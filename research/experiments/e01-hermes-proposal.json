@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "created_on": "2026-10-09",
+  "id": "E01-hermes-quote-volume-v1",
+  "status": "proposed_not_validated",
+  "registration_complete": false,
+  "runnable_replay_config": false,
+  "origin": "Two Hermes researchers plus independent Hermes review; coordinator reconciled candidates. Original review required changes. This integrated proposal has not received a second independent review.",
+  "hypothesis": "A joint depth/volume feature group improves fixed-horizon quote-share forecasts beyond matched price-only, no-change and momentum baselines.",
+  "interpretation": "Synthetic price-share forecasting only. Joint-group improvement cannot attribute causality or separate depth from volume and establishes no executable trading edge.",
+  "population": {
+    "country": "IE",
+    "sport": "HORSE_RACING",
+    "market_type": "WIN",
+    "venues": "all venues in a frozen outcome-blind consecutive inventory",
+    "package": "ADV",
+    "currency": null,
+    "corpus_manifest": null,
+    "exclude_permanently_inspected_samples": true,
+    "scope_reason": "Adopt independent reviewer scope for one coherent experiment; no claim Ireland is more profitable than UK. Corpus changes require a new registration before scoring."
+  },
+  "temporal_contract": {
+    "anchor": "first_published_scheduled_start_known_before_lookback",
+    "decision_offset_s": -120,
+    "lookback_s": 180,
+    "horizon_s": 60,
+    "availability": "publisher_pt_proxy_not_historical_receipt",
+    "snapshots": "backward at or before each cutoff; deterministic file order for equal pt",
+    "eligibility": "Complete native field IDs; valid two-sided quote states and required volume; unchanged field and uninterrupted OPEN/pre-play throughout lookback; no schedule revision known by decision. Never re-anchor an issued forecast.",
+    "freshness_policy": null,
+    "freshness_note": "Quote-change age is a feature, not proof of staleness. Continuity and age gates must be calibrated and frozen before test access."
+  },
+  "target": {
+    "midpoint": "m_i=(best_back_decimal_odds_i+best_lay_decimal_odds_i)/2",
+    "share": "q_i=(1/m_i)/sum_active_field(1/m_j)",
+    "value": "q_i(t+60)-q_i(t)",
+    "valid_quotes": "Both decimal odds > 1; best_back <= best_lay; finite positive available size at both sides; complete then-known active field",
+    "meaning": "Not a calibrated winning probability or executable midpoint price."
+  },
+  "features": {
+    "P": [
+      "current q",
+      "current m",
+      "relative spread (best_lay-best_back)/m",
+      "own q changes over 30, 60 and 180 seconds",
+      "field size",
+      "age of last back-price change",
+      "age of last lay-price change"
+    ],
+    "L": [
+      "(best_back_available_size-best_lay_available_size)/(best_back_available_size+best_lay_available_size)",
+      "log1p(cumulative_runner_matched_volume(t)-cumulative_runner_matched_volume(t-30))"
+    ],
+    "volume_semantics": "Unsigned cumulative matched activity, not buying pressure; validate currency/counters/images/corrections. Missing is not zero. Unreconciled negative increments invalidate the decision window.",
+    "primary_groups": [
+      "P",
+      "P+L"
+    ],
+    "deferred": [
+      "E02 rival features",
+      "E03 prior performance"
+    ],
+    "forbidden_search": "No additional horizons, features, models, country/package variants, outcome-based subgroups or rescue candidate on this test."
+  },
+  "model": {
+    "family": "ridge",
+    "objective": "Race-weighted mean squared target loss plus lambda times squared non-intercept coefficients; unpenalized intercept",
+    "weights": "Each market total weight equal; its runner rows divide that weight equally",
+    "preprocessing": "Weighted standardization learned within training folds only; zero-variance features assigned scale 1",
+    "penalties": [
+      0.1,
+      1,
+      10
+    ],
+    "selection": "Chronological validation race-balanced MAE after simplex projection; ties choose larger penalty",
+    "forecast": "Euclidean projection of q(t)+predicted_change onto the simplex"
+  },
+  "baselines": {
+    "price_only": "P ridge, same folds/penalty grid",
+    "no_change": "q(t)",
+    "momentum": "Euclidean simplex projection of q(t)+(60/180)*(q(t)-q(t-180))"
+  },
+  "trial_budget": {
+    "feature_penalty_combinations_per_fold": 6,
+    "fixed_baselines": 2,
+    "fold_count": null,
+    "final_fits": 2,
+    "ledger": "Record every variant, failure and earlier exploration. Six configurations per fold is not six independent hypotheses. No interim final-test scoring."
+  },
+  "label_accounting": {
+    "preserve": "Every issued forecast and its decision-known runner set",
+    "undefined_target": "Field change before the label changes the same-field target domain; report separately and never remove individual runners retrospectively",
+    "other_label_invalidation": "Post-decision suspension/in-play/status break recorded separately; keep forecast in issuance cohort",
+    "unavailable_but_well_defined": "No valid label quote despite established unchanged field/status; distinguish from unknown domain or unknown status",
+    "missingness_sensitivity": "Only bound losses for well-defined missing targets on the feasible simplex, retaining coupling among runners. Unknown/undefined domains are coverage limitations, not invented outcomes.",
+    "report": "Full decision cohort, all exclusions and label categories by day/meeting; identical scored cohort for every model; claims conditional on label eligibility"
+  },
+  "evaluation": {
+    "primary_metric": "Per-market mean absolute error, then equal-weight mean over markets",
+    "primary_contrasts": [
+      "E01 versus price_only",
+      "E01 versus no_change",
+      "E01 versus momentum"
+    ],
+    "chronology": "Early separate audit/precision calibration block, expanding fit/validation folds, then one sealed later test; purge overlapping feature/label intervals and freeze any availability gap",
+    "calendar_timezone": "Europe/Dublin",
+    "dates": null,
+    "folds": null,
+    "availability_gap_s": null,
+    "usefulness_fraction_r": null,
+    "minimum_improvement_delta": null,
+    "margin_rule": "Set positive research-usefulness fraction r before candidate comparisons; delta=r*calibration_no_change_MAE. Parser errors invalidate evaluation rather than inflate delta.",
+    "uncertainty": {
+      "method": "Stationary bootstrap over consecutive calendar-day blocks, preserving all meetings and paired model losses; recompute equal-market statistic for each resample",
+      "block_length_days": null,
+      "resamples": 10000,
+      "seed": 20261009,
+      "familywise_confidence": 0.95,
+      "multiplicity": "Bonferroni across three fixed baseline contrasts; two-sided individual intervals at 1-0.05/3",
+      "assumptions": "Dependence/stationarity approximations require pilot assessment; too few blocks or achieved precision worse than registered requirement can be inconclusive."
+    },
+    "precision_plan": "Choose fixed test duration from earlier paired day-block variance to target interval half-width <= delta/2; freeze before test access; this does not guarantee precision.",
+    "coverage_limits": null,
+    "robustness": "Report leave-day/meeting-out influence as diagnostics; no deletion of adverse groups or extra significance claims."
+  },
+  "gates": {
+    "promote_forecast_research": "All three simultaneous lower bounds exceed delta, registered coverage/sensitivity gates pass, and replay/chronology are valid.",
+    "reject_useful_increment": "At least one required contrast has upper bound <= delta; reject useful improvement for this frozen specification.",
+    "inconclusive": "Intervals overlap delta, achieved precision is inadequate, or coverage prevents a general conclusion without a demonstrated parser/leakage error.",
+    "invalid": "Leakage, unresolved replay/identity/counter errors, holdout reuse, or undeclared changes invalidate the evaluation.",
+    "economic_gate": "A separate future execution simulation requires quotes/depth, delays, conservative queues/fills, exits, impact and applicable fees; no LTP/midpoint profit accounting."
+  },
+  "next_implementation": [
+    "Reconstruct ADV level-keyed back/lay prices and sizes, runner cumulative volume and state resets.",
+    "Validate images, conflicting level updates, zero deletion, equal-pt ordering, corrections, suspensions and future-data invariance on engineering data.",
+    "Obtain permitted consecutive inventory and freeze a complete calibration/training/validation/test plan before opening final outcomes.",
+    "Fit only registered configurations, freeze code/config/data hashes, evaluate the sealed test once and report every gate."
+  ],
+  "required_before_registration": [
+    "Permitted corpus inventory and currency",
+    "Validated quote/volume parser and fixtures",
+    "Exact dates and folds",
+    "Freshness/continuity and coverage limits",
+    "Positive usefulness margin and dependence/precision calibration",
+    "Review of finalized implementation/configuration"
+  ],
+  "source_report": "../../reports/hermes-edge-2026-10-09.md"
+}

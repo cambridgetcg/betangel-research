@@ -1,0 +1,27 @@
+{
+  "checked_on": "2026-10-09",
+  "method": "Read existing Pro zero-delay predictions, settled SP CSV and final WIN market definitions; identify first published REMOVED update for the snapshot-only runner. No replay or model fit rerun.",
+  "total_final_defined_WIN_identities": 126,
+  "settled_SP_identities": 112,
+  "snapshot_identities": 113,
+  "settled_in_snapshot": 112,
+  "removed_absent_from_SP": 14,
+  "removed_excluded_from_snapshots": 13,
+  "removed_after_label_in_snapshots": [
+    {
+      "market_id": "1.131280564",
+      "selection_id": "41761",
+      "name": "Simons Castle",
+      "decision_time": "2017-04-29T17:08:00+00:00",
+      "label_time": "2017-04-29T17:09:00+00:00",
+      "first_REMOVED_published_time": "2017-04-29T17:10:49.148000+00:00",
+      "reported_removal_date": "2017-04-29T17:10:44.000Z",
+      "final_status": "REMOVED"
+    }
+  ],
+  "input_sha256": {
+    "data/raw/betfair-samples/horse-racing-pro-sample.bz2": "cb8896c5509bb26fd49e4f0cfa4a1eecb09abd18a381c17d54bcce707cb22767",
+    "data/raw/betfair-sp/dwbfpricesirewin30042017.csv": "d8e24ecba7c7e859844de5f36f59e9a72c9b6741556192bda7e8441e973d2fab",
+    "outputs/sample-pro-final/predictions.csv": "7c70dad605159201d8b451f49781965a2112654029883990f499265726857124"
+  }
+}

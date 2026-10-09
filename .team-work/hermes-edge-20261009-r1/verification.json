@@ -1,0 +1,11 @@
+{
+  "json_files_parsed": 7,
+  "unique_source_records": 39,
+  "completed_sessions_and_handoff_prompt_hashes": 3,
+  "unchanged_review_inputs_except_completed_brief": 5,
+  "proposal_status_and_trial_consistency": "passed; proposal is not an executable config",
+  "existing_local_markdown_targets": 34,
+  "identity_audit": "126 defined = 112 settled + 14 removed; 113 replay = 112 settled + 1 removed after label; inputs hashed",
+  "application_tests": "Not rerun; no application code changed",
+  "independent_review": "Original candidates: CHANGES NEEDED; integrated proposal not independently re-reviewed"
+}

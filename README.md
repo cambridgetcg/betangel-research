@@ -7,6 +7,7 @@ Research snapshot: **9 October 2026**. 本地研究 repo；離線 framework 已�
 ## Start here
 
 - [Edge 開發框架：資料量、速度、連結點樣驗證](docs/edge-framework.md)
+- [Hermes／Astra 研究、獨立覆核同下一個 E01 experiment](reports/hermes-edge-2026-10-09.md)
 - [真實歷史資料審核與 ID／時間陷阱](docs/data-audit.md)
 - [第一輪 replay 結果](reports/sample-replay-2026-10-09.md)
 - [資料、時間、模型與指標合約](docs/data-contract.md)

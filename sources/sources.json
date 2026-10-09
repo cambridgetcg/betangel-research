@@ -319,6 +319,46 @@
       "published_or_updated_on": null,
       "supports": "Authenticated historical-download route.",
       "limitations": "Not called; no session tokens accessed."
+    },
+    {
+      "id": "D19",
+      "title": "Historical data coverage",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/360002407732-What-data-is-provided-by-the-Historical-Data-service",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": "2026-09-24",
+      "accessed_on": "2026-10-09",
+      "supports": "Advertised exchange history coverage and packages.",
+      "limitations": "April 2015 start conflicts with May wording in the undated specification; actual corpus inventory is still required."
+    },
+    {
+      "id": "D20",
+      "title": "Exchange virtual prices and cross-matching",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/115003878512-Why-are-the-prices-displayed-on-the-website-different-from-what-I-see-in-my-API-application",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": "2026-06-15",
+      "accessed_on": "2026-10-09",
+      "supports": "Equivalent cross-selection offers can mechanically relate runner prices.",
+      "limitations": "Not evidence of predictive advantage or a reconstruction of historical virtual offers."
+    },
+    {
+      "id": "D21",
+      "title": "Advanced historical update interpretation",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/360018468438-Advanced-Historical-Data-How-do-I-interpret-updates",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": "2026-09-24",
+      "accessed_on": "2026-10-09",
+      "supports": "ADV best-offer triples are keyed by levels; conflicting offers may disappear without explicit cancellation updates.",
+      "limitations": "Documentation only; quote/depth replay is not yet implemented."
+    },
+    {
+      "id": "D22",
+      "title": "The Racing API ratings methodology",
+      "url": "https://www.theracingapi.com/tools/ratings",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": "2026-07-04",
+      "accessed_on": "2026-10-09",
+      "supports": "Vendor describes historical recalculation and distinctions between pre-race and settled rating vintages.",
+      "limitations": "Commercial vendor assertions; original publication/version evidence and exact authenticated endpoint coverage unverified."
     }
   ]
 }

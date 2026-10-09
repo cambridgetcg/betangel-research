@@ -1,0 +1,49 @@
+{
+  "status": "proposed_not_validated",
+  "primary_hypothesis": "E01 volume improves 60-second price-share forecasts beyond price-only and fixed baselines",
+  "features": {
+    "primary": [
+      "P",
+      "V"
+    ],
+    "declared_ablation": "E02: P+V+R versus refitted P+V"
+  },
+  "baselines": [
+    "price_only_ridge",
+    "no_change",
+    "scaled_momentum"
+  ],
+  "temporal_contract": {
+    "anchor": "first_published_start",
+    "decision_offset_s": -120,
+    "lookback_s": 180,
+    "horizon_s": 60,
+    "availability": "publisher_pt_proxy"
+  },
+  "evaluation": {
+    "metric": "race_balanced_MAE",
+    "split": "chronological_tuning_then_single_locked_test",
+    "uncertainty": "day_block_bootstrap_with_meetings_intact",
+    "penalties": [
+      0.1,
+      1,
+      10
+    ],
+    "minimum_improvement": null
+  },
+  "required_missing_inputs": [
+    "permitted_consecutive_corpus_and_currency_manifest",
+    "validated_volume_replay",
+    "exact_calendar_boundaries",
+    "pilot_variance_and_block_length",
+    "usefulness_margin_and_coverage_limits",
+    "receipt_evidence_and_historical_execution_cost_inputs"
+  ],
+  "implementation_steps": [
+    "extend_replay_outside_preserved_pilot",
+    "test_images_counters_withdrawals_and_future_data_invariance",
+    "calibrate_and_register",
+    "fit_and_freeze",
+    "evaluate_once_and_report_all_gates"
+  ]
+}

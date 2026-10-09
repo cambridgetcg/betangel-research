@@ -1,0 +1,141 @@
+{
+  "batch": "hermes-edge-20261009-r1",
+  "model_requested": "gpt-6-astra",
+  "provider_requested": "openai-codex",
+  "reasoning_requested": "ultra",
+  "reasoning_sent_by_installed_route": "max",
+  "workers": {
+    "data-edge": {
+      "session_id": "20261009_181607_21379d",
+      "exit_code": 0,
+      "duration_ms": 276497,
+      "reported_tokens": {
+        "input": 96772,
+        "output": 7897,
+        "total": 122333,
+        "cache_read": 17664,
+        "cache_write": 0
+      },
+      "artifact": ".team-work/hermes-edge-20261009-r1/handoffs/data-edge.md",
+      "sha256": "7aba35902558ecef96c62e61c98aff0189b8eb7a591399da177073563575aa04",
+      "visible_tool_errors": [
+        "web_extract: search-only backend cannot extract URL content"
+      ],
+      "prompt_sha256": "88584e7885a9fb9547f32c563d6cfb6bdfdc14dd1cb1ff93b136f5e11a67c270",
+      "invocation": [
+        "hermes",
+        "chat",
+        "--query-file",
+        "outputs/hermes-edge-20261009-r1/data-edge.prompt.txt",
+        "--model",
+        "gpt-6-astra",
+        "--provider",
+        "openai-codex",
+        "--reasoning",
+        "ultra",
+        "--toolsets",
+        "web",
+        "--max-turns",
+        "12",
+        "--run-budget",
+        "480",
+        "--format",
+        "stream-json"
+      ]
+    },
+    "strategy-design": {
+      "session_id": "20261009_181607_6c19ce",
+      "exit_code": 0,
+      "duration_ms": 313683,
+      "reported_tokens": {
+        "input": 91386,
+        "output": 9166,
+        "total": 117704,
+        "cache_read": 17152,
+        "cache_write": 0
+      },
+      "artifact": ".team-work/hermes-edge-20261009-r1/handoffs/strategy-design.md",
+      "sha256": "912f68ce98aa9a2364ce4a951ce2e0cccd3e16a61e9066241f1af48dab8d0194",
+      "visible_tool_errors": [
+        "web_extract: search-only backend cannot extract URL content"
+      ],
+      "prompt_sha256": "f384abe0550b6ee13e09640f6ab3d740c4cc5118be2425dd1494fc31cf4eab8f",
+      "invocation": [
+        "hermes",
+        "chat",
+        "--query-file",
+        "outputs/hermes-edge-20261009-r1/strategy-design.prompt.txt",
+        "--model",
+        "gpt-6-astra",
+        "--provider",
+        "openai-codex",
+        "--reasoning",
+        "ultra",
+        "--toolsets",
+        "web",
+        "--max-turns",
+        "12",
+        "--run-budget",
+        "480",
+        "--format",
+        "stream-json"
+      ]
+    }
+  },
+  "reported_token_note": "Counts are reported verbatim by Hermes and may include cached/repeated context. They are not a billing statement or an inferred monetary cost.",
+  "reviewer": {
+    "session_id": "20261009_182206_eee9a6",
+    "initialized_model": "gpt-6-astra",
+    "status": "completed",
+    "configured_run_budget_seconds": 360,
+    "prompt_sha256": "5ec0d8028e60079842ec58bc3ac60630074efbd40130aac21845e19e12d7829a",
+    "invocation": [
+      "hermes",
+      "chat",
+      "--query-file",
+      "outputs/hermes-edge-20261009-r1/independent-review.prompt.txt",
+      "--model",
+      "gpt-6-astra",
+      "--provider",
+      "openai-codex",
+      "--reasoning",
+      "ultra",
+      "--toolsets",
+      "web",
+      "--max-turns",
+      "8",
+      "--run-budget",
+      "360",
+      "--format",
+      "stream-json"
+    ],
+    "exit_code": 0,
+    "duration_ms": 323139,
+    "reported_tokens": {
+      "input": 12584,
+      "output": 10212,
+      "total": 26508,
+      "cache_read": 3712,
+      "cache_write": 0
+    },
+    "artifact": ".team-work/hermes-edge-20261009-r1/handoffs/independent-review.md",
+    "sha256": "c5fec7084d0c3590d014a2f483b6ce87b6f6aa70fb88dc29bf929b3b41f4d8cb",
+    "verdict": "CHANGES NEEDED for the proposed offline forecasting design"
+  },
+  "global_settings_changed": false,
+  "worker_context": "Curated project artifact text; no shell or filesystem tools exposed to workers.",
+  "private_runtime_directory": "outputs/hermes-edge-20261009-r1",
+  "route_evidence": {
+    "path": "/Users/macair/.hermes/hermes-agent/agent/reasoning_effort.py",
+    "sha256": "742bf0702d77d2a3db7853a1f0d23e8bdf9cb30b78c10135e8b9018517b4bb2d",
+    "observed_display_label": "ultra (sends max on this route)"
+  },
+  "review_inputs": {
+    "AGENTS.md": "f221db036b49b968c74a2106a700ea2cba346bcf941355dc991d0534793b0a7e",
+    ".team-work/hermes-edge-20261009-r1/brief.md": "a3cbde6a5a1cb9bd0f8cd454fe3860b7e1589ea6fc0a218a2d0971c93f5dc6be",
+    "docs/data-contract.md": "a837ee073f2c6551a0411219d10f19d82ea14121dbe8f70cfd7039b6a9e0ce72",
+    "reports/sample-replay-2026-10-09.md": "ebbf0e3264d7f490495fcd526f72b62df67e8efb0cb768f8c2e853dd3379c2ec",
+    ".team-work/hermes-edge-20261009-r1/handoffs/data-edge.md": "7aba35902558ecef96c62e61c98aff0189b8eb7a591399da177073563575aa04",
+    ".team-work/hermes-edge-20261009-r1/handoffs/strategy-design.md": "912f68ce98aa9a2364ce4a951ce2e0cccd3e16a61e9066241f1af48dab8d0194"
+  }
+}

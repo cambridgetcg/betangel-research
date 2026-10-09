@@ -1,6 +1,6 @@
 {
   "reviewed_on": "2026-10-09",
-  "scope": "Bounded public-source review, not a systematic customer survey. Dates are recorded only where identified.",
+  "scope": "Bounded public evidence review, primary methodology and actual public sample audit; not a systematic customer survey or independent performance study.",
   "verification": "No source in this review is classified as an independently audited Bet Angel profit record.",
   "typical_user_success_rate": null,
   "expected_user_roi": null,
@@ -193,6 +193,132 @@
       "published_or_updated_on": null,
       "supports": "Monthly and annual software prices.",
       "limitations": "Prices may change; no purchase completed."
+    },
+    {
+      "id": "M01",
+      "title": "Feast: Point-in-time joins",
+      "url": "https://docs.feast.dev/getting-started/concepts/point-in-time-joins",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Backward retrieval and feature age.",
+      "limitations": "Event-time lookup alone does not establish historical publication or receipt time."
+    },
+    {
+      "id": "M02",
+      "title": "scikit-learn: Common pitfalls",
+      "url": "https://scikit-learn.org/stable/common_pitfalls.html",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Training-only preprocessing and leakage prevention.",
+      "limitations": "Methodology reference; scikit-learn is not a runtime dependency here."
+    },
+    {
+      "id": "M03",
+      "title": "scikit-learn: TimeSeriesSplit",
+      "url": "https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Chronological evaluation and gaps.",
+      "limitations": "Irregular race data needs grouping/calendar handling; no fitted walk-forward experiment yet."
+    },
+    {
+      "id": "M04",
+      "title": "scikit-learn: Permutation importance",
+      "url": "https://scikit-learn.org/stable/modules/permutation_importance.html",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Correlated predictors complicate feature importance.",
+      "limitations": "Group ablation is our proposed protocol, not yet executed."
+    },
+    {
+      "id": "M05",
+      "title": "Strictly Proper Scoring Rules, Prediction, and Estimation",
+      "url": "https://sites.stat.washington.edu/raftery/Research/PDF/Gneiting2007jasa.pdf",
+      "evidence_type": "primary_research",
+      "published_or_updated_on": "2007-03",
+      "supports": "Proper probability forecast scoring.",
+      "limitations": "No evidence of betting profitability or performance of our candidates."
+    },
+    {
+      "id": "M06",
+      "title": "The Probability of Backtest Overfitting",
+      "url": "https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf",
+      "evidence_type": "primary_research",
+      "published_or_updated_on": "2015-02-27",
+      "supports": "Selection among many variants can overfit backtests.",
+      "limitations": "Author-hosted revised draft; PBO/CSCV not implemented or estimated here."
+    },
+    {
+      "id": "M07",
+      "title": "BHA: Adjusting a handicap rating",
+      "url": "https://www.britishhorseracing.com/regulation/adjusting-handicap-rating/",
+      "evidence_type": "official_methodology",
+      "published_or_updated_on": null,
+      "supports": "Past performance figures may be revised.",
+      "limitations": "No point-in-time ratings dataset acquired."
+    },
+    {
+      "id": "D12",
+      "title": "Betfair Historical Data: Help",
+      "url": "https://historicdata.betfair.com/help",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Current frontend publishes historical sample links.",
+      "limitations": "Public sample access is not an open redistribution licence."
+    },
+    {
+      "id": "D13",
+      "title": "Horse racing Basic public sample",
+      "url": "https://historicdata.betfair.com/files/horse-racing-basic-sample.bz2",
+      "evidence_type": "official_data_sample",
+      "published_or_updated_on": null,
+      "supports": "Actual format and coverage inspected locally.",
+      "limitations": "Same selected 2017 Irish meeting as Advanced and Pro; not independent evidence."
+    },
+    {
+      "id": "D14",
+      "title": "Horse racing Advanced public sample",
+      "url": "https://historicdata.betfair.com/files/horse-racing-adv-sample.bz2",
+      "evidence_type": "official_data_sample",
+      "published_or_updated_on": null,
+      "supports": "Actual format and coverage inspected locally.",
+      "limitations": "Old selected sample; zero LTP placeholders require handling."
+    },
+    {
+      "id": "D15",
+      "title": "Horse racing Pro public sample",
+      "url": "https://historicdata.betfair.com/files/horse-racing-pro-sample.bz2",
+      "evidence_type": "official_data_sample",
+      "published_or_updated_on": null,
+      "supports": "Actual format and coverage inspected locally.",
+      "limitations": "Images may omit active-runner LTP; no customer receipt or counterfactual order data."
+    },
+    {
+      "id": "D16",
+      "title": "Betfair SP history archive",
+      "url": "https://promo.betfair.com/betfairsp/SP_history.html",
+      "evidence_type": "official_data_archive",
+      "published_or_updated_on": null,
+      "supports": "Settled CSV fields and identity-format audit.",
+      "limitations": "Rights reserved; no reuse licence established. Not used as a strategy benchmark."
+    },
+    {
+      "id": "D17",
+      "title": "How is BASIC historical LTP updated?",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/25918481395740-How-is-the-BASIC-Historical-Data-last-price-traded-ltp-updated",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Basic last-traded-price updates are change based.",
+      "limitations": "Missing updates do not measure real customer receipt latency."
+    },
+    {
+      "id": "D18",
+      "title": "HTTP requests to the Historical Data API",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/12859956891932-How-Can-I-Make-HTTP-Requests-to-the-Historical-Data-API",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": null,
+      "supports": "Authenticated historical-download route.",
+      "limitations": "Not called; no session tokens accessed."
     }
   ]
 }

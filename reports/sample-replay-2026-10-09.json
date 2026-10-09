@@ -1,0 +1,1334 @@
+{
+  "reviewed_on": "2026-10-09",
+  "status": "engineering_sample_only_no_validated_edge",
+  "scope": "Same eight Punchestown races on 2017-04-29; three packages are not independent samples.",
+  "config": {
+    "experiment_id": "sample-preoff-v1",
+    "status": "exploratory_engineering_sample_not_preregistered_holdout",
+    "scope": "Official 2017 Irish horse-racing samples; not a current UK performance study",
+    "countries": [
+      "IE"
+    ],
+    "market_type": "WIN",
+    "decision_before_start_s": 120,
+    "lookback_s": 180,
+    "horizon_s": 60,
+    "delays_s": [
+      0,
+      2,
+      10,
+      30
+    ],
+    "max_snapshot_age_s": 90,
+    "candidates": [
+      "no_change",
+      "momentum",
+      "mean_reversion",
+      "rival_linkage"
+    ],
+    "primary_metric": "race_balanced_mae",
+    "target": "change in normalized inverse-LTP share from decision to target",
+    "economic_evaluation": "disabled_LTP_is_not_an_executable_quote",
+    "notes": "Rival coefficient 0.5 is fixed in code, not fitted. All four candidates and delays are reported; no winner selected. All inspected samples remain exploratory forever."
+  },
+  "config_sha256": "0c2d66a45e45faeeb91f949df59d899cfcc8efb52a40f9eb04953bd52c31c54a",
+  "code_sha256": {
+    "betangel_research/__init__.py": "1c6f9f424bae9653f42e824531fb52e0f95b0958b4e42b440ad4406aa30c0558",
+    "betangel_research/__main__.py": "eccace6e14b9e6beaaa355c61be90b3c3527d92ec42136134f1de8ed62c5a2da",
+    "betangel_research/evaluation.py": "7308d604f486dc6828b028152fb12e88797472b40c310f6a0172e84a53454b8d",
+    "betangel_research/stream.py": "084ce9460cdd3d0981e602f8b2c718b2b5a05c1cfe74a8a5ec5c2c27529773f9",
+    "betangel_research/temporal.py": "024d7535c3e74a2c02b6c7fdf229349ab000a99924a98175718e8144dd724354"
+  },
+  "independent_holdout": false,
+  "economic_result": null,
+  "selected_strategy": null,
+  "tiers": {
+    "basic": {
+      "source_sha256": "5fd51df5fedff10d6f6103eac6634c7dd3763c686d4556d6118440edfad19527",
+      "input_bytes": 79576,
+      "messages": 1251,
+      "elapsed_seconds": 0.1156,
+      "scores_by_delay_seconds": {
+        "0": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.004830246386400751,
+              "race_balanced_mae": 0.0059264366896303895,
+              "directional_accuracy": 0.504424778761062,
+              "race_balanced_directional_accuracy": 0.5098834827453248
+            },
+            "momentum": {
+              "mae": 0.005565921991280666,
+              "race_balanced_mae": 0.007025393677225058,
+              "directional_accuracy": 0.49557522123893805,
+              "race_balanced_directional_accuracy": 0.49011651725467514
+            },
+            "no_change": {
+              "mae": 0.004848945012963577,
+              "race_balanced_mae": 0.006100156566489697,
+              "directional_accuracy": 0.0,
+              "race_balanced_directional_accuracy": 0.0
+            },
+            "rival_linkage": {
+              "mae": 0.006244366274190767,
+              "race_balanced_mae": 0.007629375063145613,
+              "directional_accuracy": 0.4424778761061947,
+              "race_balanced_directional_accuracy": 0.4071265905147484
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.004830246386400751,
+                  "race_balanced_mae": 0.0059264366896303895,
+                  "directional_accuracy": 0.504424778761062,
+                  "race_balanced_directional_accuracy": 0.5098834827453248
+                },
+                "momentum": {
+                  "mae": 0.005565921991280666,
+                  "race_balanced_mae": 0.007025393677225058,
+                  "directional_accuracy": 0.49557522123893805,
+                  "race_balanced_directional_accuracy": 0.49011651725467514
+                },
+                "no_change": {
+                  "mae": 0.004848945012963577,
+                  "race_balanced_mae": 0.006100156566489697,
+                  "directional_accuracy": 0.0,
+                  "race_balanced_directional_accuracy": 0.0
+                },
+                "rival_linkage": {
+                  "mae": 0.006244366274190767,
+                  "race_balanced_mae": 0.007629375063145613,
+                  "directional_accuracy": 0.4424778761061947,
+                  "race_balanced_directional_accuracy": 0.4071265905147484
+                }
+              }
+            }
+          }
+        },
+        "2": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.004862399352472154,
+              "race_balanced_mae": 0.005963937496324126,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.0055956007202614365,
+              "race_balanced_mae": 0.007060838363681307,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.004848945012963577,
+              "race_balanced_mae": 0.006100156566489697,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.0063016180559528545,
+              "race_balanced_mae": 0.007690705172899611,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.004862399352472154,
+                  "race_balanced_mae": 0.005963937496324126,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.0055956007202614365,
+                  "race_balanced_mae": 0.007060838363681307,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.004848945012963577,
+                  "race_balanced_mae": 0.006100156566489697,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.0063016180559528545,
+                  "race_balanced_mae": 0.007690705172899611,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        },
+        "10": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.0050071209530304335,
+              "race_balanced_mae": 0.006146447869506406,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.005716590439564147,
+              "race_balanced_mae": 0.007205036253219052,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.004848945012963577,
+              "race_balanced_mae": 0.006100156566489697,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.006552193479655872,
+              "race_balanced_mae": 0.007951482936012754,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.0050071209530304335,
+                  "race_balanced_mae": 0.006146447869506406,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.005716590439564147,
+                  "race_balanced_mae": 0.007205036253219052,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.004848945012963577,
+                  "race_balanced_mae": 0.006100156566489697,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.006552193479655872,
+                  "race_balanced_mae": 0.007951482936012754,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        },
+        "30": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.005401999910469043,
+              "race_balanced_mae": 0.006634697421070751,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.006053462297209489,
+              "race_balanced_mae": 0.007599015887273626,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.004848945012963577,
+              "race_balanced_mae": 0.006100156566489697,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.007259022578285506,
+              "race_balanced_mae": 0.008703977689565646,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.005401999910469043,
+                  "race_balanced_mae": 0.006634697421070751,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.006053462297209489,
+                  "race_balanced_mae": 0.007599015887273626,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.004848945012963577,
+                  "race_balanced_mae": 0.006100156566489697,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.007259022578285506,
+                  "race_balanced_mae": 0.008703977689565646,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        }
+      },
+      "exclusions_by_delay_seconds": {
+        "0": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "2": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "10": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "30": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        }
+      },
+      "ltp_age_seconds_by_delay": {
+        "0": {
+          "min": 43.868,
+          "median": 43.901,
+          "max": 163.916
+        },
+        "2": {
+          "min": 41.868,
+          "median": 41.901,
+          "max": 161.916
+        },
+        "10": {
+          "min": 33.868,
+          "median": 33.901,
+          "max": 153.916
+        },
+        "30": {
+          "min": 13.868,
+          "median": 13.901,
+          "max": 133.916
+        }
+      },
+      "available_chronological_folds": [],
+      "local_report": "outputs/sample-basic-final/report.json"
+    },
+    "adv": {
+      "source_sha256": "fd80f8625bf17cb8d9eb1a0797aefc50d0b9b679777c8dd525f866ccc8c1766f",
+      "input_bytes": 8487377,
+      "messages": 71764,
+      "elapsed_seconds": 2.9837,
+      "scores_by_delay_seconds": {
+        "0": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.003528929622760297,
+              "race_balanced_mae": 0.004296588440233208,
+              "directional_accuracy": 0.504424778761062,
+              "race_balanced_directional_accuracy": 0.5539449585502216
+            },
+            "momentum": {
+              "mae": 0.004544273392639189,
+              "race_balanced_mae": 0.005562827257023372,
+              "directional_accuracy": 0.49557522123893805,
+              "race_balanced_directional_accuracy": 0.44605504144977826
+            },
+            "no_change": {
+              "mae": 0.00339503882068034,
+              "race_balanced_mae": 0.004058593907009776,
+              "directional_accuracy": 0.0,
+              "race_balanced_directional_accuracy": 0.0
+            },
+            "rival_linkage": {
+              "mae": 0.004923595173125,
+              "race_balanced_mae": 0.006098399052110182,
+              "directional_accuracy": 0.5132743362831859,
+              "race_balanced_directional_accuracy": 0.5019218719876615
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.003528929622760297,
+                  "race_balanced_mae": 0.004296588440233208,
+                  "directional_accuracy": 0.504424778761062,
+                  "race_balanced_directional_accuracy": 0.5539449585502216
+                },
+                "momentum": {
+                  "mae": 0.004544273392639189,
+                  "race_balanced_mae": 0.005562827257023372,
+                  "directional_accuracy": 0.49557522123893805,
+                  "race_balanced_directional_accuracy": 0.44605504144977826
+                },
+                "no_change": {
+                  "mae": 0.00339503882068034,
+                  "race_balanced_mae": 0.004058593907009776,
+                  "directional_accuracy": 0.0,
+                  "race_balanced_directional_accuracy": 0.0
+                },
+                "rival_linkage": {
+                  "mae": 0.004923595173125,
+                  "race_balanced_mae": 0.006098399052110182,
+                  "directional_accuracy": 0.5132743362831859,
+                  "race_balanced_directional_accuracy": 0.5019218719876615
+                }
+              }
+            }
+          }
+        },
+        "2": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.003602506140782325,
+              "race_balanced_mae": 0.004348912669686928,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.004398256185116268,
+              "race_balanced_mae": 0.005403892697428719,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.003282684154486001,
+              "race_balanced_mae": 0.0039773275634410405,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.0048207068332487765,
+              "race_balanced_mae": 0.0058911180335820745,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.003602506140782325,
+                  "race_balanced_mae": 0.004348912669686928,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.004398256185116268,
+                  "race_balanced_mae": 0.005403892697428719,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.003282684154486001,
+                  "race_balanced_mae": 0.0039773275634410405,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.0048207068332487765,
+                  "race_balanced_mae": 0.0058911180335820745,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        },
+        "10": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.004355520755010799,
+              "race_balanced_mae": 0.005274288099140922,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.005009642995081569,
+              "race_balanced_mae": 0.005603848360006124,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.0038185460752520714,
+              "race_balanced_mae": 0.0045682772740412506,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.005827788664282765,
+              "race_balanced_mae": 0.006821663790426466,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.004355520755010799,
+                  "race_balanced_mae": 0.005274288099140922,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.005009642995081569,
+                  "race_balanced_mae": 0.005603848360006124,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.0038185460752520714,
+                  "race_balanced_mae": 0.0045682772740412506,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.005827788664282765,
+                  "race_balanced_mae": 0.006821663790426466,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        },
+        "30": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.005197531692838345,
+              "race_balanced_mae": 0.006393613860296272,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.00651523517362115,
+              "race_balanced_mae": 0.008252129746079494,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.004733161306192668,
+              "race_balanced_mae": 0.006224295740071072,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.007925136830259695,
+              "race_balanced_mae": 0.009558284436499672,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.005197531692838345,
+                  "race_balanced_mae": 0.006393613860296272,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.00651523517362115,
+                  "race_balanced_mae": 0.008252129746079494,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.004733161306192668,
+                  "race_balanced_mae": 0.006224295740071072,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.007925136830259695,
+                  "race_balanced_mae": 0.009558284436499672,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        }
+      },
+      "exclusions_by_delay_seconds": {
+        "0": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "2": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "10": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "30": {
+          "1.131280545": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280548": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        }
+      },
+      "ltp_age_seconds_by_delay": {
+        "0": {
+          "min": 0.846,
+          "median": 0.856,
+          "max": 3.943
+        },
+        "2": {
+          "min": 0.861,
+          "median": 0.9,
+          "max": 2.901
+        },
+        "10": {
+          "min": 0.834,
+          "median": 0.88,
+          "max": 6.864
+        },
+        "30": {
+          "min": 0.856,
+          "median": 0.907,
+          "max": 8.936
+        }
+      },
+      "available_chronological_folds": [],
+      "local_report": "outputs/sample-adv-final/report.json"
+    },
+    "pro": {
+      "source_sha256": "cb8896c5509bb26fd49e4f0cfa4a1eecb09abd18a381c17d54bcce707cb22767",
+      "input_bytes": 16812379,
+      "messages": 407927,
+      "elapsed_seconds": 6.5637,
+      "scores_by_delay_seconds": {
+        "0": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.003799430751992524,
+              "race_balanced_mae": 0.004568748249532299,
+              "directional_accuracy": 0.5132743362831859,
+              "race_balanced_directional_accuracy": 0.5649309572006941
+            },
+            "momentum": {
+              "mae": 0.004620845619947962,
+              "race_balanced_mae": 0.005526631762627619,
+              "directional_accuracy": 0.48672566371681414,
+              "race_balanced_directional_accuracy": 0.4350690427993059
+            },
+            "no_change": {
+              "mae": 0.0035880131493529173,
+              "race_balanced_mae": 0.0042963060177860415,
+              "directional_accuracy": 0.0,
+              "race_balanced_directional_accuracy": 0.0
+            },
+            "rival_linkage": {
+              "mae": 0.004896302865001839,
+              "race_balanced_mae": 0.005883495024397814,
+              "directional_accuracy": 0.5575221238938053,
+              "race_balanced_directional_accuracy": 0.527903291883555
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.003799430751992524,
+                  "race_balanced_mae": 0.004568748249532299,
+                  "directional_accuracy": 0.5132743362831859,
+                  "race_balanced_directional_accuracy": 0.5649309572006941
+                },
+                "momentum": {
+                  "mae": 0.004620845619947962,
+                  "race_balanced_mae": 0.005526631762627619,
+                  "directional_accuracy": 0.48672566371681414,
+                  "race_balanced_directional_accuracy": 0.4350690427993059
+                },
+                "no_change": {
+                  "mae": 0.0035880131493529173,
+                  "race_balanced_mae": 0.0042963060177860415,
+                  "directional_accuracy": 0.0,
+                  "race_balanced_directional_accuracy": 0.0
+                },
+                "rival_linkage": {
+                  "mae": 0.004896302865001839,
+                  "race_balanced_mae": 0.005883495024397814,
+                  "directional_accuracy": 0.5575221238938053,
+                  "race_balanced_directional_accuracy": 0.527903291883555
+                }
+              }
+            }
+          }
+        },
+        "2": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.0038263132818052627,
+              "race_balanced_mae": 0.004516156475388509,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.004327807913738892,
+              "race_balanced_mae": 0.0053234515211839206,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.003374145396112175,
+              "race_balanced_mae": 0.004042571321805802,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.004855761914812137,
+              "race_balanced_mae": 0.006091708696702185,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.0038263132818052627,
+                  "race_balanced_mae": 0.004516156475388509,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.004327807913738892,
+                  "race_balanced_mae": 0.0053234515211839206,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.003374145396112175,
+                  "race_balanced_mae": 0.004042571321805802,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.004855761914812137,
+                  "race_balanced_mae": 0.006091708696702185,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        },
+        "10": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.004664059431736065,
+              "race_balanced_mae": 0.005615924862976645,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.005041124334822622,
+              "race_balanced_mae": 0.005783198366867455,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.0039750772371968165,
+              "race_balanced_mae": 0.004948658715455281,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.005683713028866689,
+              "race_balanced_mae": 0.006776544320226659,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.004664059431736065,
+                  "race_balanced_mae": 0.005615924862976645,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.005041124334822622,
+                  "race_balanced_mae": 0.005783198366867455,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.0039750772371968165,
+                  "race_balanced_mae": 0.004948658715455281,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.005683713028866689,
+                  "race_balanced_mae": 0.006776544320226659,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        },
+        "30": {
+          "status": "ok",
+          "counts": {
+            "records": 113,
+            "markets": 8,
+            "days": 1
+          },
+          "direction_zero_tolerance": 1e-12,
+          "models": {
+            "mean_reversion": {
+              "mae": 0.005315970319783479,
+              "race_balanced_mae": 0.006468396645655341,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "momentum": {
+              "mae": 0.006561536278088168,
+              "race_balanced_mae": 0.008208419351217779,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "no_change": {
+              "mae": 0.004813954026676751,
+              "race_balanced_mae": 0.006262003754975093,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            },
+            "rival_linkage": {
+              "mae": 0.00804692921905763,
+              "race_balanced_mae": 0.009762567578518719,
+              "directional_accuracy": null,
+              "race_balanced_directional_accuracy": null
+            }
+          },
+          "per_day": {
+            "2017-04-29": {
+              "counts": {
+                "records": 113,
+                "markets": 8,
+                "days": 1
+              },
+              "models": {
+                "mean_reversion": {
+                  "mae": 0.005315970319783479,
+                  "race_balanced_mae": 0.006468396645655341,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "momentum": {
+                  "mae": 0.006561536278088168,
+                  "race_balanced_mae": 0.008208419351217779,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "no_change": {
+                  "mae": 0.004813954026676751,
+                  "race_balanced_mae": 0.006262003754975093,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                },
+                "rival_linkage": {
+                  "mae": 0.00804692921905763,
+                  "race_balanced_mae": 0.009762567578518719,
+                  "directional_accuracy": null,
+                  "race_balanced_directional_accuracy": null
+                }
+              }
+            }
+          },
+          "direction_note": "suppressed: undelayed decision reference unavailable to delayed forecast"
+        }
+      },
+      "exclusions_by_delay_seconds": {
+        "0": {
+          "1.131280548": "outside_declared_population",
+          "1.131280545": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "2": {
+          "1.131280548": "outside_declared_population",
+          "1.131280545": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "10": {
+          "1.131280548": "outside_declared_population",
+          "1.131280545": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        },
+        "30": {
+          "1.131280548": "outside_declared_population",
+          "1.131280545": "outside_declared_population",
+          "1.131280553": "outside_declared_population",
+          "1.131280547": "outside_declared_population",
+          "1.131280552": "outside_declared_population",
+          "1.131280550": "outside_declared_population",
+          "1.131280535": "outside_declared_population",
+          "1.131280556": "outside_declared_population",
+          "1.131280567": "outside_declared_population",
+          "1.131280536": "outside_declared_population",
+          "1.131280538": "outside_declared_population",
+          "1.131280543": "outside_declared_population",
+          "1.131280558": "outside_declared_population",
+          "1.131280540": "outside_declared_population",
+          "1.131280541": "outside_declared_population",
+          "1.131280542": "outside_declared_population",
+          "1.131280557": "outside_declared_population",
+          "1.131280563": "outside_declared_population",
+          "1.131280555": "outside_declared_population",
+          "1.131280537": "outside_declared_population",
+          "1.131280560": "outside_declared_population",
+          "1.131280566": "outside_declared_population",
+          "1.131280561": "outside_declared_population",
+          "1.131280565": "outside_declared_population",
+          "1.131280568": "outside_declared_population",
+          "1.131280562": "outside_declared_population"
+        }
+      },
+      "ltp_age_seconds_by_delay": {
+        "0": {
+          "min": 0.024,
+          "median": 1.138,
+          "max": 4.515
+        },
+        "2": {
+          "min": 0.01,
+          "median": 1.096,
+          "max": 12.025
+        },
+        "10": {
+          "min": 0.015,
+          "median": 1.036,
+          "max": 8.437
+        },
+        "30": {
+          "min": 0.025,
+          "median": 1.381,
+          "max": 8.936
+        }
+      },
+      "available_chronological_folds": [],
+      "local_report": "outputs/sample-pro-final/report.json"
+    }
+  }
+}

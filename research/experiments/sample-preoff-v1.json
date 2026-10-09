@@ -1,0 +1,17 @@
+{
+  "experiment_id": "sample-preoff-v1",
+  "status": "exploratory_engineering_sample_not_preregistered_holdout",
+  "scope": "Official 2017 Irish horse-racing samples; not a current UK performance study",
+  "countries": ["IE"],
+  "market_type": "WIN",
+  "decision_before_start_s": 120,
+  "lookback_s": 180,
+  "horizon_s": 60,
+  "delays_s": [0, 2, 10, 30],
+  "max_snapshot_age_s": 90,
+  "candidates": ["no_change", "momentum", "mean_reversion", "rival_linkage"],
+  "primary_metric": "race_balanced_mae",
+  "target": "change in normalized inverse-LTP share from decision to target",
+  "economic_evaluation": "disabled_LTP_is_not_an_executable_quote",
+  "notes": "Rival coefficient 0.5 is fixed in code, not fitted. All four candidates and delays are reported; no winner selected. All inspected samples remain exploratory forever."
+}

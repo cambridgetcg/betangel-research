@@ -1,10 +1,10 @@
 # Research plan and economic validation
 
-As of **2026-10-09**. Completed: public evidence review and import of the prior descriptive pilot. Not completed: historical exchange-data acquisition, model training, prospective forecasts or any profitability test.
+As of **2026-10-09**. Completed: public evidence review, prior pilot import, official historical sample acquisition, field/identity audit, and an offline fixed-forecast replay framework. See [sample results](../reports/sample-replay-2026-10-09.md), [edge framework](edge-framework.md) and [data contracts](data-contract.md). Model training, independent holdout validation, prospective forecasts and profitability tests are not completed.
 
 ## 1. Audit data before buying infrastructure
 
-Use the Mac to inspect permitted historical samples and their actual fields. Record provider, licence/reuse terms, retrieval date, timestamps, market/selection IDs and missingness. The [official download guide](https://support.developer.betfair.com/hc/en-us/articles/360000402211-How-do-I-download-and-view-Betfair-Historical-Data) documents a separate historical download service; this repo has not bought or downloaded those files.
+The Mac has now inspected official public samples; [the audit](data-audit.md) records actual fields and limitations. Continue recording provider, licence/reuse terms, retrieval date, timestamps, market/selection IDs and missingness for any expansion. The [official download guide](https://support.developer.betfair.com/hc/en-us/articles/360000402211-How-do-I-download-and-view-Betfair-Historical-Data) documents a separate historical download service; no paid or authenticated historical-store acquisition has been performed.
 
 Choose a narrow, consecutive population of UK horse races before viewing outcome patterns. Record race type, distance, field size, scheduled/actual start and suspensions. For every data item distinguish event time, publication time and receipt time. Report missing races, withdrawals and exclusions rather than silently dropping them.
 

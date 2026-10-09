@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "created_on": "2026-10-09",
+  "status": "proposed",
+  "scope": "Public-source methodology and offline experiments only; no real-data advantage or executable betting strategy established.",
+  "expected_roi": null,
+  "registration_complete": false,
+  "shared_preregistration_required": [
+    "Consecutive eligible population and fixed train, validation and final-test dates",
+    "Observable decision schedule, target horizon, target price definition and feature availability cutoff",
+    "Missingness, suspensions, late starts, non-runners and unscorable-case policies",
+    "Model family, feature groups, hyperparameter search budget and complete trial ledger",
+    "One primary metric, minimum useful improvement and uncertainty/multiplicity policy",
+    "Calendar/group splits, label-overlap purge, availability gap and final-test access log"
+  ],
+  "shared_temporal_contract": {
+    "conceptual_fields": [
+      "market_id",
+      "selection_id",
+      "event_time",
+      "available_time",
+      "retrieved_time",
+      "decision_time",
+      "source_id",
+      "source_version"
+    ],
+    "rule": "Features must describe events and versions available no later than the declared cutoff. A past event date alone is insufficient. Fit transformations on training folds only.",
+    "receipt_time": "Use genuine historical receipt evidence when claiming delivery latency; do not treat the date of a later bulk download as historical receipt time.",
+    "unknown_availability": "Exclude from strict historical claims or label explicit availability assumptions; never silently infer availability from event time.",
+    "schedule": "Anchor decisions to information observable then; do not choose decision timestamps retrospectively from actual off time.",
+    "runner_set": "Preserve the field known at the decision, with a preregistered policy for subsequent removals and scoring."
+  },
+  "shared_gates": {
+    "invalid_experiment": "Reject results with leakage, unresolved entity joins or post hoc exclusions. Correct the design before further evaluation.",
+    "forecast_rejection": "A frozen variant with no useful held-out gain fails its stated claim for that specification; insufficient precision is inconclusive.",
+    "forecast_promotion": "Advance only when a preregistered confidence bound for paired score improvement exceeds the preregistered minimum useful improvement, with registered multiplicity control and planned robustness checks. Promotion means more research, not betting approval.",
+    "economic_promotion": "Requires a separate future execution simulation with obtainable prices, queue/delay/fill assumptions, adverse cases and all applicable costs. No current card has passed this gate.",
+    "minimum_useful_improvement": null,
+    "confidence_level": null,
+    "multiplicity_method": null,
+    "threshold_note": "Null values deliberately mean not registered. They must be frozen before final-test inspection, not chosen to fit results."
+  },
+  "cards": [
+    {
+      "id": "E01",
+      "status": "proposed",
+      "title": "Incremental price and volume information",
+      "related_existing_hypotheses": ["H01"],
+      "primary_candidate": true,
+      "question": "Does lagged price/volume/depth information improve a fixed-horizon pre-off price forecast beyond simple price baselines?",
+      "plausible_mechanism": "Persistent order imbalance or changes in participation may precede further repricing.",
+      "counterhypothesis": "Current prices already incorporate these observations; apparent persistence reflects stale quotes, mechanical sampling or future leakage.",
+      "required_predecision_data": [
+        "Timestamped best back/lay prices and corresponding available sizes",
+        "Traded volume updates with clear delta-versus-cumulative semantics",
+        "Market status, runner IDs and field membership as known then",
+        "Enough predecision history to construct registered lookbacks without later values"
+      ],
+      "target": "Change from the declared decision-time price to the same price definition at a fixed later horizon; exact horizon and missing-target policy await registration.",
+      "baselines": ["No price change", "Simple momentum using a registered lookback", "Price-only model with the same training/tuning budget"],
+      "metrics": {
+        "primary": "Paired reduction in absolute forecast error in a declared tick or probability scale",
+        "secondary": ["Directional accuracy including a defined no-change class", "Error by liquidity and calendar block", "Coverage and unscorable-case counts"]
+      },
+      "ablations": [
+        "Refit without volume/depth features using identical calendar folds",
+        "Predeclared training-size learning curve with fixed evaluation dates",
+        "Apply staleness limits and additional availability delay"
+      ],
+      "reject_if": "The extra feature group adds no useful held-out improvement, or its gain requires stale/after-cutoff data or one exceptional meeting.",
+      "promote_if": "Shared forecast gate passes against each registered baseline and the increment survives volume-group removal comparisons and delay stress.",
+      "local_v1": "Replay public stream deltas into pre-off LTP snapshots and score fixed no-change, momentum and mean-reversion candidates with market-balanced errors. The one-meeting 2017 sample is an engineering check, not a holdout or a trained price/volume model.",
+      "future_work": "Acquire permitted depth/volume data; train and compare models; quantify blocked uncertainty and execution sensitivity.",
+      "source_urls": ["https://scikit-learn.org/stable/common_pitfalls.html", "https://arxiv.org/html/2510.16008v1"]
+    },
+    {
+      "id": "E02",
+      "status": "proposed",
+      "title": "Information linking runners within a market",
+      "related_existing_hypotheses": ["H01"],
+      "primary_candidate": false,
+      "depends_on": ["E01"],
+      "question": "Do lagged competitor movements improve the same target forecast beyond the runner's own history and contemporaneous market state?",
+      "plausible_mechanism": "Relative repricing and changes in volume distribution may convey information not yet reflected equally across runners.",
+      "counterhypothesis": "The relationship is mechanical normalization, shared market movement, synchronized stale data or post hoc selection of the eventual favourite.",
+      "required_predecision_data": [
+        "All E01 fields across the then-known field, with per-runner freshness",
+        "Stable cross-runner market joins without later field membership",
+        "Price rank and market shares computed only at the decision cutoff"
+      ],
+      "target": "Same registered price definition and horizon as E01; reuse identical eligible races and calendar splits.",
+      "baselines": ["E01 own-runner model", "Own-runner model plus current market rank and normalized price shares"],
+      "metrics": {
+        "primary": "Paired reduction in fixed-horizon absolute forecast error relative to the strongest registered own-runner baseline",
+        "secondary": ["Coverage loss from missing competitors", "Performance by field size and spread", "Calendar-block uncertainty"]
+      },
+      "ablations": [
+        "Remove all other-runner lagged features as one group and refit",
+        "Retain current market shares but remove competitor history",
+        "Compare complete-case and preregistered missingness-aware results without hiding exclusions"
+      ],
+      "reject_if": "The increment vanishes after controlling for current shares, consistent timestamps or whole-group removal, or depends on a field/rank known only later.",
+      "promote_if": "Shared forecast gate passes relative to the full own-runner baseline with synchronized data and registered group ablations.",
+      "local_v1": "Validate market/runner timing and score a fixed cross-runner linkage candidate on replayed LTP snapshots. No fitted linkage model or cross-runner advantage is established by the sample.",
+      "future_work": "Fit linked-feature models only after reliable all-runner coverage and E01 baselines exist.",
+      "source_urls": ["https://docs.feast.dev/getting-started/concepts/point-in-time-joins", "https://scikit-learn.org/stable/modules/permutation_importance.html"]
+    },
+    {
+      "id": "E03",
+      "status": "proposed",
+      "title": "Earlier performance beyond market probabilities",
+      "related_existing_hypotheses": ["H02"],
+      "primary_candidate": true,
+      "question": "Do genuinely earlier published performance features improve future race-outcome probabilities beyond a calibrated market-only benchmark?",
+      "plausible_mechanism": "Pace-conditioned previous sectionals may encode information that is incompletely represented by headline finishing positions.",
+      "counterhypothesis": "The market already prices the information, or improvement comes from revised ratings/pars, target-race sectionals or selective data coverage.",
+      "required_predecision_data": [
+        "Stable horse/race IDs joining previous starts to each target race",
+        "Earlier-start sectionals, total times and contextual distance/surface/going with publication/version evidence",
+        "Predecision executable price snapshot and the then-known runner set",
+        "Historical rating-at-race/publication evidence if ratings are included; otherwise omit them"
+      ],
+      "target": "Future race outcome under a registered policy for later withdrawals, voids and dead heats; target-race measurements are labels only.",
+      "baselines": ["Normalized inverse predecision odds", "Market-only calibration fitted on training folds", "Uniform field probabilities as a sanity check only"],
+      "metrics": {
+        "primary": "Paired reduction in race-level log loss against market-only calibration",
+        "secondary": ["Race-level multiclass Brier score", "Reliability/calibration diagnostics", "Coverage by course and date", "Uncertainty blocked by day/meeting"]
+      },
+      "ablations": [
+        "Refit without the entire previous-sectional feature group",
+        "Keep market information but remove all added performance information",
+        "Exclude revised or availability-unknown features and report the changed population"
+      ],
+      "reject_if": "No useful held-out improvement survives as-of availability checks, market-only calibration and the registered feature-group comparison.",
+      "promote_if": "Shared forecast gate passes on untouched later races, with improved proper scores and no unacceptable preregistered calibration degradation.",
+      "local_v1": "Implement point-in-time entity-join contracts only. No fitted outcome model or probability-validation claim. The two-race archive remains descriptive, not a test set.",
+      "future_work": "Acquire consecutive historical performance and predecision prices, train calibration/models, and evaluate enough independent calendar blocks for meaningful uncertainty.",
+      "source_urls": ["https://www.britishhorseracing.com/regulation/adjusting-handicap-rating/", "https://sites.stat.washington.edu/raftery/Research/PDF/Gneiting2007jasa.pdf", "https://scikit-learn.org/stable/common_pitfalls.html"]
+    },
+    {
+      "id": "E04",
+      "status": "proposed",
+      "title": "A predictive increment that survives delay",
+      "related_existing_hypotheses": ["H01", "H03"],
+      "primary_candidate": false,
+      "depends_on": ["E01"],
+      "question": "Does a frozen signal retain useful incremental forecast quality at achievable data-availability and computation delays?",
+      "plausible_mechanism": "An information effect may persist long enough for a modest local pipeline to observe and process it.",
+      "counterhypothesis": "Signal value disappears before the input is available, or an elaborate model's additional score gain is smaller than its delay-induced degradation.",
+      "required_predecision_data": [
+        "Frozen model/feature definition from a separate training period",
+        "Publication timestamps and genuine receipt timestamps where historical latency is claimed",
+        "Measured preprocessing/inference start and finish times on the target device",
+        "A preregistered delay grid, data resolution and staleness/missingness policy"
+      ],
+      "target": "Same fixed decision/horizon as the underlying forecast; an input at decision minus delay is available only under the registered timestamp rule.",
+      "baselines": ["Simple forecast using information genuinely available at that decision", "Frozen model under zero added delay as an optimistic reference only", "Simpler model with measured computation time"],
+      "metrics": {
+        "primary": "Retention of paired forecast-score improvement under each registered realistic delay scenario",
+        "secondary": ["Data age distribution", "Preprocessing/inference p50 and p95", "Late-decision and missing-data counts", "Score-decay curve"]
+      },
+      "ablations": [
+        "Hold the model fixed while delaying all its required inputs coherently",
+        "Compare model complexity at the same available-information deadline",
+        "Separate observed delivery delay from hypothetical stress scenarios"
+      ],
+      "reject_if": "Useful improvement requires earlier-than-supported input availability or disappears at measured/credible total delays.",
+      "promote_if": "Shared forecast gate survives the registered realistic delay range; historical assumptions remain explicitly conditional where receipt evidence is missing.",
+      "local_v1": "Inject declared data-delay scenarios into fixed forecasts and record offline replay/scoring runtime. These are sensitivity scenarios, not measured historical feed, network, VPS or exchange-order latency.",
+      "future_work": "Collect defensible timing evidence and replay at appropriate granularity; any economic claim additionally requires the separate execution gate.",
+      "source_urls": ["https://docs.feast.dev/getting-started/concepts/point-in-time-joins", "https://arxiv.org/html/2510.16008v1"]
+    }
+  ]
+}

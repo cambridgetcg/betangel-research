@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-10-09T16:56:53.718741+00:00",
+  "datasets": [
+    {
+      "dataset_id": "betfair-sp-ire-win-file-2017-04-29",
+      "provider": "Betfair",
+      "source_url": "https://promo.betfair.com/betfairsp/prices/dwbfpricesirewin29042017.csv",
+      "discovery_url": "https://promo.betfair.com/betfairsp/SP_history.html",
+      "retrieved_at_utc": "2026-10-09T16:56:53.506474+00:00",
+      "path": "data/raw/betfair-sp/dwbfpricesirewin29042017.csv",
+      "sha256": "d351a3955eee95d9b46d15a5255b43210e660ab56140bdc4f846c33f7c0049de",
+      "bytes": 21960,
+      "http_status": 200,
+      "content_type": "text/plain",
+      "last_modified": null,
+      "authentication_used": false,
+      "access_note": "Public daily aggregate CSV; public accessibility does not establish a reuse or redistribution licence. Publisher SP page explicitly reserves copyright and database rights. Raw CSV excluded from Git.",
+      "audit": {
+        "format": "CSV",
+        "rows": 100,
+        "columns": [
+          "EVENT_ID",
+          "MENU_HINT",
+          "EVENT_NAME",
+          "EVENT_DT",
+          "SELECTION_ID",
+          "SELECTION_NAME",
+          "WIN_LOSE",
+          "BSP",
+          "PPWAP",
+          "MORNINGWAP",
+          "PPMAX",
+          "PPMIN",
+          "IPMAX",
+          "IPMIN",
+          "MORNINGTRADEDVOL",
+          "PPTRADEDVOL",
+          "IPTRADEDVOL"
+        ],
+        "null_counts": {
+          "EVENT_ID": 0,
+          "MENU_HINT": 0,
+          "EVENT_NAME": 0,
+          "EVENT_DT": 0,
+          "SELECTION_ID": 0,
+          "SELECTION_NAME": 0,
+          "WIN_LOSE": 0,
+          "BSP": 0,
+          "PPWAP": 0,
+          "MORNINGWAP": 0,
+          "PPMAX": 0,
+          "PPMIN": 0,
+          "IPMAX": 0,
+          "IPMIN": 0,
+          "MORNINGTRADEDVOL": 0,
+          "PPTRADEDVOL": 0,
+          "IPTRADEDVOL": 0
+        },
+        "market_count_by_event_id": 8,
+        "event_dt_values": [
+          "28-04-2017 15:40",
+          "28-04-2017 16:20",
+          "28-04-2017 16:55",
+          "28-04-2017 17:30",
+          "28-04-2017 18:05",
+          "28-04-2017 18:40",
+          "28-04-2017 19:10",
+          "28-04-2017 19:45"
+        ],
+        "event_names": [
+          "2m Grd1 Hrd",
+          "2m Nov Hrd",
+          "2m2f INHF",
+          "2m4f Grd1 Nov Hrd",
+          "2m4f Hunt Chs",
+          "2m5f Hcap Chs",
+          "2m5f Nov Hcap Chs",
+          "3m Hunt Chs"
+        ],
+        "unsupported_uses": [
+          "Executable price paths or queue fills inferred from daily max/min",
+          "Using final BSP, results, full pre-off volume or in-play aggregates as earlier predictors",
+          "Observed local/network/decision latency; no observation timestamps present"
+        ],
+        "file_date_is_not_event_date": true,
+        "timestamp_semantics": {
+          "EVENT_DT": "Naive textual date/time, no timezone or observation timestamp in CSV.",
+          "BSP_and_aggregates": "Final/aggregate retrospective data; cannot be earlier features.",
+          "publication_and_receipt": "Not provided; retrieval time in manifest is when this audit downloaded the file."
+        }
+      },
+      "permitted_use_status": "Reuse/licence unresolved; no strategy benchmark is based on these files. Local format and identity audit only."
+    }
+  ]
+}

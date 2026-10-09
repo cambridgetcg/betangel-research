@@ -1,0 +1,5496 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-10-09T16:55:22.025117+00:00",
+  "scope": "Public Betfair horse-racing historical help samples; file-format and offline research feasibility audit",
+  "total_downloaded_bytes": 25379332,
+  "download_cap_bytes": 50000000,
+  "datasets": [
+    {
+      "dataset_id": "horse-racing-basic-sample",
+      "provider": "Betfair",
+      "source_url": "https://historicdata.betfair.com/files/horse-racing-basic-sample.bz2",
+      "discovery_url": "https://historicdata.betfair.com/help",
+      "retrieved_at_utc": "2026-10-09T16:55:20.386611+00:00",
+      "completed_at_utc": "2026-10-09T16:55:20.502235+00:00",
+      "path": "data/raw/betfair-samples/horse-racing-basic-sample.bz2",
+      "sha256": "5fd51df5fedff10d6f6103eac6634c7dd3763c686d4556d6118440edfad19527",
+      "bytes": 79576,
+      "http_status": 200,
+      "content_type": "application/octet-stream",
+      "last_modified": "Wed, 26 Aug 2026 11:06:12 GMT",
+      "authentication_used": false,
+      "access_note": "Publisher-linked public sample downloaded without account or payment. No redistribution licence established; raw file is ignored by Git.",
+      "audit": {
+        "format": "bz2-compressed JSON Lines; each line is a market-change message; no TAR wrapper",
+        "decompressed_bytes": 1609190,
+        "messages": 1251,
+        "parse_errors": [],
+        "root_key_counts": {
+          "op": 1251,
+          "clk": 1251,
+          "pt": 1251,
+          "mc": 1251
+        },
+        "market_change_key_counts": {
+          "id": 6353,
+          "marketDefinition": 390,
+          "rc": 6147
+        },
+        "runner_change_key_counts": {
+          "ltp": 16924,
+          "id": 16924
+        },
+        "market_definition_key_counts": {
+          "bspMarket": 390,
+          "turnInPlayEnabled": 390,
+          "persistenceEnabled": 390,
+          "marketBaseRate": 390,
+          "eventId": 390,
+          "eventTypeId": 390,
+          "numberOfWinners": 390,
+          "bettingType": 390,
+          "marketType": 390,
+          "marketTime": 390,
+          "suspendTime": 390,
+          "bspReconciled": 390,
+          "complete": 390,
+          "inPlay": 390,
+          "crossMatching": 390,
+          "runnersVoidable": 390,
+          "numberOfActiveRunners": 390,
+          "betDelay": 390,
+          "status": 390,
+          "runners": 390,
+          "regulators": 390,
+          "venue": 390,
+          "countryCode": 390,
+          "discountAllowed": 390,
+          "timezone": 390,
+          "openDate": 390,
+          "version": 390,
+          "name": 390,
+          "eventName": 390,
+          "eachWayDivisor": 74,
+          "settledTime": 34
+        },
+        "market_count": 34,
+        "event_ids": [
+          "28209874"
+        ],
+        "countries": [
+          "IE"
+        ],
+        "venues": [
+          "Punchestown"
+        ],
+        "market_types": {
+          "WIN": 8,
+          "PLACE": 7,
+          "OTHER_PLACE": 12,
+          "EACH_WAY": 7
+        },
+        "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+        "last_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+        "global_publish_time_inversions": 0,
+        "repeated_adjacent_publish_times": 0,
+        "minimum_positive_global_pt_step_ms": 6679,
+        "markets": {
+          "1.131280544": {
+            "message_count": 550,
+            "market_definition_count": 9,
+            "runner_change_count": 1106,
+            "runner_change_keys": {
+              "ltp": 1106,
+              "id": 1106
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 56,
+              "WINNER": 1,
+              "LOSER": 6
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 14425,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:59:16.076000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:51:16.142000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:59:16.076000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 1,
+              "LOSER": 6
+            },
+            "runner_count": 7
+          },
+          "1.131280545": {
+            "message_count": 127,
+            "market_definition_count": 9,
+            "runner_change_count": 266,
+            "runner_change_keys": {
+              "ltp": 266,
+              "id": 266
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 56,
+              "WINNER": 2,
+              "LOSER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 57977,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:00:16.162000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:51:16.142000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:00:16.162000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 2,
+              "LOSER": 5
+            },
+            "runner_count": 7
+          },
+          "1.131280550": {
+            "message_count": 105,
+            "market_definition_count": 8,
+            "runner_change_count": 200,
+            "runner_change_keys": {
+              "ltp": 200,
+              "id": 200
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 49,
+              "LOSER": 5,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59704,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:33:16.158000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:26:16.115000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:33:16.158000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 5,
+              "WINNER": 2
+            },
+            "runner_count": 7
+          },
+          "1.131280553": {
+            "message_count": 79,
+            "market_definition_count": 7,
+            "runner_change_count": 155,
+            "runner_change_keys": {
+              "ltp": 155,
+              "id": 155
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 42,
+              "LOSER": 4,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59536,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:33:16.158000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:26:16.115000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:33:16.158000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 4,
+              "WINNER": 3
+            },
+            "runner_count": 7
+          },
+          "1.131280552": {
+            "message_count": 42,
+            "market_definition_count": 8,
+            "runner_change_count": 73,
+            "runner_change_keys": {
+              "ltp": 73,
+              "id": 73
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 49,
+              "LOSER": 5,
+              "WINNER": 1,
+              "PLACED": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59922,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:33:16.158000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:26:16.115000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:33:16.158000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 5,
+              "WINNER": 1,
+              "PLACED": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280548": {
+            "message_count": 97,
+            "market_definition_count": 8,
+            "runner_change_count": 186,
+            "runner_change_keys": {
+              "ltp": 186,
+              "id": 186
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 49,
+              "WINNER": 3,
+              "LOSER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59458,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:01:16.080000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:51:16.142000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:01:16.080000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 3,
+              "LOSER": 4
+            },
+            "runner_count": 7
+          },
+          "1.131280547": {
+            "message_count": 45,
+            "market_definition_count": 9,
+            "runner_change_count": 68,
+            "runner_change_keys": {
+              "ltp": 68,
+              "id": 68
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 56,
+              "WINNER": 1,
+              "LOSER": 5,
+              "PLACED": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59909,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:00:16.162000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:51:16.142000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:00:16.162000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 1,
+              "LOSER": 5,
+              "PLACED": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280549": {
+            "message_count": 481,
+            "market_definition_count": 7,
+            "runner_change_count": 918,
+            "runner_change_keys": {
+              "ltp": 918,
+              "id": 918
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 42,
+              "LOSER": 6,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 49665,
+            "first_publish_time_utc": "2017-04-27T11:35:14.192000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:16.055000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:26:16.115000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:16.055000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 6,
+              "WINNER": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280555": {
+            "message_count": 231,
+            "market_definition_count": 13,
+            "runner_change_count": 547,
+            "runner_change_keys": {
+              "ltp": 547,
+              "id": 547
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 165,
+              "REMOVED": 17,
+              "WINNER": 3,
+              "LOSER": 10
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58152,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:11:16.030000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:16.123000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:11:16.030000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 3,
+              "LOSER": 10
+            },
+            "runner_count": 15
+          },
+          "1.131280554": {
+            "message_count": 700,
+            "market_definition_count": 13,
+            "runner_change_count": 1971,
+            "runner_change_keys": {
+              "ltp": 1971,
+              "id": 1971
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 165,
+              "REMOVED": 17,
+              "WINNER": 1,
+              "LOSER": 12
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 29495,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:16.111000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:16.123000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:16.111000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 1,
+              "LOSER": 12
+            },
+            "runner_count": 15
+          },
+          "1.131280535": {
+            "message_count": 101,
+            "market_definition_count": 10,
+            "runner_change_count": 196,
+            "runner_change_keys": {
+              "ltp": 196,
+              "id": 196
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 61,
+              "REMOVED": 13,
+              "LOSER": 3,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59445,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:16.140000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:36:16.050000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:16.140000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 3,
+              "WINNER": 3
+            },
+            "runner_count": 8
+          },
+          "1.131280557": {
+            "message_count": 89,
+            "market_definition_count": 13,
+            "runner_change_count": 185,
+            "runner_change_keys": {
+              "ltp": 185,
+              "id": 185
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 165,
+              "REMOVED": 17,
+              "WINNER": 1,
+              "LOSER": 10,
+              "PLACED": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59776,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:11:16.030000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:16.123000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:11:16.030000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 1,
+              "LOSER": 10,
+              "PLACED": 2
+            },
+            "runner_count": 15
+          },
+          "1.131280534": {
+            "message_count": 383,
+            "market_definition_count": 9,
+            "runner_change_count": 786,
+            "runner_change_keys": {
+              "ltp": 786,
+              "id": 786
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 55,
+              "REMOVED": 11,
+              "LOSER": 5,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 54635,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:45:16.080000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:36:16.050000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:45:16.080000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 5,
+              "WINNER": 1
+            },
+            "runner_count": 8
+          },
+          "1.131280556": {
+            "message_count": 43,
+            "market_definition_count": 12,
+            "runner_change_count": 66,
+            "runner_change_keys": {
+              "ltp": 66,
+              "id": 66
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 152,
+              "REMOVED": 15,
+              "WINNER": 2,
+              "LOSER": 11
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59901,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:11:16.030000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:16.123000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:11:16.030000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 2,
+              "LOSER": 11
+            },
+            "runner_count": 15
+          },
+          "1.131280566": {
+            "message_count": 36,
+            "market_definition_count": 11,
+            "runner_change_count": 77,
+            "runner_change_keys": {
+              "ltp": 77,
+              "id": 77
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 131,
+              "REMOVED": 11,
+              "LOSER": 10,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59914,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 10,
+              "WINNER": 2
+            },
+            "runner_count": 14
+          },
+          "1.131280543": {
+            "message_count": 77,
+            "market_definition_count": 12,
+            "runner_change_count": 222,
+            "runner_change_keys": {
+              "ltp": 222,
+              "id": 222
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 215,
+              "REMOVED": 6,
+              "LOSER": 14,
+              "WINNER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58616,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:33:16.107000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:11:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:33:16.107000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 5,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 14,
+              "WINNER": 5
+            },
+            "runner_count": 20
+          },
+          "1.131280565": {
+            "message_count": 90,
+            "market_definition_count": 11,
+            "runner_change_count": 284,
+            "runner_change_keys": {
+              "ltp": 284,
+              "id": 284
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 131,
+              "REMOVED": 11,
+              "LOSER": 9,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59821,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 9,
+              "WINNER": 3
+            },
+            "runner_count": 14
+          },
+          "1.131280568": {
+            "message_count": 60,
+            "market_definition_count": 11,
+            "runner_change_count": 164,
+            "runner_change_keys": {
+              "ltp": 164,
+              "id": 164
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 131,
+              "REMOVED": 11,
+              "LOSER": 8,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59821,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:27:16.102000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:27:16.102000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 8,
+              "WINNER": 4
+            },
+            "runner_count": 14
+          },
+          "1.131280567": {
+            "message_count": 48,
+            "market_definition_count": 12,
+            "runner_change_count": 104,
+            "runner_change_keys": {
+              "ltp": 104,
+              "id": 104
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 143,
+              "REMOVED": 13,
+              "LOSER": 9,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59821,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 9,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "runner_count": 14
+          },
+          "1.131280540": {
+            "message_count": 206,
+            "market_definition_count": 13,
+            "runner_change_count": 629,
+            "runner_change_keys": {
+              "ltp": 629,
+              "id": 629
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 234,
+              "REMOVED": 7,
+              "LOSER": 15,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58016,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:11:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 15,
+              "WINNER": 4
+            },
+            "runner_count": 20
+          },
+          "1.131280561": {
+            "message_count": 75,
+            "market_definition_count": 18,
+            "runner_change_count": 168,
+            "runner_change_keys": {
+              "ltp": 168,
+              "id": 168
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 436,
+              "REMOVED": 44,
+              "LOSER": 21,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59875,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:00:16.157000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:00:16.157000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 21,
+              "WINNER": 3
+            },
+            "runner_count": 28
+          },
+          "1.131280564": {
+            "message_count": 330,
+            "market_definition_count": 11,
+            "runner_change_count": 806,
+            "runner_change_keys": {
+              "ltp": 806,
+              "id": 806
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 131,
+              "REMOVED": 11,
+              "LOSER": 11,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 49032,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:20:15.578000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:20:15.578000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 11,
+              "WINNER": 1
+            },
+            "runner_count": 14
+          },
+          "1.131280542": {
+            "message_count": 92,
+            "market_definition_count": 12,
+            "runner_change_count": 229,
+            "runner_change_keys": {
+              "ltp": 229,
+              "id": 229
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 215,
+              "REMOVED": 6,
+              "LOSER": 15,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58616,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:11:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 15,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "runner_count": 20
+          },
+          "1.131280541": {
+            "message_count": 65,
+            "market_definition_count": 12,
+            "runner_change_count": 151,
+            "runner_change_keys": {
+              "ltp": 151,
+              "id": 151
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 215,
+              "REMOVED": 6,
+              "LOSER": 16,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58616,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:11:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 16,
+              "WINNER": 3
+            },
+            "runner_count": 20
+          },
+          "1.131280563": {
+            "message_count": 163,
+            "market_definition_count": 18,
+            "runner_change_count": 442,
+            "runner_change_keys": {
+              "ltp": 442,
+              "id": 442
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 436,
+              "REMOVED": 44,
+              "LOSER": 19,
+              "WINNER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58368,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:00:16.157000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:00:16.157000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 5,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 19,
+              "WINNER": 5
+            },
+            "runner_count": 28
+          },
+          "1.131280560": {
+            "message_count": 304,
+            "market_definition_count": 20,
+            "runner_change_count": 872,
+            "runner_change_keys": {
+              "ltp": 872,
+              "id": 872
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 485,
+              "REMOVED": 51,
+              "LOSER": 20,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58464,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:51:16.095000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:51:16.095000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 20,
+              "WINNER": 4
+            },
+            "runner_count": 28
+          },
+          "1.131280559": {
+            "message_count": 745,
+            "market_definition_count": 19,
+            "runner_change_count": 2741,
+            "runner_change_keys": {
+              "ltp": 2741,
+              "id": 2741
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 460,
+              "REMOVED": 48,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 35512,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:50:16.152000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:50:16.152000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "runner_count": 28
+          },
+          "1.131280537": {
+            "message_count": 35,
+            "market_definition_count": 10,
+            "runner_change_count": 48,
+            "runner_change_keys": {
+              "ltp": 48,
+              "id": 48
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 61,
+              "REMOVED": 13,
+              "LOSER": 3,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59911,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:16.140000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:36:16.050000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:16.140000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 3,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "runner_count": 8
+          },
+          "1.131280536": {
+            "message_count": 48,
+            "market_definition_count": 9,
+            "runner_change_count": 87,
+            "runner_change_keys": {
+              "ltp": 87,
+              "id": 87
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 55,
+              "REMOVED": 11,
+              "LOSER": 4,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59870,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:16.140000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:36:16.050000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:16.140000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 4,
+              "WINNER": 2
+            },
+            "runner_count": 8
+          },
+          "1.131280558": {
+            "message_count": 133,
+            "market_definition_count": 12,
+            "runner_change_count": 282,
+            "runner_change_keys": {
+              "ltp": 282,
+              "id": 282
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 152,
+              "REMOVED": 15,
+              "WINNER": 4,
+              "LOSER": 9
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59033,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:16:16.067000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:16.123000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:16:16.067000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 4,
+              "LOSER": 9
+            },
+            "runner_count": 15
+          },
+          "1.131280539": {
+            "message_count": 490,
+            "market_definition_count": 13,
+            "runner_change_count": 1691,
+            "runner_change_keys": {
+              "ltp": 1691,
+              "id": 1691
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 234,
+              "REMOVED": 7,
+              "LOSER": 18,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55790,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:11:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:16.132000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 18,
+              "WINNER": 1
+            },
+            "runner_count": 20
+          },
+          "1.131280538": {
+            "message_count": 52,
+            "market_definition_count": 9,
+            "runner_change_count": 107,
+            "runner_change_keys": {
+              "ltp": 107,
+              "id": 107
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 55,
+              "REMOVED": 11,
+              "LOSER": 2,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59910,
+            "first_publish_time_utc": "2017-04-28T12:08:35.725000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:47:16.150000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:36:16.050000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:47:16.150000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 2,
+              "WINNER": 4
+            },
+            "runner_count": 8
+          },
+          "1.131344223": {
+            "message_count": 169,
+            "market_definition_count": 12,
+            "runner_change_count": 884,
+            "runner_change_keys": {
+              "ltp": 884,
+              "id": 884
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 269,
+              "REMOVED": 31,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 27275,
+            "first_publish_time_utc": "2017-04-28T20:15:15.603000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:50:16.075000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T17:40:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 3,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "runner_count": 27
+          },
+          "1.131280562": {
+            "message_count": 62,
+            "market_definition_count": 10,
+            "runner_change_count": 213,
+            "runner_change_keys": {
+              "ltp": 213,
+              "id": 213
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 221,
+              "REMOVED": 5,
+              "LOSER": 20,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59914,
+            "first_publish_time_utc": "2017-04-29T13:30:16.067000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:51:16.095000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:16.112000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:51:16.095000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 20,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "runner_count": 25
+          }
+        },
+        "independent_meetings": 1,
+        "distinct_scheduled_races": 8,
+        "zero_or_negative_ltp_change_count": 0,
+        "explicit_image_count": 0,
+        "timestamp_semantics": {
+          "pt": "Publisher timestamp in Unix epoch milliseconds; UTC conversion verified numerically. Proxy for source availability, not local receipt or physical race-event time.",
+          "marketTime": "Scheduled market start in UTC, not observed actual off.",
+          "received_at": "Absent. Network and local processing latency cannot be measured.",
+          "inPlay": "Observed market-definition transition; its first appearance differs across package sampling.",
+          "sampling": "Changes are sparse and may be conflated; do not manufacture ticks or assume every message contains every field."
+        }
+      },
+      "permitted_use_status": "Publisher provides public help sample for inspection; no open-data or redistribution licence established. Keep raw local/ignored; use this sample for format and framework smoke checks only.",
+      "unsupported_uses": [
+        "Estimating generalizable ROI from one selected 2017 meeting",
+        "Treating LTP, a touched level, or aggregate traded volume as proof of a fill",
+        "Measuring physical event-to-publisher or network/receipt latency",
+        "Independent cross-provider entity-history edge: all acquired exchange data originate with Betfair",
+        "Assuming all 34 related markets are independent races",
+        "Applying old marketBaseRate as the current account commission rate"
+      ]
+    },
+    {
+      "dataset_id": "horse-racing-adv-sample",
+      "provider": "Betfair",
+      "source_url": "https://historicdata.betfair.com/files/horse-racing-adv-sample.bz2",
+      "discovery_url": "https://historicdata.betfair.com/help",
+      "retrieved_at_utc": "2026-10-09T16:55:20.502454+00:00",
+      "completed_at_utc": "2026-10-09T16:55:21.060348+00:00",
+      "path": "data/raw/betfair-samples/horse-racing-adv-sample.bz2",
+      "sha256": "fd80f8625bf17cb8d9eb1a0797aefc50d0b9b679777c8dd525f866ccc8c1766f",
+      "bytes": 8487377,
+      "http_status": 200,
+      "content_type": "application/octet-stream",
+      "last_modified": "Wed, 26 Aug 2026 11:06:12 GMT",
+      "authentication_used": false,
+      "access_note": "Publisher-linked public sample downloaded without account or payment. No redistribution licence established; raw file is ignored by Git.",
+      "audit": {
+        "format": "bz2-compressed JSON Lines; each line is a market-change message; no TAR wrapper",
+        "decompressed_bytes": 84791246,
+        "messages": 71764,
+        "parse_errors": [],
+        "root_key_counts": {
+          "op": 71764,
+          "clk": 71764,
+          "pt": 71764,
+          "mc": 71764
+        },
+        "market_change_key_counts": {
+          "id": 323519,
+          "marketDefinition": 665,
+          "rc": 323088,
+          "tv": 44336
+        },
+        "runner_change_key_counts": {
+          "batb": 566098,
+          "ltp": 879505,
+          "tv": 879505,
+          "id": 879505,
+          "batl": 471280,
+          "trd": 121029
+        },
+        "market_definition_key_counts": {
+          "bspMarket": 665,
+          "turnInPlayEnabled": 665,
+          "persistenceEnabled": 665,
+          "marketBaseRate": 665,
+          "eventId": 665,
+          "eventTypeId": 665,
+          "numberOfWinners": 665,
+          "bettingType": 665,
+          "marketType": 665,
+          "marketTime": 665,
+          "suspendTime": 665,
+          "bspReconciled": 665,
+          "complete": 665,
+          "inPlay": 665,
+          "crossMatching": 665,
+          "runnersVoidable": 665,
+          "numberOfActiveRunners": 665,
+          "betDelay": 665,
+          "status": 665,
+          "runners": 665,
+          "regulators": 665,
+          "venue": 665,
+          "countryCode": 665,
+          "discountAllowed": 665,
+          "timezone": 665,
+          "openDate": 665,
+          "version": 665,
+          "name": 665,
+          "eventName": 665,
+          "eachWayDivisor": 122,
+          "settledTime": 34
+        },
+        "market_count": 34,
+        "event_ids": [
+          "28209874"
+        ],
+        "countries": [
+          "IE"
+        ],
+        "venues": [
+          "Punchestown"
+        ],
+        "market_types": {
+          "WIN": 8,
+          "PLACE": 7,
+          "OTHER_PLACE": 12,
+          "EACH_WAY": 7
+        },
+        "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+        "last_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+        "global_publish_time_inversions": 0,
+        "repeated_adjacent_publish_times": 0,
+        "minimum_positive_global_pt_step_ms": 51,
+        "markets": {
+          "1.131280544": {
+            "message_count": 10809,
+            "market_definition_count": 12,
+            "runner_change_count": 25426,
+            "runner_change_keys": {
+              "batb": 19326,
+              "ltp": 25426,
+              "tv": 25426,
+              "id": 25426,
+              "batl": 13913,
+              "trd": 10056
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 77,
+              "WINNER": 1,
+              "LOSER": 6
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 3330,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:58:28.135000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:47.101000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:58:28.135000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 1,
+              "LOSER": 6
+            },
+            "runner_count": 7
+          },
+          "1.131280545": {
+            "message_count": 7758,
+            "market_definition_count": 11,
+            "runner_change_count": 15263,
+            "runner_change_keys": {
+              "batl": 7082,
+              "ltp": 15263,
+              "tv": 15263,
+              "id": 15263,
+              "batb": 11174,
+              "trd": 1757
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 70,
+              "WINNER": 2,
+              "LOSER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1713,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 96,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:59:56.161000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:45.893000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:59:56.161000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 2,
+              "LOSER": 5
+            },
+            "runner_count": 7
+          },
+          "1.131280550": {
+            "message_count": 6370,
+            "market_definition_count": 11,
+            "runner_change_count": 13594,
+            "runner_change_keys": {
+              "batl": 6108,
+              "ltp": 13594,
+              "tv": 13594,
+              "id": 13594,
+              "batb": 10181,
+              "trd": 1001
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 70,
+              "LOSER": 5,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1510,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 59,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:23.154000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:27.096000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:23.154000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 5,
+              "WINNER": 2
+            },
+            "runner_count": 7
+          },
+          "1.131280553": {
+            "message_count": 7786,
+            "market_definition_count": 11,
+            "runner_change_count": 15978,
+            "runner_change_keys": {
+              "batb": 12021,
+              "ltp": 15978,
+              "tv": 15978,
+              "id": 15978,
+              "batl": 6210,
+              "trd": 607
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 70,
+              "LOSER": 4,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1511,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:33.113000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:27.096000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:33.113000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 4,
+              "WINNER": 3
+            },
+            "runner_count": 7
+          },
+          "1.131280552": {
+            "message_count": 7937,
+            "market_definition_count": 12,
+            "runner_change_count": 17032,
+            "runner_change_keys": {
+              "batb": 13070,
+              "ltp": 17032,
+              "tv": 17032,
+              "id": 17032,
+              "batl": 6390,
+              "trd": 169
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 77,
+              "LOSER": 5,
+              "WINNER": 1,
+              "PLACED": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 4236,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 181,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:27.096000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:27.096000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:27.096000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 5,
+              "WINNER": 1,
+              "PLACED": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280548": {
+            "message_count": 7336,
+            "market_definition_count": 9,
+            "runner_change_count": 15236,
+            "runner_change_keys": {
+              "batb": 11139,
+              "ltp": 15236,
+              "tv": 15236,
+              "id": 15236,
+              "batl": 6725,
+              "trd": 826
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 56,
+              "WINNER": 3,
+              "LOSER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 991,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 52,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:00:33.121000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:45.893000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:00:33.121000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 3,
+              "LOSER": 4
+            },
+            "runner_count": 7
+          },
+          "1.131280547": {
+            "message_count": 5538,
+            "market_definition_count": 13,
+            "runner_change_count": 11518,
+            "runner_change_keys": {
+              "batb": 7546,
+              "ltp": 11518,
+              "tv": 11518,
+              "id": 11518,
+              "batl": 6755,
+              "trd": 128
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 84,
+              "WINNER": 1,
+              "LOSER": 5,
+              "PLACED": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1397,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 102,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:59:46.113000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:45.893000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:59:46.113000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 1,
+              "LOSER": 5,
+              "PLACED": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280549": {
+            "message_count": 10612,
+            "market_definition_count": 11,
+            "runner_change_count": 24085,
+            "runner_change_keys": {
+              "batb": 17793,
+              "ltp": 24085,
+              "tv": 24085,
+              "id": 24085,
+              "batl": 13347,
+              "trd": 8644
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 70,
+              "LOSER": 6,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 3352,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 56,
+            "first_publish_time_utc": "2017-04-27T11:34:16.264000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:31:42.137000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:27.096000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:31:42.137000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 6,
+              "WINNER": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280555": {
+            "message_count": 14018,
+            "market_definition_count": 21,
+            "runner_change_count": 35171,
+            "runner_change_keys": {
+              "batb": 23803,
+              "ltp": 35171,
+              "tv": 35171,
+              "id": 35171,
+              "batl": 16180,
+              "trd": 2555
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 280,
+              "REMOVED": 22,
+              "WINNER": 3,
+              "LOSER": 10
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 4510,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 54,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:49.049000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:11.150000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:49.049000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 3,
+              "LOSER": 10
+            },
+            "runner_count": 15
+          },
+          "1.131280566": {
+            "message_count": 8506,
+            "market_definition_count": 17,
+            "runner_change_count": 23314,
+            "runner_change_keys": {
+              "batb": 11201,
+              "ltp": 23314,
+              "tv": 23314,
+              "id": 23314,
+              "batl": 14616,
+              "trd": 123
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 213,
+              "REMOVED": 13,
+              "LOSER": 10,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 11733,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 105,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:20:59.140000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:03.061000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:20:59.140000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 10,
+              "WINNER": 2
+            },
+            "runner_count": 14
+          },
+          "1.131280554": {
+            "message_count": 16750,
+            "market_definition_count": 24,
+            "runner_change_count": 41855,
+            "runner_change_keys": {
+              "batb": 30068,
+              "ltp": 41855,
+              "tv": 41855,
+              "id": 41855,
+              "batl": 23093,
+              "trd": 14325
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 319,
+              "REMOVED": 28,
+              "WINNER": 1,
+              "LOSER": 12
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1056,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 51,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:09:53.126000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:11.150000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:09:53.126000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 1,
+              "LOSER": 12
+            },
+            "runner_count": 15
+          },
+          "1.131280543": {
+            "message_count": 2089,
+            "market_definition_count": 18,
+            "runner_change_count": 9000,
+            "runner_change_keys": {
+              "batb": 7867,
+              "ltp": 9000,
+              "tv": 9000,
+              "id": 9000,
+              "batl": 2133,
+              "trd": 429
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 335,
+              "REMOVED": 6,
+              "LOSER": 14,
+              "WINNER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 2933,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 107,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:32:29.063000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.082000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:32:29.063000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 5,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 14,
+              "WINNER": 5
+            },
+            "runner_count": 20
+          },
+          "1.131280565": {
+            "message_count": 9464,
+            "market_definition_count": 19,
+            "runner_change_count": 26962,
+            "runner_change_keys": {
+              "batb": 18982,
+              "ltp": 26962,
+              "tv": 26962,
+              "id": 26962,
+              "batl": 12917,
+              "trd": 1331
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 238,
+              "REMOVED": 16,
+              "LOSER": 9,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 6432,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 62,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:10.923000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:04.158000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:10.923000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 9,
+              "WINNER": 3
+            },
+            "runner_count": 14
+          },
+          "1.131280535": {
+            "message_count": 8207,
+            "market_definition_count": 16,
+            "runner_change_count": 17432,
+            "runner_change_keys": {
+              "batb": 11472,
+              "ltp": 17432,
+              "tv": 17432,
+              "id": 17432,
+              "batl": 9345,
+              "trd": 884
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 107,
+              "REMOVED": 15,
+              "LOSER": 3,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 3362,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 75,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:02.124000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:39.106000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:02.124000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 3,
+              "WINNER": 3
+            },
+            "runner_count": 8
+          },
+          "1.131280557": {
+            "message_count": 13245,
+            "market_definition_count": 24,
+            "runner_change_count": 33871,
+            "runner_change_keys": {
+              "batb": 11967,
+              "ltp": 33871,
+              "tv": 33871,
+              "id": 33871,
+              "batl": 25008,
+              "trd": 449
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 319,
+              "REMOVED": 28,
+              "WINNER": 1,
+              "LOSER": 10,
+              "PLACED": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 16630,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:43.150000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:11.150000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:43.150000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 1,
+              "LOSER": 10,
+              "PLACED": 2
+            },
+            "runner_count": 15
+          },
+          "1.131280568": {
+            "message_count": 7876,
+            "market_definition_count": 18,
+            "runner_change_count": 23758,
+            "runner_change_keys": {
+              "batb": 15915,
+              "ltp": 23758,
+              "tv": 23758,
+              "id": 23758,
+              "batl": 11706,
+              "trd": 364
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 226,
+              "REMOVED": 14,
+              "LOSER": 8,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 4968,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 105,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:26:28.120000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:03.061000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:26:28.120000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 8,
+              "WINNER": 4
+            },
+            "runner_count": 14
+          },
+          "1.131280534": {
+            "message_count": 9657,
+            "market_definition_count": 16,
+            "runner_change_count": 19916,
+            "runner_change_keys": {
+              "batb": 13174,
+              "ltp": 19916,
+              "tv": 19916,
+              "id": 19916,
+              "batl": 12902,
+              "trd": 7250
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 107,
+              "REMOVED": 15,
+              "LOSER": 5,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1436,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:45:06.058000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:39.106000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:45:06.058000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 5,
+              "WINNER": 1
+            },
+            "runner_count": 8
+          },
+          "1.131280556": {
+            "message_count": 11549,
+            "market_definition_count": 21,
+            "runner_change_count": 28855,
+            "runner_change_keys": {
+              "batb": 13102,
+              "ltp": 28855,
+              "tv": 28855,
+              "id": 28855,
+              "batl": 17982,
+              "trd": 133
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 280,
+              "REMOVED": 22,
+              "WINNER": 2,
+              "LOSER": 11
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 11528,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 107,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:43.150000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:11.150000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:43.150000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 2,
+              "LOSER": 11
+            },
+            "runner_count": 15
+          },
+          "1.131280567": {
+            "message_count": 11814,
+            "market_definition_count": 20,
+            "runner_change_count": 29246,
+            "runner_change_keys": {
+              "batb": 16543,
+              "ltp": 29246,
+              "tv": 29246,
+              "id": 29246,
+              "batl": 17220,
+              "trd": 221
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 250,
+              "REMOVED": 18,
+              "LOSER": 9,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 15631,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 105,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:03.061000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:16.129000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 9,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "runner_count": 14
+          },
+          "1.131280540": {
+            "message_count": 14666,
+            "market_definition_count": 20,
+            "runner_change_count": 43665,
+            "runner_change_keys": {
+              "batb": 27815,
+              "ltp": 43665,
+              "tv": 43665,
+              "id": 43665,
+              "batl": 21303,
+              "trd": 3045
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 374,
+              "REMOVED": 7,
+              "LOSER": 15,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 10465,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 51,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:03.137000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.871000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:03.137000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 15,
+              "WINNER": 4
+            },
+            "runner_count": 20
+          },
+          "1.131280561": {
+            "message_count": 5223,
+            "market_definition_count": 36,
+            "runner_change_count": 15118,
+            "runner_change_keys": {
+              "batb": 10233,
+              "ltp": 15118,
+              "tv": 15118,
+              "id": 15118,
+              "batl": 6067,
+              "trd": 277
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 903,
+              "REMOVED": 81,
+              "LOSER": 21,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 5248,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 105,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:59:55.116000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:11.072000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:59:55.116000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 21,
+              "WINNER": 3
+            },
+            "runner_count": 28
+          },
+          "1.131280564": {
+            "message_count": 11939,
+            "market_definition_count": 20,
+            "runner_change_count": 31499,
+            "runner_change_keys": {
+              "batb": 22622,
+              "ltp": 31499,
+              "tv": 31499,
+              "id": 31499,
+              "batl": 17683,
+              "trd": 9219
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 251,
+              "REMOVED": 17,
+              "LOSER": 11,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 2141,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 54,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:19:25.115000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:04.158000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:19:25.115000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 11,
+              "WINNER": 1
+            },
+            "runner_count": 14
+          },
+          "1.131280542": {
+            "message_count": 9992,
+            "market_definition_count": 21,
+            "runner_change_count": 26730,
+            "runner_change_keys": {
+              "batb": 16335,
+              "ltp": 26730,
+              "tv": 26730,
+              "id": 26730,
+              "batl": 14884,
+              "trd": 542
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 393,
+              "REMOVED": 8,
+              "LOSER": 15,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 2136,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:23:24.165000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.871000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:23:24.165000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 15,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "runner_count": 20
+          },
+          "1.131280541": {
+            "message_count": 8838,
+            "market_definition_count": 20,
+            "runner_change_count": 25947,
+            "runner_change_keys": {
+              "batb": 14170,
+              "ltp": 25947,
+              "tv": 25947,
+              "id": 25947,
+              "batl": 13829,
+              "trd": 274
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 374,
+              "REMOVED": 7,
+              "LOSER": 16,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 8522,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:05.161000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.082000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:05.161000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 16,
+              "WINNER": 3
+            },
+            "runner_count": 20
+          },
+          "1.131280563": {
+            "message_count": 2581,
+            "market_definition_count": 34,
+            "runner_change_count": 10549,
+            "runner_change_keys": {
+              "batb": 9267,
+              "ltp": 10549,
+              "tv": 10549,
+              "id": 10549,
+              "batl": 2186,
+              "trd": 876
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 851,
+              "REMOVED": 77,
+              "LOSER": 19,
+              "WINNER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 2247,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 212,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:59:57.065000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:11.072000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:59:57.065000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 5,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 19,
+              "WINNER": 5
+            },
+            "runner_count": 28
+          },
+          "1.131280560": {
+            "message_count": 12048,
+            "market_definition_count": 40,
+            "runner_change_count": 51633,
+            "runner_change_keys": {
+              "batb": 22467,
+              "ltp": 51633,
+              "tv": 51633,
+              "id": 51633,
+              "batl": 33393,
+              "trd": 4427
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 1003,
+              "REMOVED": 93,
+              "LOSER": 20,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 7644,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 58,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:51:03.028000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:11.072000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:51:03.028000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 20,
+              "WINNER": 4
+            },
+            "runner_count": 28
+          },
+          "1.131280559": {
+            "message_count": 19471,
+            "market_definition_count": 38,
+            "runner_change_count": 68994,
+            "runner_change_keys": {
+              "batb": 51794,
+              "ltp": 68994,
+              "tv": 68994,
+              "id": 68994,
+              "trd": 21797,
+              "batl": 32871
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 950,
+              "REMOVED": 90,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 1120,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 56,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:49:52.916000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:12.079000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:49:52.916000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "runner_count": 28
+          },
+          "1.131280537": {
+            "message_count": 6902,
+            "market_definition_count": 16,
+            "runner_change_count": 13334,
+            "runner_change_keys": {
+              "batb": 6812,
+              "batl": 9112,
+              "ltp": 13334,
+              "tv": 13334,
+              "id": 13334,
+              "trd": 98
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 107,
+              "REMOVED": 15,
+              "LOSER": 3,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 8629,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 54,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:45:57.161000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:39.106000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:45:57.161000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 3,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "runner_count": 8
+          },
+          "1.131280536": {
+            "message_count": 7691,
+            "market_definition_count": 18,
+            "runner_change_count": 16944,
+            "runner_change_keys": {
+              "batb": 9290,
+              "ltp": 16944,
+              "tv": 16944,
+              "id": 16944,
+              "batl": 10025,
+              "trd": 233
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 123,
+              "REMOVED": 15,
+              "LOSER": 4,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 5574,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 107,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:07.067000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:39.106000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:07.067000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 4,
+              "WINNER": 2
+            },
+            "runner_count": 8
+          },
+          "1.131280558": {
+            "message_count": 14284,
+            "market_definition_count": 21,
+            "runner_change_count": 34705,
+            "runner_change_keys": {
+              "batb": 20093,
+              "ltp": 34705,
+              "tv": 34705,
+              "id": 34705,
+              "batl": 18646,
+              "trd": 747
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 279,
+              "REMOVED": 23,
+              "WINNER": 4,
+              "LOSER": 9
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 8843,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 55,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:15:28.087000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:11.150000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:15:28.087000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 4,
+              "LOSER": 9
+            },
+            "runner_count": 15
+          },
+          "1.131280539": {
+            "message_count": 15732,
+            "market_definition_count": 23,
+            "runner_change_count": 50502,
+            "runner_change_keys": {
+              "batb": 39149,
+              "ltp": 50502,
+              "tv": 50502,
+              "id": 50502,
+              "batl": 24126,
+              "trd": 16154
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 431,
+              "REMOVED": 10,
+              "LOSER": 18,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 4462,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 66,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:23:43.149000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:45.107000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:23:43.149000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 18,
+              "WINNER": 1
+            },
+            "runner_count": 20
+          },
+          "1.131280538": {
+            "message_count": 6391,
+            "market_definition_count": 15,
+            "runner_change_count": 13781,
+            "runner_change_keys": {
+              "batb": 8770,
+              "ltp": 13781,
+              "tv": 13781,
+              "id": 13781,
+              "batl": 6919,
+              "trd": 394
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 101,
+              "REMOVED": 13,
+              "LOSER": 2,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 3347,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 69,
+            "first_publish_time_utc": "2017-04-28T12:08:33.870000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:39.122000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:39.106000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:39.122000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 2,
+              "WINNER": 4
+            },
+            "runner_count": 8
+          },
+          "1.131344223": {
+            "message_count": 6794,
+            "market_definition_count": 23,
+            "runner_change_count": 33055,
+            "runner_change_keys": {
+              "batb": 20268,
+              "ltp": 33055,
+              "tv": 33055,
+              "id": 33055,
+              "batl": 21262,
+              "trd": 11129
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 541,
+              "REMOVED": 56,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 2656,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 72,
+            "first_publish_time_utc": "2017-04-28T20:14:48.674000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:49:51.975000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T17:40:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 3,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "runner_count": 27
+          },
+          "1.131280562": {
+            "message_count": 3646,
+            "market_definition_count": 16,
+            "runner_change_count": 15537,
+            "runner_change_keys": {
+              "batl": 9342,
+              "ltp": 15537,
+              "tv": 15537,
+              "id": 15537,
+              "batb": 10669,
+              "trd": 565
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 369,
+              "REMOVED": 7,
+              "LOSER": 20,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 2997,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 517,
+            "first_publish_time_utc": "2017-04-29T13:29:56.083000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:50:25.074000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:11.072000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:50:25.074000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 20,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "runner_count": 25
+          }
+        },
+        "independent_meetings": 1,
+        "distinct_scheduled_races": 8,
+        "zero_or_negative_ltp_change_count": 174290,
+        "explicit_image_count": 0,
+        "timestamp_semantics": {
+          "pt": "Publisher timestamp in Unix epoch milliseconds; UTC conversion verified numerically. Proxy for source availability, not local receipt or physical race-event time.",
+          "marketTime": "Scheduled market start in UTC, not observed actual off.",
+          "received_at": "Absent. Network and local processing latency cannot be measured.",
+          "inPlay": "Observed market-definition transition; its first appearance differs across package sampling.",
+          "sampling": "Changes are sparse and may be conflated; do not manufacture ticks or assume every message contains every field."
+        }
+      },
+      "permitted_use_status": "Publisher provides public help sample for inspection; no open-data or redistribution licence established. Keep raw local/ignored; use this sample for format and framework smoke checks only.",
+      "unsupported_uses": [
+        "Estimating generalizable ROI from one selected 2017 meeting",
+        "Treating LTP, a touched level, or aggregate traded volume as proof of a fill",
+        "Measuring physical event-to-publisher or network/receipt latency",
+        "Independent cross-provider entity-history edge: all acquired exchange data originate with Betfair",
+        "Assuming all 34 related markets are independent races",
+        "Applying old marketBaseRate as the current account commission rate"
+      ]
+    },
+    {
+      "dataset_id": "horse-racing-pro-sample",
+      "provider": "Betfair",
+      "source_url": "https://historicdata.betfair.com/files/horse-racing-pro-sample.bz2",
+      "discovery_url": "https://historicdata.betfair.com/help",
+      "retrieved_at_utc": "2026-10-09T16:55:21.072921+00:00",
+      "completed_at_utc": "2026-10-09T16:55:21.998033+00:00",
+      "path": "data/raw/betfair-samples/horse-racing-pro-sample.bz2",
+      "sha256": "cb8896c5509bb26fd49e4f0cfa4a1eecb09abd18a381c17d54bcce707cb22767",
+      "bytes": 16812379,
+      "http_status": 200,
+      "content_type": "application/octet-stream",
+      "last_modified": "Wed, 26 Aug 2026 11:06:12 GMT",
+      "authentication_used": false,
+      "access_note": "Publisher-linked public sample downloaded without account or payment. No redistribution licence established; raw file is ignored by Git.",
+      "audit": {
+        "format": "bz2-compressed JSON Lines; each line is a market-change message; no TAR wrapper",
+        "decompressed_bytes": 206028882,
+        "messages": 407927,
+        "parse_errors": [],
+        "root_key_counts": {
+          "op": 407927,
+          "clk": 407927,
+          "pt": 407927,
+          "mc": 407927
+        },
+        "market_change_key_counts": {
+          "id": 1089793,
+          "marketDefinition": 1066,
+          "rc": 1089793,
+          "con": 1089793,
+          "img": 1089793,
+          "tv": 1068589
+        },
+        "runner_change_key_counts": {
+          "atb": 1432952,
+          "id": 2836032,
+          "spn": 52537,
+          "spf": 52537,
+          "atl": 1125416,
+          "spl": 7264,
+          "trd": 211454,
+          "ltp": 211454,
+          "tv": 211454,
+          "spb": 6409
+        },
+        "market_definition_key_counts": {
+          "bspMarket": 1066,
+          "turnInPlayEnabled": 1066,
+          "persistenceEnabled": 1066,
+          "marketBaseRate": 1066,
+          "eventId": 1066,
+          "eventTypeId": 1066,
+          "numberOfWinners": 1066,
+          "bettingType": 1066,
+          "marketType": 1066,
+          "marketTime": 1066,
+          "suspendTime": 1066,
+          "bspReconciled": 1066,
+          "complete": 1066,
+          "inPlay": 1066,
+          "crossMatching": 1066,
+          "runnersVoidable": 1066,
+          "numberOfActiveRunners": 1066,
+          "betDelay": 1066,
+          "status": 1066,
+          "runners": 1066,
+          "regulators": 1066,
+          "venue": 1066,
+          "countryCode": 1066,
+          "discountAllowed": 1066,
+          "timezone": 1066,
+          "openDate": 1066,
+          "version": 1066,
+          "name": 1066,
+          "eventName": 1066,
+          "eachWayDivisor": 146,
+          "settledTime": 34
+        },
+        "market_count": 34,
+        "event_ids": [
+          "28209874"
+        ],
+        "countries": [
+          "IE"
+        ],
+        "venues": [
+          "Punchestown"
+        ],
+        "market_types": {
+          "WIN": 8,
+          "OTHER_PLACE": 12,
+          "PLACE": 7,
+          "EACH_WAY": 7
+        },
+        "first_publish_time_utc": "2017-04-27T11:34:16.167000+00:00",
+        "last_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+        "global_publish_time_inversions": 0,
+        "repeated_adjacent_publish_times": 299,
+        "minimum_positive_global_pt_step_ms": 1,
+        "markets": {
+          "1.131280544": {
+            "message_count": 39765,
+            "market_definition_count": 35,
+            "runner_change_count": 122300,
+            "runner_change_keys": {
+              "atb": 57265,
+              "id": 122300,
+              "spn": 2224,
+              "spf": 2224,
+              "atl": 40086,
+              "trd": 21851,
+              "ltp": 21851,
+              "tv": 21851,
+              "spl": 525,
+              "spb": 349
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 238,
+              "WINNER": 1,
+              "LOSER": 6
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 21,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 1,
+            "first_publish_time_utc": "2017-04-27T11:34:16.167000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:58:27.192000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:46.208000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:58:27.192000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 1,
+              "LOSER": 6
+            },
+            "runner_count": 7
+          },
+          "1.131280548": {
+            "message_count": 23671,
+            "market_definition_count": 12,
+            "runner_change_count": 39339,
+            "runner_change_keys": {
+              "atb": 23882,
+              "id": 39339,
+              "atl": 14480,
+              "trd": 977,
+              "ltp": 977,
+              "tv": 977
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 77,
+              "WINNER": 3,
+              "LOSER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 1,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 6,
+            "first_publish_time_utc": "2017-04-27T11:34:16.211000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:00:32.789000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:45.451000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:00:32.789000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 3,
+              "LOSER": 4
+            },
+            "runner_count": 7
+          },
+          "1.131280545": {
+            "message_count": 22445,
+            "market_definition_count": 36,
+            "runner_change_count": 44147,
+            "runner_change_keys": {
+              "atl": 15596,
+              "id": 44147,
+              "spn": 1633,
+              "spf": 1633,
+              "atb": 24338,
+              "trd": 2334,
+              "ltp": 2334,
+              "tv": 2334,
+              "spl": 137,
+              "spb": 109
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 245,
+              "WINNER": 2,
+              "LOSER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 22,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 5,
+            "first_publish_time_utc": "2017-04-27T11:34:16.211000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:59:55.596000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:45.844000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:59:55.596000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 2,
+              "LOSER": 5
+            },
+            "runner_count": 7
+          },
+          "1.131280553": {
+            "message_count": 25368,
+            "market_definition_count": 14,
+            "runner_change_count": 41393,
+            "runner_change_keys": {
+              "atb": 26954,
+              "id": 41393,
+              "atl": 13733,
+              "trd": 706,
+              "ltp": 706,
+              "tv": 706
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 91,
+              "LOSER": 4,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 1,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-27T11:34:16.211000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:33.113000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:26.265000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:33.113000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 4,
+              "WINNER": 3
+            },
+            "runner_count": 7
+          },
+          "1.131280547": {
+            "message_count": 21147,
+            "market_definition_count": 16,
+            "runner_change_count": 38480,
+            "runner_change_keys": {
+              "atb": 18447,
+              "id": 38480,
+              "atl": 19882,
+              "trd": 151,
+              "ltp": 151,
+              "tv": 151
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 105,
+              "WINNER": 1,
+              "LOSER": 5,
+              "PLACED": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 2,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-27T11:34:16.211000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:59:45.540000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:50:45.451000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:59:45.540000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T14:50:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "WINNER": 1,
+              "LOSER": 5,
+              "PLACED": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280552": {
+            "message_count": 51243,
+            "market_definition_count": 18,
+            "runner_change_count": 100064,
+            "runner_change_keys": {
+              "atb": 70103,
+              "id": 100064,
+              "atl": 29760,
+              "trd": 201,
+              "ltp": 201,
+              "tv": 201
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 119,
+              "LOSER": 5,
+              "WINNER": 1,
+              "PLACED": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 3,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-27T11:34:16.211000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:27.082000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:26.265000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:27.082000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 5,
+              "WINNER": 1,
+              "PLACED": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280550": {
+            "message_count": 19024,
+            "market_definition_count": 35,
+            "runner_change_count": 37628,
+            "runner_change_keys": {
+              "atl": 13668,
+              "id": 37628,
+              "spn": 1484,
+              "spf": 1484,
+              "atb": 20968,
+              "trd": 1307,
+              "ltp": 1307,
+              "tv": 1307,
+              "spl": 116,
+              "spb": 85
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 238,
+              "LOSER": 5,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 20,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 19,
+            "first_publish_time_utc": "2017-04-27T11:34:16.212000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:32:23.067000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:26.590000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:32:23.067000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 5,
+              "WINNER": 2
+            },
+            "runner_count": 7
+          },
+          "1.131280549": {
+            "message_count": 36362,
+            "market_definition_count": 27,
+            "runner_change_count": 109969,
+            "runner_change_keys": {
+              "atb": 50638,
+              "id": 109969,
+              "spn": 2096,
+              "spf": 2096,
+              "atl": 37937,
+              "trd": 18450,
+              "ltp": 18450,
+              "tv": 18450,
+              "spl": 522,
+              "spb": 326
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 182,
+              "LOSER": 6,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 13,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-27T11:34:16.212000+00:00",
+            "last_publish_time_utc": "2017-04-29T15:31:41.907000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T15:25:26.764000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T15:31:41.907000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T15:25:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "LOSER": 6,
+              "WINNER": 1
+            },
+            "runner_count": 7
+          },
+          "1.131280559": {
+            "message_count": 63868,
+            "market_definition_count": 64,
+            "runner_change_count": 255947,
+            "runner_change_keys": {
+              "atb": 133120,
+              "id": 255947,
+              "spn": 7778,
+              "spf": 7778,
+              "trd": 34583,
+              "ltp": 34583,
+              "tv": 34583,
+              "atl": 77416,
+              "spl": 1437,
+              "spb": 1613
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 1646,
+              "REMOVED": 122,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 20,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 6,
+            "first_publish_time_utc": "2017-04-28T12:08:33.498000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:49:52.319000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:11.840000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:49:52.319000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "runner_count": 28
+          },
+          "1.131280554": {
+            "message_count": 52840,
+            "market_definition_count": 49,
+            "runner_change_count": 183207,
+            "runner_change_keys": {
+              "atb": 84256,
+              "id": 183207,
+              "spn": 6122,
+              "spf": 6122,
+              "atl": 61142,
+              "trd": 30109,
+              "ltp": 30109,
+              "tv": 30109,
+              "spl": 893,
+              "spb": 685
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 680,
+              "REMOVED": 42,
+              "WINNER": 1,
+              "LOSER": 12
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 18,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 3,
+            "first_publish_time_utc": "2017-04-28T12:08:33.498000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:09:53.093000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:10.936000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:09:53.093000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 1,
+              "LOSER": 12
+            },
+            "runner_count": 15
+          },
+          "1.131280539": {
+            "message_count": 53731,
+            "market_definition_count": 39,
+            "runner_change_count": 200183,
+            "runner_change_keys": {
+              "atb": 102910,
+              "id": 200183,
+              "spn": 6172,
+              "spf": 6172,
+              "spl": 1085,
+              "atl": 61831,
+              "trd": 27175,
+              "ltp": 27175,
+              "tv": 27175,
+              "spb": 1010
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 747,
+              "REMOVED": 14,
+              "LOSER": 18,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 12,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T12:08:33.498000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:23:42.821000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:44.220000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:23:42.821000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 18,
+              "WINNER": 1
+            },
+            "runner_count": 20
+          },
+          "1.131280564": {
+            "message_count": 44721,
+            "market_definition_count": 36,
+            "runner_change_count": 139903,
+            "runner_change_keys": {
+              "atb": 69257,
+              "id": 139903,
+              "spn": 3793,
+              "spf": 3793,
+              "atl": 48781,
+              "trd": 16664,
+              "ltp": 16664,
+              "tv": 16664,
+              "spl": 684,
+              "spb": 724
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 467,
+              "REMOVED": 25,
+              "LOSER": 11,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 12,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T12:08:33.498000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:19:24.411000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:03.204000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:19:24.411000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 11,
+              "WINNER": 1
+            },
+            "runner_count": 14
+          },
+          "1.131280534": {
+            "message_count": 35959,
+            "market_definition_count": 44,
+            "runner_change_count": 103382,
+            "runner_change_keys": {
+              "atb": 43497,
+              "id": 103382,
+              "spn": 2431,
+              "spf": 2431,
+              "spl": 478,
+              "atl": 39765,
+              "trd": 16870,
+              "ltp": 16870,
+              "tv": 16870,
+              "spb": 341
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 317,
+              "REMOVED": 29,
+              "LOSER": 5,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 21,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T12:08:33.605000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:45:05.242000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:39.106000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:45:05.242000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 5,
+              "WINNER": 1
+            },
+            "runner_count": 8
+          },
+          "1.131280535": {
+            "message_count": 25478,
+            "market_definition_count": 52,
+            "runner_change_count": 51472,
+            "runner_change_keys": {
+              "atb": 26523,
+              "id": 51472,
+              "spn": 2118,
+              "spf": 2118,
+              "atl": 21449,
+              "spl": 151,
+              "trd": 1167,
+              "ltp": 1167,
+              "tv": 1167,
+              "spb": 64
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 379,
+              "REMOVED": 31,
+              "LOSER": 3,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 29,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T12:08:33.719000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:01.445000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:38.867000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:01.445000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 3,
+              "WINNER": 3
+            },
+            "runner_count": 8
+          },
+          "1.131280556": {
+            "message_count": 35499,
+            "market_definition_count": 24,
+            "runner_change_count": 68257,
+            "runner_change_keys": {
+              "atb": 25232,
+              "id": 68257,
+              "atl": 42868,
+              "trd": 157,
+              "ltp": 157,
+              "tv": 157
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 320,
+              "REMOVED": 27,
+              "WINNER": 2,
+              "LOSER": 11
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-28T12:08:33.719000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:42.278000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:10.315000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:42.278000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 2,
+              "LOSER": 11
+            },
+            "runner_count": 15
+          },
+          "1.131280567": {
+            "message_count": 54347,
+            "market_definition_count": 22,
+            "runner_change_count": 114608,
+            "runner_change_keys": {
+              "atb": 74518,
+              "id": 114608,
+              "atl": 39817,
+              "trd": 273,
+              "ltp": 273,
+              "tv": 273
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 274,
+              "REMOVED": 22,
+              "LOSER": 9,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 3,
+            "first_publish_time_utc": "2017-04-28T12:08:33.719000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:15.928000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:02.810000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:15.928000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 9,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "runner_count": 14
+          },
+          "1.131280536": {
+            "message_count": 24438,
+            "market_definition_count": 20,
+            "runner_change_count": 42900,
+            "runner_change_keys": {
+              "atb": 18974,
+              "id": 42900,
+              "atl": 23664,
+              "trd": 262,
+              "ltp": 262,
+              "tv": 262
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 136,
+              "REMOVED": 18,
+              "LOSER": 4,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 11,
+            "first_publish_time_utc": "2017-04-28T12:08:33.720000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:06.465000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:38.649000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:06.465000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 4,
+              "WINNER": 2
+            },
+            "runner_count": 8
+          },
+          "1.131280538": {
+            "message_count": 20599,
+            "market_definition_count": 20,
+            "runner_change_count": 37794,
+            "runner_change_keys": {
+              "atb": 19612,
+              "id": 37794,
+              "atl": 17737,
+              "trd": 445,
+              "ltp": 445,
+              "tv": 445
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 136,
+              "REMOVED": 18,
+              "LOSER": 2,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 2,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 12,
+            "first_publish_time_utc": "2017-04-28T12:08:33.720000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:46:38.629000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:38.649000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:46:38.629000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 2,
+              "WINNER": 4
+            },
+            "runner_count": 8
+          },
+          "1.131280543": {
+            "message_count": 5231,
+            "market_definition_count": 22,
+            "runner_change_count": 14829,
+            "runner_change_keys": {
+              "atb": 11142,
+              "id": 14829,
+              "atl": 3223,
+              "trd": 464,
+              "ltp": 464,
+              "tv": 464
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 412,
+              "REMOVED": 9,
+              "LOSER": 14,
+              "WINNER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 1,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 20,
+            "first_publish_time_utc": "2017-04-28T12:08:33.720000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:32:28.531000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.082000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:32:28.531000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 5,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 14,
+              "WINNER": 5
+            },
+            "runner_count": 20
+          },
+          "1.131280558": {
+            "message_count": 39249,
+            "market_definition_count": 25,
+            "runner_change_count": 77088,
+            "runner_change_keys": {
+              "atb": 38934,
+              "id": 77088,
+              "atl": 37325,
+              "trd": 829,
+              "ltp": 829,
+              "tv": 829
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 333,
+              "REMOVED": 29,
+              "WINNER": 4,
+              "LOSER": 9
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T12:08:33.720000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:15:27.529000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:10.315000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:15:27.529000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 4,
+              "LOSER": 9
+            },
+            "runner_count": 15
+          },
+          "1.131280540": {
+            "message_count": 36694,
+            "market_definition_count": 35,
+            "runner_change_count": 99342,
+            "runner_change_keys": {
+              "atb": 54264,
+              "id": 99342,
+              "spn": 4217,
+              "spf": 4217,
+              "atl": 36474,
+              "spl": 315,
+              "trd": 3726,
+              "ltp": 3726,
+              "tv": 3726,
+              "spb": 346
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 670,
+              "REMOVED": 11,
+              "LOSER": 15,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 11,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 3,
+            "first_publish_time_utc": "2017-04-28T12:08:33.721000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:02.876000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.811000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:02.876000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 15,
+              "WINNER": 4
+            },
+            "runner_count": 20
+          },
+          "1.131280541": {
+            "message_count": 29211,
+            "market_definition_count": 25,
+            "runner_change_count": 63364,
+            "runner_change_keys": {
+              "atb": 25254,
+              "id": 63364,
+              "atl": 37808,
+              "trd": 302,
+              "ltp": 302,
+              "tv": 302
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 470,
+              "REMOVED": 11,
+              "LOSER": 16,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 1,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 6,
+            "first_publish_time_utc": "2017-04-28T12:08:33.724000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:24:04.888000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.082000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:24:04.888000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 16,
+              "WINNER": 3
+            },
+            "runner_count": 20
+          },
+          "1.131280542": {
+            "message_count": 46366,
+            "market_definition_count": 22,
+            "runner_change_count": 110343,
+            "runner_change_keys": {
+              "atb": 54419,
+              "id": 110343,
+              "atl": 55310,
+              "trd": 614,
+              "ltp": 614,
+              "tv": 614
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 412,
+              "REMOVED": 9,
+              "LOSER": 15,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 10,
+            "first_publish_time_utc": "2017-04-28T12:08:33.726000+00:00",
+            "last_publish_time_utc": "2017-04-29T14:23:23.690000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T14:10:43.214000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T14:23:23.690000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T14:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 15,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "runner_count": 20
+          },
+          "1.131280557": {
+            "message_count": 43566,
+            "market_definition_count": 28,
+            "runner_change_count": 88803,
+            "runner_change_keys": {
+              "atb": 36885,
+              "id": 88803,
+              "atl": 51415,
+              "trd": 503,
+              "ltp": 503,
+              "tv": 503
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 373,
+              "REMOVED": 34,
+              "WINNER": 1,
+              "LOSER": 10,
+              "PLACED": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-28T12:08:33.727000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:42.279000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:10.315000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:42.279000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 1,
+              "LOSER": 10,
+              "PLACED": 2
+            },
+            "runner_count": 15
+          },
+          "1.131280563": {
+            "message_count": 5793,
+            "market_definition_count": 39,
+            "runner_change_count": 16449,
+            "runner_change_keys": {
+              "atb": 12603,
+              "id": 16449,
+              "atl": 2922,
+              "trd": 924,
+              "ltp": 924,
+              "tv": 924
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 979,
+              "REMOVED": 89,
+              "LOSER": 19,
+              "WINNER": 5
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 13,
+            "first_publish_time_utc": "2017-04-28T12:08:33.727000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:59:56.191000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:10.569000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:59:56.191000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 5,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 19,
+              "WINNER": 5
+            },
+            "runner_count": 28
+          },
+          "1.131280555": {
+            "message_count": 36386,
+            "market_definition_count": 39,
+            "runner_change_count": 85255,
+            "runner_change_keys": {
+              "atb": 45804,
+              "id": 85255,
+              "spn": 4171,
+              "spf": 4171,
+              "atl": 31708,
+              "spl": 279,
+              "trd": 3131,
+              "ltp": 3131,
+              "tv": 3131,
+              "spb": 162
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 537,
+              "REMOVED": 35,
+              "WINNER": 3,
+              "LOSER": 10
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 15,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 5,
+            "first_publish_time_utc": "2017-04-28T12:08:33.728000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:10:48.311000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:00:10.897000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:10:48.311000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T16:00:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "WINNER": 3,
+              "LOSER": 10
+            },
+            "runner_count": 15
+          },
+          "1.131280537": {
+            "message_count": 26475,
+            "market_definition_count": 22,
+            "runner_change_count": 43841,
+            "runner_change_keys": {
+              "atb": 21654,
+              "id": 43841,
+              "atl": 22066,
+              "trd": 121,
+              "ltp": 121,
+              "tv": 121
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 146,
+              "REMOVED": 24,
+              "LOSER": 3,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 5,
+            "first_publish_time_utc": "2017-04-28T12:08:33.728000+00:00",
+            "last_publish_time_utc": "2017-04-29T13:45:56.424000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T13:35:38.649000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T13:45:56.424000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T13:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 3,
+              "PLACED": 2,
+              "WINNER": 1
+            },
+            "runner_count": 8
+          },
+          "1.131280560": {
+            "message_count": 27531,
+            "market_definition_count": 67,
+            "runner_change_count": 99959,
+            "runner_change_keys": {
+              "atb": 42915,
+              "id": 99959,
+              "spn": 5059,
+              "spf": 5059,
+              "atl": 45731,
+              "spl": 432,
+              "trd": 5373,
+              "ltp": 5373,
+              "tv": 5373,
+              "spb": 449
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 1713,
+              "REMOVED": 139,
+              "LOSER": 20,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 20,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-28T12:08:33.729000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:51:02.681000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:10.995000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:51:02.681000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 20,
+              "WINNER": 4
+            },
+            "runner_count": 28
+          },
+          "1.131280566": {
+            "message_count": 26330,
+            "market_definition_count": 22,
+            "runner_change_count": 53647,
+            "runner_change_keys": {
+              "atb": 22043,
+              "id": 53647,
+              "atl": 31462,
+              "trd": 142,
+              "ltp": 142,
+              "tv": 142
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 276,
+              "REMOVED": 20,
+              "LOSER": 10,
+              "WINNER": 2
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 1,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 1,
+            "first_publish_time_utc": "2017-04-28T12:08:33.729000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:20:58.837000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:02.810000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:20:58.837000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 2,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 10,
+              "WINNER": 2
+            },
+            "runner_count": 14
+          },
+          "1.131280561": {
+            "message_count": 12237,
+            "market_definition_count": 39,
+            "runner_change_count": 26815,
+            "runner_change_keys": {
+              "atb": 15516,
+              "id": 26815,
+              "atl": 10981,
+              "trd": 318,
+              "ltp": 318,
+              "tv": 318
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 982,
+              "REMOVED": 86,
+              "LOSER": 21,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 25,
+            "first_publish_time_utc": "2017-04-28T12:08:33.731000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:59:54.189000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:10.569000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:59:54.189000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 4,
+              "LOSER": 21,
+              "WINNER": 3
+            },
+            "runner_count": 28
+          },
+          "1.131280565": {
+            "message_count": 31316,
+            "market_definition_count": 52,
+            "runner_change_count": 78622,
+            "runner_change_keys": {
+              "atb": 41295,
+              "id": 78622,
+              "spn": 3239,
+              "spf": 3239,
+              "atl": 32005,
+              "spl": 210,
+              "trd": 1727,
+              "ltp": 1727,
+              "tv": 1727,
+              "spb": 146
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 687,
+              "REMOVED": 29,
+              "LOSER": 9,
+              "WINNER": 3
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 28,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 1,
+            "first_publish_time_utc": "2017-04-28T12:08:33.731000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:21:10.923000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:03.277000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:21:10.923000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 3,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 9,
+              "WINNER": 3
+            },
+            "runner_count": 14
+          },
+          "1.131280568": {
+            "message_count": 28677,
+            "market_definition_count": 21,
+            "runner_change_count": 65958,
+            "runner_change_keys": {
+              "atb": 36269,
+              "id": 65958,
+              "atl": 29260,
+              "trd": 429,
+              "ltp": 429,
+              "tv": 429
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 262,
+              "REMOVED": 20,
+              "LOSER": 8,
+              "WINNER": 4
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T12:08:33.732000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:26:27.463000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:13:02.810000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:26:27.463000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "OTHER_PLACE",
+              "marketTime": "2017-04-29T17:10:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 2,
+              "LOSER": 8,
+              "WINNER": 4
+            },
+            "runner_count": 14
+          },
+          "1.131344223": {
+            "message_count": 34348,
+            "market_definition_count": 27,
+            "runner_change_count": 148495,
+            "runner_change_keys": {
+              "atb": 65970,
+              "id": 148495,
+              "atl": 63994,
+              "trd": 18531,
+              "ltp": 18531,
+              "tv": 18531
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 641,
+              "REMOVED": 64,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 4,
+            "first_publish_time_utc": "2017-04-28T20:14:48.253000+00:00",
+            "last_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T17:49:51.610000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T17:56:27.745000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "WIN",
+              "marketTime": "2017-04-29T17:40:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 1,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 3,
+              "LOSER": 23,
+              "WINNER": 1
+            },
+            "runner_count": 27
+          },
+          "1.131280562": {
+            "message_count": 9878,
+            "market_definition_count": 18,
+            "runner_change_count": 32249,
+            "runner_change_keys": {
+              "atl": 14120,
+              "id": 32249,
+              "atb": 17491,
+              "trd": 638,
+              "ltp": 638,
+              "tv": 638
+            },
+            "definition_runner_statuses": {
+              "ACTIVE": 417,
+              "REMOVED": 9,
+              "LOSER": 20,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "market_pt_inversions": 0,
+            "explicit_image_count": 0,
+            "bet_delays": [
+              0,
+              1
+            ],
+            "zero_ltp_changes": 0,
+            "nonpositive_price_points": 0,
+            "minimum_pt_step_ms": 8,
+            "first_publish_time_utc": "2017-04-29T13:29:55.958000+00:00",
+            "last_publish_time_utc": "2017-04-29T16:50:24.484000+00:00",
+            "first_in_play_publish_time_utc": "2017-04-29T16:39:10.569000+00:00",
+            "first_closed_publish_time_utc": "2017-04-29T16:50:24.484000+00:00",
+            "metadata": {
+              "eventId": "28209874",
+              "eventTypeId": "7",
+              "marketType": "EACH_WAY",
+              "marketTime": "2017-04-29T16:35:00.000Z",
+              "venue": "Punchestown",
+              "countryCode": "IE",
+              "timezone": "Europe/London",
+              "status": "CLOSED",
+              "numberOfWinners": 4,
+              "numberOfActiveRunners": 0
+            },
+            "final_runner_status_counts": {
+              "REMOVED": 1,
+              "LOSER": 20,
+              "PLACED": 3,
+              "WINNER": 1
+            },
+            "runner_count": 25
+          }
+        },
+        "independent_meetings": 1,
+        "distinct_scheduled_races": 8,
+        "zero_or_negative_ltp_change_count": 0,
+        "explicit_image_count": 274,
+        "timestamp_semantics": {
+          "pt": "Publisher timestamp in Unix epoch milliseconds; UTC conversion verified numerically. Proxy for source availability, not local receipt or physical race-event time.",
+          "marketTime": "Scheduled market start in UTC, not observed actual off.",
+          "received_at": "Absent. Network and local processing latency cannot be measured.",
+          "inPlay": "Observed market-definition transition; its first appearance differs across package sampling.",
+          "sampling": "Changes are sparse and may be conflated; do not manufacture ticks or assume every message contains every field."
+        },
+        "image_audit": {
+          "statistics": {
+            "images": 274,
+            "with_market_definition": 274,
+            "with_runner_changes": 274,
+            "runner_changes": 12028,
+            "runner_changes_with_ltp": 1199,
+            "images_with_defined_runners_missing_ltp": 245,
+            "images_with_active_runners_missing_ltp": 228
+          },
+          "examples": [
+            {
+              "market_id": "1.131280544",
+              "pt": 1493292893477,
+              "market_definition_present": true,
+              "runner_change_count": 14,
+              "runners_with_ltp": 0,
+              "defined_runner_count": 7,
+              "active_runner_count": 7,
+              "active_runners_missing_ltp_count": 7,
+              "all_runner_keys": [
+                "atb",
+                "id",
+                "spf",
+                "spn"
+              ]
+            },
+            {
+              "market_id": "1.131280550",
+              "pt": 1493299193509,
+              "market_definition_present": true,
+              "runner_change_count": 1,
+              "runners_with_ltp": 0,
+              "defined_runner_count": 7,
+              "active_runner_count": 7,
+              "active_runners_missing_ltp_count": 7,
+              "all_runner_keys": [
+                "id",
+                "spf",
+                "spn"
+              ]
+            },
+            {
+              "market_id": "1.131280545",
+              "pt": 1493299193509,
+              "market_definition_present": true,
+              "runner_change_count": 1,
+              "runners_with_ltp": 0,
+              "defined_runner_count": 7,
+              "active_runner_count": 7,
+              "active_runners_missing_ltp_count": 7,
+              "all_runner_keys": [
+                "id",
+                "spf",
+                "spn"
+              ]
+            },
+            {
+              "market_id": "1.131280544",
+              "pt": 1493304593526,
+              "market_definition_present": true,
+              "runner_change_count": 16,
+              "runners_with_ltp": 0,
+              "defined_runner_count": 7,
+              "active_runner_count": 7,
+              "active_runners_missing_ltp_count": 7,
+              "all_runner_keys": [
+                "atb",
+                "atl",
+                "id",
+                "spf",
+                "spn"
+              ]
+            },
+            {
+              "market_id": "1.131280544",
+              "pt": 1493307293552,
+              "market_definition_present": true,
+              "runner_change_count": 16,
+              "runners_with_ltp": 0,
+              "defined_runner_count": 7,
+              "active_runner_count": 7,
+              "active_runners_missing_ltp_count": 7,
+              "all_runner_keys": [
+                "atb",
+                "atl",
+                "id",
+                "spf",
+                "spn"
+              ]
+            }
+          ],
+          "interpretation": "All image messages contain marketDefinition, but images can omit ltp for some ACTIVE runners. Resetting prior cache then rebuilding yields legitimately incomplete LTP snapshots; do not forward-fill from pre-image state to manufacture completeness."
+        }
+      },
+      "permitted_use_status": "Publisher provides public help sample for inspection; no open-data or redistribution licence established. Keep raw local/ignored; use this sample for format and framework smoke checks only.",
+      "unsupported_uses": [
+        "Estimating generalizable ROI from one selected 2017 meeting",
+        "Treating LTP, a touched level, or aggregate traded volume as proof of a fill",
+        "Measuring physical event-to-publisher or network/receipt latency",
+        "Independent cross-provider entity-history edge: all acquired exchange data originate with Betfair",
+        "Assuming all 34 related markets are independent races",
+        "Applying old marketBaseRate as the current account commission rate"
+      ]
+    }
+  ],
+  "linkage_audit": {
+    "scope": "Format/identity feasibility only; not an authorized reusable strategy benchmark or evidence of edge",
+    "exchange_dataset_id": "horse-racing-pro-sample",
+    "sp_dataset_id": "betfair-sp-ire-win-file-2017-04-30",
+    "rule_tested": "CSV EVENT_ID == stream market ID after removing leading 1.; CSV SELECTION_ID == stream runner id. This is an observed sample mapping, not an assumed universal contract.",
+    "stream_win_market_count": 8,
+    "stream_win_runner_count": 126,
+    "sp_row_count": 112,
+    "matched_runner_rows": 112,
+    "missing_stream_runner_status_counts": {
+      "REMOVED": 14
+    },
+    "name_mismatch_count": 0,
+    "bsp_rows_compared": 88,
+    "bsp_abs_difference_over_1e_minus_6": 55,
+    "bsp_max_abs_difference": 0.00978978499999883,
+    "bsp_difference_note": "Differences in 55 rows are all <0.01; stream values appear truncated to two decimals for these rows. Do not require byte-equal BSP to establish identity.",
+    "naive_csv_time_minus_stream_market_time_seconds_counts": {
+      "3600": 112
+    },
+    "time_interpretation": "CSV times have no offset; all 112 linked rows are one hour ahead of UTC stream marketTime, consistent with Europe/London summer time on this date. Not proof of a global timezone contract.",
+    "filename_date_note": "SP file 2017-04-29 contains 2017-04-28 event dates; file 2017-04-30 contains 2017-04-29 event dates. Never infer event date from filename."
+  },
+  "audit_completed_at_utc": "2026-10-09T16:58:43.617217+00:00"
+}

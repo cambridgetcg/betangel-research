@@ -1,0 +1,348 @@
+{
+  "schema_version": 1,
+  "created_on": "2026-10-09",
+  "status": "qualitative_research_not_validated_strategy",
+  "scope": "Purposeful sample of 13 discussion threads plus 1 automated-alert context page across Bet Angel and Betfair Community. Not exhaustive, representative or a prevalence estimate. Only selected posts/pages read.",
+  "source_selection": "Queried order flow, price psychology, failure cases, market selection and automation; used recent 2025-2026 examples and historical disagreements. Read original bodies where listed, not attachment contents.",
+  "e01_changed": false,
+  "raw_forum_archive_saved": false,
+  "observations": [
+    {
+      "id": "F01",
+      "title": "Some basic questions",
+      "url": "https://forum.betangel.com/viewtopic.php?t=20596",
+      "authors": [
+        "ShaunWhite",
+        "Derek27",
+        "sa7med",
+        "Kai",
+        "firlandsfarm"
+      ],
+      "selected_post_dates": [
+        "2020-02-23",
+        "2020-02-24"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "flow_not_static_size",
+      "reported_view": "ShaunWhite emphasizes offer, fill and cancellation rates. Other posters warn that visible weight of money is a snapshot and can mislead. Kai favors matched activity.",
+      "limits_or_counterview": "These are competing mental models; aggregate ladders do not reveal all additions/cancellations or prove spoofing intent.",
+      "coordinator_measurement_proposal": "Validate unsigned matched volume and available-size state separately; retain the existing price-only versus joint depth/volume comparison.",
+      "disposition": "E01 measurement rationale; not new features",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F02",
+      "title": "Swing sizes",
+      "url": "https://forum.betangel.com/viewtopic.php?t=32435",
+      "authors": [
+        "stueytrader",
+        "Alpha322",
+        "Euler"
+      ],
+      "selected_post_dates": [
+        "2026-09-14",
+        "2026-09-15"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "market_selection",
+      "reported_view": "Euler argues the strategy should fit the race: he expects larger moves in novice/maiden races and quieter prices in competitive handicaps. Alpha322 describes taking smaller moves in large meetings.",
+      "limits_or_counterview": "Regime expectations are forum opinions, not measured distributions or universal rules. Race-type metadata needs a trustworthy predecision source.",
+      "coordinator_measurement_proposal": "Future separate study: compare predeclared volatility/continuation distributions by race type while controlling odds, liquidity and time to off.",
+      "disposition": "Backlog; no race-type filter added to E01",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+    },
+    {
+      "id": "F03",
+      "title": "Telegram Horse Racing Channel",
+      "url": "https://forum.betangel.com/viewtopic.php?t=19873",
+      "authors": [
+        "northbound",
+        "spreadbetting",
+        "Euler"
+      ],
+      "selected_post_dates": [
+        "2019-10-29",
+        "2019-10-30",
+        "2019-11-07"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "between_race_attention",
+      "reported_view": "northbound proposes that a beaten favourite may attract backing of the next favourite, but acknowledges mixed moves and false result proxies; spreadbetting asks whether the next price actually changed.",
+      "limits_or_counterview": "Alert creator promoting a reportedly free channel. No event-study result supplied; high in-play odds can be followed by a win.",
+      "coordinator_measurement_proposal": "Future event study must distinguish the first observable provisional alert from confirmed result time, use subsequent quotes, matched no-event controls and exclude target-race hindsight.",
+      "disposition": "Backlog; separate linkage hypothesis",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+    },
+    {
+      "id": "F04",
+      "title": "2 minute madness",
+      "url": "https://forum.betangel.com/viewtopic.php?p=327753",
+      "authors": [
+        "lm1994",
+        "Euler",
+        "Snaff",
+        "ShaunWhite"
+      ],
+      "selected_post_dates": [
+        "2023-04-27",
+        "2023-05-02",
+        "2023-07-21"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "late_flow_or_late_entry",
+      "reported_view": "Snaff reports an early gain following late shortening runners disappearing the following week. ShaunWhite says recognizing the move may be too late; other posters speculate about hedging, cancellations and automation.",
+      "limits_or_counterview": "Unaudited short experiment. The identity and intention behind late money are unestablished; no universal rejection of momentum follows.",
+      "coordinator_measurement_proposal": "Measure only movement after the information cutoff and declared delay, with identical baselines and all selected markets retained.",
+      "disposition": "E01 timing/anti-leakage rationale",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+    },
+    {
+      "id": "F05",
+      "title": "Volume Tracker",
+      "url": "https://forum.betangel.com/viewtopic.php?p=382194",
+      "authors": [
+        "Emtaxx",
+        "jamesedwards"
+      ],
+      "selected_post_dates": [
+        "2025-09-28",
+        "2025-09-29"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "measurement_before_pattern",
+      "reported_view": "Emtaxx tries to follow lay money. jamesedwards identifies that differencing volume at the current best lay price can compare different price levels when the quote moves. Later success is asserted without a return series.",
+      "limits_or_counterview": "Attachments unavailable; no bot execution or profit verification. A traded-volume increment alone does not identify aggressor direction.",
+      "coordinator_measurement_proposal": "Parser fixture: move the best quote with no new trade; verify the measurement does not invent a matched-volume spike by mixing price identities.",
+      "disposition": "E01 future parser validation requirement",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F06",
+      "title": "Condition advice",
+      "url": "https://forum.betangel.com/viewtopic.php?p=387220",
+      "authors": [
+        "delghisallo",
+        "Dallas"
+      ],
+      "selected_post_dates": [
+        "2026-02-28",
+        "2026-03-02"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "terminology_and_orientation",
+      "reported_view": "A user catches an inconsistent complementary weight-of-money percentage in Dallas's example; Dallas acknowledges the typo and clarifies the intended 60/40 example.",
+      "limits_or_counterview": "A corrected explanation, not evidence of a software defect, strategy edge or independent validation of current UI semantics.",
+      "coordinator_measurement_proposal": "Use known synthetic ladders to verify explicit feature-side orientation and complementary proportions before evaluating a signal.",
+      "disposition": "E01 future parser validation requirement",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F07",
+      "title": "Back or Lay at a Percentage of BSP Guardian Automation Bot",
+      "url": "https://forum.betangel.com/viewtopic.php?p=377450",
+      "authors": [
+        "dobbs",
+        "Dallas",
+        "ShaunWhite"
+      ],
+      "selected_post_dates": [
+        "2025-06-03"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "exit_policy_tradeoffs",
+      "reported_view": "dobbs wants smaller losses after reversals. Dallas discusses fast prices outrunning an exit; ShaunWhite challenges tight stops that repeatedly crystallize losses before recovery.",
+      "limits_or_counterview": "In-play example, not directly transferable to pre-off E01. No controlled exit comparison. Statements about stops preventing full loss assume execution and are not guarantees.",
+      "coordinator_measurement_proposal": "Future execution study: identical entries and fixed exit alternatives, including missed/partial fills; compare expected net payoff and tail loss separately.",
+      "disposition": "Later execution study only",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F08",
+      "title": "Bookies odds and support / resistance",
+      "url": "https://forum.betangel.com/viewtopic.php?p=162876",
+      "authors": [
+        "ShaunWhite",
+        "ruthlessimon",
+        "Dallas",
+        "Derek27",
+        "spreadbetting"
+      ],
+      "selected_post_dates": [
+        "2018-07-28"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "price_anchors",
+      "reported_view": "Posters disagree whether round/fractional prices represent meaningful support, temporary congestion or noise. Dallas asks for traded-volume buildup; Derek27 questions the general significance of traditional odds.",
+      "limits_or_counterview": "A disputed explanation of selected examples, not measured mean reversion. Tick-size geometry and retrospective level selection can create apparent effects.",
+      "coordinator_measurement_proposal": "Future study: freeze candidate price levels in advance and compare with nearby control levels at matched odds/tick sizes and liquidity.",
+      "disposition": "Backlog; no support/resistance feature added",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F09",
+      "title": "Trading What I see!? — selected page",
+      "url": "https://forum.betangel.com/viewtopic.php?start=1350&t=21616",
+      "authors": [
+        "goat68",
+        "spreadbetting",
+        "vhdgkl"
+      ],
+      "selected_post_dates": [
+        "2021-01-07",
+        "2021-01-10"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "edge_decay_and_research_hopping",
+      "reported_view": "goat68 reports a losing week for a VWAP-based bot and wants a replacement. spreadbetting suggests examining entry value and exit cost separately; vhdgkl says a previous trading edge disappeared.",
+      "limits_or_counterview": "Self-reports and one inspected page of a long thread; neither the historical earnings nor general failure of these rule families is verified.",
+      "coordinator_measurement_proposal": "Record all trials and failed variants; freeze evaluation periods and separate forecast value from exit effects instead of selecting a new bot on the same sample.",
+      "disposition": "Research-ledger discipline; no new candidate",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F10",
+      "title": "Running Multiple Bots",
+      "url": "https://forum.betangel.com/viewtopic.php?t=30424",
+      "authors": [
+        "Wrightie",
+        "Dublin_Flyer",
+        "jamesedwards"
+      ],
+      "selected_post_dates": [
+        "2025-03-20"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "automation_is_shared_state",
+      "reported_view": "Users discuss combining scalp and swing bots. jamesedwards challenges the suggestion that separate software instances isolate them, because their rules may still use the account's overall market position.",
+      "limits_or_counterview": "Forum troubleshooting is not an independently tested API contract. No application integration was attempted.",
+      "coordinator_measurement_proposal": "Future sandbox execution design needs order ownership, strategy attribution and explicit shared-exposure tests; separate processes alone must not be assumed to isolate positions.",
+      "disposition": "Later engineering backlog, outside current offline E01",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F11",
+      "title": "Trading horses — any advice?",
+      "url": "https://community.betfair.com/general_betting/go/thread/view/94082/27944985/trading-horses---any-advice?liveView=0&pg=2",
+      "authors": [
+        "The_Ocho",
+        "LordBobbbin",
+        "slt2005",
+        "thebert"
+      ],
+      "selected_post_dates": [
+        "2011-07-12",
+        "2011-07-19",
+        "2011-07-21"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "winner_value_versus_trade_path",
+      "reported_view": "The_Ocho emphasizes exiting after a favorable price change; others discuss form/value. slt2005 interprets a bad entry as discipline, while thebert suggests insufficient knowledge instead.",
+      "limits_or_counterview": "Historical contrast from a second forum, not current platform guidance or a representative sample. Conflicting explanations cannot diagnose a trader from one story.",
+      "coordinator_measurement_proposal": "Keep outcome-value forecasting, short-horizon price forecasting and execution behavior as distinct targets; investigate whether an error is signal quality or policy deviation.",
+      "disposition": "Framework interpretation; no performance claim",
+      "profitability_verified": false,
+      "commercial_context": "Exchange-operator-hosted community; individual affiliation not established"
+    },
+    {
+      "id": "F12",
+      "title": "Horse Racing Alerts — selected bot page",
+      "url": "https://forum.betangel.com/viewtopic.php?p=393882",
+      "authors": [
+        "BetAngelBot"
+      ],
+      "selected_post_dates": [
+        "2026-09-11",
+        "2026-09-12"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "automated_alert_context",
+      "reported_view": "The account posts price-move, beaten-favourite, draw and jockey/trainer streak alerts. This demonstrates the information being surfaced on the forum.",
+      "limits_or_counterview": "Automated posts are not independent human opinions. Alerts describe selected events; historical delivery delay, edits, complete trigger denominator and predictive value are unverified.",
+      "coordinator_measurement_proposal": "Any later event dataset needs complete alert/non-alert coverage and first-availability evidence; do not train sentiment counts on repeated bot messages as independent bettors.",
+      "disposition": "Data-availability audit only",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+    },
+    {
+      "id": "F13",
+      "title": "Most followed horse racing tipster",
+      "url": "https://forum.betangel.com/viewtopic.php?t=18049",
+      "authors": [
+        "Derek27",
+        "MickeyFinn",
+        "wearthefoxhat"
+      ],
+      "selected_post_dates": [
+        "2019-01-08"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "anticipating_followers",
+      "reported_view": "Derek27 watches broad tipster support to anticipate demand. MickeyFinn proposes entering before followers; wearthefoxhat supplies an example of a heavily tipped runner drifting.",
+      "limits_or_counterview": "Participant observations only; endorsement may follow existing news or price movement, and popular tips need not shorten.",
+      "coordinator_measurement_proposal": "Separate future event study: timestamped public tip releases, pre-event trends, fixed post-release horizon and matched controls; no hindsight from later tip lists.",
+      "disposition": "Backlog; no tipster features added",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community; Euler vendor connection documented separately; other affiliations not established"
+    },
+    {
+      "id": "F14",
+      "title": "Best time to trade Pre Race",
+      "url": "https://forum.betangel.com/viewtopic.php?t=26752",
+      "authors": [
+        "cookyweb",
+        "Euler"
+      ],
+      "selected_post_dates": [
+        "2022-12-29",
+        "2022-12-30"
+      ],
+      "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+      "accessed_on": "2026-10-09",
+      "retrieval": "public_page_body_opened_by_coordinator",
+      "theme": "attention_and_liquidity_timing",
+      "reported_view": "Euler relates tactics and stake capacity to liquidity, volatility and money arriving after the preceding race. cookyweb experiences the same arrival as erratic reversals.",
+      "limits_or_counterview": "Vendor-affiliated opinion, not a measured causal timing effect. Approaching post time and race scheduling may explain the association.",
+      "coordinator_measurement_proposal": "Future study: compare volume/spread changes at matched time-to-off with and without a preceding-race finish observable then; separate increased activity from predictable direction.",
+      "disposition": "Backlog; no timing changes to E01",
+      "profitability_verified": false,
+      "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+    }
+  ],
+  "affiliation_source": "https://forum.betangel.com/viewtopic.php?t=5226"
+}

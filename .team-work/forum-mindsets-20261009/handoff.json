@@ -1,0 +1,43 @@
+{
+  "external_agent": "Hermes CLI",
+  "requested_model": "gpt-6-astra",
+  "provider": "openai-codex",
+  "requested_reasoning": "ultra",
+  "installed_route_reasoning": "max",
+  "session_id": "20261009_183451_81f760",
+  "exit_code": 0,
+  "duration_ms": 166943,
+  "provider_reported_tokens": {
+    "input": 99627,
+    "output": 5761,
+    "total": 109100,
+    "cache_read": 3712,
+    "cache_write": 0
+  },
+  "usage_note": "Reported usage, not monetary billing.",
+  "prompt_sha256": "c2c470f0a2955a677fa7b3b458dbcb5457cddcb93c0dfea000015ccf6e7d95cb",
+  "returned_report_sha256": "885f285a8da77350119eec9a35dffe06dd911109aafb6975d9db3591a3fbd6d7",
+  "context_hashes": {
+    "AGENTS.md": "f221db036b49b968c74a2106a700ea2cba346bcf941355dc991d0534793b0a7e",
+    "docs/evidence-review.md": "9ea9bd5adc36897898299e30e5f7335fbad6e84cd8e1752a1bf56a0150ca8259",
+    "reports/hermes-edge-2026-10-09.md": "9c1348eaac07456146cce0e3f078d95381f2fbd40e78ae8d2898947ae2aa54ec"
+  },
+  "accepted_contributions": [
+    "F13 tipster-attention example and counterexample",
+    "F14 preceding-race timing model",
+    "Independent confirmation of F02 regime choice and vendor interest"
+  ],
+  "not_added": [
+    "Weight of Money t=27282: overlaps existing F01; no extra strategy feature"
+  ],
+  "retrieval_audit": "Hermes reported native page browsing; native searches are not fully exposed by CLI stream. Coordinator separately opened every accepted primary page.",
+  "native_worker": "betangel_profit_evidence",
+  "native_worker_contributions": [
+    "F04",
+    "F05",
+    "F06",
+    "F07"
+  ],
+  "global_settings_changed": false,
+  "execution_or_backtests_run": false
+}

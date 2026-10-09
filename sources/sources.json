@@ -359,6 +359,211 @@
       "accessed_on": "2026-10-09",
       "supports": "Vendor describes historical recalculation and distinctions between pre-race and settled rating vintages.",
       "limitations": "Commercial vendor assertions; original publication/version evidence and exact authenticated endpoint coverage unverified."
+    },
+    {
+      "id": "F01",
+      "title": "Some basic questions",
+      "url": "https://forum.betangel.com/viewtopic.php?t=20596",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2020-02-23",
+        "2020-02-24"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "These are competing mental models; aggregate ladders do not reveal all additions/cancellations or prove spoofing intent."
+    },
+    {
+      "id": "F02",
+      "title": "Swing sizes",
+      "url": "https://forum.betangel.com/viewtopic.php?t=32435",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2026-09-14",
+        "2026-09-15"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Regime expectations are forum opinions, not measured distributions or universal rules. Race-type metadata needs a trustworthy predecision source."
+    },
+    {
+      "id": "F03",
+      "title": "Telegram Horse Racing Channel",
+      "url": "https://forum.betangel.com/viewtopic.php?t=19873",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2019-10-29",
+        "2019-10-30",
+        "2019-11-07"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Alert creator promoting a reportedly free channel. No event-study result supplied; high in-play odds can be followed by a win."
+    },
+    {
+      "id": "F04",
+      "title": "2 minute madness",
+      "url": "https://forum.betangel.com/viewtopic.php?p=327753",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2023-04-27",
+        "2023-05-02",
+        "2023-07-21"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Unaudited short experiment. The identity and intention behind late money are unestablished; no universal rejection of momentum follows."
+    },
+    {
+      "id": "F05",
+      "title": "Volume Tracker",
+      "url": "https://forum.betangel.com/viewtopic.php?p=382194",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2025-09-28",
+        "2025-09-29"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Attachments unavailable; no bot execution or profit verification. A traded-volume increment alone does not identify aggressor direction."
+    },
+    {
+      "id": "F06",
+      "title": "Condition advice",
+      "url": "https://forum.betangel.com/viewtopic.php?p=387220",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2026-02-28",
+        "2026-03-02"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "A corrected explanation, not evidence of a software defect, strategy edge or independent validation of current UI semantics."
+    },
+    {
+      "id": "F07",
+      "title": "Back or Lay at a Percentage of BSP Guardian Automation Bot",
+      "url": "https://forum.betangel.com/viewtopic.php?p=377450",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2025-06-03"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "In-play example, not directly transferable to pre-off E01. No controlled exit comparison. Statements about stops preventing full loss assume execution and are not guarantees."
+    },
+    {
+      "id": "F08",
+      "title": "Bookies odds and support / resistance",
+      "url": "https://forum.betangel.com/viewtopic.php?p=162876",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2018-07-28"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "A disputed explanation of selected examples, not measured mean reversion. Tick-size geometry and retrospective level selection can create apparent effects."
+    },
+    {
+      "id": "F09",
+      "title": "Trading What I see!? — selected page",
+      "url": "https://forum.betangel.com/viewtopic.php?start=1350&t=21616",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2021-01-07",
+        "2021-01-10"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Self-reports and one inspected page of a long thread; neither the historical earnings nor general failure of these rule families is verified."
+    },
+    {
+      "id": "F10",
+      "title": "Running Multiple Bots",
+      "url": "https://forum.betangel.com/viewtopic.php?t=30424",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2025-03-20"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Forum troubleshooting is not an independently tested API contract. No application integration was attempted."
+    },
+    {
+      "id": "F11",
+      "title": "Trading horses — any advice?",
+      "url": "https://community.betfair.com/general_betting/go/thread/view/94082/27944985/trading-horses---any-advice?liveView=0&pg=2",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2011-07-12",
+        "2011-07-19",
+        "2011-07-21"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Historical contrast from a second forum, not current platform guidance or a representative sample. Conflicting explanations cannot diagnose a trader from one story."
+    },
+    {
+      "id": "F12",
+      "title": "Horse Racing Alerts — selected bot page",
+      "url": "https://forum.betangel.com/viewtopic.php?p=393882",
+      "evidence_type": "forum_automated_alerts",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2026-09-11",
+        "2026-09-12"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observations in research/forum-observations.json; no profitability inference.",
+      "limitations": "Automated posts are not independent human opinions. Alerts describe selected events; historical delivery delay, edits, complete trigger denominator and predictive value are unverified."
+    },
+    {
+      "id": "F13",
+      "title": "Most followed horse racing tipster",
+      "url": "https://forum.betangel.com/viewtopic.php?t=18049",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2019-01-08"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observation in research/forum-observations.json.",
+      "limitations": "Participant observations only; endorsement may follow existing news or price movement, and popular tips need not shorten."
+    },
+    {
+      "id": "F14",
+      "title": "Best time to trade Pre Race",
+      "url": "https://forum.betangel.com/viewtopic.php?t=26752",
+      "evidence_type": "forum_participant_opinion",
+      "published_or_updated_on": null,
+      "selected_post_dates": [
+        "2022-12-29",
+        "2022-12-30"
+      ],
+      "accessed_on": "2026-10-09",
+      "supports": "Attributed mental-model observation in research/forum-observations.json.",
+      "limitations": "Vendor-affiliated opinion, not a measured causal timing effect. Approaching post time and race scheduling may explain the association."
+    },
+    {
+      "id": "F15",
+      "title": "Bet Angel /Euler — affiliation context",
+      "url": "https://forum.betangel.com/viewtopic.php?t=5226",
+      "evidence_type": "first_person_affiliation_statement",
+      "published_or_updated_on": "2011-12-17",
+      "accessed_on": "2026-10-09",
+      "supports": "Euler distinguishes his identity from the shared Bet Angel team account.",
+      "limitations": "Affiliation context only; not verified trading ability or a new strategy observation."
     }
   ]
 }

@@ -1,0 +1,67 @@
+{
+  "observed_date_local": "2026-10-09",
+  "timezone": "Europe/London",
+  "purpose": "Descriptive data-feasibility pilot for UK all-weather performance research.",
+  "data_status": "Manually transcribed from public Racing TV result pages, then arithmetic-checked. These are post-race observations, not pre-race predictions.",
+  "selection": "Convenience sample: both Class 4 six-furlong handicap divisions at Kempton on 5 October 2026. Division 2 was inspected first; Division 1 was added to include both divisions. This is not an independently selected test set.",
+  "races": [
+    {
+      "race_id": "kempton-20261005-1815",
+      "scheduled_time_local": "2026-10-05T18:15:00+01:00",
+      "course": "Kempton Park",
+      "distance_furlongs": 6,
+      "surface": "Polytrack",
+      "going": "Standard / Slow",
+      "class": 4,
+      "age_condition": "3YO+",
+      "starters": 10,
+      "non_runners_displayed": [],
+      "time_index": 4.6,
+      "time_vs_par_s": 0.45,
+      "source_url": "https://www.racingtv.com/results/2026-10-05/kempton-park/1815"
+    },
+    {
+      "race_id": "kempton-20261005-1845",
+      "scheduled_time_local": "2026-10-05T18:45:00+01:00",
+      "course": "Kempton Park",
+      "distance_furlongs": 6,
+      "surface": "Polytrack",
+      "going": "Standard / Slow",
+      "class": 4,
+      "age_condition": "3YO+",
+      "starters": 9,
+      "non_runners_displayed": ["Shihoku"],
+      "time_index": 4.7,
+      "time_vs_par_s": 0.40,
+      "source_url": "https://www.racingtv.com/results/2026-10-05/kempton-park/1845"
+    }
+  ],
+  "definitions": {
+    "finish_position": "Official placing from the result table; do not infer dead heats from rounded elapsed times.",
+    "sp_fractional": "Reported industry Starting Price, with favourite suffix removed. Not BSP or a recorded earlier executable quote.",
+    "total_time_s": "Reported elapsed time, preserved independently of rounded furlong splits.",
+    "f1_s_to_f6_s": "Displayed first-to-sixth furlong times in seconds, each rounded to 0.01 seconds.",
+    "fsp_pct": "Reported finishing speed percentage: closing speed relative to the runner's whole-race average. For these six-furlong races the closing segment is two furlongs. This is not a win probability or a comparison with course par.",
+    "time_index": "Provider's contextual race time score out of 10, not a probability."
+  },
+  "methodology_sources": [
+    {"url": "https://www.racingtv.com/raceiq", "supports": "Free public metrics and historical coverage description; FSP definitions."},
+    {"url": "https://raceiq.com/par-sectionals-fsp/", "supports": "Course-specific par context and relationship between pace and finishing speed."},
+    {"url": "https://www.britishhorseracing.com/regulation/guide-to-handicapping/", "supports": "Rating at the time of a race differs from current rating and post-race performance figure."},
+    {"url": "https://www.britishhorseracing.com/regulation/adjusting-handicap-rating/", "supports": "Past performance figures can be revised using subsequent evidence."},
+    {"url": "https://www.britishhorseracing.com/regulation/official-ratings/ratings-database/", "supports": "Official current ratings and public exports; no historical-as-of completeness established."}
+  ],
+  "not_acquired": [
+    "BHA rating-at-race rows or historical as-of rating snapshots",
+    "RaceiQ Par FSP values and historical model versions",
+    "Earlier timestamped executable prices and market liquidity",
+    "A representative multi-season dataset"
+  ],
+  "bha_access_check": "The official ratings page and export link were identified. Web export fetch returned HTTP 418; an ordinary direct request to the ratings page returned HTTP 403. No export file was acquired, and no access restriction was bypassed.",
+  "known_caveats": [
+    "Both 18:45 leading runners display 72.63 seconds, but Mesaafi won by a nose.",
+    "Displayed split sums can differ from reported elapsed time by a few hundredths of a second.",
+    "Only coverage within these two races was checked; site-wide completeness and bulk access are unverified.",
+    "BHA was used for methodology; no BHA runner-level data has been joined to this sample."
+  ]
+}

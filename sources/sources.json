@@ -1,0 +1,198 @@
+{
+  "reviewed_on": "2026-10-09",
+  "scope": "Bounded public-source review, not a systematic customer survey. Dates are recorded only where identified.",
+  "verification": "No source in this review is classified as an independently audited Bet Angel profit record.",
+  "typical_user_success_rate": null,
+  "expected_user_roi": null,
+  "sources": [
+    {
+      "id": "S01",
+      "title": "Mark Iverson: From £250 to £4505 in 12 Months",
+      "url": "https://markiverson-professionalsportstrader.blogspot.com/2007/08/from-250-to-4505-in-12-months.html",
+      "evidence_type": "self_report_longitudinal_historical",
+      "published_or_updated_on": "2007-08-31",
+      "supports": "Explicit Bet Angel use and reported year-long bank growth.",
+      "limitations": "Unaudited; old non-horse-specific results; affiliate interest; bank growth excludes some costs."
+    },
+    {
+      "id": "S02",
+      "title": "2 Years and still struggling",
+      "url": "https://forum.betangel.com/viewtopic.php?t=22046",
+      "evidence_type": "self_report_unverified",
+      "published_or_updated_on": "2020-09-24",
+      "supports": "Reported extensive pre-off experience without consistent profitability.",
+      "limitations": "Unaudited; attachments not inspected; cannot estimate population success rate."
+    },
+    {
+      "id": "S03",
+      "title": "Why You Will Never Make A Profit On Automation Alone",
+      "url": "https://forum.betangel.com/viewtopic.php?p=316206",
+      "evidence_type": "mixed_vendor_and_user_claims",
+      "published_or_updated_on": null,
+      "supports": "Participants report successful automation.",
+      "limitations": "Relevant posts in November 2022 and March 2024; no complete audited record; vendor conflict."
+    },
+    {
+      "id": "S04",
+      "title": "Catch the Late Move Reversal Guardian Automation Bot: discussion",
+      "url": "https://forum.betangel.com/viewtopic.php?start=10&t=13403",
+      "evidence_type": "example_and_self_reports",
+      "published_or_updated_on": null,
+      "supports": "Mixed reported results with a shared example and profitability claims for adaptations.",
+      "limitations": "Relevant replies June 2022 and February 2024; neither profit nor execution failure frequency independently verified."
+    },
+    {
+      "id": "S05",
+      "title": "When to stop?",
+      "url": "https://forum.betangel.com/viewtopic.php?t=28389",
+      "evidence_type": "self_report_unverified",
+      "published_or_updated_on": null,
+      "supports": "Users describe substantial effort without consistent profit.",
+      "limitations": "Relevant posts November to December 2023; self-selected accounts without standardized cost records."
+    },
+    {
+      "id": "S06",
+      "title": "bet angel % and beginning stake confusion",
+      "url": "https://forum.betangel.com/viewtopic.php?t=30306",
+      "evidence_type": "accounting_caution",
+      "published_or_updated_on": null,
+      "supports": "Displayed profit claims do not reconcile with balance; replies discuss conditional and stale values.",
+      "limitations": "Relevant posts February 2025; not a verified winning record; not all accounting issues resolved."
+    },
+    {
+      "id": "S07",
+      "title": "Convolutional Attention in Betting Exchange Markets, v1",
+      "url": "https://arxiv.org/html/2510.16008v1",
+      "evidence_type": "primary_research_simulation",
+      "published_or_updated_on": "2025-10-14",
+      "supports": "Custom pre-off framework and simulated held-out trading results.",
+      "limitations": "Not a Bet Angel account; simulation queue/impact limitations; explicit commission deduction not located."
+    },
+    {
+      "id": "D01",
+      "title": "Bet Angel Risk Notice",
+      "url": "https://www.betangel.com/user-guide/risk_notice.html",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Software does not guarantee profitability.",
+      "limitations": "Vendor statement, not a study of customer returns."
+    },
+    {
+      "id": "D02",
+      "title": "Bet Angel Example rules",
+      "url": "https://www.betangel.com/user-guide/example_rules.html",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Scalping and example automation mechanisms.",
+      "limitations": "Instructional example, not verified performance."
+    },
+    {
+      "id": "D03",
+      "title": "Quicker bet placement",
+      "url": "https://www.betangel.com/quicker-bet-placement/",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Conditional placement and directional trading examples.",
+      "limitations": "Capabilities do not establish a forecast advantage."
+    },
+    {
+      "id": "D04",
+      "title": "Front-runner strategies and automation",
+      "url": "https://www.betangel.com/front-runner-strategies-automation/",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "In-play back-to-lay mechanism.",
+      "limitations": "Selection and execution remain unvalidated for this project."
+    },
+    {
+      "id": "D05",
+      "title": "Import selections",
+      "url": "https://www.betangel.com/import-selections/",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "CSV model outputs can feed stored values and displays.",
+      "limitations": "No model or live integration implemented in this repository."
+    },
+    {
+      "id": "D06",
+      "title": "Advanced dutching: Back with a stake of",
+      "url": "https://www.betangel.com/user-guide/advanced_dutching___back_with_a_stake_of.html",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Stake allocation over selections with possible full-stake loss.",
+      "limitations": "Allocation alone does not demonstrate positive expectation."
+    },
+    {
+      "id": "D07",
+      "title": "Getting started with automation",
+      "url": "https://www.betangel.com/user-guide/getting_started_2.html",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Predefined rule execution capabilities.",
+      "limitations": "A mechanism for testing hypotheses, not a validated system."
+    },
+    {
+      "id": "D08",
+      "title": "Ladder columns and Estimated Position in Queue",
+      "url": "https://www.betangel.com/user-guide/columns_2.html",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Queue position is estimated rather than known exactly.",
+      "limitations": "Historical prices cannot identify counterfactual fills precisely."
+    },
+    {
+      "id": "D09",
+      "title": "Practice Mode",
+      "url": "https://www.betangel.com/user-guide/practice_mode.html",
+      "evidence_type": "vendor_documentation",
+      "published_or_updated_on": null,
+      "supports": "Local simulated matching differs from live market interaction.",
+      "limitations": "Practice earnings are not settled cash; extended usage may result in delayed data."
+    },
+    {
+      "id": "D10",
+      "title": "Betfair Historical Data Feed Specification",
+      "url": "https://historicdata.betfair.com/files/Betfair-Historical-Data-Feed-Specification.pdf",
+      "evidence_type": "official_data_specification",
+      "published_or_updated_on": null,
+      "supports": "Package frequency and depth/volume fields differ.",
+      "limitations": "Specification inspected; no purchased data files downloaded or independently checked."
+    },
+    {
+      "id": "D11",
+      "title": "How do I download and view Betfair Historical Data?",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/360000402211-How-do-I-download-and-view-Betfair-Historical-Data",
+      "evidence_type": "official_documentation",
+      "published_or_updated_on": "2026-09-24",
+      "supports": "Historical service format and download interface.",
+      "limitations": "Date is displayed update date, not necessarily original publication; requires applicable access and data terms."
+    },
+    {
+      "id": "C01",
+      "title": "Betfair Charges, Great Britain",
+      "url": "https://www.betfair.com/www/GBR/en/aboutUs/Betfair.Charges/",
+      "evidence_type": "official_current_policy",
+      "published_or_updated_on": null,
+      "supports": "Market-level commission and conditional additional charges.",
+      "limitations": "Actual account package and event rules apply; recheck before economic evaluation."
+    },
+    {
+      "id": "C02",
+      "title": "Bet Angel VPS",
+      "url": "https://www.betangel.com/vps/",
+      "evidence_type": "vendor_current_pricing",
+      "published_or_updated_on": null,
+      "supports": "Windows VPS specifications, inclusive price and renewal terms.",
+      "limitations": "No checkout or performance benchmark; software licence separate."
+    },
+    {
+      "id": "C03",
+      "title": "Buy a licence for Bet Angel",
+      "url": "https://www.betangel.com/buy/",
+      "evidence_type": "vendor_current_pricing",
+      "published_or_updated_on": null,
+      "supports": "Monthly and annual software prices.",
+      "limitations": "Prices may change; no purchase completed."
+    }
+  ]
+}

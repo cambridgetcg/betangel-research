@@ -1,0 +1,31 @@
+{
+  "status": "Descriptive pilot complete; predictive study not executed.",
+  "question": "Do previous-race sectional measurements improve future race-outcome probability forecasts beyond information already in market prices?",
+  "scope_for_next_data_audit": "Consecutive Kempton Polytrack Class 4 six-furlong handicaps in a declared time window. Include every starter, record non-runners separately, and publish missingness. Fix the window before inspecting outcomes.",
+  "hypotheses": [
+    "Previous-race closing speed may add information when conditioned on whole-race speed, course par and early pace.",
+    "The effect may disappear after including market prices and rating-at-race."
+  ],
+  "baseline": {
+    "formula": "q_i = (1 / decimal_odds_i) / sum_j(1 / decimal_odds_j)",
+    "interpretation": "Normalised market-price benchmark, not established true probability.",
+    "required_snapshot": "A fixed timestamp before each target race, preserving the runners known at that timestamp. Define treatment of later withdrawals and any subsequent forecast revision in advance; do not insert the final starter set retrospectively. SP may be reported separately as a later benchmark, never substituted for an earlier available price."
+  },
+  "data_requirements": [
+    "Stable horse/race identifiers and source/retrieval timestamps.",
+    "Previous starts only: sectionals, elapsed time, distance, surface, class, going and carried weight.",
+    "Separate official rating-at-race, current rating and race performance figure; require historical availability evidence for predictive inputs.",
+    "Provider model version/publication dates for pars, or exclude pars from claims requiring strict historical availability.",
+    "All target-race outcomes kept separate from inputs; missing values kept missing."
+  ],
+  "validation": [
+    "Split chronologically by whole races; never split runners within a race across train and test.",
+    "Fit transformations, feature choices and calibration on the training period only.",
+    "Compare market-only and market-plus-performance forecasts with race-level log loss, Brier score and calibration.",
+    "Retain an untouched later period; report uncertainty accounting for common meetings and repeated horses.",
+    "Exclude these already inspected pilot races from claims about an untouched test set.",
+    "A subsequent prospective, timestamped prediction record is needed to assess whether results persist."
+  ],
+  "economic_evidence_requirements": "No ROI estimate is supported by this pilot. Any later economic analysis additionally needs actual available prices/stakes, commissions, non-runner reductions, liquidity, execution timing and applicable fees.",
+  "scope_limits": "This folder contains public-data research and offline calculations only. It does not access betting accounts, submit wagers or produce live staking instructions."
+}

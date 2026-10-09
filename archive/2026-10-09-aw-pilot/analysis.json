@@ -1,0 +1,38 @@
+{
+  "status": "Descriptive observations; no model fitted and no predictive edge measured.",
+  "input_sha256": "dd6f3e1e722bbffd7b390acf060335fd4441eab9d47bbff67c6ded38d84d10f6",
+  "races": [
+    {
+      "race_id": "kempton-20261005-1815",
+      "starters": 10,
+      "complete_split_rows": 10,
+      "max_split_sum_error_s": 0.02,
+      "sp_implied_probability_sum": 1.1958996530607784,
+      "sp_overround_pct": 19.58996530607784,
+      "highest_fsp_runner": "Pixie Diva",
+      "highest_fsp_finish_position": 8,
+      "winner": "Star Chorus",
+      "winner_fsp_rank": 6
+    },
+    {
+      "race_id": "kempton-20261005-1845",
+      "starters": 9,
+      "complete_split_rows": 9,
+      "max_split_sum_error_s": 0.01,
+      "sp_implied_probability_sum": 1.1756936289337272,
+      "sp_overround_pct": 17.569362893372716,
+      "highest_fsp_runner": "Tyger Bay",
+      "highest_fsp_finish_position": 4,
+      "winner": "Mesaafi",
+      "winner_fsp_rank": 3
+    }
+  ],
+  "runner_count": 19,
+  "checks": [
+    "Declared starter counts and complete placing sequences agree.",
+    "Runner identities unique within each race.",
+    "Reported totals and splits consistent within rounding precision.",
+    "Reported FSP consistent with a two-furlong finish within rounding bounds.",
+    "All starting prices parse; normalisation is performed within each race."
+  ]
+}

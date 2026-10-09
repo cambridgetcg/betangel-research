@@ -1,0 +1,43 @@
+{
+  "imported_on": "2026-10-09",
+  "source_path": "/Users/macair/Documents/horse-racing-research/2026-10-09-aw-pilot",
+  "status": "Unchanged copy of a descriptive pilot; no predictive or profitability claim.",
+  "files": [
+    {
+      "path": "archive/2026-10-09-aw-pilot/analyse.py",
+      "sha256": "4d5cf6e9a8d7ac2fd4274dc446f0a4f5d6ffc3204f4b7143229fded027a1a195"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/analysis.json",
+      "sha256": "5031d173f934941188afd7115f2542ec6e9f98ffd2c33265e97d22d250c6d66c"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/closing-speed.png",
+      "sha256": "edf71c9bbb3c9ad93b05b7bde3e3adb2aca58592603b8e966709e439de6631f7"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/closing-speed.svg",
+      "sha256": "56364840d255e073faf6b1f6e6454447ae5377a8f18848c5b10c1ec3dcabb17c"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/derived.csv",
+      "sha256": "995aad0797ff80a3d73c5fc06d0528f79f5acd854c01889462c0f2585110d445"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/requirements-plot.txt",
+      "sha256": "de950d3b75e4ad1a760c121533e06390c84574f7dd0b53c0eaa742ab6d5c2f38"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/research_protocol.json",
+      "sha256": "3b9d91c69e381647f02c3622eb5df99cf5752c683a74d314a98f37a8f12e046a"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/runners.csv",
+      "sha256": "dd6f3e1e722bbffd7b390acf060335fd4441eab9d47bbff67c6ded38d84d10f6"
+    },
+    {
+      "path": "archive/2026-10-09-aw-pilot/sources.json",
+      "sha256": "5d34618f6aaf84be576af0aaaa6ba305ccd86b05add706728b65941276e4c80e"
+    }
+  ]
+}

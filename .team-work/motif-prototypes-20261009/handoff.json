@@ -1,0 +1,55 @@
+{
+  "created_at": "2026-10-09T18:30:52.610591+00:00",
+  "start_revision": "caed0e4",
+  "scope": "offline motif engineering only",
+  "hermes": {
+    "requested_model": "gpt-6-astra",
+    "requested_reasoning": "ultra",
+    "route_effective_reasoning": "max",
+    "provider": "openai-codex",
+    "session_id": "20261009_191948_7f6e55",
+    "exit_code": 1,
+    "duration_ms": 394696,
+    "status": "failed_no_research_output",
+    "reason": "Provider reported five consecutive stale attempts with no response; CLI aborted. No model switch or retry by coordinator.",
+    "prompt_sha256": "b795081aa213ba6ac774dda1b97f70ba3927e1b9dd7e53429f75b86652e59d17",
+    "events_sha256": "df46a6444dc5157b5928746c4c7d71a184861506fb16865a1d1bdf5b3ea86785",
+    "cost": null
+  },
+  "runs": {
+    "synthetic-final": {
+      "path": "outputs/motif-prototypes-20261009/synthetic-final",
+      "report_sha256": "fc18e0dac93870cac3c1e502d526074e34e9e6a51947bda4be5d03bb06a38583"
+    },
+    "adv-final": {
+      "path": "outputs/motif-prototypes-20261009/adv-final",
+      "report_sha256": "146582255f35f8109984b3755b3ed7b8886f496de5d3cb8696490036d097026b"
+    }
+  },
+  "verification": {
+    "command": "python3 -m unittest discover -s tests -v",
+    "exit_code": 0,
+    "tests_passed": 60,
+    "log_sha256": "bab93c335718b387372e088f44aee3024428e758b28239d9d81debf2d80eb8a9"
+  },
+  "independent_review": {
+    "path": ".team-work/motif-prototypes-20261009/handoffs/reviewer.md",
+    "sha256": "37fb9339b19363c9f16d11f7e2944fc26771f1e435899b7d4af01ae918233ab2",
+    "verdict": "READY_for_reviewed_fixed_config_offline_prototype",
+    "limits": "static review; coordinator ran tests and demonstrations; docs later updated for integration"
+  },
+  "integration_review": {
+    "path": ".team-work/motif-prototypes-20261009/handoffs/integration-review.md",
+    "sha256": "5eaa4a02c625313c67dc2a7a9059381752bc3df94d1a1bca273de5f06d2034ba",
+    "verdict": "READY_for_report_fidelity_and_local_integration",
+    "tests_or_replays_rerun_by_reviewer": false
+  },
+  "final_artifact_sha256": {
+    "README.md": "1c70525cd0ed5eea4f9a6ae84f493a6b82a0dcfbf011c5bb6e2a945e0a64ec9d",
+    "docs/motif-strategies.md": "5bfdc21ef2494f92453444725a62886e531fb1c96075d68ef05d7fb14ec3369c",
+    "research/motif-catalog.json": "8c4d622da224af6d4859abc390cf4d7201861601ca8123f09007b1cb5613a872",
+    "reports/motif-prototypes-2026-10-09.md": "ceda157ee55a6d607c6a484b678db4694abde9818f24da275444eeeac64a74b8",
+    "reports/motif-prototypes-2026-10-09.json": "868f13a380d0ea6bffeb2a3140dc2ff8ec5705c710d19334edcf2743601cdd48",
+    "sources/sources.json": "02b03d388b6b461d761586427188420d58e89535d2d9481a8870dedd494c3557"
+  }
+}

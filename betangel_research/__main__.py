@@ -119,11 +119,26 @@ def main():
     replay.add_argument("--input", required=True)
     replay.add_argument("--config", default="research/experiments/sample-preoff-v1.json")
     replay.add_argument("--out", required=True)
+    motifs = commands.add_parser("motifs", help="Trace offline motif hypotheses; no orders or scoring")
+    motifs.add_argument("--input", required=True)
+    motifs.add_argument("--format", choices=["synthetic", "adv"], default="synthetic")
+    motifs.add_argument("--context", help="Optional local structured context JSON list")
+    motifs.add_argument("--config", default="research/experiments/motif-prototypes-v1.json")
+    motifs.add_argument("--out", required=True)
     args = parser.parse_args()
     try:
-        report = run_replay(args.input, args.config, args.out)
+        if args.command == "motifs":
+            from .motifs import run_motif_lab
+            report = run_motif_lab(args.input, args.config, args.out, args.format, args.context)
+        else:
+            report = run_replay(args.input, args.config, args.out)
     except (ValueError, KeyError, OSError) as exc:
         parser.exit(2, f"Research input error: {exc}\n")
+    if args.command == "motifs":
+        print(json.dumps({"status": report["status"], "output": args.out,
+                          "feature_records": report["feature_records"], "summary": report["summary"],
+                          "elapsed_seconds": report["elapsed_seconds"]}, indent=2))
+        return
     print(json.dumps({"status": report["status"], "output": args.out,
                       "counts_by_delay": {k: v["counts"] for k, v in report["scores_by_delay_seconds"].items()},
                       "elapsed_seconds": report["elapsed_seconds"]}, indent=2))

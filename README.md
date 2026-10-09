@@ -9,6 +9,8 @@ Research snapshot: **9 October 2026**. 本地研究 repo；離線 framework 已�
 - [Edge 開發框架：資料量、速度、連結點樣驗證](docs/edge-framework.md)
 - [Hermes／Astra 研究、獨立覆核同下一個 E01 experiment](reports/hermes-edge-2026-10-09.md)
 - [論壇交易者點樣諗：思路、反例同可測試假說](docs/forum-mindsets.md)
+- [14 個觀察 → 9 類 motifs → 3 個離線 prototypes](docs/motif-strategies.md)
+- [Prototype 工程結果及目前限制](reports/motif-prototypes-2026-10-09.md)
 - [真實歷史資料審核與 ID／時間陷阱](docs/data-audit.md)
 - [第一輪 replay 結果](reports/sample-replay-2026-10-09.md)
 - [資料、時間、模型與指標合約](docs/data-contract.md)
@@ -33,6 +35,19 @@ python3 -m betangel_research replay \
 ```
 
 每次用新 output directory。輸出 `report.json`、`predictions.csv`、`summary.md`，並記錄 input/config/code hashes 同 local run ledger。比較 no-change、momentum、mean-reversion、rival-linkage，以及 0／2／10／30 秒人工資料延遲。
+
+另外可運行 forum motif prototypes：
+
+```sh
+python3 -m betangel_research motifs \
+  --input research/fixtures/motif-scenarios.json \
+  --out outputs/my-motif-demo
+python3 -m betangel_research motifs --format adv \
+  --input data/raw/betfair-samples/horse-racing-adv-sample.bz2 \
+  --out outputs/my-motif-adv
+```
+
+輸出 `features.jsonl`、`decisions.jsonl` 同 `report.json`。P01 產生價格延續假說；P02 留意 public event 後嘅活動；P03 加 explicit context abstention。Context 目前係 synthetic supplied assessments，未接語言模型或真實 news collector；真實 ADV run 冇 context 時，P02／P03 會 abstain。原 E01 proposal 同 v1 replay 方法保持不變。
 
 ```mermaid
 flowchart LR
@@ -71,6 +86,8 @@ The copy receives regenerated JSON/CSV. Optional plot reproduction needs `requir
 The next research step is a consecutive, multi-date dataset with known access terms, followed by a frozen primary experiment. The public sample replay is not a holdout or profit test. See the [research plan](docs/research-plan.md).
 
 ## Local verification
+
+Motif prototypes: **60 tests passed** across the full suite; synthetic scenarios and the real ADV sample completed. See [engineering results](reports/motif-prototypes-2026-10-09.md) for policy counts, independent-review scope and the limits of these checks.
 
 Framework v1: 22 unit/integration tests passed, covering time leakage, revisions, identity ambiguity, snapshots/images, suspensions, zero prices, chronology, balanced scoring, commission and run provenance. Basic/Advanced/Pro real-format replays completed. Independent review findings about delayed direction metrics, suspensions, timestamp precision and identity ordering were corrected and regression-tested. The [results report](reports/sample-replay-2026-10-09.md) states empirical limits.
 

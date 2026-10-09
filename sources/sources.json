@@ -564,6 +564,17 @@
       "accessed_on": "2026-10-09",
       "supports": "Euler distinguishes his identity from the shared Bet Angel team account.",
       "limitations": "Affiliation context only; not verified trading ability or a new strategy observation."
+    },
+    {
+      "id": "D23",
+      "title": "Why does traded volume decrease as well as increase?",
+      "url": "https://support.developer.betfair.com/hc/en-us/articles/360006560978-Why-does-traded-volume-decrease-as-well-as-increase",
+      "evidence_type": "official_vendor_data_semantics",
+      "published_or_updated_on": "2026-09-24",
+      "accessed_on": "2026-10-09",
+      "supports": "Official explanation of currency-rate-related changes in price-keyed traded amounts; motivates preserving counter corrections.",
+      "limitations": "Directly discusses trd, not proof of the cause of every runner tv decrease; vendor documentation does not validate this parser.",
+      "retrieval": "public_body_opened_by_microstructure_worker"
     }
   ]
 }

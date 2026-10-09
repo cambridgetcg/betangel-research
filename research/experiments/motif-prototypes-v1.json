@@ -1,0 +1,16 @@
+{
+  "experiment_id": "motif-prototypes-v1",
+  "status": "illustrative_engineering_thresholds_not_tuned_or_preregistered",
+  "max_relative_spread": 0.03,
+  "min_relative_move": 0.002,
+  "min_volume_delta": 1,
+  "max_feature_age_s": 10,
+  "signal_lifetime_s": 15,
+  "max_context_age_s": 120,
+  "processing_delays_s": [0, 2, 10, 30],
+  "candidate_policies": {
+    "P01": "price_continuation_with_unsigned_matched_activity",
+    "P02": "public_attention_event_activity_watch_no_direction",
+    "P03": "P01_with_explicit_context_abstention"
+  }
+}

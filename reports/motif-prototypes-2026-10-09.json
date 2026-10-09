@@ -1,0 +1,526 @@
+{
+  "created_at": "2026-10-09T18:30:52.609672+00:00",
+  "status": "engineering_only_no_efficacy_or_economic_result",
+  "tests": {
+    "command": "python3 -m unittest discover -s tests -v",
+    "exit_code": 0,
+    "tests_passed": 60,
+    "log_sha256": "bab93c335718b387372e088f44aee3024428e758b28239d9d81debf2d80eb8a9"
+  },
+  "runs": {
+    "synthetic-final": {
+      "status": "offline_engineering_prototypes_not_validated_strategies",
+      "created_at": "2026-10-09T18:27:41.876409+00:00",
+      "input_sha256": "2d215e42c892758ba0d08572824c18ae486e9e9003c90803338e4dc6a0368035",
+      "config_sha256": "73b0890f2512c0f1b3a47687ba94198a9f8cb0c051c8ed0d61e529e6f6b89712",
+      "code_sha256": {
+        "betangel_research/__init__.py": "1c6f9f424bae9653f42e824531fb52e0f95b0958b4e42b440ad4406aa30c0558",
+        "betangel_research/__main__.py": "43e96e196495a798816c52050bee3b47c645389f5b6990751e8088a7057fadcc",
+        "betangel_research/evaluation.py": "7308d604f486dc6828b028152fb12e88797472b40c310f6a0172e84a53454b8d",
+        "betangel_research/microstructure.py": "5a171a5ac17a239253071c5a1173a024b08fc2e373ea64d36ffc1ae85f46d4c5",
+        "betangel_research/motifs.py": "a4f69ce887a0fc761f6e544c798ab81e558dff1d426ecb78ee1a4aa7d8a2b3fc",
+        "betangel_research/stream.py": "084ce9460cdd3d0981e602f8b2c718b2b5a05c1cfe74a8a5ec5c2c27529773f9",
+        "betangel_research/temporal.py": "024d7535c3e74a2c02b6c7fdf229349ab000a99924a98175718e8144dd724354"
+      },
+      "input_format": "synthetic",
+      "audit": {
+        "data_kind": "synthetic",
+        "fixture_purpose": "Engineered counterexamples for policy timing, unknown context, volume identity and attention watches; no real-world efficacy labels."
+      },
+      "feature_records": 9,
+      "context_records_supplied": 8,
+      "summary": [
+        {
+          "policy": "P01",
+          "processing_delay_s": 0,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "hypothesis": 7,
+            "abstain": 2
+          },
+          "reasons": {
+            "price_move_with_unsigned_matched_activity": 7,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P01",
+          "processing_delay_s": 2,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "hypothesis": 7,
+            "abstain": 2
+          },
+          "reasons": {
+            "price_move_with_unsigned_matched_activity": 7,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P01",
+          "processing_delay_s": 10,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 9
+          },
+          "reasons": {
+            "feature_too_old_at_issue": 9,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P01",
+          "processing_delay_s": 30,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 9
+          },
+          "reasons": {
+            "feature_too_old_at_issue": 9,
+            "signal_expired": 9,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 0,
+          "unit": "market_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 7,
+            "watch": 2
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 7,
+            "attention_may_change_activity_direction_unknown": 2
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 2,
+          "unit": "market_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 7,
+            "watch": 2
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 7,
+            "attention_may_change_activity_direction_unknown": 2
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 10,
+          "unit": "market_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 9
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 7,
+            "no_timely_eligible_market_features": 9
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 30,
+          "unit": "market_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 9
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 7,
+            "no_timely_eligible_market_features": 9
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 0,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 8,
+            "hypothesis": 1
+          },
+          "reasons": {
+            "context_unknown": 4,
+            "price_move_with_unsigned_matched_activity": 1,
+            "compatible_with_declared_context_scope": 3,
+            "context_contradicted": 1,
+            "context_uncertain": 1,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 2,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 8,
+            "hypothesis": 1
+          },
+          "reasons": {
+            "context_unknown": 4,
+            "price_move_with_unsigned_matched_activity": 1,
+            "compatible_with_declared_context_scope": 3,
+            "context_contradicted": 1,
+            "context_uncertain": 1,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 10,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 9
+          },
+          "reasons": {
+            "context_unknown": 4,
+            "feature_too_old_at_issue": 9,
+            "compatible_with_declared_context_scope": 3,
+            "context_contradicted": 1,
+            "context_uncertain": 1,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 30,
+          "unit": "runner_decision",
+          "total": 9,
+          "statuses": {
+            "abstain": 9
+          },
+          "reasons": {
+            "context_unknown": 4,
+            "feature_too_old_at_issue": 9,
+            "signal_expired": 9,
+            "compatible_with_declared_context_scope": 3,
+            "context_contradicted": 1,
+            "context_uncertain": 1,
+            "matched_activity_not_established": 1,
+            "spread_too_wide": 1
+          }
+        }
+      ],
+      "economic_result": null,
+      "forecast_score": null,
+      "elapsed_seconds": 0.0303
+    },
+    "adv-final": {
+      "status": "offline_engineering_prototypes_not_validated_strategies",
+      "created_at": "2026-10-09T18:27:54.829630+00:00",
+      "input_sha256": "fd80f8625bf17cb8d9eb1a0797aefc50d0b9b679777c8dd525f866ccc8c1766f",
+      "config_sha256": "73b0890f2512c0f1b3a47687ba94198a9f8cb0c051c8ed0d61e529e6f6b89712",
+      "code_sha256": {
+        "betangel_research/__init__.py": "1c6f9f424bae9653f42e824531fb52e0f95b0958b4e42b440ad4406aa30c0558",
+        "betangel_research/__main__.py": "43e96e196495a798816c52050bee3b47c645389f5b6990751e8088a7057fadcc",
+        "betangel_research/evaluation.py": "7308d604f486dc6828b028152fb12e88797472b40c310f6a0172e84a53454b8d",
+        "betangel_research/microstructure.py": "5a171a5ac17a239253071c5a1173a024b08fc2e373ea64d36ffc1ae85f46d4c5",
+        "betangel_research/motifs.py": "a4f69ce887a0fc761f6e544c798ab81e558dff1d426ecb78ee1a4aa7d8a2b3fc",
+        "betangel_research/stream.py": "084ce9460cdd3d0981e602f8b2c718b2b5a05c1cfe74a8a5ec5c2c27529773f9",
+        "betangel_research/temporal.py": "024d7535c3e74a2c02b6c7fdf229349ab000a99924a98175718e8144dd724354"
+      },
+      "input_format": "adv",
+      "audit": {
+        "messages": 71764,
+        "markets": 34,
+        "records": 113,
+        "eligible_records": 113,
+        "invalid_reason_counts": {},
+        "market_exclusions": {
+          "1.131280535": [
+            "outside_win_market_scope"
+          ],
+          "1.131280536": [
+            "outside_win_market_scope"
+          ],
+          "1.131280537": [
+            "outside_win_market_scope"
+          ],
+          "1.131280538": [
+            "outside_win_market_scope"
+          ],
+          "1.131280540": [
+            "outside_win_market_scope"
+          ],
+          "1.131280541": [
+            "outside_win_market_scope"
+          ],
+          "1.131280542": [
+            "outside_win_market_scope"
+          ],
+          "1.131280543": [
+            "outside_win_market_scope"
+          ],
+          "1.131280545": [
+            "outside_win_market_scope"
+          ],
+          "1.131280547": [
+            "outside_win_market_scope"
+          ],
+          "1.131280548": [
+            "outside_win_market_scope"
+          ],
+          "1.131280550": [
+            "outside_win_market_scope"
+          ],
+          "1.131280552": [
+            "outside_win_market_scope"
+          ],
+          "1.131280553": [
+            "outside_win_market_scope"
+          ],
+          "1.131280555": [
+            "outside_win_market_scope"
+          ],
+          "1.131280556": [
+            "outside_win_market_scope"
+          ],
+          "1.131280557": [
+            "outside_win_market_scope"
+          ],
+          "1.131280558": [
+            "outside_win_market_scope"
+          ],
+          "1.131280560": [
+            "outside_win_market_scope"
+          ],
+          "1.131280561": [
+            "outside_win_market_scope"
+          ],
+          "1.131280562": [
+            "outside_win_market_scope"
+          ],
+          "1.131280563": [
+            "outside_win_market_scope"
+          ],
+          "1.131280565": [
+            "outside_win_market_scope"
+          ],
+          "1.131280566": [
+            "outside_win_market_scope"
+          ],
+          "1.131280567": [
+            "outside_win_market_scope"
+          ],
+          "1.131280568": [
+            "outside_win_market_scope"
+          ]
+        },
+        "last_pt": 1493488587745,
+        "supported_package": "ADV_ONLY",
+        "format_detection": "pre-decision field evidence only",
+        "market_type": "WIN",
+        "countries": "unfiltered",
+        "time_basis": "publisher_pt_not_customer_receipt",
+        "schedule_anchor": "first_published_marketTime",
+        "volume_basis": "unsigned_runner_cumulative_tv_not_price_keyed_trd",
+        "decision_before_start_s": 120,
+        "lookback_s": 30,
+        "max_snapshot_age_s": 10,
+        "future_labels_used": false,
+        "execution_model": null
+      },
+      "feature_records": 113,
+      "context_records_supplied": 0,
+      "summary": [
+        {
+          "policy": "P01",
+          "processing_delay_s": 0,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 94,
+            "hypothesis": 19
+          },
+          "reasons": {
+            "move_below_threshold": 25,
+            "spread_too_wide": 89,
+            "price_move_with_unsigned_matched_activity": 19,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P01",
+          "processing_delay_s": 2,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 94,
+            "hypothesis": 19
+          },
+          "reasons": {
+            "move_below_threshold": 25,
+            "spread_too_wide": 89,
+            "price_move_with_unsigned_matched_activity": 19,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P01",
+          "processing_delay_s": 10,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 113
+          },
+          "reasons": {
+            "feature_too_old_at_issue": 113,
+            "move_below_threshold": 25,
+            "spread_too_wide": 89,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P01",
+          "processing_delay_s": 30,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 113
+          },
+          "reasons": {
+            "feature_too_old_at_issue": 113,
+            "move_below_threshold": 25,
+            "signal_expired": 113,
+            "spread_too_wide": 89,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 0,
+          "unit": "market_decision",
+          "total": 8,
+          "statuses": {
+            "abstain": 8
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 8
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 2,
+          "unit": "market_decision",
+          "total": 8,
+          "statuses": {
+            "abstain": 8
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 8
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 10,
+          "unit": "market_decision",
+          "total": 8,
+          "statuses": {
+            "abstain": 8
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 8,
+            "no_timely_eligible_market_features": 8
+          }
+        },
+        {
+          "policy": "P02",
+          "processing_delay_s": 30,
+          "unit": "market_decision",
+          "total": 8,
+          "statuses": {
+            "abstain": 8
+          },
+          "reasons": {
+            "no_timely_linked_attention_event": 8,
+            "no_timely_eligible_market_features": 8
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 0,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 113
+          },
+          "reasons": {
+            "context_unknown": 113,
+            "move_below_threshold": 25,
+            "spread_too_wide": 89,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 2,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 113
+          },
+          "reasons": {
+            "context_unknown": 113,
+            "move_below_threshold": 25,
+            "spread_too_wide": 89,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 10,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 113
+          },
+          "reasons": {
+            "context_unknown": 113,
+            "feature_too_old_at_issue": 113,
+            "move_below_threshold": 25,
+            "spread_too_wide": 89,
+            "matched_activity_not_established": 9
+          }
+        },
+        {
+          "policy": "P03",
+          "processing_delay_s": 30,
+          "unit": "runner_decision",
+          "total": 113,
+          "statuses": {
+            "abstain": 113
+          },
+          "reasons": {
+            "context_unknown": 113,
+            "feature_too_old_at_issue": 113,
+            "move_below_threshold": 25,
+            "signal_expired": 113,
+            "spread_too_wide": 89,
+            "matched_activity_not_established": 9
+          }
+        }
+      ],
+      "economic_result": null,
+      "forecast_score": null,
+      "elapsed_seconds": 12.9508
+    }
+  }
+}

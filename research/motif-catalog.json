@@ -1,0 +1,746 @@
+{
+  "schema_version": 1,
+  "created_on": "2026-10-09",
+  "status": "implemented_offline_engineering_prototypes_not_validated",
+  "scope": "Interpretation of exactly the existing 14 forum observations; no new primary-source claims, human-motive inference, causality or profitability evidence.",
+  "source_observations_path": "research/forum-observations.json",
+  "source_observations_sha256": "d9f364134e2c1d87e807d73b7418fe8687198846b4a001e476691cb6252106ca",
+  "affiliation_source": "https://forum.betangel.com/viewtopic.php?t=5226",
+  "e01_changed": false,
+  "e01_sha256_at_design": "c3abe4af0632e09ed2ce1d2d867ca6e7cb993637328cd61e85aa2314f30b0d7b",
+  "motifs": [
+    {
+      "id": "M01",
+      "name": "Flow measurement before interpretation",
+      "observations": [
+        "F01",
+        "F05",
+        "F06"
+      ]
+    },
+    {
+      "id": "M02",
+      "name": "Regime and market selection",
+      "observations": [
+        "F02",
+        "F14"
+      ]
+    },
+    {
+      "id": "M03",
+      "name": "Timestamped public-event attention linkage",
+      "observations": [
+        "F03",
+        "F12",
+        "F13",
+        "F14"
+      ]
+    },
+    {
+      "id": "M04",
+      "name": "Continuation versus late recognition",
+      "observations": [
+        "F04"
+      ]
+    },
+    {
+      "id": "M05",
+      "name": "Exit-policy tradeoffs",
+      "observations": [
+        "F07",
+        "F09"
+      ]
+    },
+    {
+      "id": "M06",
+      "name": "Price anchors versus tick geometry",
+      "observations": [
+        "F08"
+      ]
+    },
+    {
+      "id": "M07",
+      "name": "Research selection and evidence discipline",
+      "observations": [
+        "F04",
+        "F09",
+        "F11",
+        "F12"
+      ]
+    },
+    {
+      "id": "M08",
+      "name": "Shared state and attribution",
+      "observations": [
+        "F10"
+      ]
+    },
+    {
+      "id": "M09",
+      "name": "Different targets and policy adherence",
+      "observations": [
+        "F11"
+      ]
+    }
+  ],
+  "prototype_contracts": [
+    {
+      "id": "P01",
+      "name": "Observed continuation with activity corroboration",
+      "scope": "Offline fixed-rule pattern decision; no order, stake, fill or profit.",
+      "inputs": [
+        "Complete as-of quote states",
+        "Validated unsigned matched increments",
+        "Fixed price lookback",
+        "Explicit spread/continuity thresholds"
+      ],
+      "output": "A continuation-pattern label or abstain with reasons; no inferred aggressor, motive or causal explanation.",
+      "mechanical_comparator": "Identical price rule and spread/data gates, with the activity gate removed; no-change forecast if a numerical forecast is later specified.",
+      "context_boundary": "Contradiction screening composes through P03; the mechanical P01 component remains identical for the comparison.",
+      "status": "implemented_synthetic_and_real_adv_feature_engineering_not_efficacy",
+      "engineering_formula": "mid=(best_back+best_lay)/2; relative_shortening=(past_mid-current_mid)/past_mid; positive=shorten, negative=drift",
+      "engineering_thresholds_not_tuned": {
+        "minimum_absolute_relative_move": 0.002,
+        "minimum_unsigned_volume_delta": 1,
+        "maximum_relative_spread": 0.03,
+        "positive_available_sizes_both_sides": true,
+        "maximum_data_age_s": 10,
+        "maximum_data_age_semantics": "market-message age strictly below10s at issue; carried quote/counter timestamps may be older"
+      }
+    },
+    {
+      "id": "P02",
+      "name": "Public-event activity watch",
+      "scope": "Offline watch/unknown/no-event-observed labels; direction must be null.",
+      "inputs": [
+        "Versioned event source",
+        "Availability evidence",
+        "Explicit entity/market link known_at",
+        "Derived analysis completed_at",
+        "Declared collection coverage"
+      ],
+      "output": "Watch activity after timely linked public event, or explain unknown/late/unlinked status; never turn a tip/streak into a direction.",
+      "mechanical_comparator": "Later event study against prespecified matched no-event windows and pre-event activity; engineering fixtures have no empirical effect estimate.",
+      "status": "implemented_synthetic_engineering_and_real_format_abstention_checks",
+      "engineering_event_types": [
+        "public_tip",
+        "previous_race_finish"
+      ],
+      "deduplication_unit": "one market-level watch per cutoff with contributing event IDs retained"
+    },
+    {
+      "id": "P03",
+      "name": "Context abstention overlay",
+      "scope": "Apply versioned explicit contradiction and availability checks to exactly the same P01 output.",
+      "inputs": [
+        "P01 record",
+        "As-of structured context with evidence",
+        "Frozen contradiction/unknown handling",
+        "Collection and analysis delay records"
+      ],
+      "output": "Retain P01 decision or abstain with coded evidence/reasons. Never reverse direction or invent a replacement policy.",
+      "mechanical_comparator": "Unchanged P01 on the full issuance cohort; quote-only gate and context-timing/coverage controls. Conditional selected-set scores alone are insufficient.",
+      "status": "implemented_synthetic_engineering_and_real_format_abstention_checks",
+      "engineering_gate": "Require timely, unexpired kind=context_assessment with assessment=compatible and explicit coverage_scope; contradiction, uncertainty, missing or late context abstains.",
+      "semantic_model_status": "No real semantic model in engine; assessments are supplied fixture inputs."
+    }
+  ],
+  "shared_contract": {
+    "availability": "Require event_ms<=published_ms<=received_ms<=analysis_completed_ms and link_known_ms<=analysis_completed_ms; all required availability must be <= decision cutoff. Effective readiness is max(received_ms,link_known_ms,analysis_completed_ms). Unknown readiness fails the context gate. Expiry is checked at delayed issue. Effective expiry includes source event age, market-message age, scheduled start and policy TTL; deadline is exclusive.",
+    "synthetic_context": "Mark all fixture events, identities and supplied assessments synthetic; require source, content hash, explicit link, coverage_scope for context assessments, explanation and alternative interpretation. Frozen-packet processing delays 0/2/10/30 seconds and lifespan 15 seconds are engineering examples, not calibrated market parameters.",
+    "unknown_context": "Missing or uncovered context is unknown, never no news. No event observed only describes the declared covered sources/window, never the whole world.",
+    "semantic_inference": "Understanding is operationalized as a versioned rule/tag schema. A contemporary LLM interpreting old material has potential hindsight contamination even if only old text is retrieved; such output is retrospective engineering, not a historical point-in-time semantic backtest.",
+    "latency": "Store source-to-collection, collection-to-analysis and decision-readiness separately. Publisher timestamps and acquisition coverage do not measure historical receipt latency or an advantage over other participants. No speed advantage is measured.",
+    "costs": "Record dataset/hosting/software costs, analysis runtime/model usage and currency explicitly; unknown costs remain null. No quote/LTP-to-P&L conversion, implicit fills or ROI. Execution economics require a separately authorized future study.",
+    "evaluation": "Freeze every variant and cohort. Preserve all issued/abstained rows and label-availability categories. Whole-market chronological splits, identical primary cohorts and a full-cohort fixed fallback are required before assessing an abstention policy; report coverage and selected/unselected diagnostics separately.",
+    "e01": "This catalogue creates a separate prototype track. It changes no E01 feature, horizon, population, trial budget or registration."
+  },
+  "observations": [
+    {
+      "id": "F01",
+      "motif_ids": [
+        "M01"
+      ],
+      "prototype_ids": [
+        "P01"
+      ],
+      "source": {
+        "title": "Some basic questions",
+        "url": "https://forum.betangel.com/viewtopic.php?t=20596",
+        "authors": [
+          "ShaunWhite",
+          "Derek27",
+          "sa7med",
+          "Kai",
+          "firlandsfarm"
+        ],
+        "selected_post_dates": [
+          "2020-02-23",
+          "2020-02-24"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "ShaunWhite emphasizes offer, fill and cancellation rates. Other posters warn that visible weight of money is a snapshot and can mislead. Kai favors matched activity.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "These are competing mental models; aggregate ladders do not reveal all additions/cancellations or prove spoofing intent.",
+      "our_inference": "A sequence of valid price changes plus independently measured unsigned matched activity may be more informative than one displayed-size snapshot.",
+      "data_needed": [
+        "Point-in-time quotes and sizes",
+        "Runner cumulative matched counters with currency and reset semantics",
+        "Stream continuity and availability timestamps"
+      ],
+      "hypothesized_mechanism": "Activity may corroborate persistence of an already observed price move; this is an association hypothesis, not inferred bettor intent.",
+      "countermechanism": "Two-sided transactions, replenishment, transient quotes, or an already completed repricing may produce activity without subsequent continuation.",
+      "operationalization": "Keep price, available size and unsigned matched increments separate. Compare the same continuation rule with and without activity gating on an identical issuance cohort.",
+      "falsifier_or_invalidation": "No registered out-of-sample forecast increment over matched price-only/no-change baselines; any improvement lost after honest delay; unresolved counter semantics invalidate testing.",
+      "status": "candidate_P01_not_validated",
+      "profitability_verified": false
+    },
+    {
+      "id": "F02",
+      "motif_ids": [
+        "M02"
+      ],
+      "prototype_ids": [],
+      "source": {
+        "title": "Swing sizes",
+        "url": "https://forum.betangel.com/viewtopic.php?t=32435",
+        "authors": [
+          "stueytrader",
+          "Alpha322",
+          "Euler"
+        ],
+        "selected_post_dates": [
+          "2026-09-14",
+          "2026-09-15"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+      },
+      "participant_mental_model": "Euler argues the strategy should fit the race: he expects larger moves in novice/maiden races and quieter prices in competitive handicaps. Alpha322 describes taking smaller moves in large meetings.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Regime expectations are forum opinions, not measured distributions or universal rules. Race-type metadata needs a trustworthy predecision source.",
+      "our_inference": "Treat race type as a possible descriptive regime variable; do not assume a race class supplies a direction forecast.",
+      "data_needed": [
+        "Race-type metadata available before decision",
+        "Comparable odds, liquidity, field size and time-to-off",
+        "Consecutive multi-date inventory"
+      ],
+      "hypothesized_mechanism": "Different uncertainty or participation could accompany different move distributions; the forum does not establish why.",
+      "countermechanism": "Odds, liquidity or scheduling may explain the apparent distinction; larger swings can increase noise rather than predictability.",
+      "operationalization": "Defer a separately registered regime comparison with fixed strata and matched market-state controls; retain all strata.",
+      "falsifier_or_invalidation": "No meaningful difference beyond controls on later dates, or the metadata was not available then.",
+      "status": "deferred_regime_study",
+      "profitability_verified": false
+    },
+    {
+      "id": "F03",
+      "motif_ids": [
+        "M03"
+      ],
+      "prototype_ids": [
+        "P02"
+      ],
+      "source": {
+        "title": "Telegram Horse Racing Channel",
+        "url": "https://forum.betangel.com/viewtopic.php?t=19873",
+        "authors": [
+          "northbound",
+          "spreadbetting",
+          "Euler"
+        ],
+        "selected_post_dates": [
+          "2019-10-29",
+          "2019-10-30",
+          "2019-11-07"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+      },
+      "participant_mental_model": "northbound proposes that a beaten favourite may attract backing of the next favourite, but acknowledges mixed moves and false result proxies; spreadbetting asks whether the next price actually changed.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Alert creator promoting a reportedly free channel. No event-study result supplied; high in-play odds can be followed by a win.",
+      "our_inference": "Represent preceding-race events as timestamped attention candidates; make no prediction that the next favourite shortens.",
+      "data_needed": [
+        "First observable provisional alert",
+        "Separate confirmed-result publication",
+        "As-of links between preceding and target races",
+        "Observed subsequent activity and no-event controls"
+      ],
+      "hypothesized_mechanism": "A visible event could coincide with attention and activity moving between races; neither attention nor participant motive is directly observed.",
+      "countermechanism": "Approaching off time, simultaneous news or ordinary scheduling can explain activity; high in-play odds are not a confirmed defeat.",
+      "operationalization": "Issue a direction-free watch after event, identity link and analysis are available. Provisional and confirmed event types remain separate.",
+      "falsifier_or_invalidation": "No subsequent activity increment relative to matched time-to-off controls, or an effect appears only after substituting later confirmed results.",
+      "status": "candidate_P02_watch_only_not_validated",
+      "profitability_verified": false
+    },
+    {
+      "id": "F04",
+      "motif_ids": [
+        "M04",
+        "M07"
+      ],
+      "prototype_ids": [
+        "P01",
+        "P03"
+      ],
+      "source": {
+        "title": "2 minute madness",
+        "url": "https://forum.betangel.com/viewtopic.php?p=327753",
+        "authors": [
+          "lm1994",
+          "Euler",
+          "Snaff",
+          "ShaunWhite"
+        ],
+        "selected_post_dates": [
+          "2023-04-27",
+          "2023-05-02",
+          "2023-07-21"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+      },
+      "participant_mental_model": "Snaff reports an early gain following late shortening runners disappearing the following week. ShaunWhite says recognizing the move may be too late; other posters speculate about hedging, cancellations and automation.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Unaudited short experiment. The identity and intention behind late money are unestablished; no universal rejection of momentum follows.",
+      "our_inference": "Continuation must be judged after its trigger and analysis delay; recognizing a completed move may provide no remaining forecast value.",
+      "data_needed": [
+        "Fixed lookback and horizon",
+        "Trigger/decision/analysis-completion times",
+        "Then-known quotes and activity",
+        "All attempted variants"
+      ],
+      "hypothesized_mechanism": "Some observed price moves may persist after the cutoff, conditional on measurable state.",
+      "countermechanism": "The observable move may already incorporate the information; delayed recognition can erase or reverse the association.",
+      "operationalization": "Freeze the rule before scoring, retain late/abstained cases, inject declared collection and analysis delays, and never count the trigger move as success.",
+      "falsifier_or_invalidation": "No useful subsequent increment, or an apparent increment exists only with pre-trigger movement or unavailable context.",
+      "status": "timing_constraint_for_P01_P03",
+      "profitability_verified": false
+    },
+    {
+      "id": "F05",
+      "motif_ids": [
+        "M01"
+      ],
+      "prototype_ids": [
+        "P01"
+      ],
+      "source": {
+        "title": "Volume Tracker",
+        "url": "https://forum.betangel.com/viewtopic.php?p=382194",
+        "authors": [
+          "Emtaxx",
+          "jamesedwards"
+        ],
+        "selected_post_dates": [
+          "2025-09-28",
+          "2025-09-29"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "Emtaxx tries to follow lay money. jamesedwards identifies that differencing volume at the current best lay price can compare different price levels when the quote moves. Later success is asserted without a return series.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Attachments unavailable; no bot execution or profit verification. A traded-volume increment alone does not identify aggressor direction.",
+      "our_inference": "Before testing an activity signal, establish that a quote moving to another price cannot manufacture a volume increment.",
+      "data_needed": [
+        "Price-keyed traded amounts or validated runner totals",
+        "Best-quote identity",
+        "Counter image/reset/correction evidence"
+      ],
+      "hypothesized_mechanism": "A correctly measured activity increase could corroborate a price pattern; a mis-keyed subtraction is only a measurement artefact.",
+      "countermechanism": "Comparing cumulative amounts at different prices invents a spike; unsigned matched increments still do not identify aggressor side.",
+      "operationalization": "Use validated cumulative runner increments, or difference each identical price key before aggregation. A moving-quote/no-trade synthetic fixture must produce zero new matched activity.",
+      "falsifier_or_invalidation": "The fixture creates activity, negative/reset counters go unreconciled, or activity gating has no later forecast increment.",
+      "status": "measurement_requirement_for_P01",
+      "profitability_verified": false
+    },
+    {
+      "id": "F06",
+      "motif_ids": [
+        "M01"
+      ],
+      "prototype_ids": [
+        "P01"
+      ],
+      "source": {
+        "title": "Condition advice",
+        "url": "https://forum.betangel.com/viewtopic.php?p=387220",
+        "authors": [
+          "delghisallo",
+          "Dallas"
+        ],
+        "selected_post_dates": [
+          "2026-02-28",
+          "2026-03-02"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "A user catches an inconsistent complementary weight-of-money percentage in Dallas's example; Dallas acknowledges the typo and clarifies the intended 60/40 example.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "A corrected explanation, not evidence of a software defect, strategy edge or independent validation of current UI semantics.",
+      "our_inference": "Name each ladder side and denominator explicitly; do not turn a corrected forum percentage into a directional market fact.",
+      "data_needed": [
+        "Known synthetic back/lay available sizes",
+        "Declared feature formula and side orientation",
+        "Positive denominator and missing-value states"
+      ],
+      "hypothesized_mechanism": "A reproducible size feature may describe visible state; the forum correction supplies no evidence of predictive usefulness.",
+      "countermechanism": "Swapped sides or percentages reverse the feature while plausible terminology hides the error; size need not remain available.",
+      "operationalization": "Check complement and sign on hand-computable ladders. Any optional size feature stays separate from the unsigned matched-activity gate.",
+      "falsifier_or_invalidation": "Known sizes do not yield the declared formula, or unavailable sides are silently converted to zero.",
+      "status": "measurement_requirement_no_new_directional_signal",
+      "profitability_verified": false
+    },
+    {
+      "id": "F07",
+      "motif_ids": [
+        "M05"
+      ],
+      "prototype_ids": [],
+      "source": {
+        "title": "Back or Lay at a Percentage of BSP Guardian Automation Bot",
+        "url": "https://forum.betangel.com/viewtopic.php?p=377450",
+        "authors": [
+          "dobbs",
+          "Dallas",
+          "ShaunWhite"
+        ],
+        "selected_post_dates": [
+          "2025-06-03"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "dobbs wants smaller losses after reversals. Dallas discusses fast prices outrunning an exit; ShaunWhite challenges tight stops that repeatedly crystallize losses before recovery.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "In-play example, not directly transferable to pre-off E01. No controlled exit comparison. Statements about stops preventing full loss assume execution and are not guarantees.",
+      "our_inference": "Exit timing and execution assumptions form a separate question from entry or short-horizon forecast quality.",
+      "data_needed": [
+        "Executable quote/depth history",
+        "Declared simulated entries and exit alternatives",
+        "Latency, partial/missed-fill and fee assumptions"
+      ],
+      "hypothesized_mechanism": "An exit rule may reshape path-dependent exposure and tail losses; it cannot guarantee a fill or positive expectation.",
+      "countermechanism": "Tight exits may repeatedly realize temporary adverse moves; gaps, suspension and unmatched orders can defeat the intended exit.",
+      "operationalization": "Defer an offline execution study using identical simulated entries and complete exit alternatives; distinguish expected payoff from tail loss. Do not transfer this in-play thread directly to pre-off prototypes.",
+      "falsifier_or_invalidation": "The claimed benefit disappears with missed/partial fills or costs, or reducing one tail measure worsens the predeclared primary criterion.",
+      "status": "deferred_execution_study_no_orders",
+      "profitability_verified": false
+    },
+    {
+      "id": "F08",
+      "motif_ids": [
+        "M06"
+      ],
+      "prototype_ids": [],
+      "source": {
+        "title": "Bookies odds and support / resistance",
+        "url": "https://forum.betangel.com/viewtopic.php?p=162876",
+        "authors": [
+          "ShaunWhite",
+          "ruthlessimon",
+          "Dallas",
+          "Derek27",
+          "spreadbetting"
+        ],
+        "selected_post_dates": [
+          "2018-07-28"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "Posters disagree whether round/fractional prices represent meaningful support, temporary congestion or noise. Dallas asks for traded-volume buildup; Derek27 questions the general significance of traditional odds.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "A disputed explanation of selected examples, not measured mean reversion. Tick-size geometry and retrospective level selection can create apparent effects.",
+      "our_inference": "Treat round/fractional levels as candidate price-location effects, not established support/resistance or reversal instructions.",
+      "data_needed": [
+        "Levels specified before inspection",
+        "Tick-size schedule",
+        "Comparable odds, spread, activity and liquidity",
+        "Nearby control levels"
+      ],
+      "hypothesized_mechanism": "Shared reference prices might coincide with congestion; this does not establish participant anchoring as the cause.",
+      "countermechanism": "Tick geometry, unequal opportunities and choosing levels after a bounce can create the appearance without an edge.",
+      "operationalization": "Defer a preregistered level-versus-control event study; count every encounter and report continuation as well as reversal.",
+      "falsifier_or_invalidation": "No effect beyond nearby matched levels on later data, or the effect relies on retrospectively choosing the level.",
+      "status": "deferred_anchor_study",
+      "profitability_verified": false
+    },
+    {
+      "id": "F09",
+      "motif_ids": [
+        "M07",
+        "M05"
+      ],
+      "prototype_ids": [
+        "P01",
+        "P02",
+        "P03"
+      ],
+      "source": {
+        "title": "Trading What I see!? — selected page",
+        "url": "https://forum.betangel.com/viewtopic.php?start=1350&t=21616",
+        "authors": [
+          "goat68",
+          "spreadbetting",
+          "vhdgkl"
+        ],
+        "selected_post_dates": [
+          "2021-01-07",
+          "2021-01-10"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "goat68 reports a losing week for a VWAP-based bot and wants a replacement. spreadbetting suggests examining entry value and exit cost separately; vhdgkl says a previous trading edge disappeared.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Self-reports and one inspected page of a long thread; neither the historical earnings nor general failure of these rule families is verified.",
+      "our_inference": "Keep a ledger of failed rules and separate forecast error from exit cost; changing stories after a loss cannot refresh a used test set.",
+      "data_needed": [
+        "Complete trial ledger",
+        "Frozen chronological splits",
+        "Forecasts and exclusion reasons",
+        "Execution assumptions if ever evaluated"
+      ],
+      "hypothesized_mechanism": "A prior association may fail in a different period, but the cited reports do not measure when or why.",
+      "countermechanism": "Selection noise, costs, coding errors or a short adverse run can resemble edge decay; switching candidates amplifies hindsight.",
+      "operationalization": "Record every fixed policy/configuration/ablation, including no-result runs. Reuse inspected data only for engineering; new claims require later untouched evidence.",
+      "falsifier_or_invalidation": "Policy gains vanish on a later frozen cohort or are recoverable only by undocumented selection; such findings defeat an incremental-edge claim.",
+      "status": "research_control_not_a_trading_signal",
+      "profitability_verified": false
+    },
+    {
+      "id": "F10",
+      "motif_ids": [
+        "M08"
+      ],
+      "prototype_ids": [],
+      "source": {
+        "title": "Running Multiple Bots",
+        "url": "https://forum.betangel.com/viewtopic.php?t=30424",
+        "authors": [
+          "Wrightie",
+          "Dublin_Flyer",
+          "jamesedwards"
+        ],
+        "selected_post_dates": [
+          "2025-03-20"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "Users discuss combining scalp and swing bots. jamesedwards challenges the suggestion that separate software instances isolate them, because their rules may still use the account's overall market position.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Forum troubleshooting is not an independently tested API contract. No application integration was attempted.",
+      "our_inference": "Independent process names do not establish independent state; the current framework therefore has no execution integration.",
+      "data_needed": [
+        "Future explicit state/ownership specification",
+        "Attribution of simulated positions and actions",
+        "Shared-state collision fixtures"
+      ],
+      "hypothesized_mechanism": "If several policies read aggregate exposure, their outputs can interact; the forum is a hypothesis for engineering review, not an API contract.",
+      "countermechanism": "Observed interference could come from implementation details; actual isolation cannot be inferred from the thread or process separation.",
+      "operationalization": "Keep policy outputs as offline records. Defer any account/exposure design; a future non-live simulator would need explicit ownership and collision tests.",
+      "falsifier_or_invalidation": "Two otherwise identical isolated simulated runs change each other through undeclared shared state, or attribution cannot reconcile totals.",
+      "status": "deferred_engineering_theme_no_account_path",
+      "profitability_verified": false
+    },
+    {
+      "id": "F11",
+      "motif_ids": [
+        "M09",
+        "M07"
+      ],
+      "prototype_ids": [
+        "P01",
+        "P02",
+        "P03"
+      ],
+      "source": {
+        "title": "Trading horses — any advice?",
+        "url": "https://community.betfair.com/general_betting/go/thread/view/94082/27944985/trading-horses---any-advice?liveView=0&pg=2",
+        "authors": [
+          "The_Ocho",
+          "LordBobbbin",
+          "slt2005",
+          "thebert"
+        ],
+        "selected_post_dates": [
+          "2011-07-12",
+          "2011-07-19",
+          "2011-07-21"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Exchange-operator-hosted community; individual affiliation not established"
+      },
+      "participant_mental_model": "The_Ocho emphasizes exiting after a favorable price change; others discuss form/value. slt2005 interprets a bad entry as discipline, while thebert suggests insufficient knowledge instead.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Historical contrast from a second forum, not current platform guidance or a representative sample. Conflicting explanations cannot diagnose a trader from one story.",
+      "our_inference": "Distinguish winner/value forecasts, price-path forecasts and rule adherence. None can diagnose an individual trader from a forum story.",
+      "data_needed": [
+        "A declared target for each policy",
+        "Decision-time rule/version",
+        "Separate issuance, adherence and forecast/error records"
+      ],
+      "hypothesized_mechanism": "Consistent target definitions make different hypotheses testable; psychology itself is not an observed feature here.",
+      "countermechanism": "Correct rule adherence can still follow a bad signal; a correct winner prediction can have no short-horizon price or execution advantage.",
+      "operationalization": "Label P01/P03 as offline price-pattern decisions and P02 as an activity watch. Record abstention and rule reasons without inferring confidence, discipline or bettor psychology.",
+      "falsifier_or_invalidation": "An apparent benefit comes from changing the target, confusing policy adherence with accuracy, or treating later winners as earlier price evidence.",
+      "status": "target_definition_constraint",
+      "profitability_verified": false
+    },
+    {
+      "id": "F12",
+      "motif_ids": [
+        "M03",
+        "M07"
+      ],
+      "prototype_ids": [
+        "P02",
+        "P03"
+      ],
+      "source": {
+        "title": "Horse Racing Alerts — selected bot page",
+        "url": "https://forum.betangel.com/viewtopic.php?p=393882",
+        "authors": [
+          "BetAngelBot"
+        ],
+        "selected_post_dates": [
+          "2026-09-11",
+          "2026-09-12"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; individual affiliation not established from this page"
+      },
+      "participant_mental_model": "The account posts price-move, beaten-favourite, draw and jockey/trainer streak alerts. This demonstrates the information being surfaced on the forum.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Automated posts are not independent human opinions. Alerts describe selected events; historical delivery delay, edits, complete trigger denominator and predictive value are unverified.",
+      "our_inference": "Alerts are selected machine-generated observations; their count is not a count of independent humans or a verified complete event feed.",
+      "data_needed": [
+        "Event IDs, source and first availability",
+        "Duplicates/edits and provisional status",
+        "Collection coverage by interval",
+        "Then-available link and analysis timestamps"
+      ],
+      "hypothesized_mechanism": "A recorded public event can index a subsequent activity window; the alert itself does not establish sentiment or predictive value.",
+      "countermechanism": "An alert may report a price move already completed; duplicated delivery and selective collection inflate evidence, while uncollected news remains unknown.",
+      "operationalization": "Deduplicate event identity/version; emit watch/unknown/no-event-observed as distinct states, with no-event-observed permitted only under explicit coverage. Delayed or unlinked alerts cannot be backdated.",
+      "falsifier_or_invalidation": "Association disappears after pre-event trend and matched controls, complete denominator is unavailable, or apparent timeliness depends on later page collection.",
+      "status": "data_gate_for_P02_P03",
+      "profitability_verified": false
+    },
+    {
+      "id": "F13",
+      "motif_ids": [
+        "M03"
+      ],
+      "prototype_ids": [
+        "P02",
+        "P03"
+      ],
+      "source": {
+        "title": "Most followed horse racing tipster",
+        "url": "https://forum.betangel.com/viewtopic.php?t=18049",
+        "authors": [
+          "Derek27",
+          "MickeyFinn",
+          "wearthefoxhat"
+        ],
+        "selected_post_dates": [
+          "2019-01-08"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community; Euler vendor connection documented separately; other affiliations not established"
+      },
+      "participant_mental_model": "Derek27 watches broad tipster support to anticipate demand. MickeyFinn proposes entering before followers; wearthefoxhat supplies an example of a heavily tipped runner drifting.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Participant observations only; endorsement may follow existing news or price movement, and popular tips need not shorten.",
+      "our_inference": "Public tip releases can define attention-event windows, but agreement among tipsters does not supply a shortening forecast.",
+      "data_needed": [
+        "Original public release/version availability",
+        "Selection links known then",
+        "Pre-event prices/activity",
+        "Complete declared source inventory and matched controls"
+      ],
+      "hypothesized_mechanism": "A recommendation may coincide with subsequent participation; copied tips or a common public cause could also explain co-occurrence.",
+      "countermechanism": "A recommendation can follow existing movement; followers may not arrive, or contrary information/liquidity can produce a drift.",
+      "operationalization": "P02 watches subsequent activity without direction. P03 may flag explicit contradictory context only through a frozen rule, not infer that popularity guarantees value.",
+      "falsifier_or_invalidation": "No post-availability increment beyond pre-trend and controls, or selecting later popular-tip lists is required to obtain the pattern.",
+      "status": "candidate_attention_linkage_not_sentiment_vote",
+      "profitability_verified": false
+    },
+    {
+      "id": "F14",
+      "motif_ids": [
+        "M02",
+        "M03"
+      ],
+      "prototype_ids": [
+        "P02"
+      ],
+      "source": {
+        "title": "Best time to trade Pre Race",
+        "url": "https://forum.betangel.com/viewtopic.php?t=26752",
+        "authors": [
+          "cookyweb",
+          "Euler"
+        ],
+        "selected_post_dates": [
+          "2022-12-29",
+          "2022-12-30"
+        ],
+        "date_semantics": "Displayed forum calendar dates; timezone/edits not reconstructed",
+        "accessed_on": "2026-10-09",
+        "retrieval": "public_page_body_opened_by_coordinator",
+        "commercial_context": "Software-vendor-hosted community. Euler acknowledges connection to the Bet Angel team in affiliation_source; not independent vendor-performance evidence. Other affiliations not established."
+      },
+      "participant_mental_model": "Euler relates tactics and stake capacity to liquidity, volatility and money arriving after the preceding race. cookyweb experiences the same arrival as erratic reversals.",
+      "participant_model_is_verbatim": false,
+      "source_limitations": "Vendor-affiliated opinion, not a measured causal timing effect. Approaching post time and race scheduling may explain the association.",
+      "our_inference": "Compare cross-race events at matched time-to-off; increased activity and predictable price direction are separate hypotheses.",
+      "data_needed": [
+        "Preceding-race finish observable then",
+        "Target schedule/version",
+        "Quotes, unsigned matched activity and spread",
+        "Matched no-event windows"
+      ],
+      "hypothesized_mechanism": "Race completion may coincide with an activity shift, without identifying whose attention moved or which direction prices should take.",
+      "countermechanism": "Scheduled off-time proximity, meeting overlap and ordinary volume growth can generate the same timing pattern; more activity may be erratic.",
+      "operationalization": "P02 emits an activity watch once all event/link evidence is available. A later separate study matches schedule, odds and liquidity and retains reversals.",
+      "falsifier_or_invalidation": "No activity increment after schedule controls, or an effect is only present when confirmed finish times unavailable then are inserted.",
+      "status": "candidate_P02_with_regime_confounder",
+      "profitability_verified": false
+    }
+  ],
+  "implementation_report": "reports/motif-prototypes-2026-10-09.md"
+}

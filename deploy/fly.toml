@@ -4,7 +4,7 @@ kill_signal = "SIGTERM"
 kill_timeout = 60
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "../Dockerfile"
 
 [deploy]
   strategy = "rolling"

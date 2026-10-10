@@ -31,7 +31,9 @@
     "repository": "cambridgetcg/betangel-research",
     "creation_visibility_verified": "PRIVATE",
     "target_branch": "main",
-    "post_push_verification": "recorded in local outputs/collection-infra-20261010/publication.json after push"
+    "post_push_verification": "publication.json",
+    "published_implementation_commit": "924e9e10554cef64a80db55b737e2b687c5efcd8",
+    "remote_main_matched": true
   },
   "tests": {
     "passed": 84,

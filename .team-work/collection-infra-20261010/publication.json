@@ -1,0 +1,15 @@
+{
+  "verified_at": "2026-10-10T08:16:35.190865+00:00",
+  "repository": {
+    "defaultBranchRef": {
+      "name": "main"
+    },
+    "isEmpty": false,
+    "nameWithOwner": "cambridgetcg/betangel-research",
+    "url": "https://github.com/cambridgetcg/betangel-research",
+    "visibility": "PRIVATE"
+  },
+  "published_implementation_commit": "924e9e10554cef64a80db55b737e2b687c5efcd8",
+  "remote_main_matched": true,
+  "cloud_resources_provisioned": false
+}

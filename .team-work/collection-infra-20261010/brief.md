@@ -6,4 +6,4 @@ Coordinator owns architecture, CLI integration, source polling contract, reposit
 
 Acceptance: primary-source provider/infra evidence, explicit timestamps/coverage/licensing limits, workload-based costs and practical recommendation, runnable local metadata provenance starter, appropriate tests, and GitHub visibility verified PRIVATE with correct remote commit. Preserve existing prototypes/raw-data exclusions. Never upload credentials or local account data.
 
-Starting branch research/offline-edge-lab is clean at35c9c22; no remote configured. Signed-in GitHub account cambridgetcg. Research, local implementation,84-test suite, demonstrations and separate reviews complete. Private repository created; final commit/push and remote verification are the remaining publication steps.
+Starting branch research/offline-edge-lab is clean at35c9c22; no remote configured. Signed-in GitHub account cambridgetcg. Research, local implementation,84-test suite, demonstrations and separate reviews complete. Publication complete: implementation commit pushed to private main; remote commit, nonempty repository and PRIVATE visibility verified. See publication.json.

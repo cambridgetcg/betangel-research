@@ -6,4 +6,4 @@ Coordinator ran the final complete suite:84 tests passed (22 collection,2 collec
 
 Four new JSON artifacts parsed,43 local Markdown targets resolved, final code hashes matched verification. Existing E01, strategy cards, stream, motifs, microstructure and archive files remain unchanged.83 historical Git blobs received a bounded high-specificity secret-pattern scan with no matches; this is not a guarantee of absent secrets. New staged artifacts receive the same bounded check before publication.
 
-GitHub repository creation was explicitly authorized and visibility was verified PRIVATE before upload. Code/research publication will be verified against local HEAD and private default main branch after push. No cloud provisioning, paid subscriptions, live account integration or CI result is implied.
+GitHub repository creation was explicitly authorized and visibility was verified PRIVATE before upload. Code/research publication was verified against local HEAD and private default main branch after push; see publication.json. No cloud provisioning, paid subscriptions, live account integration or CI result is implied.

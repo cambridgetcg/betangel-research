@@ -2,7 +2,7 @@
 
 Author `/root/vps_research_costs`; checked 2026-10-10. Owned research outputs:
 
-- `docs/newsapi-source-research.md` — 1,043 whitespace words, public facts versus proposed architecture, exact feeds and source holds.
+- `docs/newsapi-source-research.md` — 1,069 whitespace words, public facts versus proposed architecture, exact feeds and source holds.
 - `research/news-source-candidates.json` — 11 candidates, two enabled recommendations, official source/policy registry and four bounded feed probe records.
 
 Immediate recommendations: GOV.UK equine Atom and Met Office news RSS, each hourly, metadata only. Both exact URLs returned HTTP200 and parsed as expected. GOV.UK's Atom items contain `updated` but not `published`: publication must remain unknown. Met Office has RSS `pubDate`; preserve literal title/link and attribution, skip description/content:encoded/images. These are equine-policy/health and weather context sources, not comprehensive horse-racing news.
@@ -15,13 +15,15 @@ BBC horse RSS returned200/11 items in a single bounded feasibility read, but cur
 
 Parent config `research/collector-sources.json` inspected after research completion: it correctly enables only the two recommended exact URLs at 3,600 seconds, records policy/licence URLs and attribution, separates Atom updated from publication, preserves Met Office titles/links and describes context-only coverage. This is policy/config inspection, not deployed-runtime verification.
 
+The richer clock/title contract is explicitly proposed, not all implemented: the adapter stores normalized UTC dates rather than original source-clock strings. Source-specific literal-title requirements are enforced separately; the Met Office config rejects polls flagged as transforming title text.
+
 Checks completed: JSON parsed; unique candidate IDs; policy/probe references resolved; enabled recommendation consistency and hourly intervals checked. Feed probe status/count/clock details are recorded in JSON; raw XML/article bodies were not retained by this research author. No credentials, cloud changes, scheduling or subscriptions were performed by this author; parent deployment work is separate.
 
 SHA-256:
 
 ```text
-053f7b28912c52063199d81d8fe7c7b18229f3dfc0e4a9ba319f9504239a9463  docs/newsapi-source-research.md
-90c2d63a9c604f4f8975e10fb859052e6452b52d72c08990cc122608dcecd612  research/news-source-candidates.json
+d494e0d3e50bb22ae1ce3812f9dea89aab02effc6d5aa8d9c4fb2f32b307deb8  docs/newsapi-source-research.md
+e39ff67fe17a4d33e85af234c3be124142faeb4482643c34a9d75a2c1d491ceb  research/news-source-candidates.json
 ```
 
 Collector/feed implementation review is a separate subsequent handoff and is not implied by these research checks.

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "as_of": "2026-10-10",
-  "status": "research_only_no_provisioning",
+  "status": "cost_comparison_preceded_direct_feed_deployment",
   "currency": "USD",
   "recommendation": {
     "now": "Mac + SQLite single writer and durable outbox; validate sources and collection gaps first.",
@@ -590,7 +590,7 @@
   ],
   "limitations": [
     "No benchmark, latency measurement, capacity test, restore test or availability guarantee performed.",
-    "No cloud/account access, subscriptions, deployment or source connection performed.",
+    "This comparison is a pricing/design record; actual Fly/Tigris provisioning and source collection are recorded separately in reports/direct-collection-2026-10-10.json.",
     "Collection coverage and observed publication/receipt differences do not establish true provider latency.",
     "Prices checked as-of date; Fly October1 revision supersedes stale cached estimates.",
     "Source/market-data eligibility is addressed separately in docs/data-provider-options.md."
@@ -776,5 +776,6 @@
       "supports": "Desktop software Windows requirement",
       "source_type": "official_primary"
     }
-  }
+  },
+  "actual_deployment_receipt": "reports/direct-collection-2026-10-10.json"
 }

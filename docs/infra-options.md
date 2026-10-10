@@ -1,6 +1,6 @@
 # Collection infrastructure options — 2026-10-10
 
-**建議：先 Mac + SQLite 驗證 collection；需要持續收集先搬一部 Linux worker。** Container workflow 選 Fly + persistent volume；想同一供應商處理 VM、archive、backup，可選 AWS Lightsail + S3。多個 writer、remote dashboard 或 managed Postgres 真係有需要先加 Supabase。以下係設計建議，未 provision、未連接 live feed，亦未證明任何 latency／預測優勢。
+**已採用 Fly London + SQLite volume + private Tigris，兩條 direct feeds 每小時收集。** [實際部署／備份收據](../reports/direct-collection-2026-10-10.json) 記錄觀察結果。以下保留部署前嘅方案及成本比較；AWS Lightsail + S3 係另一選擇，多個 writer、remote dashboard 或 managed Postgres 真係有需要先加 Supabase。未證明任何 latency／預測優勢。
 
 All linked official sources were accessed **2026-10-10**. Machine-readable assumptions, derivations and unresolved prices are in [infra-options.json](../research/infra-options.json).
 
@@ -45,4 +45,4 @@ Use runtime secrets, never Git or logs: Fly encrypts its app secrets and injects
 
 Record last successful receive, publication/receive clock differences, disconnect gaps, queue backlog and disk usage. Preserve raw content hashes plus provenance outside Git; test restoring the DB and raw objects before relying on backups. Collection coverage is not measured true source latency, and a London region alone proves no speed advantage.
 
-Bet Angel's desktop software requires Windows; keep that as a separate machine/licence decision from this Linux collection design. [System requirements](https://www.betangel.com/system-requirements/). No paid deployment, account access, subscription or betting execution was performed for this comparison.
+Bet Angel's desktop software requires Windows; keep that as a separate machine/licence decision from this Linux collection design. [System requirements](https://www.betangel.com/system-requirements/). The selected Fly/Tigris collection deployment is recorded separately; no Windows execution host or betting integration has been created.

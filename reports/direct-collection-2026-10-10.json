@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "checked_at": "2026-10-10T08:39:41.311706+00:00",
-  "status": "tests_passed_resources_created_deployment_pending",
+  "checked_at": "2026-10-10T08:47:00.077776+00:00",
+  "status": "deployed_collecting_initial_backup_readback_and_restore_verified",
   "code_sha256": {
     "betangel_research/collector.py": "1613332a9f01725ff5d74399adac32a39be579a4de65a852e84db99431e118d1",
     "betangel_research/feeds.py": "f55d0be4eae3889e2400afc667575da8b23611f536a003804236b926a9ba29a1",
     "scripts/backup_metadata.py": "d01827233c3a4055a2dbfbff921f13a9b3af1431f29478bed147ba96d1e76e8c",
     "Dockerfile": "a4d28fc5163b99b67841fa8d1082e7185729b3daffa95afad6c82f1d59bb8d52",
     ".dockerignore": "365bd989c757ed4b104e02cd02930b32cc6597d625193f475ac57e41c4c64729",
-    "deploy/fly.toml": "b3d249a117d41522529e835dfaab1c74b344362e2e1f34ab0bbc99f81bf1019a",
+    "deploy/fly.toml": "d9b97b5fda14aaad94c99886721f585b7d0ff3856a022857665cc452bf3ec72c",
     "research/collector-sources.json": "672484e0bdcee807a281b5a2385958e36aab9b0a82ad69c489c3f4a70a2de9d3",
     "tests/test_collector.py": "d5e3c3fbe0cf8af5446a7e68f1e6c36f2ba2ec30a37662cf0855fcf9d5253cce",
     "tests/test_feeds.py": "564098e8e348720d708a612e63351555eddee0a8dc7a0b2925eb8a4ac526e0c7",
@@ -63,7 +63,6 @@
     "restore_check": "passed_new_directory_no_live_replacement"
   },
   "provisioning": {
-    "checked_at": "2026-10-10T08:34:08.585906+00:00",
     "app": "betangel-research-collector",
     "organization": "personal",
     "region": "lhr",
@@ -81,11 +80,201 @@
       "AWS_REGION",
       "BUCKET_NAME"
     ],
-    "secrets_at_check": "staged",
-    "machine_deployed": false
+    "secrets_at_check": "deployed_to_worker_by_Fly",
+    "machine_deployed": true,
+    "initial_resources_checked_at": "2026-10-10T08:34:08.585906+00:00",
+    "latest_checked_at": "2026-10-10T08:47:00.077776+00:00"
   },
-  "deployment": null,
-  "remote_backup": null,
+  "deployment": {
+    "machines": [
+      {
+        "id": "d896d6da133398",
+        "name": "crimson-pine-6779",
+        "state": "started",
+        "region": "lhr",
+        "image_ref": {
+          "registry": "registry.fly.io",
+          "repository": "betangel-research-collector",
+          "tag": "deployment-01M4JFNWQZNP5ATF60N5ZDJKKN",
+          "digest": "sha256:c28c3a2e665bf9a413b5a6ffb8b21cd6e308a5044dd7d094cb72783f047815d9",
+          "labels": {
+            "org.opencontainers.image.revision": "fd8317e"
+          }
+        },
+        "created_at": "2026-10-10T08:43:44Z",
+        "updated_at": "2026-10-10T08:43:52Z",
+        "guest": {
+          "cpu_kind": "shared",
+          "cpus": 1,
+          "memory_mb": 1024
+        },
+        "services": [],
+        "mounts": [
+          {
+            "encrypted": true,
+            "path": "/data",
+            "size_gb": 10,
+            "volume": "vol_vxmzw289pk9w3p84",
+            "name": "collector_data"
+          }
+        ],
+        "restart": {
+          "policy": "always"
+        }
+      }
+    ],
+    "actual_runtime_check": {
+      "checked_at": "2026-10-10T08:44:49.794226+00:00",
+      "python": "3.12.15",
+      "receipts": [
+        {
+          "source_id": "govuk-equine-v1",
+          "status": "ok",
+          "received_at": "2026-10-10T08:43:54.422445Z",
+          "item_count": 20,
+          "accepted_count": 20,
+          "quarantined_count": 0
+        },
+        {
+          "source_id": "metoffice-news-v1",
+          "status": "ok",
+          "received_at": "2026-10-10T08:43:54.705666Z",
+          "item_count": 1,
+          "accepted_count": 1,
+          "quarantined_count": 0
+        }
+      ],
+      "versions": 21,
+      "integrity_check": "ok",
+      "poll_audit": [
+        {
+          "request_started_at": "2026-10-10T08:43:53.143950Z",
+          "received_at": "2026-10-10T08:43:54.422445Z",
+          "normalization_completed_at": "2026-10-10T08:43:54.428504Z",
+          "status": "ok",
+          "outcome": "ok",
+          "http_status": 200,
+          "headers": {
+            "content-length": "12749",
+            "content-type": "application/atom+xml; charset=utf-8",
+            "etag": "W/\"6dc103038b1154bd722604aecae06465\"",
+            "date": "Sat, 10 Oct 2026 08:43:54 GMT"
+          },
+          "parser_error_count": 0,
+          "flags": [
+            "publication_unknown",
+            "title_normalized"
+          ],
+          "format": "atom",
+          "parser_version": "public-feeds-v1",
+          "response_bytes": 12749,
+          "payload_sha256": "6dc103038b1154bd722604aecae064651166f98ca3fa041a41f26bc8213082de",
+          "receipt_id": "3be68ab4f3df7c42ed9fdc608b593a41e93e11f0d92052b409dffd2ec2500d8a",
+          "source_id": "govuk-equine-v1",
+          "item_count": 20,
+          "accepted_count": 20,
+          "quarantined_count": 0,
+          "new_versions": 20,
+          "idempotent_replay": false,
+          "coverage": "response_metadata_only_no_absence_inference",
+          "partial_parse": false,
+          "next_due": "2026-10-10T09:43:59.421952+00:00",
+          "config_sha256": "a038f18a97a012a97522a7dd0c9011d479d380bfeb9d3145327bf5845523d509"
+        },
+        {
+          "request_started_at": "2026-10-10T08:43:54.438792Z",
+          "received_at": "2026-10-10T08:43:54.705666Z",
+          "normalization_completed_at": "2026-10-10T08:43:54.706461Z",
+          "status": "ok",
+          "outcome": "ok",
+          "http_status": 200,
+          "headers": {
+            "content-type": "application/rss+xml; charset=utf-8",
+            "date": "Sat, 10 Oct 2026 08:43:54 GMT",
+            "content-length": "6268"
+          },
+          "parser_error_count": 0,
+          "flags": [],
+          "format": "rss2",
+          "parser_version": "public-feeds-v1",
+          "response_bytes": 6268,
+          "payload_sha256": "4c5c7809798358e4c81475cc625f06a0b6b79d2ee4b44a46bfaad35d0231a557",
+          "receipt_id": "f39b8b48a040d1eaec1cba0ab844a67f3ee6584beddf09d4201fbc4800c397f1",
+          "source_id": "metoffice-news-v1",
+          "item_count": 1,
+          "accepted_count": 1,
+          "quarantined_count": 0,
+          "new_versions": 1,
+          "idempotent_replay": false,
+          "coverage": "response_metadata_only_no_absence_inference",
+          "partial_parse": false,
+          "next_due": "2026-10-10T09:44:06.613425+00:00",
+          "config_sha256": "99f85d120e53829e7cbdd36529be9c4a1e08a12b208b128935df9e1da6a2a639"
+        }
+      ],
+      "sha256": {
+        "betangel_research/collector.py": "1613332a9f01725ff5d74399adac32a39be579a4de65a852e84db99431e118d1",
+        "betangel_research/feeds.py": "f55d0be4eae3889e2400afc667575da8b23611f536a003804236b926a9ba29a1",
+        "betangel_research/collection.py": "a56d2a61b701173c0dc9ba808e3b56ac3348524c2bc569ad0cd46eba59515372",
+        "scripts/backup_metadata.py": "d01827233c3a4055a2dbfbff921f13a9b3af1431f29478bed147ba96d1e76e8c",
+        "research/collector-sources.json": "672484e0bdcee807a281b5a2385958e36aab9b0a82ad69c489c3f4a70a2de9d3"
+      }
+    },
+    "restart_check": {
+      "checked_at": "2026-10-10T08:46:04.236600+00:00",
+      "scheduler": {
+        "status": "local_scheduler_state_not_health_guarantee",
+        "sources": [
+          {
+            "source_id": "govuk-equine-v1",
+            "next_due": 1791625439.4219522,
+            "failures": 0,
+            "last_success": "2026-10-10T08:43:54.422445Z",
+            "last_attempt": "2026-10-10T08:43:54.422445Z",
+            "in_flight": 0,
+            "pending_receipt": 0
+          },
+          {
+            "source_id": "metoffice-news-v1",
+            "next_due": 1791625446.6134253,
+            "failures": 0,
+            "last_success": "2026-10-10T08:43:54.705666Z",
+            "last_attempt": "2026-10-10T08:43:54.705666Z",
+            "in_flight": 0,
+            "pending_receipt": 0
+          }
+        ]
+      },
+      "counts": {
+        "news_receipts": 2,
+        "news_versions": 21
+      }
+    },
+    "image_code_hashes_match_local": true,
+    "ingress_services": 0,
+    "restart_result": "same_volume_receipts_and_due_times_preserved_no_early_repoll",
+    "observed_uptime_scope": "initial polls and one machine restart only; not a 24h availability test",
+    "initial_deploy_path_correction": "Fly resolves Dockerfile relative to deploy/fly.toml; ../Dockerfile built successfully",
+    "post_restart_heartbeat": "2026-10-10T08:45:35.284160Z"
+  },
+  "remote_backup": {
+    "upload": {
+      "bucket": "betangel-research-archive",
+      "bytes": 9682,
+      "key": "metadata-backups/56172cb9a2e361f51ae6e7b0cd91427971ad19398638048ff7d8f9134d487252/bundle.tar.gz",
+      "sha256": "56172cb9a2e361f51ae6e7b0cd91427971ad19398638048ff7d8f9134d487252",
+      "status": "remote_archive_readback_verified",
+      "verified_at": "2026-10-10T08:44:25.212378Z"
+    },
+    "anonymous_object_head_status": 403,
+    "restore_rehearsal": {
+      "status": "passed_on_deployed_python3.12",
+      "databases": 2,
+      "live_state_replaced": false,
+      "method": "extract same SHA256 archive into fresh /tmp directory; database hashes and integrity checked"
+    },
+    "recurring_schedule_enabled": false
+  },
   "limits": [
     "No complete horse-racing news coverage",
     "No paid NewsAPI account or measured NewsAPI latency",
@@ -95,5 +284,10 @@
     "Backup is manual; no recurring object archive schedule or lifecycle configured",
     "State cap1GB stops collection; no automated retention deletion"
   ],
-  "fly_config_validation": "flyctl config validate --config deploy/fly.toml --strict: exit0; static config only"
+  "fly_config_validation": "flyctl config validate --config deploy/fly.toml --strict: exit0; static config only",
+  "source_commit": "fd8317e591c24b70c37fd3d5116f81e060324533",
+  "review": {
+    "collector_feed": "READY, separate reviewer plus six offline adversarial checks",
+    "deployment_backup": "READY static review; subsequent Dockerfile path correction verified by actual cloud build"
+  }
 }

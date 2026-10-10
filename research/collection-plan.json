@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "as_of": "2026-10-10",
-  "status": "direct_feed_worker_implemented_cloud_resources_created_deploy_pending",
+  "status": "direct_feed_worker_running_on_fly_lhr",
   "live_collectors_enabled": true,
   "cloud_resources_provisioned": true,
   "source_lanes": [
@@ -89,5 +89,6 @@
     "external_source_staleness_alerts",
     "complete_racing_news_coverage"
   ],
-  "configured_sources": "research/collector-sources.json"
+  "configured_sources": "research/collector-sources.json",
+  "deployment_receipt": "reports/direct-collection-2026-10-10.json"
 }

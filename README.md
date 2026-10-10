@@ -1,6 +1,6 @@
 # Bet Angel research
 
-Research snapshot: **10 October 2026**. [Private GitHub repo](https://github.com/cambridgetcg/betangel-research)；離線 framework、direct RSS/Atom collector 同 persistent scheduler 已實作，未證明有可重複嘅盈利策略。
+Research snapshot: **10 October 2026**. [Private GitHub repo](https://github.com/cambridgetcg/betangel-research)；direct RSS/Atom collector 已部署 Fly London，每小時收集兩條 context feeds，SQLite + private Tigris 初次備份已驗證。離線 framework 可運行，未證明有可重複嘅盈利策略。
 
 **初步結論：搵到具名、長期嘅盈利自述，但未搵到獨立審核嘅典型用戶回報。** 買 Bet Angel 可以取得交易工具；工具本身唔足以證明有 edge。公開成功例子、失敗討論同模擬研究要分開睇。
 

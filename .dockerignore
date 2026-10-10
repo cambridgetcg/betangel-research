@@ -1,0 +1,12 @@
+# Allowlist: never send local receipts, databases, credentials or research archives.
+**
+!Dockerfile
+!betangel_research/
+!betangel_research/**
+!research/
+!research/collector-sources.json
+!scripts/
+!scripts/backup_metadata.py
+**/__pycache__
+**/*.pyc
+**/.env*

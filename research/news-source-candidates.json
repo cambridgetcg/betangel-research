@@ -1,0 +1,705 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-10",
+  "scope": "Public interface research and direct-publisher metadata candidates; recommendation is distinct from deployment.",
+  "status": "research_complete_no_scheduler_enabled_by_author",
+  "recommended_source_ids": [
+    "govuk_equine",
+    "metoffice_news"
+  ],
+  "recommendation_limit": "Both are context sources; there is no enabled complete horse-racing news source set.",
+  "newsapi_public_findings": {
+    "sources_catalogue_scope": "Subset for /v2/top-headlines only; not complete /v2/everything coverage",
+    "documented_examples": [
+      {
+        "name": "BBC News",
+        "source_id": "bbc-news",
+        "evidence": "newsapi_started"
+      },
+      {
+        "name": "TechCrunch",
+        "source_id": "techcrunch",
+        "evidence": "newsapi_home"
+      },
+      {
+        "name": "Wall Street Journal",
+        "domain": "wsj.com",
+        "source_id": null,
+        "evidence": "newsapi_home"
+      }
+    ],
+    "racing_publisher_membership_verified": false,
+    "country_documentation_discrepancy": "Top Headlines reference lists us; UK landing page demonstrates gb. Runtime behaviour not authenticated/tested.",
+    "known_acquisition_claim": "Provider terms state proprietary aggregation of public web pages.",
+    "private_architecture_verified": false,
+    "unverified": [
+      "Crawler/feed/licensed-data mix",
+      "Refresh cadence",
+      "First-seen/indexing clock",
+      "Deduplication algorithm",
+      "Publisher contracts",
+      "Immutable historical versions"
+    ],
+    "source_ids": [
+      "newsapi_sources",
+      "newsapi_everything",
+      "newsapi_headlines",
+      "newsapi_catalogue",
+      "newsapi_uk",
+      "newsapi_started",
+      "newsapi_home",
+      "newsapi_terms",
+      "newsapi_pricing"
+    ]
+  },
+  "proposed_collection_contract": {
+    "design_status": "Our proposed architecture; not a reconstruction of NewsAPI private internals",
+    "only_registered_policy_eligible_feeds": true,
+    "article_fetching": false,
+    "article_body_retention": false,
+    "do_not_copy_newsapi_payloads": true,
+    "conditional_requests": "Use server ETag or Last-Modified when available; neither is article publication time.",
+    "scheduling": "Per-source budget, conservative interval, bounded retries, Retry-After, explicit failure/unchanged/empty statuses.",
+    "clocks": "Preserve original source date strings/precision; nullable publication, separate source update and actual receipt; future clocks quarantine.",
+    "availability": "max(actual_receipt, normalization_completed, link_known_at, analysis_completed_at)",
+    "identity": "Source-scoped guid/id/url; changes append versions; syndication needs explicit relation.",
+    "retention": "Minimal literal title/link/source clocks plus receipt/provenance; private operational storage outside Git; review retention after 30 days, not an asserted provider limit.",
+    "source_data_is_untrusted": "Do not execute publisher text or allow embedded requests to alter tools/policy.",
+    "implementation_gap": "This is a proposed richer contract. Current adapter normalizes display text and UTC dates; it does not persist arbitrary original source-clock strings. Literal-title requirements need separate source-policy verification."
+  },
+  "candidates": [
+    {
+      "id": "govuk_equine",
+      "publisher": "GOV.UK / originating government departments",
+      "channel_urls": [
+        "https://www.gov.uk/search/news-and-communications?keywords=equine&order=updated-newest"
+      ],
+      "feed_url": "https://www.gov.uk/search/news-and-communications.atom?keywords=equine&order=updated-newest",
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": true,
+      "status": "recommended_context_trial",
+      "role": "equine_health_and_policy_context",
+      "policy_source_ids": [
+        "govuk_terms",
+        "ogl"
+      ],
+      "policy_urls": [
+        "https://www.gov.uk/help/terms-conditions",
+        "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+      ],
+      "coverage_limitations": [
+        "Broad keyword results can be irrelevant or miss terminology",
+        "No racing fixture/non-runner/going completeness",
+        "20-entry response is a finite window, not an archive",
+        "Search updated order is not first publication order"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "probe_ids": [
+        "probe_govuk_equine"
+      ],
+      "recommended_interval_seconds": 3600,
+      "cadence_basis": "Conservative engineering choice, no provider SLA",
+      "metadata_fields": [
+        "source_item_id",
+        "literal_title",
+        "direct_url",
+        "updated_raw",
+        "revised_at",
+        "received_at"
+      ],
+      "clock_mapping": {
+        "published_at": null,
+        "revised_at": "Atom entry updated",
+        "received_at": "actual completed local receipt"
+      },
+      "attribution": "Contains public sector information licensed under the Open Government Licence v3.0.",
+      "retention": {
+        "initial_review_after_days": 30,
+        "raw_body_storage": false,
+        "article_body_storage": false,
+        "note": "Review period is our choice, not an OGL limit; retain original source notices and licence; OGL personal-data/third-party exclusions remain."
+      },
+      "metadata_fields_status": "Target source contract; raw source-date fields are not yet persisted by current adapter."
+    },
+    {
+      "id": "metoffice_news",
+      "publisher": "Met Office",
+      "channel_urls": [
+        "https://weather.metoffice.gov.uk/guides/rss"
+      ],
+      "feed_url": "https://www.metoffice.gov.uk/feed/syndication/news-rss.xml",
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": true,
+      "status": "recommended_context_trial",
+      "role": "weather_press_context",
+      "policy_source_ids": [
+        "metoffice_feeds",
+        "metoffice_terms",
+        "ogl"
+      ],
+      "policy_urls": [
+        "https://weather.metoffice.gov.uk/guides/rss",
+        "https://www.metoffice.gov.uk/policies/tandc",
+        "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+      ],
+      "coverage_limitations": [
+        "Not a racecourse-going feed",
+        "Not complete forecasts or a warning-distribution integration",
+        "One-item observed window can miss older items",
+        "Publication does not establish first delivery"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "probe_ids": [
+        "probe_metoffice_news"
+      ],
+      "recommended_interval_seconds": 3600,
+      "cadence_basis": "Conservative engineering choice, no provider SLA",
+      "metadata_fields": [
+        "guid",
+        "literal_title",
+        "direct_url",
+        "pubDate_raw",
+        "published_at",
+        "received_at"
+      ],
+      "clock_mapping": {
+        "published_at": "RSS item pubDate if valid",
+        "revised_at": null,
+        "received_at": "actual completed local receipt"
+      },
+      "preserve_literal_title_and_link": true,
+      "attribution": "Met Office; Contains public sector information licensed under the Open Government Licence v3.0.",
+      "retention": {
+        "initial_review_after_days": 30,
+        "raw_body_storage": false,
+        "article_body_storage": false,
+        "excluded_feed_fields": [
+          "description",
+          "content:encoded",
+          "images"
+        ],
+        "note": "Keep attribution and functional direct links; do not edit publisher metadata; derived fields remain separate. Observe feed discontinuation/removal notices."
+      },
+      "metadata_fields_status": "Target source contract; raw source-date fields are not yet persisted by current adapter."
+    },
+    {
+      "id": "govuk_horse_alternative",
+      "publisher": "GOV.UK",
+      "channel_urls": [
+        "https://www.gov.uk/search/news-and-communications?keywords=horse&order=updated-newest"
+      ],
+      "feed_url": "https://www.gov.uk/search/news-and-communications.atom?keywords=horse&order=updated-newest",
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_redundant_noisy_alternative",
+      "role": "broader_equine_policy_keyword",
+      "policy_source_ids": [
+        "govuk_terms",
+        "ogl"
+      ],
+      "policy_urls": [
+        "https://www.gov.uk/help/terms-conditions",
+        "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+      ],
+      "coverage_limitations": [
+        "Overlaps equine feed",
+        "Observed unrelated finance result",
+        "Not independent confirmation"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "probe_ids": [
+        "probe_govuk_horse"
+      ],
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "bha_publications",
+      "publisher": "British Horseracing Authority",
+      "channel_urls": [
+        "https://www.britishhorseracing.com/press_releases/",
+        "https://www.britishhorseracing.com/racing-updates/"
+      ],
+      "feed_url": null,
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_policy_and_feed_verification",
+      "role": "official_GB_racing_announcements",
+      "policy_source_ids": [
+        "bha_terms"
+      ],
+      "policy_urls": [
+        "https://www.britishhorseracing.com/terms-conditions/"
+      ],
+      "coverage_limitations": [
+        "Recurring research acquisition grant not verified",
+        "Commercial reuse/automated extraction restricted",
+        "No Ireland completeness",
+        "No supported feed/version latency established"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "racingpost_news",
+      "publisher": "Racing Post",
+      "channel_urls": [
+        "https://www.racingpost.com/news/"
+      ],
+      "feed_url": null,
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_policy_and_feed_verification",
+      "role": "racing_reporting",
+      "policy_source_ids": [
+        "racingpost_terms"
+      ],
+      "policy_urls": [
+        "https://help.racingpost.com/hc/en-us/articles/208996085-Terms-and-conditions"
+      ],
+      "coverage_limitations": [
+        "No supported publisher RSS verified",
+        "No collector reuse grant established",
+        "Subscription/paywall access not granted by public news listing"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "sportinglife_news",
+      "publisher": "Sporting Life",
+      "channel_urls": [
+        "https://www.sportinglife.com/racing/news"
+      ],
+      "feed_url": null,
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_explicit_capture_restriction",
+      "role": "racing_reporting",
+      "policy_source_ids": [
+        "sportinglife_terms"
+      ],
+      "policy_urls": [
+        "https://www.sportinglife.com/terms-and-conditions"
+      ],
+      "coverage_limitations": [
+        "Data capture prohibited by published terms",
+        "No recurring storage permission established"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "bbc_horse_racing",
+      "publisher": "BBC Sport",
+      "channel_urls": [
+        "https://www.bbc.co.uk/sport/horse-racing"
+      ],
+      "feed_url": "https://feeds.bbci.co.uk/sport/horse-racing/rss.xml",
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_current_feed_policy_unverified",
+      "role": "racing_reporting",
+      "policy_source_ids": [
+        "bbc_terms"
+      ],
+      "policy_urls": [
+        "https://www.bbc.co.uk/usingthebbc/terms/can-i-use-bbc-content/"
+      ],
+      "coverage_limitations": [
+        "Current feed-use terms inaccessible during review",
+        "Successful RSS read does not establish recurring research rights",
+        "BBC News example in NewsAPI docs does not prove this specific sport feed is indexed"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "probe_ids": [
+        "probe_bbc_horse"
+      ],
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "guardian_horse_racing",
+      "publisher": "Guardian",
+      "channel_urls": [
+        "https://www.theguardian.com/sport/horse-racing"
+      ],
+      "feed_url": "https://www.theguardian.com/sport/horse-racing/rss",
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_policy",
+      "role": "racing_reporting",
+      "policy_source_ids": [
+        "guardian_terms",
+        "guardian_feeds"
+      ],
+      "policy_urls": [
+        "https://www.theguardian.com/help/terms-of-service",
+        "https://www.theguardian.com/help/feeds"
+      ],
+      "coverage_limitations": [
+        "Not probed"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "atr_news",
+      "publisher": "At The Races",
+      "channel_urls": [
+        "https://www.attheraces.com/news"
+      ],
+      "feed_url": null,
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_policy_retrieval_and_feed_verification",
+      "role": "racing_reporting",
+      "policy_source_ids": [
+        "atr_terms"
+      ],
+      "policy_urls": [
+        "https://www.attheraces.com/terms-and-conditions"
+      ],
+      "coverage_limitations": [
+        "Terms web retrieval returned429; not retried",
+        "No verified feed or acquisition grant"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "jockeyclub_press",
+      "publisher": "The Jockey Club / racecourses",
+      "channel_urls": [
+        "https://www.thejockeyclub.co.uk/about-us/media-centre/press-releases/"
+      ],
+      "feed_url": null,
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_feed_and_reuse_verification",
+      "role": "original_fixture_and_course_announcements",
+      "policy_source_ids": [
+        "jockeyclub_terms",
+        "jockeyclub_press"
+      ],
+      "policy_urls": [
+        "https://www.thejockeyclub.co.uk/terms-and-conditions/",
+        "https://www.thejockeyclub.co.uk/about-us/media-centre/press-releases/"
+      ],
+      "coverage_limitations": [
+        "No supported feed or automated reuse grant verified",
+        "One racecourse operator is not all UK/Irish courses",
+        "Publication date alone does not establish exact first-announcement time"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    },
+    {
+      "id": "newsapi_org",
+      "publisher": "NewsAPI.org",
+      "channel_urls": [
+        "https://newsapi.org/docs/endpoints/everything",
+        "https://newsapi.org/docs/endpoints/sources"
+      ],
+      "feed_url": null,
+      "checked_date": "2026-10-10",
+      "enabled_recommendation": false,
+      "status": "held_key_plan_and_use_case",
+      "role": "aggregated_discovery_comparator",
+      "policy_source_ids": [
+        "newsapi_terms",
+        "newsapi_pricing"
+      ],
+      "policy_urls": [
+        "https://newsapi.org/terms",
+        "https://newsapi.org/pricing"
+      ],
+      "coverage_limitations": [
+        "Not a source for cloning a news database",
+        "Developer delay unsuitable for speed research",
+        "Horse-racing source coverage unverified"
+      ],
+      "newsapi_inclusion": "unverified",
+      "scheduled_by_this_research": false,
+      "recommended_interval_seconds": null
+    }
+  ],
+  "probes": [
+    {
+      "id": "probe_govuk_equine",
+      "url": "https://www.gov.uk/search/news-and-communications.atom?keywords=equine&order=updated-newest",
+      "requested_at": "2026-10-10T08:29:21.512827+00:00",
+      "completed_at": "2026-10-10T08:29:21.704588+00:00",
+      "http_status": 200,
+      "elapsed_seconds": 0.192,
+      "content_type": "application/atom+xml; charset=utf-8",
+      "bytes_read": 12749,
+      "entries": 20,
+      "etag": "W/\"6dc103038b1154bd722604aecae06465\"",
+      "last_modified": null,
+      "item_fields": [
+        "id",
+        "updated",
+        "link",
+        "title",
+        "summary"
+      ],
+      "published_field_present": false,
+      "raw_response_retained": false,
+      "interpretation": "Transport/XML feasible; no racing recall or per-story latency measurement."
+    },
+    {
+      "id": "probe_govuk_horse",
+      "url": "https://www.gov.uk/search/news-and-communications.atom?keywords=horse&order=updated-newest",
+      "requested_at": "2026-10-10T08:29:21.244897+00:00",
+      "completed_at": "2026-10-10T08:29:21.512717+00:00",
+      "http_status": 200,
+      "elapsed_seconds": 0.268,
+      "content_type": "application/atom+xml; charset=utf-8",
+      "bytes_read": 12756,
+      "entries": 20,
+      "etag": "W/\"69a2e31d831e6ce0e29772781d3f4ba5\"",
+      "last_modified": null,
+      "raw_response_retained": false,
+      "interpretation": "Noisier overlapping alternative; first URL concerned private finance. Not enabled recommendation."
+    },
+    {
+      "id": "probe_metoffice_news",
+      "url": "https://www.metoffice.gov.uk/feed/syndication/news-rss.xml",
+      "requested_at": "2026-10-10T08:30:29.294274+00:00",
+      "completed_at": "2026-10-10T08:30:29.398604+00:00",
+      "http_status": 200,
+      "elapsed_seconds": 0.104,
+      "content_type": "application/rss+xml; charset=utf-8",
+      "bytes_read": 6268,
+      "entries": 1,
+      "etag": null,
+      "last_modified": null,
+      "item_fields": [
+        "title",
+        "link",
+        "description",
+        "content:encoded",
+        "pubDate",
+        "author",
+        "guid"
+      ],
+      "raw_response_retained": false,
+      "interpretation": "Only title/link/id/pubDate candidates for retention. Body/description/images ignored. One item cannot establish complete coverage."
+    },
+    {
+      "id": "probe_bbc_horse",
+      "url": "https://feeds.bbci.co.uk/sport/horse-racing/rss.xml",
+      "requested_at": "2026-10-10T08:31:24.798296+00:00",
+      "completed_at": "2026-10-10T08:31:24.917705+00:00",
+      "http_status": 200,
+      "elapsed_seconds": 0.119,
+      "content_type": "text/xml; charset=utf-8",
+      "bytes_read": 9598,
+      "entries": 11,
+      "raw_response_retained": false,
+      "interpretation": "Bounded feasibility read only; policy remains held, no periodic collection recommendation."
+    }
+  ],
+  "actions_not_taken": [
+    "NewsAPI authenticated requests",
+    "Credentials or subscription creation",
+    "Cloud deployment",
+    "Scheduled polling by this author",
+    "Full article storage",
+    "GDELT retry",
+    "Paywall bypass"
+  ],
+  "sources": {
+    "newsapi_sources": {
+      "url": "https://newsapi.org/docs/endpoints/sources",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Top Headlines source subset, not complete Everything catalogue",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_everything": {
+      "url": "https://newsapi.org/docs/endpoints/everything",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Query/domain/date/pagination fields and article response semantics",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_headlines": {
+      "url": "https://newsapi.org/docs/endpoints/top-headlines",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Top Headlines; current country parameter table lists us",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_catalogue": {
+      "url": "https://newsapi.org/sources",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Public country catalogue",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_uk": {
+      "url": "https://newsapi.org/s/uk-news-api",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "UK example uses gb, inconsistent with current parameter table",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_started": {
+      "url": "https://newsapi.org/docs/get-started",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Documented BBC News bbc-news example",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_home": {
+      "url": "https://newsapi.org/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Documented TechCrunch and wsj.com domain examples",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_terms": {
+      "url": "https://newsapi.org/terms",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Public-web aggregation statement and service/data licence boundaries",
+      "retrieval_status": "read_or_official_index"
+    },
+    "newsapi_pricing": {
+      "url": "https://newsapi.org/pricing",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Developer limits, production restrictions and Business monthly display",
+      "retrieval_status": "read_or_official_index"
+    },
+    "rss_spec": {
+      "url": "https://www.rssboard.org/rss-specification",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "RSS pubDate and item semantics",
+      "retrieval_status": "read_or_official_index"
+    },
+    "atom_spec": {
+      "url": "https://www.rfc-editor.org/info/rfc4287/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Distinct Atom published and updated semantics",
+      "retrieval_status": "read_or_official_index"
+    },
+    "news_sitemap": {
+      "url": "https://developers.google.com/search/docs/crawling-indexing/sitemaps/news-sitemap",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "News sitemap publication metadata",
+      "retrieval_status": "read_or_official_index"
+    },
+    "schema_newsarticle": {
+      "url": "https://schema.org/NewsArticle",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Article publication/modification metadata",
+      "retrieval_status": "read_or_official_index"
+    },
+    "govuk_terms": {
+      "url": "https://www.gov.uk/help/terms-conditions",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "OGL content and feeds for applications",
+      "retrieval_status": "read_or_official_index"
+    },
+    "ogl": {
+      "url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Reuse with attribution and exclusions; direct public GET200",
+      "retrieval_status": "read_or_official_index"
+    },
+    "metoffice_feeds": {
+      "url": "https://weather.metoffice.gov.uk/guides/rss",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Official directory linking news RSS",
+      "retrieval_status": "read_or_official_index"
+    },
+    "metoffice_terms": {
+      "url": "https://www.metoffice.gov.uk/policies/tandc",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "RSS any-purpose use with attribution/unchanged direct links; OGL exclusions",
+      "retrieval_status": "read_or_official_index"
+    },
+    "bha_terms": {
+      "url": "https://www.britishhorseracing.com/terms-conditions/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Commercial/automated extraction restriction",
+      "retrieval_status": "read_or_official_index"
+    },
+    "racingpost_terms": {
+      "url": "https://help.racingpost.com/hc/en-us/articles/208996085-Terms-and-conditions",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Restricted material reuse; no collector grant confirmed",
+      "retrieval_status": "read_or_official_index"
+    },
+    "sportinglife_terms": {
+      "url": "https://www.sportinglife.com/terms-and-conditions",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Data capture/storage restrictions",
+      "retrieval_status": "read_or_official_index"
+    },
+    "bbc_terms": {
+      "url": "https://www.bbc.co.uk/usingthebbc/terms/can-i-use-bbc-content/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Current feed-use policy retrieval failed; no permission inference",
+      "retrieval_status": "failed"
+    },
+    "guardian_terms": {
+      "url": "https://www.theguardian.com/help/terms-of-service",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Policy hold",
+      "retrieval_status": "read_or_official_index"
+    },
+    "guardian_feeds": {
+      "url": "https://www.theguardian.com/help/feeds",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Official RSS discovery convention; not acquisition approval",
+      "retrieval_status": "read_or_official_index"
+    },
+    "atr_terms": {
+      "url": "https://www.attheraces.com/terms-and-conditions",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Web reader HTTP429; policy text not verified",
+      "retrieval_status": "failed"
+    },
+    "jockeyclub_terms": {
+      "url": "https://www.thejockeyclub.co.uk/terms-and-conditions/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "No automated collection grant verified",
+      "retrieval_status": "read_or_official_index"
+    },
+    "jockeyclub_press": {
+      "url": "https://www.thejockeyclub.co.uk/about-us/media-centre/press-releases/",
+      "accessed": "2026-10-10",
+      "source_type": "official_primary",
+      "supports": "Official fixture statements/publication channel",
+      "retrieval_status": "read_or_official_index"
+    }
+  }
+}

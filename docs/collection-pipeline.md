@@ -1,6 +1,6 @@
 # Information collection pipeline
 
-As of **10 October 2026**. [Provider research](data-provider-options.md) and [infrastructure choices](infra-options.md) support this design. [Machine-readable plan](../research/collection-plan.json) records what is proposed versus running. The current implementation is a local metadata receipt/version store; cloud services, scheduled API adapters, entity resolution and live semantic inference have not been deployed.
+As of **10 October 2026**. [Provider research](data-provider-options.md) and [infrastructure choices](infra-options.md) support this design. The metadata store now has a direct RSS/Atom adapter and restart-safe scheduler. The [source investigation](newsapi-source-research.md), [enabled source registry](../research/collector-sources.json), [deployment guide](collector-deployment.md) and [setup receipt](../reports/direct-collection-2026-10-10.json) distinguish actual collection/deployment from future work. Entity resolution and live semantic inference remain unimplemented.
 
 ## Collect four different kinds of evidence
 
@@ -28,7 +28,7 @@ flowchart LR
     G --> H[Later outcomes and evaluation]
 ```
 
-**Receipt before interpretation.** The collector records request start, completion/receipt, response status, query/window/page and parser version. A timeout, 429, error or exhausted page cap is a coverage limitation. A successful empty response means this request returned nothing; it never proves no relevant news exists. Every source has its own request budget and last-success marker. Recovery uses bounded backoff and `Retry-After` when supplied, overlapping time windows, idempotency and explicit gap markers. These network controls are a production design, not implemented by the local store.
+**Receipt before interpretation.** The collector records request start, network completion, normalization completion, HTTP status, safe response headers, response hash, parser version and skipped-entry flags. A timeout, 429, error or feed cap is a coverage limitation. A successful empty response means this request returned nothing; it never proves no relevant news exists. Source cadence, last success, conditional headers, exponential backoff, positive jitter and `Retry-After` persist across restarts. RSS/Atom feeds expose a current bounded window: pagination, historical completeness and overlapping query windows are not implemented.
 
 **Immutable versions, separate repeats.** Identity is scoped to the source: provider article ID where present, otherwise the exact supplied URL. Changed metadata creates another version; an identical receipt retry creates no extra event. The same story syndicated by another outlet remains a separate source observation until an explicit story-cluster relation exists. Do not aggressively strip URL parameters, merge horse names or treat ten copies of a press release as ten independent signals.
 
@@ -69,13 +69,32 @@ python3 -m betangel_research collect-demo \
   --db data/private/news-demo.sqlite
 ```
 
-Run it twice to inspect idempotent receipt replay. The CLI explicitly accepts synthetic fixtures only. A future real collector can call `configure_sources` and `ingest_metadata` with its actual recorded receipt clocks; this module labels those clocks caller-supplied, not independently verified. The current schema does not yet persist every proposed production field above, such as query pagination, provider first-seen, entity links or normalization completion.
+Run it twice to inspect idempotent receipt replay. This demo command explicitly accepts synthetic fixtures only. The separate [collector](../betangel_research/collector.py) calls the same store with actual recorded receipt clocks; the store still labels those clocks caller-supplied, not independently verified. `scheduler.sqlite` preserves normalization completion and HTTP/parse audit fields alongside `metadata.sqlite`; provider first-seen, pagination and entity links remain absent.
+
+## Direct-source worker
+
+```sh
+python3 -m betangel_research.collector --once
+python3 -m betangel_research.collector --status
+# Run continuously in the foreground; stop with Ctrl-C:
+python3 -m betangel_research.collector
+```
+
+The checked-in registry enables GOV.UK equine news and Met Office news hourly. They provide government/health and weather press context, not comprehensive racing news, live racecards or course going. Attribution and policy URLs are retained in source registration; backup manifests also identify the configuration hash. Article links and metadata only are stored; the response body is discarded after bounded parsing.
+
+One process owns the state directory. Before fetching it saves a cadence guard; after parsing it durably saves a pending receipt. Metadata commits before the scheduler acknowledges that receipt. If interrupted between commits, restart replays the exact receipt without duplicating versions. An interruption before durable response capture leaves a coverage-gap flag on the next attempt; responses never received cannot be recovered. `.snapshot.lock` coordinates a collector tick with consistent two-database backups. Both databases must be restored together.
+
+Successful full parses update validators; partial parses and quarantined timestamps clear them so a later complete response can be retried. An unsolicited 304 is recorded as an error. Sources resolve only allowlisted HTTPS hosts to public IP addresses, pin that address with hostname-verified TLS, and refuse redirects/compression. XML declarations with DTD/entities and oversized/deep payloads are rejected. These restrictions can reject otherwise legitimate feeds; they are visible collection failures.
+
+Original date strings are not retained; parsed source times are normalized to UTC. Met Office polls requiring title transformation are rejected because that source requires unchanged content. An unrepresentably large Retry-After pauses that source at the supported calendar ceiling with an explicit flag; it does not poison receipt recovery.
+
+The 1GB state cap stops collection without deleting evidence. It is checked before each tick and may be exceeded by that final bounded tick. No automatic article retention/deletion or unbounded cloud archive schedule is enabled. A source requiring deletion or a different storage policy needs a corresponding implementation before activation. Machine restarts and local heartbeat logs are not an external alert service; monitor source last-success independently before relying on availability.
 
 ## Infra boundaries and first experiment
 
 Start with this Mac for parser and fixture work. For 24/7 collection, use one persistent Linux worker close to the data/database region. A small Fly Machine or AWS Lightsail instance can perform this role; platform-specific prices and assumptions are in the [infra comparison](infra-options.md). Supabase is a candidate for managed Postgres and a later dashboard, not a requirement for initial single-writer SQLite work. Keep exchange stream chunks in compressed object storage where permitted; keep receipts, identities, extracted features and experiment indices in the database.
 
-Separate a persistent stream worker from bounded scheduled pollers. Supabase Edge Functions have finite wall-clock and CPU limits; they cannot be treated as an unrestricted daemon. [Official limits](https://supabase.com/docs/guides/functions/limits). A later Bet Angel execution bridge needs its own supported Windows host; the proposed Python/Linux collector is separate. No Windows host or cloud resources have been created.
+Separate a persistent stream worker from bounded scheduled pollers. Supabase Edge Functions have finite wall-clock and CPU limits; they cannot be treated as an unrestricted daemon. [Official limits](https://supabase.com/docs/guides/functions/limits). A later Bet Angel execution bridge needs its own supported Windows host. The Linux feed collector has dedicated Fly/Tigris resources; see the setup receipt for deployed machine and backup verification. No Windows host has been created.
 
 The next acquisition experiment should fix a small consecutive meeting/date window and approved source list before observing outcomes. Measure source coverage, 429/error frequency, publication-to-receipt lag where publication is trustworthy, revisions, missing links, duplicate story clusters and analysis completion latency. Include empty/failed polls and source outages. Compare a mechanical metadata/coverage gate with semantic analysis at equal availability and delay; greater collection volume is not by itself an edge.
 

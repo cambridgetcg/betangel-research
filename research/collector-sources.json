@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "max_state_bytes": 1000000000,
+  "sources": [
+    {
+      "source_id": "govuk-equine-v1",
+      "enabled": true,
+      "url": "https://www.gov.uk/search/news-and-communications.atom?keywords=equine&order=updated-newest",
+      "allowed_hosts": ["www.gov.uk"],
+      "poll_interval_seconds": 3600,
+      "policy_status": "permitted",
+      "policy_url": "https://www.gov.uk/help/terms-conditions",
+      "licence_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+      "policy_checked_at": "2026-10-10",
+      "attribution": "Contains public sector information licensed under the Open Government Licence v3.0. Source: GOV.UK; linked original publishers retained per item.",
+      "scope": "Equine health and government policy context; keyword search can contain irrelevant results and does not cover racing news comprehensively.",
+      "retention": "Metadata only within 1GB deployment cap; no article bodies or raw XML retained. OGL exclusions still apply; no endorsement implied.",
+      "publication_mapping": "Atom published -> published_at if present; updated -> revised_at. Never infer publication from updated."
+    },
+    {
+      "source_id": "metoffice-news-v1",
+      "enabled": true,
+      "require_unmodified_title": true,
+      "url": "https://www.metoffice.gov.uk/feed/syndication/news-rss.xml",
+      "allowed_hosts": ["www.metoffice.gov.uk"],
+      "poll_interval_seconds": 3600,
+      "policy_status": "permitted",
+      "policy_url": "https://www.metoffice.gov.uk/policies/tandc",
+      "licence_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+      "policy_checked_at": "2026-10-10",
+      "attribution": "Source: Met Office. Contains public sector information licensed under the Open Government Licence v3.0. Original article links retained; no endorsement implied.",
+      "scope": "Weather press context only; not location-specific forecast vintages or racecourse going.",
+      "retention": "Metadata only within 1GB deployment cap; original titles and links preserved; no article bodies, images or raw XML retained.",
+      "publication_mapping": "RSS pubDate -> published_at; absent dates remain unknown."
+    }
+  ]
+}

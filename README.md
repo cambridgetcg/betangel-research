@@ -1,12 +1,15 @@
 # Bet Angel research
 
-Research snapshot: **10 October 2026**. [Private GitHub repo](https://github.com/cambridgetcg/betangel-research)；離線 framework 同本地 metadata collection starter 已可運行，未證明有可重複嘅盈利策略。
+Research snapshot: **10 October 2026**. [Private GitHub repo](https://github.com/cambridgetcg/betangel-research)；離線 framework、direct RSS/Atom collector 同 persistent scheduler 已實作，未證明有可重複嘅盈利策略。
 
 **初步結論：搵到具名、長期嘅盈利自述，但未搵到獨立審核嘅典型用戶回報。** 買 Bet Angel 可以取得交易工具；工具本身唔足以證明有 edge。公開成功例子、失敗討論同模擬研究要分開睇。
 
 ## Start here
 
 - [Collection pipeline：receipt、版本、連結與情境分析](docs/collection-pipeline.md)
+- [NewsAPI 公開架構、publisher sources 同發佈時鐘](docs/newsapi-source-research.md)
+- [Collector 部署、備份、還原同操作](docs/collector-deployment.md)
+- [今次實際收集／cloud setup receipt](reports/direct-collection-2026-10-10.json)
 - [News／racing data API 選擇及已確認限制](docs/data-provider-options.md)
 - [AWS／Supabase／Fly 分工及成本模型](docs/infra-options.md)
 - [Collection 工程檢查與實際 API probe](reports/collection-infra-2026-10-10.md)
@@ -71,7 +74,16 @@ python3 -m betangel_research collect-demo \
   --db data/private/news-demo.sqlite
 ```
 
-示範資料全部 synthetic。再跑同一命令會辨認相同 receipts，唔會重複新增版本。保存 publication／receipt／revision clocks，分開 empty success、failure、unchanged，同埋 quarantine 未來時間嘅 metadata。Database 同 raw data 唔入 Git。現時未有 scheduled API adapters、cloud deployment 或 live LLM；[pipeline 文件](docs/collection-pipeline.md) 清楚列出已實作同待完成部分。
+示範資料全部 synthetic。再跑同一命令會辨認相同 receipts，唔會重複新增版本。保存 publication／receipt／revision clocks，分開 empty success、failure、unchanged，同埋 quarantine 未來時間嘅 metadata。Database 同 raw data 唔入 Git。
+
+真實 direct-feed collection 用另一個 command：
+
+```sh
+python3 -m betangel_research.collector --once
+python3 -m betangel_research.collector --status
+```
+
+已配置 GOV.UK equine 同 Met Office news 每小時收集；`--once` 同樣遵守已保存嘅排程，唔會強制重複請求。省略 `--once` 會持續運行。呢兩條係健康／政策及天氣新聞 context，唔係完整賽馬新聞。未有 entity linking 或 live LLM；[pipeline 文件](docs/collection-pipeline.md) 列出邊界。
 
 ## Existing local pilot
 

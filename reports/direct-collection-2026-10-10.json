@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-10-10T08:39:41.311706+00:00",
+  "status": "tests_passed_resources_created_deployment_pending",
+  "code_sha256": {
+    "betangel_research/collector.py": "1613332a9f01725ff5d74399adac32a39be579a4de65a852e84db99431e118d1",
+    "betangel_research/feeds.py": "f55d0be4eae3889e2400afc667575da8b23611f536a003804236b926a9ba29a1",
+    "scripts/backup_metadata.py": "d01827233c3a4055a2dbfbff921f13a9b3af1431f29478bed147ba96d1e76e8c",
+    "Dockerfile": "a4d28fc5163b99b67841fa8d1082e7185729b3daffa95afad6c82f1d59bb8d52",
+    ".dockerignore": "365bd989c757ed4b104e02cd02930b32cc6597d625193f475ac57e41c4c64729",
+    "deploy/fly.toml": "b3d249a117d41522529e835dfaab1c74b344362e2e1f34ab0bbc99f81bf1019a",
+    "research/collector-sources.json": "672484e0bdcee807a281b5a2385958e36aab9b0a82ad69c489c3f4a70a2de9d3",
+    "tests/test_collector.py": "d5e3c3fbe0cf8af5446a7e68f1e6c36f2ba2ec30a37662cf0855fcf9d5253cce",
+    "tests/test_feeds.py": "564098e8e348720d708a612e63351555eddee0a8dc7a0b2925eb8a4ac526e0c7",
+    "tests/test_backup_metadata.py": "87487fd3367d6eb1550271a1542e29b2714be4cdceffe49084c0cafdcd40d571"
+  },
+  "tests": {
+    "command": "/opt/homebrew/bin/python3 -m unittest discover -s tests -v",
+    "passed": 142,
+    "log_sha256": "8cbe9ac66998fc74432b4a4b66f8a30457019a68268b0436687e8fa8c34424b0"
+  },
+  "local_probe": {
+    "phase": "before_review_fixes",
+    "source_ids": [
+      "govuk-equine-v1",
+      "metoffice-news-v1"
+    ],
+    "http_statuses": [
+      200,
+      200
+    ],
+    "accepted_items": [
+      20,
+      1
+    ],
+    "new_versions": 21,
+    "raw_body_retained": false,
+    "last_receipt": "2026-10-10T08:34:14.176522Z",
+    "limits": "Old source publications first observed today; not fresh racing events or measured trading edge.",
+    "source_time_ranges": [
+      {
+        "source_id": "govuk-equine-v1",
+        "versions": 20,
+        "min_publication": null,
+        "max_publication": null,
+        "min_revision": "2023-02-06T10:30:11.000000Z",
+        "max_revision": "2026-09-24T09:00:07.000000Z"
+      },
+      {
+        "source_id": "metoffice-news-v1",
+        "versions": 1,
+        "min_publication": "2026-10-09T11:43:55.000000Z",
+        "max_publication": "2026-10-09T11:43:55.000000Z",
+        "min_revision": null,
+        "max_revision": null
+      }
+    ]
+  },
+  "local_backup": {
+    "databases": 2,
+    "integrity_check": "ok",
+    "archive_sha256": "0ab35486c075387d7f2bd8a5ee87f2a405b0f0beb0a601de641a327284deefed",
+    "restore_check": "passed_new_directory_no_live_replacement"
+  },
+  "provisioning": {
+    "checked_at": "2026-10-10T08:34:08.585906+00:00",
+    "app": "betangel-research-collector",
+    "organization": "personal",
+    "region": "lhr",
+    "volume_id": "vol_vxmzw289pk9w3p84",
+    "volume_gb": 10,
+    "snapshots_enabled": true,
+    "snapshot_retention_days": 5,
+    "bucket": "betangel-research-archive",
+    "bucket_create_public_flag": false,
+    "tigris_create_exit": 0,
+    "secret_names_verified": [
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_ENDPOINT_URL_S3",
+      "AWS_REGION",
+      "BUCKET_NAME"
+    ],
+    "secrets_at_check": "staged",
+    "machine_deployed": false
+  },
+  "deployment": null,
+  "remote_backup": null,
+  "limits": [
+    "No complete horse-racing news coverage",
+    "No paid NewsAPI account or measured NewsAPI latency",
+    "No race/horse entity linking or LLM inference",
+    "No betting-account integration",
+    "Single worker and volume; no HA",
+    "Backup is manual; no recurring object archive schedule or lifecycle configured",
+    "State cap1GB stops collection; no automated retention deletion"
+  ],
+  "fly_config_validation": "flyctl config validate --config deploy/fly.toml --strict: exit0; static config only"
+}

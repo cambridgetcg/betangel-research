@@ -1,0 +1,36 @@
+app = "betangel-research-collector"
+primary_region = "lhr"
+kill_signal = "SIGTERM"
+kill_timeout = 60
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"
+  max_unavailable = 1
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[processes]
+  worker = "python3 -m betangel_research.collector --config /app/research/collector-sources.json --state-dir /data"
+
+[mounts]
+  source = "collector_data"
+  destination = "/data"
+  processes = ["worker"]
+  initial_size = "10gb"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"
+  processes = ["worker"]
+
+[[restart]]
+  policy = "always"
+  processes = ["worker"]
+
+# No services/http_service/ingress. Deploy with --ha=false, then explicitly set
+# `fly scale count worker=1`; machine count is not a fly.toml setting.

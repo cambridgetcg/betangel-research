@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "as_of": "2026-10-10",
-  "status": "proposed_collection_plan_not_running",
-  "live_collectors_enabled": false,
-  "cloud_resources_provisioned": false,
+  "status": "direct_feed_worker_implemented_cloud_resources_created_deploy_pending",
+  "live_collectors_enabled": true,
+  "cloud_resources_provisioned": true,
   "source_lanes": [
     {
       "id": "race_reference",
@@ -22,9 +22,10 @@
     {
       "id": "news_discovery",
       "purpose": "Discover linked article metadata; not verified event facts or complete racing coverage",
-      "candidate": "GDELT DOC for bounded feasibility; licensed news provider only after coverage measurement",
+      "candidate": "Direct GOV.UK equine Atom and Met Office news RSS",
       "proposed_initial_poll_interval_seconds": 900,
-      "gate": "Not enabled; honor provider limits/Retry-After, measure missingness, cap exhaustion and actual collection lag"
+      "gate": "Enabled context feeds only; racing-specific publisher adapters remain held pending suitable access and source policy",
+      "poll_interval_seconds": 3600
     },
     {
       "id": "conditions",
@@ -53,8 +54,40 @@
     "entity_links": "explicit source/race/market/selection IDs, link_known_at and version; ambiguous names remain unlinked",
     "analysis": "evidence-bounded facts, alternative explanation, model/prompt version, analysis_completed_at, uncertainty and expiry",
     "decision_availability": "max(received_at, normalization_completed_at, link_known_at, analysis_completed_at)",
-    "monitoring": ["last_success", "429/5xx/errors", "source_publication_lag_when_known", "queue_age", "unlinked_fraction", "revision_rate", "quota_spend", "clock_drift"]
+    "monitoring": [
+      "last_success",
+      "429/5xx/errors",
+      "source_publication_lag_when_known",
+      "queue_age",
+      "unlinked_fraction",
+      "revision_rate",
+      "quota_spend",
+      "clock_drift"
+    ]
   },
-  "implemented_today": ["local_metadata_receipts", "immutable_metadata_versions", "source_registration", "synthetic_demo"],
-  "not_implemented": ["scheduled_network_adapters", "complete_pagination", "cloud_queue", "object_store_writer", "entity_resolution", "live_semantic_inference", "P03_context_bridge", "orders"]
+  "implemented_today": [
+    "local_metadata_receipts",
+    "immutable_metadata_versions",
+    "source_registration",
+    "synthetic_demo",
+    "bounded_rss_atom_network_adapter",
+    "persistent_conditional_poll_scheduler",
+    "http_parse_audit",
+    "crash_receipt_recovery",
+    "source_policy_registry",
+    "manual_verified_sqlite_backups",
+    "optional_tigris_upload_readback"
+  ],
+  "not_implemented": [
+    "complete_pagination",
+    "cloud_queue",
+    "entity_resolution",
+    "live_semantic_inference",
+    "P03_context_bridge",
+    "orders",
+    "scheduled_object_backups",
+    "external_source_staleness_alerts",
+    "complete_racing_news_coverage"
+  ],
+  "configured_sources": "research/collector-sources.json"
 }

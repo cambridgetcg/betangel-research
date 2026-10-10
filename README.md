@@ -1,11 +1,15 @@
 # Bet Angel research
 
-Research snapshot: **9 October 2026**. 本地研究 repo；離線 framework 已可運行，未證明有可重複嘅盈利策略。
+Research snapshot: **10 October 2026**. [Private GitHub repo](https://github.com/cambridgetcg/betangel-research)；離線 framework 同本地 metadata collection starter 已可運行，未證明有可重複嘅盈利策略。
 
 **初步結論：搵到具名、長期嘅盈利自述，但未搵到獨立審核嘅典型用戶回報。** 買 Bet Angel 可以取得交易工具；工具本身唔足以證明有 edge。公開成功例子、失敗討論同模擬研究要分開睇。
 
 ## Start here
 
+- [Collection pipeline：receipt、版本、連結與情境分析](docs/collection-pipeline.md)
+- [News／racing data API 選擇及已確認限制](docs/data-provider-options.md)
+- [AWS／Supabase／Fly 分工及成本模型](docs/infra-options.md)
+- [Collection 工程檢查與實際 API probe](reports/collection-infra-2026-10-10.md)
 - [Edge 開發框架：資料量、速度、連結點樣驗證](docs/edge-framework.md)
 - [Hermes／Astra 研究、獨立覆核同下一個 E01 experiment](reports/hermes-edge-2026-10-09.md)
 - [論壇交易者點樣諗：思路、反例同可測試假說](docs/forum-mindsets.md)
@@ -60,6 +64,15 @@ flowchart LR
 
 現時完成前四步嘅工程版本；後兩步需要更廣、未睇過嘅資料同成交模型。[四張 strategy cards](research/strategy-cards.json) 列出每個假說、反證方法同晉級條件。
 
+## Run the collection receipt demo
+
+```sh
+python3 -m betangel_research collect-demo \
+  --db data/private/news-demo.sqlite
+```
+
+示範資料全部 synthetic。再跑同一命令會辨認相同 receipts，唔會重複新增版本。保存 publication／receipt／revision clocks，分開 empty success、failure、unchanged，同埋 quarantine 未來時間嘅 metadata。Database 同 raw data 唔入 Git。現時未有 scheduled API adapters、cloud deployment 或 live LLM；[pipeline 文件](docs/collection-pipeline.md) 清楚列出已實作同待完成部分。
+
 ## Existing local pilot
 
 [19-runner / two-race pilot](archive/2026-10-09-aw-pilot/) contains public result measurements from Kempton on 5 October 2026. It shows data handling and descriptive analysis, **not a prediction backtest or profit result**. Previous-race sectionals could later be features; the target race's own sectionals cannot be known before it happens.
@@ -81,11 +94,13 @@ The copy receives regenerated JSON/CSV. Optional plot reproduction needs `requir
 - Research and offline Python work run on the Mac.
 - Windows VPS specifications are a future hosting choice for Bet Angel, not evidence of profitability.
 - No purchases, live account connections or orders are part of this repository.
-- This is a local Git repository; no remote publication is implied.
+- Code, synthetic fixtures and research notes are published to the private GitHub repository; credentials, local databases and ignored raw data remain outside Git.
 
 The next research step is a consecutive, multi-date dataset with known access terms, followed by a frozen primary experiment. The public sample replay is not a holdout or profit test. See the [research plan](docs/research-plan.md).
 
 ## Local verification
+
+Collection starter: **84 tests passed** across the full suite. Synthetic receipt replay and an actual HTTP 429 failure receipt were checked; see [collection results](reports/collection-infra-2026-10-10.md). No cloud deployment or successful news-coverage trial is claimed.
 
 Motif prototypes: **60 tests passed** across the full suite; synthetic scenarios and the real ADV sample completed. See [engineering results](reports/motif-prototypes-2026-10-09.md) for policy counts, independent-review scope and the limits of these checks.
 

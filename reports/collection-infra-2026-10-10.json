@@ -1,0 +1,64 @@
+{
+  "as_of": "2026-10-10T08:13:38.388024+00:00",
+  "implementation": "local_metadata_store_not_scheduled_pipeline",
+  "tests": {
+    "command": "python3 -m unittest discover -s tests -v",
+    "exit_code": 0,
+    "passed": 84,
+    "evidence": "22 collection + 2 collection CLI + 60 existing; final-tests.log",
+    "log_sha256": "9f72b6eed85b25df4b5ded4b65e3f9f3fcf49600f24a8f52ad41a47036683590"
+  },
+  "synthetic_demo": {
+    "first_run_polls": 8,
+    "retry_idempotent_polls": 8,
+    "database_counts_after_retry": {
+      "news_receipts": 8,
+      "news_articles": 3,
+      "news_versions": 4,
+      "news_observations": 6
+    },
+    "fixture_sha256": "741f363756c6338b40c2f1d0973accd17655a942a3a229befa20e8e09d705bb8"
+  },
+  "public_probe": {
+    "source": "gdelt-doc",
+    "request_url": "https://api.gdeltproject.org/api/v2/doc/doc?query=%22horse+racing%22+sourcelang%3Aenglish&mode=artlist&format=json&maxrecords=25&timespan=24h&sort=datedesc",
+    "request_started_at": "2026-10-10T08:04:50.306+00:00",
+    "scope": "one bounded unauthenticated metadata discovery probe; no completeness or freshness claim",
+    "status": "error",
+    "received_at": "2026-10-10T08:05:01.698+00:00",
+    "returned_items": null,
+    "error_type": "HTTPError",
+    "http_status": 429,
+    "elapsed_seconds": 11.393
+  },
+  "public_error_receipt": {
+    "source_id": "gdelt-doc-probe",
+    "request_started_at": "2026-10-10T08:04:50.306000Z",
+    "received_at": "2026-10-10T08:05:01.698000Z",
+    "status": "error",
+    "parser_version": "metadata-v1",
+    "synthetic": false,
+    "payload_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "receipt_id": "b083a276e5002f701803eb4ec984c9176466e8d31e931d606ff792d421d1e258",
+    "timestamp_provenance": "caller_supplied_collector_receipt_not_independently_verified",
+    "coverage": "collection_failed_coverage_unknown",
+    "item_count": 0,
+    "accepted_count": 0,
+    "quarantined_count": 0,
+    "new_articles": 0,
+    "new_versions": 0,
+    "idempotent_replay": false
+  },
+  "code_sha256": {
+    "betangel_research/collection.py": "a56d2a61b701173c0dc9ba808e3b56ac3348524c2bc569ad0cd46eba59515372",
+    "betangel_research/__main__.py": "b5f7459ec9b0c38d012e923c06c6bc18111b7e6d2136cb646542ff36823fc227",
+    "tests/test_collection.py": "70f0d86ed44102f76a685a9869e995223dfae76453d793ac65420187a61aa718",
+    "tests/test_cli.py": "247ff1c29d044dd10fb63343eb60f63866fcdbf6bccd38e9ae6b9c33ba6ff3e9"
+  },
+  "limitations": [
+    "HTTP429 checks failure recording, not article coverage or typical latency.",
+    "No network scheduler, source API adapters, entity linker, LLM inference or cloud services deployed.",
+    "All receipt clocks are caller-supplied and preserved; code does not authenticate them.",
+    "Historical prototype/replay tests are engineering checks, not edge or profit evidence."
+  ]
+}

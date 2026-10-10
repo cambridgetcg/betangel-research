@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-10",
+  "status": "proposed_collection_plan_not_running",
+  "live_collectors_enabled": false,
+  "cloud_resources_provisioned": false,
+  "source_lanes": [
+    {
+      "id": "race_reference",
+      "purpose": "Versioned racecards, explicit horse/race IDs, going, declared runners and later results",
+      "candidate": "TheRacingAPI or directly licensed equivalent",
+      "poll_interval_seconds": null,
+      "gate": "Confirm plan, endpoint schema, vintage semantics, quotas and update cadence before scheduling"
+    },
+    {
+      "id": "exchange_market",
+      "purpose": "Market definitions, scheduled times, selection IDs, quotes, unsigned traded activity and suspensions",
+      "candidate": "Current offline Betfair samples; later an appropriately licensed streaming source",
+      "poll_interval_seconds": null,
+      "gate": "Historical samples are not live; personal Live App Key is not a generic read-only data subscription"
+    },
+    {
+      "id": "news_discovery",
+      "purpose": "Discover linked article metadata; not verified event facts or complete racing coverage",
+      "candidate": "GDELT DOC for bounded feasibility; licensed news provider only after coverage measurement",
+      "proposed_initial_poll_interval_seconds": 900,
+      "gate": "Not enabled; honor provider limits/Retry-After, measure missingness, cap exhaustion and actual collection lag"
+    },
+    {
+      "id": "conditions",
+      "purpose": "Forecast-vintage weather and official course/going updates",
+      "candidate": "Met Office and licensed official race/course feeds",
+      "poll_interval_seconds": null,
+      "gate": "Do not substitute later observed weather or revised going for the earlier published forecast"
+    }
+  ],
+  "receipt_contract": {
+    "source_publication_is_not_receipt": true,
+    "first_seen_clock": "our actual collector receipt, preserved across retries and revisions",
+    "provider_first_seen_clock": "separate nullable provider field; not silently mapped to published_at",
+    "failed_poll": "coverage_unknown_never_zero_news",
+    "exact_retry": "same receipt identity, no duplicate revision",
+    "changed_article": "new immutable metadata version with its own received time",
+    "same_story_other_outlet": "separate source record with later optional syndication relation",
+    "future_publication_or_revision": "quarantined observation",
+    "full_text": "not stored by current metadata starter; provider/publisher rights needed for any later text ingestion"
+  },
+  "proposed_production_controls": {
+    "polling": "bounded concurrency, explicit source budget, backoff with jitter and Retry-After, overlapping windows and pagination audit",
+    "streaming": "persistent worker, resume token when supported, full image after reconnect, gap markers and no silent continuity assumption",
+    "queue": "at-least-once delivery; acknowledge after durable commit; deterministic idempotency keys",
+    "raw_storage": "compressed objects only where retention is permitted; lifecycle by source entitlement; not individual exchange ticks in Postgres",
+    "entity_links": "explicit source/race/market/selection IDs, link_known_at and version; ambiguous names remain unlinked",
+    "analysis": "evidence-bounded facts, alternative explanation, model/prompt version, analysis_completed_at, uncertainty and expiry",
+    "decision_availability": "max(received_at, normalization_completed_at, link_known_at, analysis_completed_at)",
+    "monitoring": ["last_success", "429/5xx/errors", "source_publication_lag_when_known", "queue_age", "unlinked_fraction", "revision_rate", "quota_spend", "clock_drift"]
+  },
+  "implemented_today": ["local_metadata_receipts", "immutable_metadata_versions", "source_registration", "synthetic_demo"],
+  "not_implemented": ["scheduled_network_adapters", "complete_pagination", "cloud_queue", "object_store_writer", "entity_resolution", "live_semantic_inference", "P03_context_bridge", "orders"]
+}

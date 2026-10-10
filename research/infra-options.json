@@ -1,0 +1,780 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-10",
+  "status": "research_only_no_provisioning",
+  "currency": "USD",
+  "recommendation": {
+    "now": "Mac + SQLite single writer and durable outbox; validate sources and collection gaps first.",
+    "when_continuity_needed": "One always-on Linux collector: Fly + volume + object archive, or Lightsail + S3 for AWS consolidation.",
+    "when_managed_database_needed": "Add managed Postgres only for concurrent writers, remote applications or concrete operational need. Fly + Supabase Storage can remain two providers.",
+    "defer": [
+      "Multi-vendor stack by default",
+      "Fargate/SQS/EventBridge unless independent workers justify them",
+      "Windows Bet Angel hosting decision"
+    ]
+  },
+  "workload": {
+    "days": 30,
+    "hours": 720,
+    "continuous_workers": 1,
+    "news_sources": 10,
+    "poll_interval_minutes": 5,
+    "polls_per_month": 86400,
+    "assumed_seconds_per_function_poll": 2,
+    "assumed_function_memory_gb": 0.5,
+    "function_gb_seconds": 86400,
+    "average_metadata_db_gb": 2,
+    "persistent_local_allocation_gb": 10,
+    "average_raw_archive_gb": 50,
+    "average_billable_snapshot_gb": 10,
+    "object_class_a_requests": 10000,
+    "object_class_b_requests": 100000,
+    "internet_egress_gb": 20,
+    "logs_ingested_gb": 1,
+    "secrets": 3,
+    "secret_api_calls": 10000,
+    "note": "Illustrative unmeasured workload. 50GB is average stored compressed archive, not daily growth. Separate-function polling assumes one invocation per source per poll. Snapshot bytes reflect retained versions, not automatically volume size."
+  },
+  "cost_boundary": {
+    "promotional_credits_used": false,
+    "free_tier_allowances_used": false,
+    "normal_purchased_plan_allowances_used": [
+      "Supabase Pro recurring $10 compute allowance",
+      "Supabase Pro included database disk, Storage and egress"
+    ],
+    "exclusions": [
+      "Tax/VAT",
+      "Currency conversion",
+      "Windows/Bet Angel licence",
+      "Market-data and news licences/subscriptions",
+      "Model inference",
+      "Support and labour",
+      "Unpriced backup/log/alert services and overages"
+    ],
+    "egress_handling": "20GB Fly internet egress modelled at listed Europe rate. Other paths remain destination- and allowance-dependent; unknown is not zero. Tigris egress-free policy applies only to Tigris side.",
+    "unknown_rule": "Null means unresolved, never free. Known-lines subtotal is not a full monthly invoice."
+  },
+  "architecture": [
+    {
+      "role": "continuous_worker",
+      "design": "Mac/Linux VM/Fly Machine/ECS service keeps outbound stream open; restart/reconnect/backoff, checkpoint, bounded buffers and gaps required. Feed permission is independent.",
+      "sources": [
+        "fly_autostart",
+        "ecs_services"
+      ]
+    },
+    {
+      "role": "short_pollers",
+      "design": "Same-worker timer initially. Ordinary Lambda max 900s; Managed Instances async path max 5400s. Supabase Edge is Deno/TypeScript, max 150s free / 400s paid wall clock and 2s CPU, 256MB. These bounded functions do not replace an indefinite Python collector.",
+      "sources": [
+        "lambda_limits",
+        "supabase_functions",
+        "supabase_limits",
+        "supabase_cron"
+      ]
+    },
+    {
+      "role": "database_queue",
+      "design": "SQLite/outbox first. Postgres/pgmq when Supabase is justified; SQS for decoupled AWS workers. Deduplication, durable acknowledgement and retries remain application responsibilities.",
+      "sources": [
+        "supabase_queues",
+        "sqs_delivery"
+      ]
+    },
+    {
+      "role": "archive_backup",
+      "design": "Compressed immutable raw objects outside Git, hashes and metadata in DB; restore test. Fly local volumes have no automatic replication. Supabase DB backup excludes Storage object contents.",
+      "sources": [
+        "fly_volumes",
+        "supabase_backups"
+      ]
+    },
+    {
+      "role": "secrets_observability",
+      "design": "Runtime provider secrets, restricted access, redact logs; monitor last receive, source age, gap duration, queue backlog, disk and cost. Fly metrics approximately 15 days with external alerting; choose logs retention explicitly.",
+      "sources": [
+        "fly_secrets",
+        "fly_metrics",
+        "supabase_vault",
+        "aws_secrets_pricing",
+        "cloudwatch"
+      ]
+    },
+    {
+      "role": "windows_separation",
+      "design": "Bet Angel Windows desktop is a separate host/licence decision; Linux collection plan does not run it.",
+      "sources": [
+        "betangel_windows"
+      ]
+    }
+  ],
+  "rates": [
+    {
+      "id": "fly_compute_lhr_1gb",
+      "region": "lhr",
+      "unit": "720-hour month",
+      "usd": 7.597874771806321,
+      "sources": [
+        "fly_update"
+      ],
+      "derivation": {
+        "base_256mb_monthly_usd": 2.194128,
+        "additional_ram_gb": 0.75,
+        "additional_ram_base_usd_per_gb_month": 6.003072,
+        "london_multiplier": 1.134615385,
+        "formula": "(base_256mb_monthly_usd + additional_ram_gb * additional_ram_base_usd_per_gb_month) * london_multiplier",
+        "evidence": "Official public HTML data-region-price attributes and London option; linked page JavaScript multiplies base amount by selection value. Derived figure, not checkout quote."
+      }
+    },
+    {
+      "id": "fly_volume",
+      "region": "lhr",
+      "unit": "provisioned GB-month",
+      "usd": 0.15,
+      "sources": [
+        "fly_pricing"
+      ]
+    },
+    {
+      "id": "fly_snapshot",
+      "region": "lhr",
+      "unit": "stored GB-month",
+      "usd": 0.08,
+      "sources": [
+        "fly_pricing"
+      ],
+      "allowance_ignored": "First 10GB"
+    },
+    {
+      "id": "fly_egress",
+      "region": "Europe",
+      "unit": "internet GB out",
+      "usd": 0.02,
+      "sources": [
+        "fly_pricing"
+      ]
+    },
+    {
+      "id": "tigris_standard",
+      "region": "global/default, not London-only",
+      "unit": "GB-month",
+      "usd": 0.02,
+      "sources": [
+        "tigris_pricing"
+      ]
+    },
+    {
+      "id": "tigris_class_a",
+      "region": "global/default",
+      "unit": "1000 requests",
+      "usd": 0.005,
+      "sources": [
+        "tigris_pricing"
+      ]
+    },
+    {
+      "id": "tigris_class_b",
+      "region": "global/default",
+      "unit": "1000 requests",
+      "usd": 0.0005,
+      "sources": [
+        "tigris_pricing"
+      ]
+    },
+    {
+      "id": "tigris_egress",
+      "region": "global/default",
+      "unit": "GB out from Tigris",
+      "usd": 0,
+      "sources": [
+        "tigris_pricing"
+      ],
+      "note": "Does not remove Fly charges for uploads leaving Fly."
+    },
+    {
+      "id": "supabase_pro_one_micro",
+      "region": "London eu-west-2 specific region",
+      "unit": "organization-month plus one Micro project",
+      "usd": 25,
+      "sources": [
+        "supabase_pricing",
+        "supabase_regions"
+      ],
+      "included": {
+        "recurring_compute_allowance_usd": 10,
+        "one_micro_compute_list_usd": 10,
+        "database_disk_gb": 8,
+        "object_storage_gb": 100,
+        "egress_gb": 250
+      },
+      "note": "Recurring purchased-plan inclusion, not promotional free credit. Additional projects, compute upgrades and excess use cost extra."
+    },
+    {
+      "id": "lightsail_linux_1gb_ipv4",
+      "region": "eu-west-2",
+      "unit": "bundle-month",
+      "usd": 7,
+      "sources": [
+        "lightsail_pricing",
+        "lightsail_regions"
+      ]
+    },
+    {
+      "id": "lightsail_linux_2gb_ipv4",
+      "region": "eu-west-2",
+      "unit": "bundle-month",
+      "usd": 12,
+      "sources": [
+        "lightsail_pricing",
+        "lightsail_regions"
+      ],
+      "included": {
+        "ram_gb": 2,
+        "vcpu_count": 2,
+        "ssd_gb": 60,
+        "transfer_tb": 3
+      },
+      "note": "CPU number is not a dedicated sustained-performance benchmark."
+    },
+    {
+      "id": "lightsail_snapshot",
+      "region": "eu-west-2",
+      "unit": "billable stored GB-month",
+      "usd": 0.05,
+      "sources": [
+        "lightsail_pricing"
+      ]
+    },
+    {
+      "id": "s3_standard",
+      "region": "eu-west-2",
+      "unit": "GB-month",
+      "usd": null,
+      "sources": [
+        "s3_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "s3_put",
+      "region": "eu-west-2",
+      "unit": "1000 requests",
+      "usd": null,
+      "sources": [
+        "s3_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "s3_get",
+      "region": "eu-west-2",
+      "unit": "1000 requests",
+      "usd": null,
+      "sources": [
+        "s3_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "s3_egress",
+      "region": "eu-west-2",
+      "unit": "GB out",
+      "usd": null,
+      "sources": [
+        "s3_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "lambda_duration",
+      "region": "eu-west-2",
+      "unit": "GB-second",
+      "usd": null,
+      "sources": [
+        "lambda_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "lambda_requests",
+      "region": "eu-west-2",
+      "unit": "million requests",
+      "usd": null,
+      "sources": [
+        "lambda_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "fargate_vcpu",
+      "region": "eu-west-2",
+      "unit": "vCPU-hour",
+      "usd": null,
+      "sources": [
+        "fargate_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "fargate_memory",
+      "region": "eu-west-2",
+      "unit": "GB-hour",
+      "usd": null,
+      "sources": [
+        "fargate_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "sqs_requests",
+      "region": "eu-west-2",
+      "unit": "million requests",
+      "usd": null,
+      "sources": [
+        "sqs_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "scheduler_invocations",
+      "region": "eu-west-2",
+      "unit": "million invocations",
+      "usd": null,
+      "sources": [
+        "scheduler_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "aws_secret",
+      "region": "eu-west-2",
+      "unit": "secret-month",
+      "usd": null,
+      "sources": [
+        "aws_secrets_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "aws_secret_reads",
+      "region": "eu-west-2",
+      "unit": "10000 API calls",
+      "usd": null,
+      "sources": [
+        "aws_secrets_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    },
+    {
+      "id": "cloudwatch_ingest",
+      "region": "eu-west-2",
+      "unit": "GB ingested",
+      "usd": null,
+      "sources": [
+        "cloudwatch_pricing"
+      ],
+      "unknown_reason": "London-specific unit price not verified in the readable official pricing material; do not substitute an example from another region."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "mac_sqlite",
+      "description": "Existing Mac, one local writer and durable outbox",
+      "incremental_cloud_hosting_usd": 0,
+      "complete_monthly_total_usd": null,
+      "unpriced_or_excluded": [
+        "Electricity",
+        "Hardware",
+        "Internet",
+        "Independent backup",
+        "Availability lost to sleep/network outages"
+      ]
+    },
+    {
+      "id": "fly_volume_tigris",
+      "description": "One 1GB London Fly worker, SQLite/10GB volume, Tigris raw archive",
+      "components": [
+        {
+          "rate_id": "fly_compute_lhr_1gb",
+          "quantity": 1,
+          "monthly_usd": 7.597874771806321
+        },
+        {
+          "rate_id": "fly_volume",
+          "quantity": 10,
+          "monthly_usd": 1.5
+        },
+        {
+          "rate_id": "fly_snapshot",
+          "quantity": 10,
+          "monthly_usd": 0.8
+        },
+        {
+          "rate_id": "fly_egress",
+          "quantity": 20,
+          "monthly_usd": 0.4
+        },
+        {
+          "rate_id": "tigris_standard",
+          "quantity": 50,
+          "monthly_usd": 1.0
+        },
+        {
+          "rate_id": "tigris_class_a",
+          "quantity": 10,
+          "monthly_usd": 0.05
+        },
+        {
+          "rate_id": "tigris_class_b",
+          "quantity": 100,
+          "monthly_usd": 0.05
+        }
+      ],
+      "known_lines_subtotal_usd": 11.397875,
+      "complete_monthly_total_usd": null,
+      "unpriced_or_excluded": [
+        "External log retention and alerts",
+        "Extra transfer/storage/churn",
+        "Taxes; common exclusions"
+      ]
+    },
+    {
+      "id": "fly_supabase",
+      "description": "Same Fly worker/local durable spool plus one London Supabase Pro Micro project and included Storage",
+      "components": [
+        {
+          "rate_id": "fly_compute_lhr_1gb",
+          "quantity": 1,
+          "monthly_usd": 7.597874771806321
+        },
+        {
+          "rate_id": "fly_volume",
+          "quantity": 10,
+          "monthly_usd": 1.5
+        },
+        {
+          "rate_id": "fly_snapshot",
+          "quantity": 10,
+          "monthly_usd": 0.8
+        },
+        {
+          "rate_id": "fly_egress",
+          "quantity": 20,
+          "monthly_usd": 0.4
+        },
+        {
+          "rate_id": "supabase_pro_one_micro",
+          "quantity": 1,
+          "monthly_usd": 25
+        }
+      ],
+      "known_lines_subtotal_usd": 35.297875,
+      "complete_monthly_total_usd": null,
+      "unpriced_or_excluded": [
+        "Independent backup of Storage object contents",
+        "External log retention and alerts",
+        "Additional compute/projects/overages",
+        "Taxes; common exclusions"
+      ]
+    },
+    {
+      "id": "aws_lightsail_s3",
+      "description": "One London Linux 2GB public-IPv4 Lightsail worker with SQLite, snapshots, S3 archive",
+      "components": [
+        {
+          "rate_id": "lightsail_linux_2gb_ipv4",
+          "quantity": 1,
+          "monthly_usd": 12
+        },
+        {
+          "rate_id": "lightsail_snapshot",
+          "quantity": 10,
+          "monthly_usd": 0.5
+        },
+        {
+          "rate_id": "s3_standard",
+          "quantity": 50,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "s3_put",
+          "quantity": 10,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "s3_get",
+          "quantity": 100,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "aws_secret",
+          "quantity": 3,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "aws_secret_reads",
+          "quantity": 1,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "cloudwatch_ingest",
+          "quantity": 1,
+          "monthly_usd": null
+        }
+      ],
+      "known_lines_subtotal_usd": 12.5,
+      "complete_monthly_total_usd": null,
+      "unpriced_or_excluded": [
+        "S3 egress depends on destination and allowances; no zero assumed",
+        "Excess Lightsail transfer if incurred",
+        "CloudWatch storage/queries/alarms",
+        "Taxes; common exclusions"
+      ]
+    },
+    {
+      "id": "aws_optional_function_pollers",
+      "description": "Alternative to same-worker timer; additions only, not a complete stack",
+      "components": [
+        {
+          "rate_id": "lambda_duration",
+          "quantity": 86400,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "lambda_requests",
+          "quantity": 0.0864,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "scheduler_invocations",
+          "quantity": 0.0864,
+          "monthly_usd": null
+        }
+      ],
+      "known_lines_subtotal_usd": null,
+      "complete_monthly_total_usd": null,
+      "unpriced_or_excluded": [
+        "Logs",
+        "Retries",
+        "Provider latency increasing billed duration",
+        "Any network service charges",
+        "Taxes; common exclusions"
+      ]
+    },
+    {
+      "id": "aws_optional_fargate",
+      "description": "Alternative continuous ECS worker, 0.25vCPU/0.5GB 720h; not capacity validated",
+      "components": [
+        {
+          "rate_id": "fargate_vcpu",
+          "quantity": 180,
+          "monthly_usd": null
+        },
+        {
+          "rate_id": "fargate_memory",
+          "quantity": 360,
+          "monthly_usd": null
+        }
+      ],
+      "known_lines_subtotal_usd": null,
+      "complete_monthly_total_usd": null,
+      "unpriced_or_excluded": [
+        "Public IPv4 or NAT choice",
+        "Logs",
+        "Persistent external storage/database",
+        "Image registry",
+        "Extra ephemeral storage",
+        "Taxes; common exclusions"
+      ]
+    }
+  ],
+  "limitations": [
+    "No benchmark, latency measurement, capacity test, restore test or availability guarantee performed.",
+    "No cloud/account access, subscriptions, deployment or source connection performed.",
+    "Collection coverage and observed publication/receipt differences do not establish true provider latency.",
+    "Prices checked as-of date; Fly October1 revision supersedes stale cached estimates.",
+    "Source/market-data eligibility is addressed separately in docs/data-provider-options.md."
+  ],
+  "sources": {
+    "fly_update": {
+      "url": "https://fly.io/pricing-update/",
+      "accessed": "2026-10-10",
+      "supports": "October 1 2026 rates; London compute multiplier and calculator base rates",
+      "source_type": "official_primary"
+    },
+    "fly_pricing": {
+      "url": "https://docs.fly.io/about/pricing",
+      "accessed": "2026-10-10",
+      "supports": "Storage, Europe egress and third-party extension billing",
+      "source_type": "official_primary"
+    },
+    "fly_regions": {
+      "url": "https://docs.fly.io/reference/regions",
+      "accessed": "2026-10-10",
+      "supports": "London lhr",
+      "source_type": "official_primary"
+    },
+    "fly_autostart": {
+      "url": "https://docs.fly.io/launch/autostop-autostart",
+      "accessed": "2026-10-10",
+      "supports": "Proxy incoming-request autostart and autostop settings",
+      "source_type": "official_primary"
+    },
+    "fly_volumes": {
+      "url": "https://docs.fly.io/volumes/overview/",
+      "accessed": "2026-10-10",
+      "supports": "Ephemeral root, single-host volume, no automatic replication",
+      "source_type": "official_primary"
+    },
+    "fly_secrets": {
+      "url": "https://docs.fly.io/apps/secrets/",
+      "accessed": "2026-10-10",
+      "supports": "Encrypted app secret vault and runtime injection",
+      "source_type": "official_primary"
+    },
+    "fly_metrics": {
+      "url": "https://docs.fly.io/monitoring/metrics/",
+      "accessed": "2026-10-10",
+      "supports": "Included metrics, approximate 15-day retention, external alerting required",
+      "source_type": "official_primary"
+    },
+    "tigris_pricing": {
+      "url": "https://www.tigrisdata.com/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Global Standard storage and request rates; zero Tigris egress",
+      "source_type": "official_primary"
+    },
+    "supabase_pricing": {
+      "url": "https://supabase.com/pricing",
+      "accessed": "2026-10-10",
+      "supports": "Pro price, recurring compute allowance and included storage/egress",
+      "source_type": "official_primary"
+    },
+    "supabase_regions": {
+      "url": "https://supabase.com/docs/guides/platform/regions",
+      "accessed": "2026-10-10",
+      "supports": "Specific London eu-west-2 selection",
+      "source_type": "official_primary"
+    },
+    "supabase_functions": {
+      "url": "https://supabase.com/docs/guides/functions",
+      "accessed": "2026-10-10",
+      "supports": "Deno-compatible TypeScript Edge Functions",
+      "source_type": "official_primary"
+    },
+    "supabase_limits": {
+      "url": "https://supabase.com/docs/guides/functions/limits",
+      "accessed": "2026-10-10",
+      "supports": "256MB, 150/400-second wall clock, 2-second CPU per request",
+      "source_type": "official_primary"
+    },
+    "supabase_cron": {
+      "url": "https://supabase.com/docs/guides/cron",
+      "accessed": "2026-10-10",
+      "supports": "Postgres pg_cron scheduling",
+      "source_type": "official_primary"
+    },
+    "supabase_queues": {
+      "url": "https://supabase.com/docs/guides/queues",
+      "accessed": "2026-10-10",
+      "supports": "Postgres pgmq durable queue",
+      "source_type": "official_primary"
+    },
+    "supabase_vault": {
+      "url": "https://supabase.com/docs/guides/database/vault",
+      "accessed": "2026-10-10",
+      "supports": "Encrypted SQL-accessible secrets",
+      "source_type": "official_primary"
+    },
+    "supabase_backups": {
+      "url": "https://supabase.com/docs/guides/platform/backups",
+      "accessed": "2026-10-10",
+      "supports": "Pro daily database backups seven days; object contents excluded",
+      "source_type": "official_primary"
+    },
+    "lightsail_pricing": {
+      "url": "https://aws.amazon.com/lightsail/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Public-IPv4 Linux bundles and snapshot rate",
+      "source_type": "official_primary"
+    },
+    "lightsail_regions": {
+      "url": "https://docs.aws.amazon.com/lightsail/latest/userguide/understanding-regions-and-availability-zones-in-amazon-lightsail.html",
+      "accessed": "2026-10-10",
+      "supports": "London availability",
+      "source_type": "official_primary"
+    },
+    "lambda_limits": {
+      "url": "https://docs.aws.amazon.com/lambda/latest/dg/configuration-timeout.html",
+      "accessed": "2026-10-10",
+      "supports": "Ordinary 900-second timeout; Managed Instances asynchronous exception 5400 seconds",
+      "source_type": "official_primary"
+    },
+    "lambda_pricing": {
+      "url": "https://aws.amazon.com/lambda/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Pricing dimensions; London rates not established by this research",
+      "source_type": "official_primary"
+    },
+    "fargate_pricing": {
+      "url": "https://aws.amazon.com/fargate/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "CPU/memory/OS/architecture/storage billing; US examples not London quotes",
+      "source_type": "official_primary"
+    },
+    "ecs_services": {
+      "url": "https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_CreateService.html",
+      "accessed": "2026-10-10",
+      "supports": "Maintain desired task count",
+      "source_type": "official_primary"
+    },
+    "s3_pricing": {
+      "url": "https://aws.amazon.com/s3/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Object-storage cost dimensions; London unit prices unresolved",
+      "source_type": "official_primary"
+    },
+    "sqs_pricing": {
+      "url": "https://aws.amazon.com/sqs/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Request billing; London unit prices unresolved",
+      "source_type": "official_primary"
+    },
+    "sqs_delivery": {
+      "url": "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues-at-least-once-delivery.html",
+      "accessed": "2026-10-10",
+      "supports": "Standard at-least-once delivery",
+      "source_type": "official_primary"
+    },
+    "scheduler_pricing": {
+      "url": "https://aws.amazon.com/eventbridge/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Scheduler invocation billing; no promotional/free allowance used in model",
+      "source_type": "official_primary"
+    },
+    "aws_secrets_pricing": {
+      "url": "https://aws.amazon.com/secrets-manager/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Secret-month and API request pricing; no London-specific quote recorded",
+      "source_type": "official_primary"
+    },
+    "cloudwatch": {
+      "url": "https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/WhatIsCloudWatch.html",
+      "accessed": "2026-10-10",
+      "supports": "Logs, metrics and alarms",
+      "source_type": "official_primary"
+    },
+    "cloudwatch_pricing": {
+      "url": "https://aws.amazon.com/cloudwatch/pricing/",
+      "accessed": "2026-10-10",
+      "supports": "Usage-dependent logging and monitoring charges",
+      "source_type": "official_primary"
+    },
+    "betangel_windows": {
+      "url": "https://www.betangel.com/system-requirements/",
+      "accessed": "2026-10-10",
+      "supports": "Desktop software Windows requirement",
+      "source_type": "official_primary"
+    }
+  }
+}

@@ -1,12 +1,43 @@
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 import test_stream
 from betangel_research.__main__ import run_replay
 
 
 class CliTests(unittest.TestCase):
+    def test_collection_demo_cli_and_idempotent_retry(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as temp:
+            command = [sys.executable, "-m", "betangel_research", "collect-demo", "--db", str(Path(temp) / "news.sqlite")]
+            first = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            first_report = json.loads(first.stdout)
+            retry = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            retry_report = json.loads(retry.stdout)
+            self.assertEqual(retry_report["idempotent_replays"], retry_report["polls"])
+            self.assertEqual(first_report["fixture_sha256"], retry_report["fixture_sha256"])
+
+    def test_collection_cli_rejects_non_synthetic_and_extra_poll_keys(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Path(temp) / "bad.json"
+            command = [sys.executable, "-m", "betangel_research", "collect-demo", "--fixture", str(fixture),
+                       "--db", str(Path(temp) / "news.sqlite")]
+            for data in ({"data_kind": "real"},
+                         {"data_kind": "synthetic", "schema_version": 2, "sources": [], "polls": []},
+                         {"data_kind": "synthetic", "schema_version": True, "sources": [], "polls": []},
+                         {"data_kind": "synthetic", "schema_version": 1, "sources": [], "polls": [{"synthetic": False}]}):
+                fixture.write_text(json.dumps(data))
+                result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("Research input error", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_delay_metrics_provenance_and_existing_run_protection(self):
         fixture = test_stream.StreamTests()
         fixture.setUp()

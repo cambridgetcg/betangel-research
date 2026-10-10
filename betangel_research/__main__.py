@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import platform
 import statistics
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -125,14 +126,39 @@ def main():
     motifs.add_argument("--context", help="Optional local structured context JSON list")
     motifs.add_argument("--config", default="research/experiments/motif-prototypes-v1.json")
     motifs.add_argument("--out", required=True)
+    collect = commands.add_parser("collect-demo", help="Replay synthetic news metadata receipts into local SQLite")
+    collect.add_argument("--fixture", default="research/fixtures/news-metadata.json")
+    collect.add_argument("--db", required=True)
     args = parser.parse_args()
     try:
-        if args.command == "motifs":
+        if args.command == "collect-demo":
+            from .collection import configure_sources, ingest_metadata
+            fixture = json.loads(Path(args.fixture).read_text())
+            if (not isinstance(fixture, dict) or fixture.get("data_kind") != "synthetic"
+                    or type(fixture.get("schema_version")) is not int or fixture["schema_version"] != 1):
+                raise ValueError("collect-demo requires an explicitly synthetic schema_version=1 fixture")
+            sources, polls = fixture["sources"], fixture["polls"]
+            if (not isinstance(sources, list) or not isinstance(polls, list)
+                    or any(not isinstance(s, dict) or s.get("data_kind") != "synthetic" for s in sources)
+                    or any(not isinstance(p, dict) for p in polls)):
+                raise ValueError("synthetic source objects and poll objects required")
+            required = {"source_id", "items", "request_started_at", "received_at"}
+            allowed = required | {"status", "parser_version"}
+            if any(not required <= set(p) or set(p) - allowed for p in polls):
+                raise ValueError("polls require source_id/items/request_started_at/received_at; only status/parser_version optional")
+            configure_sources(args.db, sources)
+            receipts = [ingest_metadata(args.db, synthetic=True, **poll) for poll in polls]
+            print(json.dumps({"status": "synthetic_metadata_receipt_demo", "db": args.db,
+                              "fixture_sha256": sha256(args.fixture), "polls": len(receipts),
+                              "idempotent_replays": sum(r["idempotent_replay"] for r in receipts),
+                              "receipts": receipts}, indent=2))
+            return
+        elif args.command == "motifs":
             from .motifs import run_motif_lab
             report = run_motif_lab(args.input, args.config, args.out, args.format, args.context)
         else:
             report = run_replay(args.input, args.config, args.out)
-    except (ValueError, KeyError, OSError) as exc:
+    except (ValueError, KeyError, OSError, sqlite3.Error) as exc:
         parser.exit(2, f"Research input error: {exc}\n")
     if args.command == "motifs":
         print(json.dumps({"status": report["status"], "output": args.out,

@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "data_kind": "synthetic",
+  "purpose": "Invented metadata and receipt clocks for local collection engineering; no real news, historical availability or context assessments.",
+  "sources": [
+    {
+      "source_id": "synthetic-news-demo",
+      "data_kind": "synthetic",
+      "description": "Invented metadata from example.invalid; no real publisher or collection coverage"
+    }
+  ],
+  "polls": [
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:00:00Z",
+      "received_at": "2026-10-10T09:00:01Z",
+      "status": "ok",
+      "parser_version": "metadata-v1",
+      "items": [
+        {"provider_id": "demo-1", "url": "https://example.invalid/demo-1", "title": "Synthetic race preview", "published_at": "2026-10-10T08:55:00Z"},
+        {"url": "https://example.invalid/unknown-publication", "title": "Synthetic item without publication time", "published_at": null}
+      ]
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:01:00Z",
+      "received_at": "2026-10-10T09:01:01Z",
+      "status": "ok",
+      "parser_version": "metadata-v1",
+      "items": [{"provider_id": "demo-1", "url": "https://example.invalid/demo-1", "title": "Synthetic race preview", "published_at": "2026-10-10T08:55:00Z"}]
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:02:00Z",
+      "received_at": "2026-10-10T09:02:01Z",
+      "status": "ok",
+      "parser_version": "metadata-v1",
+      "items": [{"provider_id": "demo-1", "url": "https://example.invalid/demo-1", "title": "Synthetic preview revised", "published_at": "2026-10-10T08:55:00Z", "revised_at": "2026-10-10T09:01:30Z"}]
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:03:00Z",
+      "received_at": "2026-10-10T09:03:01Z",
+      "status": "ok",
+      "parser_version": "metadata-v1",
+      "items": []
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:04:00Z",
+      "received_at": "2026-10-10T09:04:01Z",
+      "status": "error",
+      "parser_version": "metadata-v1",
+      "items": []
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:05:00Z",
+      "received_at": "2026-10-10T09:05:01Z",
+      "status": "not_modified",
+      "parser_version": "metadata-v1",
+      "items": []
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:06:00Z",
+      "received_at": "2026-10-10T09:06:01Z",
+      "status": "ok",
+      "parser_version": "metadata-v1",
+      "items": [{"provider_id": "demo-future", "url": "https://example.invalid/future-dated", "title": "Synthetic future-dated item", "published_at": "2026-10-10T09:10:00Z"}]
+    },
+    {
+      "source_id": "synthetic-news-demo",
+      "request_started_at": "2026-10-10T09:11:00Z",
+      "received_at": "2026-10-10T09:11:01Z",
+      "status": "ok",
+      "parser_version": "metadata-v1",
+      "items": [{"provider_id": "demo-future", "url": "https://example.invalid/future-dated", "title": "Synthetic future-dated item", "published_at": "2026-10-10T09:10:00Z"}]
+    }
+  ]
+}

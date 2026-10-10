@@ -1,0 +1,47 @@
+{
+  "completed_at": "2026-10-10T08:15:32.267489+00:00",
+  "starting_revision": "35c9c22",
+  "artifact_sha256": {
+    "betangel_research/collection.py": "a56d2a61b701173c0dc9ba808e3b56ac3348524c2bc569ad0cd46eba59515372",
+    "betangel_research/__main__.py": "b5f7459ec9b0c38d012e923c06c6bc18111b7e6d2136cb646542ff36823fc227",
+    "tests/test_collection.py": "70f0d86ed44102f76a685a9869e995223dfae76453d793ac65420187a61aa718",
+    "tests/test_cli.py": "247ff1c29d044dd10fb63343eb60f63866fcdbf6bccd38e9ae6b9c33ba6ff3e9",
+    "research/fixtures/news-metadata.json": "741f363756c6338b40c2f1d0973accd17655a942a3a229befa20e8e09d705bb8",
+    "docs/collection-pipeline.md": "cc8ae7ec2b2976e17be63afff0d442c2b1c0a38e9deb6b4b9d4a0f2cea360fbe",
+    "docs/data-provider-options.md": "e99cee14421664bdf39ae60e11d1cfc4562c98056bb8511573f4d86bdd92aa00",
+    "docs/infra-options.md": "e775ffc0f3834b8652c8374828ca42482b4787d6ebbec92e83d7369e445b5861",
+    "research/data-provider-options.json": "b30745f3c159c6ab54059c8b64690fa17dc0757ee1a6eb71729b588c85de049e",
+    "research/infra-options.json": "1f12c4bdcfb3cfd992648ed74b296372ad1bfd0c199ae6a44e5e04dc69a6f9be",
+    "research/collection-plan.json": "9c63502a999bf6084de94f240f2ab196a255a8946c1354e30f0f65e811540fab",
+    "reports/collection-infra-2026-10-10.json": "b87c39a6c6e3187835e04cf4c660dabf324df1f1fe18c6fc54f6f8b80857b2d8",
+    "reports/collection-infra-2026-10-10.md": "24d1dce037cbe3311a80909a2c0fcae54158f469a10cb36d23acd739883720c1"
+  },
+  "protected_sha256": {
+    "research/experiments/e01-hermes-proposal.json": "c3abe4af0632e09ed2ce1d2d867ca6e7cb993637328cd61e85aa2314f30b0d7b",
+    "research/strategy-cards.json": "e82831a9a6239b7b53859b8cea4cf8be60362a580416dbd82b271218b8873183",
+    "betangel_research/stream.py": "084ce9460cdd3d0981e602f8b2c718b2b5a05c1cfe74a8a5ec5c2c27529773f9",
+    "betangel_research/motifs.py": "a4f69ce887a0fc761f6e544c798ab81e558dff1d426ecb78ee1a4aa7d8a2b3fc",
+    "betangel_research/microstructure.py": "5a171a5ac17a239253071c5a1173a024b08fc2e373ea64d36ffc1ae85f46d4c5"
+  },
+  "reviews": {
+    ".team-work/collection-infra-20261010/handoffs/collection-review.md": "25e610f6230834ffade9ee7e9f04269bd1f7c8fa19edc1fe26ea6b4065416e1f",
+    ".team-work/collection-infra-20261010/handoffs/research-review.md": "6ca721bdd34ad6f2c8f75adbc7c564288b66d60fc9ee2704305498503eb32b73"
+  },
+  "github": {
+    "repository": "cambridgetcg/betangel-research",
+    "creation_visibility_verified": "PRIVATE",
+    "target_branch": "main",
+    "post_push_verification": "recorded in local outputs/collection-infra-20261010/publication.json after push"
+  },
+  "tests": {
+    "passed": 84,
+    "command": "python3 -m unittest discover -s tests -v"
+  },
+  "cloud_resources_provisioned": false,
+  "paid_subscriptions_created": false,
+  "limitations": [
+    "No successful article acquisition was demonstrated; public API probe returned429.",
+    "Store timestamps are caller-supplied; no scheduled collector/entity linker/LLM bridge yet.",
+    "Infra figures are workload-based partial estimates; tax/data/model/unknowncharges excluded."
+  ]
+}

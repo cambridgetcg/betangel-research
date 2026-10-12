@@ -14,3 +14,7 @@ outputs/
 *.sqlite-*
 *.db
 *.db-*
+*.crt
+*.csr
+*.p12
+*.pfx

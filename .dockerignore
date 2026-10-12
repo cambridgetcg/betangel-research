@@ -10,3 +10,5 @@
 **/__pycache__
 **/*.pyc
 **/.env*
+betangel_research/betfair/
+betangel_research/betfair/**

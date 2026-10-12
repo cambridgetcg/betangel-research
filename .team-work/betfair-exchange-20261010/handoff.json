@@ -36,10 +36,10 @@
     "betangel_research/betfair/transport.py": "e65f23a7d2ef926c6d60744abab895a5e5591347d0b4c893d5d896a3c3b8a61a",
     "betangel_research/betfair/validate.py": "2e47f936f1be233112edbec02103e3a66de1517d122749b7af3307f144d6165d",
     "docs/betfair-facts.md": "520a3880f70d54a3e347a2bf5556ef28bbb9d95f821d5b8848864d95c4ef5e81",
-    "docs/betfair-integration.md": "be45e61cd591b866e1ed698f08664ae7e8d8fa29f74b49c289298f2d61b6674c",
-    "docs/betfair-order-path.md": "8d75ead980a053fe00b962cfd498024c0c663c8cf442fbc4cb15075b1695653a",
-    "reports/betfair-setup-2026-10-10.json": "649ab0685c0a6282a0e5e3ec73e32314e9a925ed859f6e109f3e3f890f459153",
-    "reports/betfair-setup-2026-10-10.md": "32bf41a5926394df2f3ad042cbf61888b9a75917133ce9314444467de4531d0c",
+    "docs/betfair-integration.md": "6bbf9a3c940f23b936f3c71182dcfcb4bd67f6cbd4d4abbc6eec1d4746b6a7d1",
+    "docs/betfair-order-path.md": "799378a27b677f4ab4c6ed063e959563b787a14de359508fb86846203dc36eff",
+    "reports/betfair-setup-2026-10-10.json": "4c44705ea4ca4ef91f5f148fed749b242558ef0d3f69a43df0ef793a0626459a",
+    "reports/betfair-setup-2026-10-10.md": "e17ddbfe925891c9ee54a653b41354049b93d4dc643a46f84b79c5466a925776",
     "research/betfair-config.example.json": "1eefe337628925fc097fa70613c0b04c7cdbf8ab6e39c2ca5b530597642c1d8e",
     "research/betfair-facts.json": "00f627ae30f54ade16f6377c73880356d457d13668fdbc7b9521292df7b7b161",
     "tests/test_betfair_api.py": "4cf62ff6e6265cbb729f03a01e78246754c85a3c5f8864d08f5ccfc5a497344b",
@@ -158,12 +158,15 @@
   "merge_gate": {
     "rule": "feat/betfair-exchange must not merge to main without S0 applied as one isolated commit.",
     "s0_required": true,
-    "s0_applied": false,
+    "s0_applied": true,
     "s0_needs_agreement_from": [
       "Yu",
       "Codex"
     ],
-    "s0_agreement_recorded": [],
+    "s0_agreement_recorded": [
+      "Yu",
+      "Codex"
+    ],
     "s0_applies_to": [
       "AGENTS.md",
       "betangel_research/__init__.py",

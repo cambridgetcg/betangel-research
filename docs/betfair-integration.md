@@ -101,7 +101,7 @@ rm client-2048.csr
   - 已經有明文 `client-2048.key` 先想加密：`openssl pkey -in client-2048.key -aes-256-cbc -out client-2048.enc.key`，再用 `openssl pkey -in client-2048.enc.key -noout` 確認解得開，**之後一定要 `rm client-2048.key`**。揀咗加密就唔可以留低明文 key，否則加密冇保護作用。注意 macOS 嘅 `rm -P` 已經冇效（`man rm`：「This flag has no effect」），APFS／SSD 都唔保證覆寫，所以由一開始就生成加密 key 先係乾淨做法。
   - 用加密 key 就將 config 嘅 `key_path` 指去 `client-2048.enc.key`、`key_passphrase_in_keychain` 設 `true`，再用 `security add-generic-password -U -s betangel-research.betfair.cert-key-passphrase -a default -w` 存 passphrase。冇 passphrase 嘅時候，`make_tls_context` 唔會畀 OpenSSL 彈出輸入提示，加密 key 會直接報 `client_certificate_unloadable`。
   - 呢啲加密命令同樣喺呢部 Mac 用 OpenSSL 3.6.2、synthetic key 同 synthetic passphrase 試過（`openssl pkey -noout` 解得開、Python `ssl` 用 passphrase 載入得到），試完已刪；同樣唔代表 Betfair 接受結果。
-- **Git**：repo 嘅 `.gitignore` 而家已經 ignore `*.key` 同 `*.pem`，但未 ignore `*.crt`、`*.csr`、`*.p12`、`*.pfx`；shared-file patch S0 會補上（見 handoff）。無論點都唔好喺 repo 入面整 certificate。`doctor` 會報告 `.gitignore` 有冇 cover。
+- **Git**：repo 嘅 `.gitignore` ignore `*.key`、`*.pem`，同埋 shared-file patch S0 加嘅 `*.crt`、`*.csr`、`*.p12`、`*.pfx`（見 handoff）。無論點都唔好喺 repo 入面整 certificate。`doctor` 會報告 `.gitignore` 有冇 cover。
 - **到期**：官方例子用 `-days 365`；續期同 Betfair 係咪只認一張 certificate，文件冇講（fact register 嘅 open questions）。
 
 ## 5. Keychain setup
@@ -396,7 +396,7 @@ python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.j
 - 冇 Heartbeat API、冇 in-play、冇 PERSIST／MOC／LOC／FOK／minFill／betTarget、冇 £1 以下注碼、冇非 GBP、live 只限 `com`。
 - v1 live 收窄（Yu 2026-10-10 決定）刻意刪咗：live replace、live 減 size 嘅 cancel、自動 live settlement（改用人手 `settle-market`）同 live 嘅 hedge credit；paper 全部保留。
 - 冇雲端部署：shared-file patch S0 會令 Docker image 排除 `betangel_research/betfair/`；Fly worker 只跑 collector。
-- `AGENTS.md`、`README.md`、`.gitignore`、`.dockerignore` 同 `betangel_research/__init__.py` 未改；改法喺 S0，要 Yu 同 Codex 同意先由 coordinator 套用。
+- `AGENTS.md`、`.gitignore`、`.dockerignore` 同 `betangel_research/__init__.py` 只喺 S0 改：Yu 同 Codex 同意之後，coordinator 用一個獨立 commit 套用；`README.md` 嘅改動係 merge 之前最後一個獨立 commit（`merge_gate.readme_commit`）。
 
 ## 12. Sources with access dates
 

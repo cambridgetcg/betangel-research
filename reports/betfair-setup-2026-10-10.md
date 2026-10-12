@@ -103,7 +103,7 @@ Astra（Codex）覆核咗第四輪之後嘅候選 tree：re-review `report_ef3fb
 
 ## Merge gate
 
-Shared-file patch S0（`AGENTS.md`、`betangel_research/__init__.py`、`.gitignore`、`.dockerignore`）未套用。佢要 Yu 同 Codex 同意，再由 coordinator 做一個獨立 commit；**未套用之前唔准 merge 去 main**。S0 只改本地 `.dockerignore`；[direct-collection receipt](direct-collection-2026-10-10.json) 係 2026-10-10 as-deployed 嘅歷史收據，一個 byte 都唔改（佢喺 `protected_sha256`，merge gate 會拒絕任何改動），之後真正 build／deploy 先另寫新收據。S0 嘅 AGENTS.md bullet 寫明收窄咗嘅 live 範圍。README 改動係 rebase 之後另一個最後 commit。Patch 原文、預期 hash 同受保護檔案 hash 喺 [handoff](../.team-work/betfair-exchange-20261010/handoff.json)。
+Shared-file patch S0（`AGENTS.md`、`betangel_research/__init__.py`、`.gitignore`、`.dockerignore`）已經套用：Yu 同 Codex 同意之後，coordinator 做咗一個獨立 commit，四個檔案都係 handoff `s0_expected_sha256_after` 嘅 hash；merge 去 main 之前仲要過 merge gate（`BETANGEL_BETFAIR_MERGE_GATE=1`）。S0 只改本地 `.dockerignore`；[direct-collection receipt](direct-collection-2026-10-10.json) 係 2026-10-10 as-deployed 嘅歷史收據，一個 byte 都唔改（佢喺 `protected_sha256`，merge gate 會拒絕任何改動），之後真正 build／deploy 先另寫新收據。S0 嘅 AGENTS.md bullet 寫明收窄咗嘅 live 範圍。README 改動係 rebase 之後另一個最後 commit。Patch 原文、預期 hash 同受保護檔案 hash 喺 [handoff](../.team-work/betfair-exchange-20261010/handoff.json)。
 
 ## Next
 

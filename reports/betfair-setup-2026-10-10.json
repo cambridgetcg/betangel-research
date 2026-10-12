@@ -4,7 +4,7 @@
   "status": "tests_passed_no_credentials_no_network_calls",
   "scope": "betangel_research/betfair: Keychain-gated login, delayed-key REST reads, Exchange Stream recorder and one paper-default order gateway; offline tests with injected fakes only",
   "code_sha256": {
-    "betangel_research/__init__.py": "1c6f9f424bae9653f42e824531fb52e0f95b0958b4e42b440ad4406aa30c0558",
+    "betangel_research/__init__.py": "c784cddf67f2510d785fd7488a148cc59eaa719f634b26ecc89e38c2269850e5",
     "betangel_research/__main__.py": "b5f7459ec9b0c38d012e923c06c6bc18111b7e6d2136cb646542ff36823fc227",
     "betangel_research/collection.py": "a56d2a61b701173c0dc9ba808e3b56ac3348524c2bc569ad0cd46eba59515372",
     "betangel_research/collector.py": "1613332a9f01725ff5d74399adac32a39be579a4de65a852e84db99431e118d1",
@@ -99,7 +99,7 @@
     "research/collector-sources.json": "672484e0bdcee807a281b5a2385958e36aab9b0a82ad69c489c3f4a70a2de9d3",
     "scripts/backup_metadata.py": "d01827233c3a4055a2dbfbff921f13a9b3af1431f29478bed147ba96d1e76e8c"
   },
-  "s0_applied": false,
+  "s0_applied": true,
   "economic_result": null,
   "limitations": [
     "Offline tests with fake transports, sockets, Keychain runners, ttys and clocks; no Betfair endpoint was contacted.",
@@ -108,8 +108,7 @@
     "Property tests check the risk rules only on the generated sequences (300 seeds x 200 steps at integration); they are not proof for every possible sequence.",
     "Python 3.10 compatibility is a syntax check (ast feature_version 3.10), not an executed run.",
     "Paper fills are a conservative model and not execution evidence.",
-    "v1 live surface narrowed by Yu's decision D1-D5 (2026-10-10; amendment-v1-live-scope.md in .team-work/betfair-exchange-20261010): live place (LIMIT with LAPSE only), full cancels of our own bets, kill, live-probe (place then cancel), reconciling unknown outcomes and a new hand-typed settle-market. There is no live replace, no live partial cancel, no automatic live settlement (cleared rows never close or settle a live order; the operator settles a CLOSED market and each order is booked at its worst case) and no hedge credit in live risk limits. The kill never takes the gateway lock. F77, settle-market's premise, is inferred; a market Betfair no longer returns cannot be settled in v1 and stays counted at worst case (A20, decided by Yu on 2026-10-11: keep this conservative behaviour and settle soon after close; a possible forget-market only after the first-live T-tests with a fresh design and review, never in v1).",
-    "S0 (AGENTS.md, betangel_research/__init__.py, .gitignore, .dockerignore) is not applied; merging to main is blocked until it is."
+    "v1 live surface narrowed by Yu's decision D1-D5 (2026-10-10; amendment-v1-live-scope.md in .team-work/betfair-exchange-20261010): live place (LIMIT with LAPSE only), full cancels of our own bets, kill, live-probe (place then cancel), reconciling unknown outcomes and a new hand-typed settle-market. There is no live replace, no live partial cancel, no automatic live settlement (cleared rows never close or settle a live order; the operator settles a CLOSED market and each order is booked at its worst case) and no hedge credit in live risk limits. The kill never takes the gateway lock. F77, settle-market's premise, is inferred; a market Betfair no longer returns cannot be settled in v1 and stays counted at worst case (A20, decided by Yu on 2026-10-11: keep this conservative behaviour and settle soon after close; a possible forget-market only after the first-live T-tests with a fresh design and review, never in v1)."
   ],
   "python_311_full_suite": {
     "version": "3.11.15",

@@ -1,0 +1,1527 @@
+{
+  "schema_version": 1,
+  "status": "external_facts_read_2026_10_10_none_checked_against_live_api",
+  "accessed": "2026-10-10",
+  "scope": "Betfair facts the betangel_research.betfair code depends on (spec section 18). Values are short paraphrases, at most one sentence each. official_* means the owner's own documentation of the thing described: Betfair's pages for the exchange (Betfair is the exchange operator), Apple's man pages for macOS tools (F68, F74); vendor_* means Bet Angel only. first_person_observation is reserved for our own first-live-test receipts (T0-T10; T11 was dropped with live replace in v1), and no record carries it yet. secondary_evidence_type labels a second, weaker source behind part of a value, or is null. retrieval is one label, or a list of labels in the order of the value's parts when the parts were obtained differently (F74: a man page, then a local check); every fact citing a local: source lists local_python_check.",
+  "fields": [
+    "id",
+    "area",
+    "value",
+    "used_by",
+    "evidence_type",
+    "secondary_evidence_type",
+    "retrieval",
+    "sources",
+    "published_or_updated",
+    "accessed",
+    "verification_status",
+    "code_handling"
+  ],
+  "vocabulary": {
+    "evidence_type": [
+      "official_documentation",
+      "official_current_policy",
+      "official_data_specification",
+      "vendor_documentation",
+      "vendor_current_pricing",
+      "forum_participant_opinion",
+      "self_report_unverified",
+      "primary_research_simulation",
+      "inferred",
+      "unverified",
+      "first_person_observation"
+    ],
+    "retrieval": [
+      "official_rest_api_storage_read",
+      "official_page_read",
+      "official_four_page_pdf_read",
+      "zendesk_api_read",
+      "reader_proxy_read",
+      "wayback_snapshot_<ts>",
+      "man_page_read",
+      "local_python_check"
+    ],
+    "verification_status": [
+      "documented",
+      "documented_corrected",
+      "partially_unverified",
+      "conflicting",
+      "unverified",
+      "unknown",
+      "inferred",
+      "local_check"
+    ]
+  },
+  "source_keys": {
+    "DD": "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/<id>",
+    "SA": "https://support.developer.betfair.com/hc/en-us/articles/<id>"
+  },
+  "limitations": [
+    "No fact has been checked against the live Betfair API; first-live tests T0-T10 are pending (T11 was dropped with live replace in v1).",
+    "support.betfair.com charges and T&C pages returned HTTP 403; those facts come from Wayback snapshots.",
+    "Paraphrases are not quotations; read the cited page before relying on a value."
+  ],
+  "facts": [
+    {
+      "id": "F01",
+      "area": "auth",
+      "value": "Certificate login is POST https://identitysso-cert.<tld>/api/certlogin with the client certificate presented in the TLS connection; tld is com, com.au (Australian and New Zealand customers), it, es or ro.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915"
+      ],
+      "published_or_updated": "2026-07-01",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "constant (SSO_CERT_HOSTS, SSO_PATHS)"
+    },
+    {
+      "id": "F02",
+      "area": "auth",
+      "value": "certlogin takes a form-urlencoded username and password body; X-Application is sent but its value is not validated.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915"
+      ],
+      "published_or_updated": "2026-07-01",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "constant"
+    },
+    {
+      "id": "F03",
+      "area": "auth",
+      "value": "certlogin answers {sessionToken, loginStatus}; a failure carries loginStatus only. Dropping the sample's curl -k (keeping certificate verification on) is our own advice.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915"
+      ],
+      "published_or_updated": "2026-07-01",
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "parser; verification stays on"
+    },
+    {
+      "id": "F04",
+      "area": "auth",
+      "value": "certlogin documents 45 loginStatus values and the list may grow.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915"
+      ],
+      "published_or_updated": "2026-07-01",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "any unknown status is a failure"
+    },
+    {
+      "id": "F05",
+      "area": "docs",
+      "value": "Certificate login needs a 2048-bit RSA self-signed client certificate made with the documented openssl steps and uploaded by hand on the website.",
+      "used_by": [
+        "docs"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915"
+      ],
+      "published_or_updated": "2026-07-01",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "docs only"
+    },
+    {
+      "id": "F06",
+      "area": "auth",
+      "value": "Interactive login is POST https://identitysso.<tld>/api/login with mandatory Accept: application/json; the response is {token, product, status, error}; LIMITED_ACCESS still returns a token; exceptional codes are listed outside FAIL.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687772"
+      ],
+      "published_or_updated": "2026-04-28",
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "can_bet=False for LIMITED_ACCESS; match exceptional codes on error"
+    },
+    {
+      "id": "F07",
+      "area": "auth",
+      "value": "keepAlive and logout live at <sso>/api/keepAlive and <sso>/api/logout with Accept: application/json, X-Authentication and X-Application, and answer {token, product, status, error}.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869"
+      ],
+      "published_or_updated": "2026-09-08",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "constant"
+    },
+    {
+      "id": "F08",
+      "area": "auth",
+      "value": "The HTTP method for keepAlive and logout: the page says POST but its curl sample sends GET.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687786"
+      ],
+      "published_or_updated": "2026-09-08",
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "config session.sso_http_method (default POST); first-live-test T2"
+    },
+    {
+      "id": "F09",
+      "area": "auth",
+      "value": "Sessions last 24 h for UK/IE customers and 12 h for other .com customers, 20 min on IT/ES; API calls do not extend a session; Logout Preferences can change it.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869",
+        "https://forum.developer.betfair.com/forum/developer-program/announcements/34635-change-to-login-session-expiry-time-24-to-12-hours-week-commencing-10th-may-2021"
+      ],
+      "published_or_updated": "2026-09-08",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "keepAlive bounds per jurisdiction; NO_SESSION halves the interval"
+    },
+    {
+      "id": "F10",
+      "area": "auth",
+      "value": "More than 100 successful logins per minute blocks new logins for 20 minutes with TEMPORARY_BAN_TOO_MANY_REQUESTS; existing sessions stay valid. Whether failed logins count is unclear.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869",
+        "https://support.developer.betfair.com/hc/en-us/articles/115003887351-Why-am-I-receiving-TEMPORARY-BAN-TOO-MANY-REQUESTS-when-attempting-to-Login"
+      ],
+      "published_or_updated": "2026-09-08",
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "local login caps and a persisted ban (spec section 6)"
+    },
+    {
+      "id": "F11",
+      "area": "api",
+      "value": "Betting and Accounts JSON-RPC endpoints are https://api.betfair.com/exchange/betting/json-rpc/v1 and /exchange/account/json-rpc/v1 with methods SportsAPING/v1.0/<op> and AccountAPING/v1.0/<op>, POST, and X-Application, X-Authentication and Accept: application/json headers.",
+      "used_by": [
+        "api",
+        "transport"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687786",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687725"
+      ],
+      "published_or_updated": "2026-07-14",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "constant (paths, method prefixes, READ_METHODS)"
+    },
+    {
+      "id": "F12",
+      "area": "config",
+      "value": "New Zealand customers use api.betfair.com.au; Italian and Spanish accounts use api.betfair.com.",
+      "used_by": [
+        "config"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687158",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687808"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "api_host allowlist; api.betfair.com.au only with jurisdiction com.au (the AUS/NZ SSO hosts)"
+    },
+    {
+      "id": "F13",
+      "area": "transport",
+      "value": "One session token can be shared across calls; request gzip and keep-alive; idle connections close after 3 minutes; do not send Expect: 100-Continue.",
+      "used_by": [
+        "transport"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687730",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2699882"
+      ],
+      "published_or_updated": "2026-08-19",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "idle_reconnect_s=170; no Expect header"
+    },
+    {
+      "id": "F14",
+      "area": "api",
+      "value": "JSON-RPC errors carry error.data.exceptionname naming an APINGException with errorCode; code -32099 carries ANGX-00nn in the message.",
+      "used_by": [
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2699907"
+      ],
+      "published_or_updated": "2014",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "spec section 7 precedence; first-live-test T4"
+    },
+    {
+      "id": "F15",
+      "area": "errors",
+      "value": "APINGException codes, JSON-RPC codes -32700/-32601/-32602/-32603 and DSC transport fault codes.",
+      "used_by": [
+        "errors"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687450",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2686993"
+      ],
+      "published_or_updated": "2023-06-01",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "(surface, code) taxonomy"
+    },
+    {
+      "id": "F16",
+      "area": "api",
+      "value": "Market data request weights and the 200-point per-request rule (TOO_MUCH_DATA above it).",
+      "used_by": [
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687478"
+      ],
+      "published_or_updated": "2025-05-21",
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "weight planner with conservative depth multiplier"
+    },
+    {
+      "id": "F17",
+      "area": "api",
+      "value": "Call listMarketBook at most 5 times per second per market (guidance); request OPEN and CLOSED markets separately; at most 250 betIds/marketIds.",
+      "used_by": [
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687510"
+      ],
+      "published_or_updated": "2024-06-04",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "throttle 4/s per market; single-id re-request of missing ids"
+    },
+    {
+      "id": "F18",
+      "area": "api",
+      "value": "listMarketBook with order projections, listCurrentOrders and listMarketProfitAndLoss share a 3-request concurrency limit per account; listClearedOrders is separate. The two sources disagree on whether queued or executing requests count.",
+      "used_by": [
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687450",
+        "https://support.developer.betfair.com/hc/en-us/articles/360000406111-Why-am-I-receiving-the-TOO-MANY-REQUESTS-error"
+      ],
+      "published_or_updated": "2023-06-01",
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "local in-flight cap 2"
+    },
+    {
+      "id": "F19",
+      "area": "risk",
+      "value": "More than 1000 instructions per second gives TOO_MANY_REQUESTS.",
+      "used_by": [
+        "risk"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/360000406111-Why-am-I-receiving-the-TOO-MANY-REQUESTS-error"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "local caps far below"
+    },
+    {
+      "id": "F20",
+      "area": "validate",
+      "value": "Per-request instruction limits: place 200 (50 on the Italian exchange); cancel, replace and update 60; exceeding them gives INVALID_INPUT_DATA.",
+      "used_by": [
+        "validate"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687496",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687491",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687487"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "V7; cancel requests hold at most 60 bet ids"
+    },
+    {
+      "id": "F21",
+      "area": "validate",
+      "value": "customerRef is at most 32 characters from letters, digits and : - . _ + * ; ~ and de-duplicates resubmissions within 60 s.",
+      "used_by": [
+        "validate",
+        "gateway"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687496"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "unique per request and never reused"
+    },
+    {
+      "id": "F22",
+      "area": "gateway",
+      "value": "Whether customerRef is echoed in the execution report.",
+      "used_by": [
+        "gateway"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687496",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "not relied on; first-live-test T9 observes it"
+    },
+    {
+      "id": "F23",
+      "area": "gateway",
+      "value": "customerOrderRef is at most 32 characters, is not checked for uniqueness and can be filtered on; its character set is not stated.",
+      "used_by": [
+        "gateway",
+        "reconcile"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687504",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687749"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "charset [A-Za-z0-9-]; local unique index; A19 via live-probe"
+    },
+    {
+      "id": "F24",
+      "area": "config",
+      "value": "customerStrategyRef is at most 15 characters.",
+      "used_by": [
+        "config"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687496"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "pattern ^[A-Za-z0-9-]{1,15}$"
+    },
+    {
+      "id": "F25",
+      "area": "lifecycle",
+      "value": "marketVersion lapses the order on a material market change; the rejection is FAILURE / BET_ACTION_ERROR / BET_TAKEN_OR_LAPSED with a betId echoed. The page is internally inconsistent about a higher version.",
+      "used_by": [
+        "lifecycle"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687496"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "spec section 9.4 rule 2: UNKNOWN until confirmed"
+    },
+    {
+      "id": "F26",
+      "area": "risk",
+      "value": "MarketBook.version monotonicity: MarketBook says it increments, the MarketVersion type says non-monotonic.",
+      "used_by": [
+        "risk"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "no monotonic assumption"
+    },
+    {
+      "id": "F27",
+      "area": "lifecycle",
+      "value": "placeOrders is atomic unless Best Execution is off, in which case PROCESSED_WITH_ERRORS can occur.",
+      "used_by": [
+        "lifecycle"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687496"
+      ],
+      "published_or_updated": "2026-07-31",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "classify per instruction"
+    },
+    {
+      "id": "F28",
+      "area": "reconcile",
+      "value": "Order calls time out after 5 s (TIMEOUT); allow 15 s for the order to appear before treating it as lapsed.",
+      "used_by": [
+        "reconcile"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687450"
+      ],
+      "published_or_updated": "2026-07-17",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "reconcile window, grace and 3 successful polls; the kill's re-sweep bound (ORDER_TIMEOUT_S + ORDER_VISIBILITY_S + IN_PLAY_DELAY_MAX_S + 3 s = 35 s after the KILL file)"
+    },
+    {
+      "id": "F29",
+      "area": "lifecycle",
+      "value": "ExecutionReportStatus, InstructionReportStatus, error code enums, OrderStatus, PersistenceType and Side values.",
+      "used_by": [
+        "lifecycle",
+        "errors"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455"
+      ],
+      "published_or_updated": "2026-07-17",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "(surface, code) tables; enum constants"
+    },
+    {
+      "id": "F30",
+      "area": "lifecycle",
+      "value": "How BET_IN_PROGRESS differs from TIMEOUT in practice.",
+      "used_by": [
+        "lifecycle"
+      ],
+      "evidence_type": "unverified",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455"
+      ],
+      "published_or_updated": "2026-07-17",
+      "accessed": "2026-10-10",
+      "verification_status": "unverified",
+      "code_handling": "treated as UNKNOWN"
+    },
+    {
+      "id": "F31",
+      "area": "killswitch",
+      "value": "cancelOrders with no marketId and no instructions cancels every bet on the account; a concurrent cancel-all is rejected or gives ERROR_IN_MATCHER; it applies to LIMIT bets only.",
+      "used_by": [
+        "killswitch"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687491"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "own-scope kill by default; account-wide kill gated; a rejected concurrent cancel-all ends the kill kill_incomplete (exit 3)"
+    },
+    {
+      "id": "F32",
+      "area": "lifecycle",
+      "value": "replaceOrders is a cancel followed by an atomic place with no rollback; CANCELLED_NOT_PLACED exists; the new betId is in placeInstructionReport.",
+      "used_by": [
+        "lifecycle"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687487",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "paper only: REPLACED with a linked child, provisional child counted adversarially; live replace removed in v1; T11 dropped"
+    },
+    {
+      "id": "F33",
+      "area": "reconcile",
+      "value": "Whether the replacement bet inherits customerOrderRef and customerStrategyRef.",
+      "used_by": [
+        "reconcile",
+        "killswitch"
+      ],
+      "evidence_type": "unverified",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687487"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "unverified",
+      "code_handling": "paper only (provisional child); live replace removed in v1, so no live code depends on it; T11 dropped"
+    },
+    {
+      "id": "F34",
+      "area": "api",
+      "value": "listCurrentOrders takes betIds/marketIds (250 combined), includeSourceId and dateRange (not the legacy placedDateRange); pages hold 1000 with moreAvailable; BY_BET ordering is deprecated.",
+      "used_by": [
+        "api",
+        "reconcile"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687504",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "BY_PLACE_TIME with dateRange"
+    },
+    {
+      "id": "F35",
+      "area": "reconcile",
+      "value": "listClearedOrders needs betStatus; groupBy applies only to SETTLED (BET needed for LAPSED/CANCELLED); the default window is 90 days and a from date is advised.",
+      "used_by": [
+        "reconcile"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687749"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "settled_from_utc required by us; groupBy only for SETTLED"
+    },
+    {
+      "id": "F36",
+      "area": "reconcile",
+      "value": "Lapsed and cancelled bets are visible in listClearedOrders before the market settles.",
+      "used_by": [
+        "reconcile"
+      ],
+      "evidence_type": "unverified",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687749"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "unverified",
+      "code_handling": "not sufficient on its own for ABSENT_UNCONFIRMED; in live, cleared rows only establish that a bet exists (EXECUTABLE at worst case, never a terminal state); first-live-test T10"
+    },
+    {
+      "id": "F37",
+      "area": "pnl",
+      "value": "ClearedOrderSummary documents profit; its commission field names an EXCHANGE grouping that the GroupBy enum (EVENT_TYPE, EVENT, MARKET, SIDE, BET) does not offer. The sign and basis of profit and the use of priceMatched/sizeSettled are unverified.",
+      "used_by": [
+        "risk",
+        "pnl"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "live P&L informational: no code path writes settled profit from cleared rows; settle-market books each order's worst case; orders-cleared shows Betfair's figure"
+    },
+    {
+      "id": "F38",
+      "area": "validate",
+      "value": "GBP minimum bet £1, minimum BSP liability £10, minimum bet payout £10.",
+      "used_by": [
+        "validate"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2686993"
+      ],
+      "published_or_updated": "2026-09-04",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "V5 (at least £1 only)"
+    },
+    {
+      "id": "F39",
+      "area": "validate",
+      "value": "INVALID_PROFIT_RATIO refuses bets whose rounded profit moves more than 20% down or 25% up; the rounding mode is inferred.",
+      "used_by": [
+        "validate"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/360010423978-Why-am-I-receiving-the-INVALID-PROFIT-RATIO-error"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "V14 checks both half-up and half-even rounding"
+    },
+    {
+      "id": "F40",
+      "area": "validate",
+      "value": "Bet sizes have 2 decimal places of precision.",
+      "used_by": [
+        "validate"
+      ],
+      "evidence_type": "unverified",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "unverified",
+      "code_handling": "exact 2 dp required"
+    },
+    {
+      "id": "F41",
+      "area": "ticks",
+      "value": "CLASSIC ladder (350 ticks 1.01-1000), FINEST and LINE_RANGE ladders; catalogue priceLadderDescription.type; the stream's priceLadderDefinition is an object in the Swagger but a string in the doc table.",
+      "used_by": [
+        "ticks",
+        "book",
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2686993",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json"
+      ],
+      "published_or_updated": "2026-09-04",
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "CLASSIC only; book.ladder_type() accepts both shapes"
+    },
+    {
+      "id": "F42",
+      "area": "validate",
+      "value": "In-play bets carry a 1-12 s delay; PASSIVE/DYNAMIC delay types; KEEP persistence is invalid on PASSIVE markets.",
+      "used_by": [
+        "validate"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/360002825652-Why-do-you-have-a-delay-on-placing-bets-on-a-market-that-is-in-play",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "in-play refused in v1; LAPSE only; IN_PLAY_DELAY_MAX_S = 12 is part of the kill's re-sweep bound"
+    },
+    {
+      "id": "F43",
+      "area": "api",
+      "value": "MarketBook gating fields include isMarketDataDelayed and runner statuses; REST MarketBook has no bettingType, marketType, eventTypeId, ladder type or marketTime.",
+      "used_by": [
+        "validate",
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "catalogue join; V9, V10 and A18"
+    },
+    {
+      "id": "F44",
+      "area": "arming",
+      "value": "The delayed key places real bets (key table); there is no sandbox; delayed data is 1-180 s late with 3 levels and no runner totalMatched; the stream allows 2 connections and 200 markets and is conflated to 180000 ms.",
+      "used_by": [
+        "arming",
+        "recorder"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687105",
+        "https://support.developer.betfair.com/hc/en-us/articles/115003886111-Is-there-an-API-testbed-available",
+        "https://support.developer.betfair.com/hc/en-us/articles/360009638032-When-should-I-use-the-Delayed-or-Live-Application-Key",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396"
+      ],
+      "published_or_updated": "2026-05-07",
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "arming independent of key; labels; the gateway refuses delayed-key orders"
+    },
+    {
+      "id": "F45",
+      "area": "errors",
+      "value": "PERMISSION_DENIED wording about the delayed key differs between the enum page and the support article.",
+      "used_by": [
+        "errors"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455",
+        "https://support.developer.betfair.com/hc/en-us/articles/360015530311-Why-am-I-receiving-the-error-PERMISSION-DENIED-ACCESS-DENIED-when-attempting-to-place-a-bet"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "terminal_account; never probed (v1 never orders on the delayed key)"
+    },
+    {
+      "id": "F46",
+      "area": "recorder",
+      "value": "The live key costs a one-off, non-refundable £499; it needs a KYC-verified, funded account; read-only use of the live key is not permitted.",
+      "used_by": [
+        "recorder",
+        "docs"
+      ],
+      "evidence_type": "official_current_policy",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/115003864531-Are-there-any-costs-associated-with-API-access",
+        "https://support.developer.betfair.com/hc/en-us/articles/25033076334748-What-is-read-only-Betfair-API-access",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687105"
+      ],
+      "published_or_updated": "2026-10-08",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "recorder.allow_live_key=false by default"
+    },
+    {
+      "id": "F47",
+      "area": "arming",
+      "value": "An unfunded or overridden live key returns delayed data.",
+      "used_by": [
+        "arming"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/115003886711-Why-am-I-receiving-delayed-data-when-using-a-live-Application-Key"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "A18 requires is_market_data_delayed False"
+    },
+    {
+      "id": "F48",
+      "area": "esa",
+      "value": "The stream is a TLS socket of CRLF-delimited JSON at stream-api.betfair.com:443; the first message must be sent within 15 s; connection, authentication and status message fields; ladderLevels 1-10 in the Swagger.",
+      "used_by": [
+        "esa"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://support.developer.betfair.com/hc/en-us/articles/12937897844252-Does-the-Stream-API-allow-Web-Socket-connections",
+        "https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "constants (STREAM_HOSTS, STREAM_PORT, timeouts)"
+    },
+    {
+      "id": "F49",
+      "area": "esa",
+      "value": "Stream error codes; every error except SUBSCRIPTION_LIMIT_EXCEEDED closes the connection (INVALID_REQUEST appears in the Swagger only).",
+      "used_by": [
+        "esa"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "stream_status error surface"
+    },
+    {
+      "id": "F50",
+      "area": "esa",
+      "value": "heartbeatMs may be requested as 500-5000 and is echoed as 500-30000; a heartbeat line carries clk and is sent only when nothing else was sent in the interval.",
+      "used_by": [
+        "esa"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_page_read",
+      "sources": [
+        "https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json",
+        "https://support.developer.betfair.com/hc/en-us/articles/360000402611-Market-Streaming-How-do-the-Heartbeat-and-Conflation-requests-work"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "use the echoed value; conflation-aware liveness; first-live-test T6"
+    },
+    {
+      "id": "F51",
+      "area": "esa",
+      "value": "conflateMs may be requested as 0-120000; the delayed key gets 180000; the default of 0 is inferred from SUB_IMAGE examples only.",
+      "used_by": [
+        "esa",
+        "recorder"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_page_read",
+      "sources": [
+        "https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "null default; record the echoed value"
+    },
+    {
+      "id": "F52",
+      "area": "recorder",
+      "value": "Segmentation is size-based; whether segmentationEnabled:false reliably prevents segments is unverified.",
+      "used_by": [
+        "esa",
+        "recorder"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/360000402331-How-does-segmentation-work-benefits",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "close the segment if a segmented line is seen"
+    },
+    {
+      "id": "F53",
+      "area": "esa",
+      "value": "clk and initialClk support resubscription (RESUB_DELTA) and INVALID_CLOCK exists; pt ordering is guaranteed.",
+      "used_by": [
+        "esa"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://support.developer.betfair.com/hc/en-us/articles/360000391612-Market-Streaming-how-do-I-managed-re-connections",
+        "https://support.developer.betfair.com/hc/en-us/articles/25873962091420-Are-Stream-API-messages-guaranteed-to-be-delivered-in-strict-sequential-order-according-to-pt"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "fresh image per segment; never resume with clocks"
+    },
+    {
+      "id": "F54",
+      "area": "book",
+      "value": "ChangeMessage, MarketChange and RunnerChange fields; deletion semantics; GBP sizes; Infinity sizes; settlement zeroing; duplicate markets keep the higher version.",
+      "used_by": [
+        "book"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json",
+        "https://support.developer.betfair.com/hc/en-us/articles/360003061798-Why-am-I-receiving-Infinity-size-from-the-Streaming-API",
+        "https://support.developer.betfair.com/hc/en-us/articles/4802553453457-Why-does-the-penultimate-rc-have-all-runner-volumes-of-Price-Points-Traded-Available-To-Back-Lay-set-to-zero"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "cache rules in book.py"
+    },
+    {
+      "id": "F55",
+      "area": "recorder",
+      "value": "The default subscription limit is 200 markets; closed markets are evicted about 1 h 5 min after close.",
+      "used_by": [
+        "recorder"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://support.developer.betfair.com/hc/en-us/articles/11741143435932-Are-closed-markets-auto-removed-from-the-Stream-API-subscription"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "pre-count; max_markets 150 (ceiling 180); stop on SUBSCRIPTION_LIMIT_EXCEEDED"
+    },
+    {
+      "id": "F56",
+      "area": "esa",
+      "value": "The live-key stream connection limit is not published.",
+      "used_by": [
+        "esa"
+      ],
+      "evidence_type": "unverified",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "unknown",
+      "code_handling": "read connectionsAvailable at authentication"
+    },
+    {
+      "id": "F57",
+      "area": "future",
+      "value": "The order stream's initial image holds only executable orders and runner removal voids show on the stream; the doc and a support article conflict.",
+      "used_by": [
+        "future"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396",
+        "https://support.developer.betfair.com/hc/en-us/articles/360000391492-How-are-void-bets-treated-by-the-Stream-API"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "conflicting",
+      "code_handling": "v1 reconciles through REST only"
+    },
+    {
+      "id": "F58",
+      "area": "gateway",
+      "value": "The Heartbeat API cancels all LIMIT bets for the customer on the exchange (not per app key) when heartbeats stop; the timeout is 10-300 s; it can unregister silently.",
+      "used_by": [
+        "gateway",
+        "arming"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687861"
+      ],
+      "published_or_updated": "2024-06-27",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "A9 refuses heartbeat_api_enabled; the path is not in the transport allowlist"
+    },
+    {
+      "id": "F59",
+      "area": "recorder",
+      "value": "Historical data uses the stream format; the ADV package carries batb/batl, trd, tv and ltp at 1 s.",
+      "used_by": [
+        "recorder"
+      ],
+      "evidence_type": "official_data_specification",
+      "secondary_evidence_type": null,
+      "retrieval": "official_four_page_pdf_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/360000402211-How-do-I-download-and-view-Betfair-Historical-Data",
+        "https://historicdata.betfair.com/files/Betfair-Historical-Data-Feed-Specification.pdf"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "ADV-like recorder fields by default"
+    },
+    {
+      "id": "F60",
+      "area": "paper",
+      "value": "Traded volume is counted as backer's stake x 2 in PRO historical data; the live API basis is unverified.",
+      "used_by": [
+        "paper"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/360000402211-How-do-I-download-and-view-Betfair-Historical-Data"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "traded_volume_divisor 2, labelled; first-live-test T8"
+    },
+    {
+      "id": "F61",
+      "area": "risk",
+      "value": "Transaction charges apply above 5000 transactions per clock hour with documented counting rules; a conflicting copy of the per-transaction rates was seen during research but its URL was not recorded, so it is not relied upon.",
+      "used_by": [
+        "risk"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/20029343399836-Transaction-Charge-how-are-transactions-counted",
+        "https://web.archive.org/web/20250717193515/https://support.betfair.com/app/answers/detail/betfair-charges/"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "count only; max_transactions_per_hour 300 (ceiling 1000)"
+    },
+    {
+      "id": "F62",
+      "area": "paper",
+      "value": "UK commission follows the My Betfair Rewards package and Basic 2% is Betfair's own example; the 5% and 8% rates (and so the example config's 5%) come only from a secondary source, not from Betfair.",
+      "used_by": [
+        "paper",
+        "pnl"
+      ],
+      "evidence_type": "official_current_policy",
+      "secondary_evidence_type": "forum_participant_opinion",
+      "retrieval": "wayback_snapshot_20250717193515",
+      "sources": [
+        "https://web.archive.org/web/20250717193515/https://support.betfair.com/app/answers/detail/betfair-charges/",
+        "https://web.archive.org/web/20250123063716/https://support.betfair.com/app/answers/detail/6801-my-betfair-rewards-faq/",
+        "https://www.sportinglife.com/free-bets/guides/betfair-exchange-education/how-does-commission-work"
+      ],
+      "published_or_updated": "2025-07-17",
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "commission_rate and commission_source are required config"
+    },
+    {
+      "id": "F63",
+      "area": "docs",
+      "value": "Terms and conditions: the API is a betting channel (18.3, 12.1.4); data is for personal non-commercial use (19.3); one account per person (6.1); cancellation is effective on confirmation (18.12). The live page returned 403.",
+      "used_by": [
+        "docs",
+        "receipts"
+      ],
+      "evidence_type": "official_current_policy",
+      "secondary_evidence_type": null,
+      "retrieval": "wayback_snapshot_20260511012028",
+      "sources": [
+        "https://web.archive.org/web/20260511012028/https://support.betfair.com/app/answers/detail/betfair-general-terms-and-conditions/",
+        "https://web.archive.org/web/20251226113352/https://support.betfair.com/app/answers/detail/betfair-general-terms-and-conditions/"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "docs; licence note in recorder receipts"
+    },
+    {
+      "id": "F64",
+      "area": "arming",
+      "value": "API access from geo-restricted IP regions (MaxMind), including the US, DE, NL, FR and SG, is blocked.",
+      "used_by": [
+        "arming"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "zendesk_api_read",
+      "sources": [
+        "https://support.developer.betfair.com/hc/en-us/articles/28271961503516-Which-IP-regions-are-restricted-from-accessing-the-Betfair-API"
+      ],
+      "published_or_updated": "2026-09-21",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "A10 operator egress attestation and cloud markers"
+    },
+    {
+      "id": "F65",
+      "area": "api",
+      "value": "getAccountFunds returns availableToBetBalance, exposure, retainedCommission, exposureLimit, discountRate and pointsBalance; the sign of exposure is unverified.",
+      "used_by": [
+        "api",
+        "risk"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687852"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "abs(exposure); first-live-test T7"
+    },
+    {
+      "id": "F66",
+      "area": "arming",
+      "value": "AccountDetails includes currencyCode.",
+      "used_by": [
+        "arming"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687852"
+      ],
+      "published_or_updated": "2022-03-02",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "A16 (an absent value fails)"
+    },
+    {
+      "id": "F67",
+      "area": "auth",
+      "value": "A new login does not invalidate other sessions, so Bet Angel and the website can coexist with our session.",
+      "used_by": [
+        "auth",
+        "cli"
+      ],
+      "evidence_type": "inferred",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687730"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "inferred",
+      "code_handling": "--bet-angel-paused required until first-live-test T3; the kill logs in a separate emergency session and prints the F67 warning while coexistence is unverified"
+    },
+    {
+      "id": "F68",
+      "area": "credentials",
+      "value": "security add-generic-password with -w as the last option prompts for the value; find-generic-password -w prints only the password.",
+      "used_by": [
+        "credentials"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "man_page_read",
+      "sources": [
+        "man:security(1)"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "exit codes not relied on, except that anchor_read treats exit 44 (errSecItemNotFound) from both lookups as 'no anchor' and fails closed on any other result; exit 44 is inferred from the OSStatus, not in the man page (unverified); first-live-test T0"
+    },
+    {
+      "id": "F69",
+      "area": "auth",
+      "value": "ssl.SSLContext.load_cert_chain(certfile, keyfile, password) loads the client certificate and urllib.parse.urlencode returns str that needs .encode() before sending; checked locally on Python 3.14.6 with synthetic files, never against Betfair.",
+      "used_by": [
+        "auth"
+      ],
+      "evidence_type": "inferred",
+      "secondary_evidence_type": null,
+      "retrieval": "local_python_check",
+      "sources": [
+        "local:python-3.14.6"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "local_check",
+      "code_handling": "as specified; make_tls_context never lets OpenSSL prompt for a passphrase"
+    },
+    {
+      "id": "F70",
+      "area": "api",
+      "value": "RANK is not a MarketSort member; listMarketCatalogue maxResults is at most 1000; CLOSED markets are not returned by the catalogue.",
+      "used_by": [
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687517",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687455"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented_corrected",
+      "code_handling": "never send sort RANK; cache catalogue rows"
+    },
+    {
+      "id": "F71",
+      "area": "killswitch",
+      "value": "listCurrentOrders and listClearedOrders accept includeSourceId; sourceIdKey is the app key used to place the order; its value format is unverified.",
+      "used_by": [
+        "killswitch",
+        "reconcile"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687504",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "partially_unverified",
+      "code_handling": "startup reconcile and reconcile_unknown leg (it only halts); no longer a kill leg since the v1 narrowing; stripped from storage"
+    },
+    {
+      "id": "F72",
+      "area": "api",
+      "value": "The filter parameter of listEventTypes and listMarketCatalogue is required.",
+      "used_by": [
+        "api"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687448",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687517"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "always send {} or refuse None"
+    },
+    {
+      "id": "F73",
+      "area": "credentials",
+      "value": "security add-generic-password -T \"\" creates an item that no application may read silently, so every read prompts.",
+      "used_by": [
+        "credentials"
+      ],
+      "evidence_type": "unverified",
+      "secondary_evidence_type": null,
+      "retrieval": "man_page_read",
+      "sources": [
+        "man:security(1)"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "unverified",
+      "code_handling": "printed by keychain-setup; first-live-test T0"
+    },
+    {
+      "id": "F74",
+      "area": "receipts",
+      "value": "macOS fsync does not flush the drive cache and F_FULLFSYNC does (man page); SQLite's PRAGMA fullfsync was checked locally on SQLite 3.53.2.",
+      "used_by": [
+        "journal",
+        "receipts"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": "inferred",
+      "retrieval": [
+        "man_page_read",
+        "local_python_check"
+      ],
+      "sources": [
+        "man:fsync(2)",
+        "local:sqlite-3.53.2"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "receipts.full_fsync and the journal pragmas; the SQLite part is a local check (secondary inferred, local_python_check), not documentation"
+    },
+    {
+      "id": "F75",
+      "area": "filters",
+      "value": "REST MarketFilter keys (marketCountries, marketTypeCodes, marketStartTime) differ from stream keys (countryCodes, marketTypes, no time range).",
+      "used_by": [
+        "filters"
+      ],
+      "evidence_type": "official_documentation",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "filters.py mapping"
+    },
+    {
+      "id": "F76",
+      "area": "arming",
+      "value": "One person may hold one account (T&C 6.1); a second local profile for the same account would split the caps.",
+      "used_by": [
+        "arming"
+      ],
+      "evidence_type": "official_current_policy",
+      "secondary_evidence_type": null,
+      "retrieval": "wayback_snapshot_20260511012028",
+      "sources": [
+        "https://web.archive.org/web/20260511012028/https://support.betfair.com/app/answers/detail/betfair-general-terms-and-conditions/"
+      ],
+      "published_or_updated": "2026-05-11",
+      "accessed": "2026-10-10",
+      "verification_status": "documented",
+      "code_handling": "accounts.json registry (A15)"
+    },
+    {
+      "id": "F77",
+      "area": "reconcile",
+      "value": "After a market closes, listMarketBook returns it as CLOSED for an unverified period, and listCurrentOrders stops listing a bet once its market is settled.",
+      "used_by": [
+        "gateway"
+      ],
+      "evidence_type": "inferred",
+      "secondary_evidence_type": null,
+      "retrieval": "official_rest_api_storage_read",
+      "sources": [
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687504",
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687510"
+      ],
+      "published_or_updated": null,
+      "accessed": "2026-10-10",
+      "verification_status": "inferred",
+      "code_handling": "settle-market P2 (CLOSED on listMarketBook) and P3 (none of our bets current); if Betfair keeps listing them settle-market refuses; a market no longer returned cannot be settled in v1 and stays counted at worst case (A20, decided by Yu 2026-10-11: kept; settle soon after close); first-live-test T10 extended"
+    }
+  ]
+}

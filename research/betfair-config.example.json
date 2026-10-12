@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "profile": "default",
+  "jurisdiction": "com",
+  "api_host": "api.betfair.com",
+  "account_currency": "GBP",
+  "coexistence": {"bet_angel": "unverified"},
+  "credentials": {
+    "source": "keychain",
+    "login_method": "cert",
+    "cert_path": "~/.config/betangel-research/betfair/client-2048.crt",
+    "key_path": "~/.config/betangel-research/betfair/client-2048.key",
+    "key_passphrase_in_keychain": false
+  },
+  "session": {"keepalive_interval_s": 3600, "sso_http_method": "POST", "max_successful_logins_per_10min": 30,
+              "max_consecutive_failed_logins": 2, "ban_lockout_s": 1260},
+  "http": {"timeout_s": 10, "order_deadline_s": 10, "max_response_bytes": 33554432, "idle_reconnect_s": 170},
+  "read": {"app_key_slot": "delayed", "max_book_calls_per_second_per_market": 4, "order_projection_inflight": 2,
+           "cleared_inflight": 2, "retry_backoff_s": [1, 4, 16], "out_root": null, "catalogue_cache_max_age_s": 21600},
+  "stream": {"host": "stream-api.betfair.com", "port": 443, "app_key_slot": "delayed", "heartbeat_ms": 5000,
+             "conflate_ms": null, "connect_timeout_s": 15, "max_line_bytes": 16777216,
+             "reconnect_backoff_s": [5, 30, 120, 300], "max_reconnects_per_hour": 12},
+  "recorder": {"root": null,
+               "market_filter": {"event_type_ids": ["7"], "country_codes": ["GB", "IE"], "market_types": ["WIN"]},
+               "market_data_filter": {"fields": ["EX_BEST_OFFERS", "EX_TRADED", "EX_TRADED_VOL", "EX_LTP", "EX_MARKET_DEF"], "ladderLevels": 3},
+               "motif_compatible": true, "max_markets": 150, "refresh_s": 1800,
+               "max_duration_s": 57600, "max_bytes": 2000000000, "fsync_interval_s": 5, "allow_live_key": false},
+  "orders": {
+    "customer_strategy_ref": "bar-manual",
+    "caps": {"max_stake_per_order": 2.0, "max_liability_per_order": 10.0, "max_market_exposure": 20.0,
+             "max_total_exposure": 50.0, "max_daily_loss": 20.0, "max_orders_per_minute": 6, "max_orders_per_hour": 60,
+             "max_orders_per_day": 200, "max_transactions_per_hour": 300, "max_instructions_per_request": 1,
+             "max_price_deviation_ticks": 10, "max_book_age_s": 2.0, "funds_reserve": 0.0, "funds_max_age_s": 60,
+             "max_minutes_before_off": 30},
+    "rules": {"market_types": ["WIN"], "event_type_ids": ["7"], "min_stake": 1.0, "external_exposure_tolerance": 0.0},
+    "paper": {"model": "paper-v1", "submit_latency_ms": 500, "displayed_size_fraction": 0.5,
+              "passive_fills": "trd_queue_conservative", "traded_volume_divisor": 2, "max_snapshot_age_s": 10,
+              "commission_rate": 0.05, "commission_source": "community_secondary_rewards_5pct_conservative_unverified"},
+    "reconcile": {"poll_interval_s": 1.0, "window_s": 15, "grace_s": 5, "min_successful_polls": 3, "cleared_lookback_s": 3600},
+    "live": {"armed": false, "acknowledgements": [], "operator_attests_uk_egress": false,
+             "heartbeat_api_enabled": false, "kill_cancels_own_orders": true}
+  }
+}

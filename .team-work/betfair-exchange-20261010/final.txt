@@ -1,0 +1,2314 @@
+# Betfair Exchange integration: final implementation spec for `betangel_research/betfair/` (read path, stream recorder, order path)
+
+- **Branch and worktree:** branch `feat/betfair-exchange` in the worktree `/Users/macair/betangel-research-betfair`.
+- **State when this spec was written:** HEAD `0983037`, clean tree. Nothing has been written.
+- **Codex's checkout:** `/Users/macair/betangel-research` is on `research/offline-edge-lab`, also at `0983037`. Nobody reads or writes it.
+- **Who this spec is for:** implementers. Anything marked "must" is a requirement. Anything marked "unverified" must be handled the defensive way described next to it.
+
+---
+
+## 0. What was checked, the stance this spec takes, and how the critiques were handled
+
+### 0.1 Facts checked first-hand on 2026-10-10 (read-only)
+- `git worktree list` shows two worktrees, both at `0983037`: `/Users/macair/betangel-research` on `research/offline-edge-lab`, and this one on `feat/betfair-exchange`.
+- `temporal.timestamp_ms` raises when `microsecond % 1000 != 0`, so it rejects sub-millisecond timestamps.
+- `microstructure._update_levels` needs `[level, price, size]` triples, with level 0–2.
+- `stream.messages` behaviour:
+  - It opens files in text mode `"rt"`, which uses universal newlines.
+  - It skips blank lines and any line whose op is not `mcm`.
+  - It requires an int `pt` (a bool is rejected) that never decreases.
+  - It rejects any non-null `segmentType`.
+- `collector.epoch` parses with `datetime.fromisoformat(value.replace("Z", "+00:00"))`.
+- `.dockerignore` is an allowlist and contains `!betangel_research/**`.
+- `.team-work/collection-infra-20261010/handoff.json` has these keys: `completed_at`, `starting_revision`, `artifact_sha256`, `protected_sha256`, `reviews`, `github`, `tests`, `cloud_resources_provisioned`, `paid_subscriptions_created`, `limitations`.
+- `evidence_type` values already used in `sources/` and `research/` include `official_documentation`, `official_current_policy`, `official_data_specification`, `vendor_documentation`, `vendor_current_pricing`, `forum_participant_opinion`, `self_report_unverified` and `primary_research_simulation`. `retrieval` values already used include `official_page_read` and `official_four_page_pdf_read`.
+- `__main__.run_replay` writes `summary.md` (line 106) and appends to `run-ledger.jsonl` (line 111).
+- `man security`:
+  - The usage line is `add-generic-password ... [-w password] [options...] [-A|-T appPath]`.
+  - `-T` is described as "Specify an application which may access this item".
+  - The page does **not** say what `-T ""` does. That is **unverified** and is test T0.
+- `man 2 fsync` documents `F_FULLFSYNC`. Local SQLite 3.53.2 supports `PRAGMA fullfsync`.
+- The current text of `AGENTS.md` line 9, `README.md` line 108 and the docstring in `betangel_research/__init__.py` is quoted exactly in §16.
+
+### 0.2 Threat model (the docs must state this)
+The order path is built to stop these:
+- accidental or unattended live orders from agents, scripts, cron, CI, cloud hosts, the wrong checkout or the wrong working directory;
+- orders priced off stale or forged market data;
+- double bets after an unknown outcome;
+- risk caps being reset because local state was lost;
+- secrets leaking into files, logs or exceptions.
+
+It does **not** stop a deliberately malicious process running as Yu's macOS user. Such a process can approve a Keychain dialog, fake a pty or edit the Python. Operator-presence checks (typing on a tty, the Keychain dialog) slow down automation. They are not cryptographic proof that Yu was there.
+
+### 0.3 What live safety rests on
+1. Paper mode is the default. Live mode needs an explicit `--mode live` on every command **and** arming in the config.
+2. There is one choke point, `gateway.py`. Each capability is bound to the sha256 of the exact request body bytes. The transport refuses any JSON-RPC call that is not a read unless it carries that matching digest.
+3. Before every live order, Yu must retype it on `/dev/tty`.
+4. Each Mac has one fixed state root outside every git worktree. The kill file and the gateway lock are global. A journal anchor is kept in the Keychain. Every live start reconciles against the exchange.
+5. The journal is append-only and hash-chained. Each record is committed with `F_FULLFSYNC` before any byte goes to the network.
+6. An unknown outcome is never treated as zero. Orders in UNKNOWN, ABSENT_UNCONFIRMED or a provisional replace child count at full adverse exposure and block new placement until resolved. Nothing is ever resent automatically.
+7. In live mode the gateway fetches its own market data with the live key, immediately before the risk check. It never trusts a book supplied by the caller.
+
+### 0.4 Style
+- Follow the repository's existing style:
+  - Records are plain dicts with exact key sets, each with a `validate_*` function.
+  - Classes are used only for stateful components.
+  - No dataclasses, no TypedDict, no `logging`.
+  - Standard library only, with relative imports.
+- Bad input raises `ValueError` or a subclass of it.
+- Status strings are snake_case and say how much they prove.
+- Python 3.10 compatibility is enforced by a test (§14). Do not use `tomllib`, `datetime.UTC`, `hashlib.file_digest`, `typing.Self` or `except*`.
+- Type hints in this spec are documentation only. Use `typing.Iterator`, never a lowercase `iterator`, or leave the hint out.
+
+### 0.5 How the critiques were handled
+**Accepted in full:**
+- Safety: 2, 4–10, 12–14, 16–31.
+- API correctness: 1–21.
+- Repo fit: 1–5, 7–22.
+
+**Accepted with changes:**
+- **Safety 1.**
+  - Accepted:
+    - a per-order typed echo on `/dev/tty`;
+    - the confirmation token can no longer come from an environment variable;
+    - the `arm-token` command is removed;
+    - the live app key is stored with `-T ""` (its effect is checked in T0).
+  - **Rejected:** the HMAC and nonce token. Its key, `config_sha256`, is public, so it adds no secrecy. Single-use presence already comes from the per-order echo.
+  - The token stays as a per-day friction value, supplied through `--confirm-live` only.
+- **Safety 3 / repo-fit 1.**
+  - Accepted: a fixed state root outside every worktree.
+  - Changed: it is keyed by `<profile>`, not `sha256(username)`, because the kill file and the HALT must work before any Keychain read.
+  - Cross-profile protection comes from three things: a global `KILL` file, a global `.gateway.lock`, and an account fingerprint registry (`accounts.json`) that refuses a second profile for the same account.
+- **Safety 11.** The transport check is an allowlist: read methods pass, and everything else needs a digest-bound capability. A regex like `(?i)Orders|Heartbeat` would also catch `listCurrentOrders` and `listClearedOrders`.
+- **Safety 4 (A15, now A19 `ref_roundtrip_verified`).** Accepted, with one exception: `live-probe` is the only command that can establish this marker, so it is exempt from it.
+- **Safety 9 and API 4, merged.**
+  - Normal commands may make 30 successful logins per 10 minutes, with a ceiling of 60.
+  - `kill`, `cancel` and `reconcile` skip that cap.
+  - Every command still respects the persisted ban and the limit of 2 consecutive login failures.
+- **Repo-fit 6.**
+  - No implementer unit edits shared files.
+  - The patch in §16 is prepared as one isolated commit, S0. The coordinator applies it only after Yu and Codex agree.
+  - Merging the betfair code without S0 is forbidden, and the handoff file records that gate.
+  - README edits stay in one final commit, made after rebasing.
+- **Repo-fit 7 / safety 20.**
+  - Removed: `frozen_experiment`, `allowed_experiments` and the `bx-*` strategy refs.
+  - Kept: the programmatic `OrderGateway` API with `source="api"`, but **only in paper mode**. This is what the "programmatic API for future frozen experiments" requirement asks for.
+  - Live programmatic use is refused in v1. Allowing it would need an AGENTS.md change that Yu approves.
+- **API 14(a).** Depth below 3 uses the conservative multiplier `max(depth, 3)/3`.
+- **Repo-fit 11.**
+  - Property tests default to 40 seeds × 120 steps.
+  - The pre-merge run uses `BETANGEL_BETFAIR_PROPERTY_SEEDS=300` and `BETANGEL_BETFAIR_PROPERTY_STEPS=200`, and the report records the seed count and wall time.
+
+**Rejected outright:** nothing beyond the HMAC token.
+
+---
+
+## 1. Modules and what each one does
+
+Every file lives in `betangel_research/betfair/` and uses the standard library only.
+
+| File | Unit | Responsibility | Network? |
+|---|---|---|---|
+| `__init__.py` | U1 | Docstring stating the limits. Imports nothing. | no |
+| `__main__.py` | U5 | `from .cli import main` then `if __name__ == "__main__": raise SystemExit(main())` | no |
+| `constants.py` | U1 | Endpoints, host and path allowlists, `READ_METHODS`, limits, enums, CLASSIC ladder bands, `ABSOLUTE_CEILINGS`, `PROVENANCE`. Contains **no** order method names. | no |
+| `errors.py` | U1 | Exception hierarchy, `ERROR_CATEGORIES` keyed by `(surface, code)`, `classify`, `classify_login`. | no |
+| `schemas.py` | U1 | Exact-key validators for book snapshots, instructions, reports and order records. | no |
+| `config.py` | U1 | Loads and validates the config, applies ceilings, `config_sha256`, `hosts_for`. | no |
+| `paths.py` | U1 | `StatePaths` (the fixed root), worktree detection, fail-closed kill detection, `file_lock`. | git subprocess only |
+| `secret.py` | U1 | `Secret`, a registry of secret values, `assert_clean`, key normalisation, `scrub`/`refuse_forbidden`. | no |
+| `credentials.py` | U1 | Keychain access through `/usr/bin/security`, cert checks, the non-secret journal anchor item. | subprocess only |
+| `capability.py` | U1 | `OrderCapability` and the module-private `_mint`. | no |
+| `receipts.py` | U1 | Clocks, `parse_utc_ns`, canonical hashing, durable writes (`F_FULLFSYNC`), JSONL append, code hashes, git state, strict JSON loading. | git subprocess only |
+| `filters.py` | U1 | A neutral market filter mapped to REST and to stream form; market data filter validation. | no |
+| `transport.py` | U1 | `HttpTransport`: TLS, gzip, host and path allowlists, digest gate, byte counter, deadline. Also `open_stream_socket`. | yes |
+| `auth.py` | U2 | `SessionManager`: certificate and interactive login, keepAlive, logout, persistent login ledger. | yes |
+| `api.py` | U2 | `JsonRpcClient` (reads, plus prepare/send for orders), `ReadClient`, `WeightPlanner`, throttles, catalogue cache, `normalise_market_book`, `parse_rpc_response`. | yes |
+| `esa.py` | U3 | Exchange Stream API client: framing, handshake, subscriptions, clocks, liveness. | yes |
+| `book.py` | U3 | `MarketBookCache` and `snapshots_from_recording`. | no |
+| `recorder.py` | U3 | `StreamRecorder`, `line_acceptance`, `verify_recording`. | yes |
+| `ticks.py` | U4 | CLASSIC ladder in integer hundredths, pence helpers, Decimal money parsing. | no |
+| `validate.py` | U4 | Pre-trade checks V1–V14 and V9b; reference generators. | no |
+| `risk.py` | U4 | `RiskGuard`: pure decisions R1–R12, adversarial exposure, rate windows, capability issue. | no |
+| `pnl.py` | U4 | Our own realised P&L and commission, and the comparison with Betfair's `profit`. | no |
+| `journal.py` | U4 | `OrderJournal`: SQLite, append-only, hash-chained, `fold()`, `anchor()`. | no |
+| `lifecycle.py` | U4 | State machine, report normalisers, the report classification rules. | no |
+| `paper.py` | U4 | `PaperExchange` (model `paper-v1`) and `run_paper_replay`. | no |
+| `reconcile.py` | U5 | UNKNOWN-outcome reconciliation, startup exchange reconciliation, refresh, settlement. | via ReadClient |
+| `arming.py` | U5 | Arming checks A1–A19, `expected_token`, anchor checks, account registry. | via Keychain |
+| `killswitch.py` | U5 | `engage` (no lock, no login), target-set construction, the sweep. | via injected callables |
+| `presence.py` | U5 | `TtyConfirmer` and `order_echo_line`. | no |
+| `gateway.py` | U5 | `OrderGateway`, the **only** choke point. The only file containing the literals `placeOrders`, `cancelOrders`, `replaceOrders`. | via api |
+| `cli.py` | U5 | argparse subcommands, `main(argv=None, *, deps=None) -> int`, sanitised exits. | yes |
+
+**Other files:**
+- U1: `research/betfair-config.example.json`, `research/betfair-facts.json`.
+- U6: `docs/betfair-integration.md`, `docs/betfair-order-path.md`, `docs/betfair-facts.md`, `reports/betfair-setup-2026-10-10.{md,json}`, `.team-work/betfair-exchange-20261010/{brief.md,handoff.json}`.
+
+**Runtime state.** It lives under a single fixed root and never inside a repository. `home` is `pwd.getpwuid(os.getuid()).pw_dir`, not `$HOME`. Directories are mode 0700 and files 0600.
+
+```
+STATE_ROOT = <home>/Library/Application Support/betangel-research/betfair/
+  KILL                                   # global kill file: blocks every profile, paper and live
+  .gateway.lock                          # global: one live gateway process per Mac
+  accounts.json                          # {account_fingerprint: profile}; live only
+  profiles/<profile>/                    # profile ^[a-z0-9][a-z0-9-]{0,31}$, default "default"
+    config.json                          # the only config path used outside tests
+    auth/login-ledger.jsonl              # at, method, jurisdiction, outcome_status, emergency, coexistence_ack; never tokens/usernames
+    orders/journal-paper.sqlite
+    orders/journal-live.sqlite
+    orders/.paper.lock
+    live-tests/<test_id>-<UTC compact>/  # raw first-live-test responses (private; never committed)
+    reads/<request_id>/{response.json,receipt.json}
+    catalogue-cache/<market_id>.json
+    recordings/run-ledger.jsonl
+    recordings/.recorder.lock
+    recordings/<session_id>/...
+```
+
+**When paths may be overridden:**
+- `recorder.root` and `read.out_root` may be absolute paths outside every git worktree, for example to use a larger disk.
+- Nothing else under the live state may be overridden. That covers `KILL`, `.gateway.lock`, `accounts.json`, `journal-live.sqlite`, `login-ledger.jsonl` and `config.json`.
+- The `--state-root` and `--config` flags, and the in-process `deps["home"]`, work **only** when `BETANGEL_BETFAIR_FORBID_NETWORK=1` is set. That variable is the test harness, so whenever these overrides work, the network is off too.
+
+---
+
+## 2. Public interfaces (signatures)
+
+### 2.1 `receipts.py` (U1, interface I11)
+```python
+class SystemClock:
+    def time_ns(self) -> int: ...
+    def monotonic_ns(self) -> int: ...
+    def sleep(self, seconds: float) -> None: ...
+    def utc_now(self) -> str: ...                 # "YYYY-MM-DDTHH:MM:SS.ffffffZ" (same shape as collector.utc_now)
+SYSTEM_CLOCK = SystemClock()
+def utc_from_ns(ns: int) -> str                    # microsecond "...ffffffZ"
+def parse_utc_ns(text: str) -> int                 # accepts micro-/milli-/second precision; requires "Z" or an offset; 3.10-safe
+                                                   # (replace("Z","+00:00") then fromisoformat); naive -> ValueError
+def canonical_json(value) -> bytes                 # json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+def canonical_sha256(value) -> str                 # sha256(canonical_json(value)); same digest as collection._digest
+def bytes_sha256(data: bytes) -> str
+def file_sha256(path) -> str                       # 1 MiB chunks
+def code_hashes(repo_root) -> dict                 # betangel_research/*.py and betangel_research/betfair/*.py, keys relative
+def git_state(repo_root) -> dict                   # {"git_revision","working_tree_dirty"}
+def full_fsync(fd) -> None                         # fcntl.fcntl(fd, fcntl.F_FULLFSYNC) when available, else os.fsync
+def atomic_write_json(path, value, *, mode=0o600) -> str
+    # secret.refuse_forbidden(value); bytes = canonical-but-indented JSON (indent=2, sort_keys, allow_nan=False);
+    # secret.assert_clean(bytes); tmp in same dir -> full_fsync -> os.replace -> fsync dir; returns sha256 of bytes
+def append_jsonl(path, row: dict, *, mode=0o600) -> None   # refuse_forbidden + assert_clean; one compact line; full_fsync
+def strict_json_loads(text: str) -> object         # parse_constant raises ValueError on NaN/Infinity/-Infinity
+```
+- `parse_utc_ns` is the parser for every local timestamp (`observed_at`, `recorded_at`, `received_at`, `funds_checked_at`).
+- `temporal.timestamp_ms` may be used only for Betfair `marketTime`, in `book.py` and `paper.py`. A test enforces this (§14).
+
+### 2.2 `secret.py` (U1, interface I2)
+```python
+class Secret:
+    __slots__ = ("_value",)
+    def __init__(self, value: str): ...            # refuses "" ; registers value (len >= 4) in the process registry at construction
+    def reveal(self) -> str: ...
+    # __repr__/__str__ -> "<redacted>"; __format__ -> "<redacted>"; __reduce__/__reduce_ex__/__getstate__ raise TypeError
+def register(value: str) -> None
+def assert_clean(data, *, where: str) -> None       # bytes or str; raises errors.SecretLeak(where) if any registered value occurs; message never contains the value
+FORBIDDEN_KEYS = frozenset({"session","sessiontoken","token","ssoid","password","username","appkey","xauthentication",
+    "xapplication","headers","authorization","cookie","setcookie","sourceidkey","errordetails","firstname","lastname"})
+def normalise_key(key: str) -> str                  # lower(); remove "-", "_", " "
+def refuse_forbidden(value, *, where: str) -> None  # recursive over dict/list; raises SecretLeak on a forbidden normalised key
+def scrub(value) -> object                          # recursive copy dropping forbidden keys (used by normalisers)
+```
+
+### 2.3 `paths.py` (U1, interface I1)
+```python
+APP_PARTS = ("Library", "Application Support", "betangel-research", "betfair")
+class StatePaths:
+    def __init__(self, *, profile="default", home=None, root_override=None, env=None): ...
+        # env defaults to os.environ. root_override or home given while env.get("BETANGEL_BETFAIR_FORBID_NETWORK") != "1"
+        #  -> ConfigError("state_root_override_not_allowed")
+    root, kill_file, gateway_lock, accounts_file, profile_dir, config_path, login_ledger,
+    paper_lock, live_tests_dir, reads_dir, catalogue_cache_dir, recordings_dir, recorder_lock   # Path attributes
+    overridden: bool
+    def journal_path(self, mode: str) -> Path       # mode in {"paper","live"}
+    def ensure(self) -> None                         # mkdir parents; chmod 0o700 on root..profile_dir and subdirs
+    def describe(self) -> dict                       # absolute paths as strings, plus "overridden"
+def is_inside_git_worktree(path) -> bool
+    # True if any existing ancestor contains a ".git" entry (file or dir), OR
+    # `git -C <nearest existing ancestor> rev-parse --is-inside-work-tree` prints "true" (5 s timeout; missing git -> skip)
+def require_outside_worktrees(path, *, what: str) -> Path   # resolves; raises ConfigError(f"{what}_inside_git_worktree")
+def kill_engaged(paths: StatePaths) -> bool
+    # os.stat(kill_file): FileNotFoundError -> False; any other OSError -> True (fail closed); exists -> True
+@contextmanager
+def file_lock(path, *, timeout_s=0.0, clock=SYSTEM_CLOCK, poll_s=0.2)   # fcntl.flock LOCK_EX|LOCK_NB polled; raises errors.LockBusy
+```
+
+### 2.4 `errors.py` (U1, interface I13)
+```python
+class BetfairError(Exception): ...                 # str() is safe code/category text only
+class ConfigError(BetfairError, ValueError): ...
+class CredentialError(BetfairError): ...
+class SecretLeak(BetfairError): ...
+class LockBusy(BetfairError): ...
+class TransportError(BetfairError):                # .phase in {"preflight","connect","send","receive","decode"}; .code; .may_have_arrived: bool
+class ApiError(BetfairError):                      # .surface, .code, .category, .request_uuid|None
+class AuthError(BetfairError):                     # .status, .error_code
+class LoginBanned(AuthError):                      # .until_utc
+class LoginBudgetExceeded(AuthError): ...
+class StreamError(BetfairError):                   # .code, .connection_closed
+class OrderRefused(BetfairError):                  # .rule, .detail (safe dict)
+class NotArmed(OrderRefused): ...
+class Halted(OrderRefused): ...
+class NotPresent(OrderRefused): ...
+class JournalError(BetfairError): ...
+SURFACES = ("aping","account_aping","execution_report","instruction_report","sso_login","sso_session",
+            "stream_status","jsonrpc","angx","dsc","http","transport","local")
+ERROR_CATEGORIES: dict[tuple[str, str], str]       # §11
+def classify(code: str, *, surface: str) -> str    # unknown surface -> ValueError; unknown (surface, code) -> "unrecognized"
+def classify_login(status: str, error: str|None) -> str   # §11 login table
+```
+
+### 2.5 `schemas.py` (U1, interfaces I7 and I8)
+```python
+def validate_book_snapshot(s) -> dict
+def validate_instruction_v1(i) -> dict
+def validate_place_report(r) -> dict
+def validate_cancel_report(r) -> dict
+def validate_replace_report(r) -> dict
+def validate_order_record(o) -> dict
+BOOK_SNAPSHOT_KEYS, RUNNER_KEYS, INSTRUCTION_V1_KEYS, PLACE_REPORT_KEYS, ORDER_RECORD_KEYS   # exact frozensets (§3)
+```
+
+### 2.6 `config.py` (U1, interface I1)
+```python
+DEFAULTS: dict                                      # §4 (commission_rate/commission_source have no default)
+def load_config(path, *, paths: StatePaths) -> dict # merge defaults; exact keys; expand "~"; validate; returns a deep copy
+def validate_config(config, *, paths: StatePaths) -> dict
+def config_sha256(config) -> str                    # canonical_sha256(validated config)
+def hosts_for(config) -> dict                       # {"sso","sso_cert","api","stream_host","stream_port"}
+```
+
+### 2.7 `credentials.py` (U1, interface I2)
+```python
+SECURITY_BIN = "/usr/bin/security"
+SERVICES = {"username": "betangel-research.betfair.username", "password": "betangel-research.betfair.password",
+            "app_key_delayed": "betangel-research.betfair.app-key.delayed", "app_key_live": "betangel-research.betfair.app-key.live",
+            "cert_key_passphrase": "betangel-research.betfair.cert-key-passphrase"}
+ANCHOR_SERVICE = "betangel-research.betfair.journal-anchor"      # non-secret JSON value
+def minimal_env() -> dict                            # {"PATH":"/usr/bin:/bin","HOME":pw_dir,"USER":pw_name,"LOGNAME":pw_name}
+def keychain_read(kind, profile, *, runner=subprocess.run, timeout_s=120) -> Secret
+    # argv [SECURITY_BIN,"find-generic-password","-s",SERVICES[kind],"-a",profile,"-w"]; env=minimal_env(); capture_output
+    # nonzero -> raise CredentialError(f"keychain_item_unavailable:{kind}") from None (never stdout/stderr)
+def keychain_present(kind, profile, *, runner=subprocess.run) -> bool    # same without "-w"
+def anchor_read(profile, *, runner=subprocess.run) -> dict|None          # parses {"genesis_sha256","seq","last_sha256","updated_at"}
+def anchor_write(profile, anchor: dict, *, runner=subprocess.run) -> None
+    # [SECURITY_BIN,"add-generic-password","-U","-s",ANCHOR_SERVICE,"-a",profile,"-w",<canonical json>]; the value is non-secret by design
+def load_credentials(config, *, purpose, profile, runner=None, loader=None) -> dict
+    # purpose: "read" -> slot read.app_key_slot; "stream" -> stream.app_key_slot; "live_orders" -> "live"
+    # -> {"username": Secret, "password": Secret, "app_key": Secret, "app_key_slot": "delayed"|"live",
+    #     "cert_path": Path|None, "key_path": Path|None, "key_passphrase": Secret|None, "source": "keychain"}
+    # sys.platform != "darwin" -> CredentialError("keychain_requires_macos")
+def check_cert_files(cert_path, key_path) -> dict    # both regular files; outside every git worktree; key st_mode & 0o077 == 0
+def keychain_setup_commands(profile) -> list[str]    # strings only; "-w" is always the final token; the live key adds -T ""
+```
+
+### 2.8 `capability.py` (U1, interface I10)
+```python
+CAPABILITY_TTL_NS = 5_000_000_000
+class OrderCapability:
+    __slots__ = ("decision_id","method","body_sha256","mode","expires_monotonic_ns","_consumed")
+    def __init__(self, *args, _token=None, **kw): ...   # raises TypeError unless _token is the module-private _MINT_TOKEN
+    def consume(self, *, method, body_sha256, now_monotonic_ns) -> str
+        # raises OrderRefused("capability_mismatch" | "capability_reused" | "capability_expired" | "capability_mode")
+        # requires self.mode == "live"; returns body_sha256
+def _mint(decision_id, method, body_sha256, mode, now_monotonic_ns, ttl_ns=CAPABILITY_TTL_NS) -> OrderCapability
+    # refuses mode != "live"; called only from risk.py (AST-tested)
+```
+
+### 2.9 `filters.py` (U1, interface I12)
+```python
+NEUTRAL_KEYS = frozenset({"event_type_ids","country_codes","market_types","market_ids"})
+def validate_neutral_filter(f) -> dict              # exact keys; lists of non-empty strings; market_ids match ^1\.\d{1,12}$
+def to_rest_market_filter(f, *, start_from_utc=None, start_to_utc=None) -> dict
+    # {"eventTypeIds","marketCountries","marketTypeCodes","marketIds","marketStartTime":{"from","to"}}; empty keys omitted
+def to_stream_market_filter(f) -> dict              # {"eventTypeIds","countryCodes","marketTypes","marketIds"}; never time keys
+STREAM_DATA_FIELDS = frozenset({"EX_BEST_OFFERS_DISP","EX_BEST_OFFERS","EX_ALL_OFFERS","EX_TRADED","EX_TRADED_VOL",
+                                "EX_LTP","EX_MARKET_DEF","SP_TRADED","SP_PROJECTED"})
+def validate_market_data_filter(d, *, motif_compatible: bool) -> dict
+    # exact keys {"fields","ladderLevels"}; fields ⊆ STREAM_DATA_FIELDS; EX_MARKET_DEF required; EX_BEST_OFFERS_DISP refused;
+    # ladderLevels int 1..10, and <= 3 when motif_compatible
+```
+
+### 2.10 `transport.py` (U1, interfaces I3 and I4)
+```python
+class HttpTransport:
+    def __init__(self, *, allowed_hosts: frozenset, max_response_bytes=32*1024*1024, idle_reconnect_s=170,
+                 clock=SYSTEM_CLOCK, connection_factory=None, env=None): ...
+    def request(self, method, url, headers: dict, body: bytes|None, *, deadline_s: float, idempotent: bool,
+                tls_context=None, order_digest: str|None=None) -> dict
+        # -> {"status": int, "headers": dict(lowercased, minus set-cookie), "body": bytes (decoded)}
+    def close(self) -> None
+def make_tls_context(cert_path=None, key_path=None, key_passphrase=None) -> ssl.SSLContext
+def open_stream_socket(host, port, timeout_s, *, env=None) -> socket-like
+```
+
+**Rules for `HttpTransport.request`, in this order:**
+1. If `env["BETANGEL_BETFAIR_FORBID_NETWORK"] == "1"`, raise `TransportError(phase="preflight", code="network_forbidden", may_have_arrived=False)` before anything else.
+2. The URL must be `https`, use no explicit port or port 443, have a host in `allowed_hosts` (from `hosts_for`), and have a path in `constants.ALLOWED_PATHS`:
+   - `/api/certlogin`, `/api/login`, `/api/keepAlive`, `/api/logout`;
+   - `/exchange/betting/json-rpc/v1`, `/exchange/account/json-rpc/v1`.
+
+   Anything else raises `TransportError(code="url_not_allowed")` during preflight. This makes the Heartbeat API path impossible to call.
+3. **Digest gate for the two JSON-RPC paths.** The body must parse as a JSON object (batch arrays are refused) with a string `method`.
+   - If `method ∈ constants.READ_METHODS`, then `order_digest` must be `None`.
+   - Otherwise:
+     - the path must be the betting path;
+     - `order_digest == bytes_sha256(body)` must hold;
+     - `idempotent` must be False.
+
+     If any of these fails, raise `TransportError(phase="preflight", code="unbound_rpc_refused")`.
+4. Never send `Expect: 100-Continue`. Send `Accept-Encoding: gzip` and `Connection: keep-alive`. Decode gzip/deflate with a bounded `zlib.decompressobj` (`max_length`). Exceeding `max_response_bytes` raises `code="response_too_large"`.
+5. Any 3xx status raises `TransportError(phase="receive", code="redirect_refused")`. Redirects are never followed.
+6. **Deadline.** `deadline_s` covers connect, send and every read. Before each socket operation, set `sock.settimeout(remaining)`. When it runs out, raise `code="deadline_exceeded"`.
+7. **Non-idempotent calls:**
+   - Set `conn.auto_open = 0`.
+   - If the connection is closed, or has been idle for at least `idle_reconnect_s`, reconnect explicitly *before* writing.
+   - Wrap the socket with a byte counter. `may_have_arrived = bytes_written > 0`.
+   - Never resend.
+8. **Idempotent calls (reads only):** retry once on `RemoteDisconnected`, `BrokenPipeError` or `ConnectionResetError`, but only if no response byte was received.
+9. Exception text never contains headers, the body or the URL query string.
+
+**`open_stream_socket`:**
+- Same network-forbidden check.
+- Host must be in `constants.STREAM_HOSTS = {"stream-api.betfair.com", "stream-api-integration.betfair.com"}`, port 443.
+- Uses `ssl.create_default_context()` with TLS ≥ 1.2, `check_hostname=True`, then `wrap_socket(server_hostname=host)`.
+
+**`make_tls_context`:**
+- `ssl.create_default_context()`, `minimum_version = TLSv1_2`, `check_hostname=True`, `CERT_REQUIRED`.
+- Calls `load_cert_chain(certfile, keyfile, password=passphrase.reveal() if passphrase else None)` when a certificate is given.
+
+### 2.11 `auth.py` (U2, interface I5)
+```python
+class SessionManager:
+    def __init__(self, config, credentials, *, paths, transport=None, clock=SYSTEM_CLOCK): ...
+    def login(self, *, emergency=False, coexistence_ack=False) -> dict   # {"status","method","can_bet","logged_in_at"}; never the token
+    def token(self) -> Secret                       # lazy login (non-emergency); raises LoginBanned/LoginBudgetExceeded/AuthError
+    def app_key(self) -> Secret                     # the slot loaded with the credentials
+    @property
+    def app_key_slot(self) -> str
+    def keep_alive(self) -> dict                    # {"status","error"}
+    def maybe_keep_alive(self) -> dict|None         # when >= current keepalive interval since last success
+    def invalidate_and_relogin(self) -> dict        # at most once per call chain
+    def logout(self) -> dict
+    def can_bet(self) -> bool                       # False for LIMITED_ACCESS or unknown
+    def account_fingerprint(self) -> str            # sha256("betfair-account:" + username)[:16]; computed at login; the username is never stored
+def parse_cert_login(body: bytes) -> dict           # {"status": loginStatus, "token": Secret|None}
+def parse_interactive_login(body: bytes) -> dict    # {"status","error","token": Secret|None,"product_present": bool}
+```
+
+### 2.12 `api.py` (U2, interface I6)
+```python
+class JsonRpcClient:
+    def __init__(self, config, session: SessionManager, *, transport=None, clock=SYSTEM_CLOCK): ...
+    app_key_slot: str                               # = session.app_key_slot
+    def call(self, method, params) -> object        # method must be in READ_METHODS; retry policy §7
+    def prepare_order(self, method, params) -> dict
+        # requires app_key_slot == "live"; method not in READ_METHODS and startswith "SportsAPING/v1.0/";
+        # -> {"method","body": bytes,"body_sha256","rpc_id"}; body = canonical_json({"jsonrpc":"2.0","method":..,"params":..,"id":rpc_id})
+    def send_order(self, capability, prepared) -> object
+        # capability.consume(method=prepared["method"], body_sha256=prepared["body_sha256"], now_monotonic_ns=clock.monotonic_ns())
+        # transport.request(... idempotent=False, deadline_s=config http.order_deadline_s, order_digest=prepared["body_sha256"])
+        # no retry and no relogin-resend; parse via parse_rpc_response; raises ApiError/TransportError
+def parse_rpc_response(status: int, body: bytes, *, surface: str) -> object     # §7 error precedence
+class WeightPlanner:
+    def book_weight(self, price_data: set, depth: int|None) -> float
+    def catalogue_weight(self, projections: set) -> int
+    def chunk(self, market_ids: list, weight: float, *, max_ids=250) -> list[list[str]]
+class ReadClient:
+    def __init__(self, rpc: JsonRpcClient, *, paths, clock=SYSTEM_CLOCK, planner=None, catalogue_cache_max_age_s=21600): ...
+    def list_event_types(self, rest_filter=None) -> list               # always sends "filter": rest_filter or {}
+    def list_market_catalogue(self, rest_filter, projections=("MARKET_DESCRIPTION","RUNNER_DESCRIPTION","EVENT_TYPE","MARKET_START_TIME"),
+                              max_results=100, sort=None) -> list       # rest_filter None -> ValueError; sort "RANK" -> ValueError
+    def count_markets(self, rest_filter) -> list[str]                  # catalogue, projections ("MARKET_START_TIME",), sort FIRST_TO_START, maxResults 1000
+    def list_market_book(self, market_ids, price_data=("EX_BEST_OFFERS",), depth=None, order_projection=None,
+                         match_projection=None, customer_strategy_refs=None) -> list
+        # ids missing from a multi-id response are re-requested one per call; single-id CLOSED responses are returned
+    def market_snapshot(self, market_id, *, price_data=("EX_BEST_OFFERS","EX_TRADED"), fetched_by) -> dict
+        # catalogue row (cache file, refreshed if older than max age or absent) + listMarketBook -> normalise_market_book
+    def list_current_orders(self, *, bet_ids=None, market_ids=None, customer_order_refs=None, customer_strategy_refs=None,
+                            order_projection="ALL", date_range=None, order_by="BY_PLACE_TIME", sort_dir="EARLIEST_TO_LATEST",
+                            include_source_id=False, from_record=0, record_count=1000) -> dict
+    def iter_current_orders(self, **kw) -> Iterator[dict]               # follows moreAvailable; fromRecord += len(page)
+    def list_cleared_orders(self, bet_status, *, settled_from_utc, settled_to_utc=None, market_ids=None, bet_ids=None,
+                            customer_order_refs=None, customer_strategy_refs=None, group_by="BET", include_source_id=False,
+                            from_record=0, record_count=1000) -> dict  # group_by sent only when bet_status == "SETTLED"
+    def iter_cleared_orders(self, bet_status, **kw) -> Iterator[dict]
+    def get_account_funds(self) -> dict    # {"availableToBetBalance","exposure","retainedCommission","exposureLimit","discountRate","pointsBalance"}
+    def get_account_details(self) -> dict  # whitelisted keys only: {"currencyCode","countryCode","discountRate","pointsBalance"}
+def normalise_market_book(book_item, *, catalogue_item, key_type, app_key_slot, observed_at, monotonic_ns, fetched_by) -> dict
+```
+
+### 2.13 `esa.py` (U3)
+```python
+class StreamClient:
+    def __init__(self, *, host, port, session: SessionManager, socket_factory=open_stream_socket, clock=SYSTEM_CLOCK,
+                 heartbeat_ms=5000, conflate_ms=None, connect_timeout_s=15, max_line_bytes=16*1024*1024): ...
+    def connect(self) -> dict                    # waits <= 15 s for op=connection; {"connection_id"}
+    def authenticate(self) -> dict               # {"status_code","connections_available"}; the auth line is never exposed
+    def subscribe_markets(self, stream_market_filter, market_data_filter, *, initial_clk=None, clk=None) -> int
+    def subscribe_orders(self, order_filter=None, *, initial_clk=None, clk=None) -> int   # implemented; unused by the v1 gateway
+    def next_message(self) -> dict
+        # {"raw": bytes (terminator stripped), "msg": dict, "op": str, "id": int|None, "received_at": str, "monotonic_ns": int}
+        # status FAILURE -> StreamError(code, connection_closed=msg.get("connectionClosed", True))
+    def clocks(self, stream="market") -> dict    # {"initial_clk","clk"}
+    def echoed(self) -> dict                     # {"heartbeat_ms","conflate_ms"} from the first change message (None until then)
+    def liveness_timeout_s(self) -> float        # §8.1
+    @property
+    def active_subscription_id(self) -> int|None
+    def close(self) -> None
+```
+
+### 2.14 `book.py` (U3)
+```python
+class MarketBookCache:
+    def __init__(self, *, key_type, app_key_slot, source): ...   # source in {"stream_cache","recording"}
+    def apply(self, msg, *, received_at=None, monotonic_ns=None) -> list[str]   # changed market ids
+    def snapshot(self, market_id) -> dict                         # book snapshot schema (§3)
+    def markets(self) -> list[str]
+    counters: dict                                                # settlement_zeroing_seen, non_finite_seen, duplicate_definition_dropped
+def ladder_type(market_definition) -> str|None                    # priceLadderDefinition: dict -> .get("type"); str -> itself; else None
+def snapshots_from_recording(path, *, key_type) -> Iterator[tuple[int, dict]]   # (pt, snapshot) via stream.messages()
+```
+
+### 2.15 `recorder.py` (U3, interface I16)
+```python
+class StreamRecorder:
+    def __init__(self, config, *, paths, session, stream_factory, market_lister, clock=SYSTEM_CLOCK, rng=None, emit=None): ...
+        # market_lister(rest_filter) -> list[str]   (ReadClient.count_markets using the delayed key)
+        # emit(event: dict) -> None                   (the CLI prints compact JSON lines)
+    def run(self, stop_requested=lambda: False, *, max_seconds=None) -> dict   # final receipt
+def line_acceptance(raw: bytes, msg: dict, prev_pt: int|None, active_id: int|None) -> str|None
+    # None = write; otherwise a reason: "not_mcm" | "superseded_id" | "pt_not_int" | "pt_regression" | "segmented" | "carriage_return"
+def verify_recording(session_dir) -> dict   # {"status": "verified"|"failed", "checks": [...]}
+```
+
+### 2.16 Order core (U4, interfaces I8, I9, I10 and I14)
+```python
+# ticks.py
+LADDER_CLASSIC: tuple[int, ...]       # built from constants.CLASSIC_BANDS; 350 prices in hundredths, 101..100000
+MONEY_RE = r"^\d{1,6}(\.\d{1,2})?$"
+def parse_money(text: str) -> int     # pence; regex then Decimal; <= 0 -> ValueError
+def parse_price(text: str) -> int     # hundredths; same regex; must be on the ladder
+def to_hundredths(value) -> int ; def to_pence(value) -> int        # exact 2 dp or ValueError
+def is_on_ladder(price_h) -> bool ; def tick_index(price_h) -> int
+def tick_offset(price_h, n) -> int ; def ticks_between(a_h, b_h) -> int
+def snap(price_h, direction) -> int   # "down"|"up"; never applied implicitly
+def wire_price(price_h) -> float ; def wire_size(size_p) -> float   # x/100 for the JSON body
+
+# validate.py
+def make_customer_ref(now_ns, rng=None) -> str        # "brq" + yymmddHHMMSS + "-" + 16 hex = 32 chars; rng default secrets.token_hex
+def make_customer_order_ref(now_ns, rng=None) -> str  # "bro" + ... = 32 chars
+def profit_ratio_ok(size_p, price_h) -> bool
+def validate_place(market_id, instructions, *, book, open_orders, config, mode, now_ns, probe=False) -> list[dict]
+def validate_replace(market_id, replaces, *, book, open_orders, config, mode, now_ns) -> list[dict]
+def validate_cancel(market_id, cancels, *, open_orders) -> list[dict]     # bet ids must be ours; <= 60; one market
+
+# pnl.py
+def order_pnl_pence(side, avg_price_h, size_settled_p, runner_result) -> int   # runner_result "WINNER"|"LOSER"; else ValueError
+def market_realized(orders, runner_results, *, commission_rate) -> dict
+    # {"gross_pence","commission_pence","net_pence","excluded_reason"|None}; commission via evaluation.settled_market_costs
+def compare_profit(own_pence, betfair_profit_pence|None) -> dict   # {"used": min(own, bf) or own, "mismatch": abs(diff) > 1}
+
+# risk.py
+def adverse_contrib(order, outcome) -> int ; def exact_contrib(order, outcome) -> int
+def worst_case_market_loss(orders, outcome_ids) -> int             # pence >= 0
+class RiskGuard:
+    def __init__(self, config, *, mode, clock=SYSTEM_CLOCK): ...
+    def evaluate_place(self, market_id, instructions, *, book, state, arming, funds=None, now_ns, probe=False) -> dict
+    def evaluate_replace(self, market_id, replaces, *, book, state, arming, funds=None, now_ns) -> dict
+    def evaluate_cancel(self, market_id, cancels, *, state, now_ns) -> dict
+    def issue(self, decision, prepared, *, now_monotonic_ns) -> OrderCapability   # decision["approved"] required; mode "live"
+# decision = {"decision_id","approved","rule"|None,"detail":{"failures":[...]},
+#             "worst_case":{"market_pence","total_pence","daily_used_pence"},"evaluated_at"}
+# arming = {"armed": bool, "failures": [codes]}  (from arming.py; paper passes {"armed": True, "failures": []})
+
+# journal.py
+class OrderJournal:
+    def __init__(self, path, *, mode, clock=SYSTEM_CLOCK): ...
+    def append(self, kind, payload, *, intent_id=None, customer_order_ref=None, customer_ref=None,
+               bet_id=None, market_id=None, state_after=None) -> dict
+    def set_account_fingerprint(self, fp: str) -> None     # once; mismatch with stored value -> JournalError
+    def events(self, since_seq=0) -> Iterator[dict]
+    def verify(self) -> dict                               # {"status": "ok"|"broken","events","first_bad_seq"}
+    def fold(self, *, now_ns) -> dict                      # §9.6
+    def anchor(self) -> dict                               # {"genesis_sha256","seq","last_sha256"} ({} if empty)
+    def close(self) -> None
+
+# lifecycle.py
+STATES, TERMINAL_STATES, UNRESOLVED_STATES, TRANSITIONS
+def transition(order, new_state, *, reason, fields=None) -> dict      # illegal -> JournalError
+def classify_place_report(result, *, sent_refs) -> dict               # {customer_order_ref: (state, fields)}
+def classify_cancel_report(result, *, sent_bet_ids) -> dict
+def classify_replace_report(result, *, sent, provisional_children) -> dict
+def outcome_from_exception(exc) -> str      # "UNKNOWN" | "FAILED_NOT_SENT" | "FAILED_REJECTED"
+
+# paper.py
+PAPER_MODEL = "paper-v1"; PAPER_ASSUMPTIONS: tuple[str, ...]
+class PaperExchange:
+    def __init__(self, params): ...          # never holds a transport, rpc or socket attribute
+    def place(self, orders, *, book, now_ms) -> dict
+    def cancel(self, orders, cancels, *, now_ms) -> dict
+    def replace(self, orders, replaces, *, book, now_ms) -> dict
+    def advance(self, open_orders, *, prev_book, book, now_ms) -> list[dict]
+    def settle(self, orders, *, market_definition) -> dict
+def run_paper_replay(recording_paths, orders_path, params, out_dir, *, repo_root) -> dict
+```
+
+### 2.17 Gateway layer (U5, interfaces I14 and I15)
+```python
+# presence.py
+class TtyConfirmer:
+    def __init__(self, *, tty_path="/dev/tty", stdin=None): ...
+    def require_present(self) -> None            # stdin.isatty() and tty_path openable r+w; else NotPresent("operator_tty_required")
+    def confirm_line(self, expected: str, *, banner: str) -> None
+        # writes banner + "\nType exactly: " + expected to the tty; reads one line from the tty; .strip() must equal expected
+        # else OrderRefused("operator_echo_mismatch")
+def order_echo_line(market_id, selection_id, side, price_h, size_p) -> str      # e.g. "1.234567 12345 LAY 1.01 1.00"
+def replace_echo_line(market_id, bet_id, old_price_h, new_price_h) -> str      # "1.234567 312345678901 REPLACE 3.50 -> 3.45"
+
+# arming.py
+ACK_IDS = ("delayed_key_places_real_bets","no_sandbox","account_shared_with_bet_angel","heartbeat_disabled_by_default",
+           "transaction_charges_apply","personal_use_only","unknown_outcomes_block_until_reconciled",
+           "kill_cannot_undo_matched_bets")
+CLOUD_ENV_MARKERS = ("CI","GITHUB_ACTIONS","GITLAB_CI","BUILDKITE","CODESPACES","KUBERNETES_SERVICE_HOST",
+                     "AWS_EXECUTION_ENV","FLY_APP_NAME","FLY_MACHINE_ID")
+def expected_token(config, now_ns) -> str        # "live-" + config_sha256(config)[:12] + "-" + UTC YYYYMMDD
+def static_arming(config, *, command, paths, cli_mode, confirm_token, bet_angel_paused, env, confirmer,
+                  keychain_runner, journal_anchor, now_ns) -> dict      # {"armed","failures","checked":[ids]}
+def dynamic_arming(config, *, command, session, account_details, journal_state, startup, book) -> dict
+def check_anchor(journal_anchor: dict, keychain_anchor: dict|None) -> list[str]
+def register_account(paths, fingerprint, profile) -> None              # accounts.json; another profile -> NotArmed
+
+# killswitch.py
+def engage(paths, reason, *, clock=SYSTEM_CLOCK) -> dict   # create KILL (0600) with {"reason","at"} if absent; never lock/login
+def target_set(read, journal_state, *, strategy_refs, live_app_key) -> dict   # {market_id: [bet_id, ...]} + sources
+def sweep(read, journal_state, *, cancel_fn, strategy_refs, live_app_key, clock, last_submit_wall_ns) -> dict
+    # {"status": "kill_complete"|"kill_incomplete", "remaining": [...], "passes": n}
+
+# reconcile.py
+def reconcile_unknown(read, order, *, cfg, clock, strategy_refs) -> dict      # §9.7 -> {"events": [...], "final_state"}
+def startup_reconcile(read, journal_state, *, strategy_refs, live_app_key, since_utc, clock) -> dict
+    # {"foreign": [...], "exchange_open": [...], "exchange_orders_today": n, "exchange_realized_today_pence": int|None}
+def refresh_open_orders(read, orders) -> list[dict]
+def settle_from_cleared(read, orders, *, since_utc, strategy_refs, commission_rate) -> list[dict]
+
+# gateway.py
+class OrderGateway:
+    def __init__(self, config, *, paths, mode, journal, guard, paper=None, rpc=None, read=None, confirmer=None,
+                 clock=SYSTEM_CLOCK, env=None, keychain_runner=None): ...
+        # paper: rpc must be None; read may be a delayed-key ReadClient or None; confirmer ignored.
+        # live: paper must be None; rpc.app_key_slot == "live"; read wraps the same rpc; confirmer required.
+    def open(self, *, command, confirm_token=None, bet_angel_paused=False) -> dict
+        # live: take .gateway.lock for the object's lifetime (wait <= order_deadline_s + 5); verify journal; anchor;
+        #       login; account registry; startup reconcile; resolve pending UNKNOWNs; returns the arming report
+        # paper: take profile .paper.lock; verify journal
+    def place(self, market_id, instructions, *, book=None, source, confirm_token=None) -> dict
+    def cancel(self, market_id, bet_ids, *, source, size_reductions=None) -> dict
+    def replace(self, market_id, replaces, *, book=None, source, confirm_token=None) -> dict
+    def probe(self, market_id, selection_id, *, confirm_token) -> dict
+    def reconcile(self, *, accept_ref=None, confirm_token=None) -> dict
+    def kill(self, *, scope="own", reason, confirm_account_wide=False) -> dict
+    def resume(self, *, confirm_token=None) -> dict
+    def status(self) -> dict
+    def close(self) -> dict                      # live: anchor_write; release the lock (logout is done by the CLI)
+# source in {"cli_manual","api"}; "api" is refused in live mode (OrderRefused("api_source_paper_only")).
+# result = {"intent_id","mode","decision":"accepted"|"refused","refusal":{"rule","detail"}|None,
+#           "orders":[{"customer_order_ref","state","bet_id","size_matched","average_price_matched","error_code"}],
+#           "journal_seq":[first,last]}
+
+# cli.py
+def main(argv=None, *, deps=None) -> int
+    # deps keys: home, keychain_runner, http_transport, stream_socket_factory, clock, confirmer, env.
+    # Any deps key while env BETANGEL_BETFAIR_FORBID_NETWORK != "1" -> exit 2 "deps_not_allowed".
+```
+
+---
+
+## 3. Shared record schemas
+
+### Book snapshot (I7)
+Keys are exact.
+```json
+{"market_id":"1.234","source":"rest_listMarketBook|stream_cache|recording|fixture",
+ "fetched_by":"gateway_self_fetch|read_command|stream_cache|recording|fixture",
+ "key_type":"delayed|live|historical|synthetic","app_key_slot":"delayed|live|null",
+ "observed_at":"...ffffffZ","monotonic_ns":123|null,"pt":1700000000000|null,
+ "status":"OPEN|SUSPENDED|CLOSED|INACTIVE","inplay":false,"version":4249587130|null,"bet_delay":0,
+ "is_market_data_delayed":true|false|null,"catalogue_present":true,
+ "market_time":"2026-10-10T14:30:00.000Z"|null,"number_of_winners":1|null,
+ "betting_type":"ODDS"|null,"market_type":"WIN"|null,"event_type_id":"7"|null,"price_ladder_type":"CLASSIC"|null,
+ "invalid_reason":null|"non_finite_size"|"catalogue_missing",
+ "runners":{"12345":{"status":"ACTIVE","handicap":0.0,"ltp":3.5|null,
+   "back":[[3.5,120.0],[3.45,40.0]],
+   "lay":[[3.55,80.0]],
+   "traded":{"3.5":1520.4}|null,
+   "total_matched":null}}}
+```
+- `back` is availableToBack, best (highest price) first. `lay` is availableToLay, best (lowest price) first. `traded` is cumulative volume at each price, as published.
+- Where the REST fields come from (§7): `market_time`, `betting_type`, `market_type`, `event_type_id` and `price_ladder_type` come from the catalogue row. `number_of_winners` comes from MarketBook.
+- With no catalogue row, those fields are `null`, `catalogue_present` is false and `invalid_reason` is `"catalogue_missing"`.
+- In the stream, the ladder type is read with `book.ladder_type()`, which accepts the value either as an object with a `type` key or as a string.
+- Non-finite sizes become `null`, and `invalid_reason` is set to `"non_finite_size"`.
+
+### Instruction v1 (I8)
+Only plain LIMIT orders are supported.
+```
+{"selection_id": int>0, "handicap": 0, "side": "BACK"|"LAY", "price_h": int (on ladder), "size_p": int>0, "persistence_type": "LAPSE"}
+```
+On the wire this becomes `{"orderType":"LIMIT","selectionId","handicap":0,"side","customerOrderRef","limitOrder":{"size": size_p/100,"price": price_h/100,"persistenceType":"LAPSE"}}`.
+
+### Order record (I8; built by `journal.fold`)
+```
+{intent_id, customer_order_ref, customer_ref, customer_strategy_ref, mode, market_id, selection_id, handicap, side,
+ price_h, size_p, persistence_type, state, bet_id|null, size_matched_p, average_price_matched_h|null, size_remaining_p,
+ size_cancelled_p, size_lapsed_p, size_voided_p, submitted_at|null, submitted_monotonic_ns|null, body_sha256|null,
+ outcome_observed_at|null, successful_polls, last_report_at|null, parent_ref|null, child_ref|null,
+ provisional_child|null, is_probe, error_code|null, reconcile_attempts, settled_profit_own_p|null,
+ settled_profit_betfair_p|null, exposure_basis: "none"|"matched_exact"|"adverse_unmatched"|"adverse_unknown"}
+```
+
+### Normalised place report
+Paper and live use the same shape.
+```
+{status: SUCCESS|FAILURE|PROCESSED_WITH_ERRORS|TIMEOUT, error_code|null, market_id,
+ instructions:[{customer_order_ref, status: SUCCESS|FAILURE|TIMEOUT, error_code|null, order_status|null,
+                bet_id|null, placed_date|null, average_price_matched_h|null, size_matched_p|null}],
+ source: "betfair"|"paper-v1"}
+```
+- Each report instruction is matched to what we sent by the echoed `instruction.customerOrderRef`. If that is missing, match by position. Any mismatch or a count mismatch makes **every** order in the request UNKNOWN (`report_ref_mismatch`).
+- The cancel and replace reports have analogous shapes. The keys are defined in `schemas.py`.
+
+---
+
+## 4. Config format and defaults
+
+**Location:**
+- Production uses `STATE_ROOT/profiles/<profile>/config.json` and nothing else.
+- `cli init-config` copies `research/betfair-config.example.json` there if no file exists.
+- `--config` is honoured only under `BETANGEL_BETFAIR_FORBID_NETWORK=1`.
+
+**Parsing rules:**
+- Unknown keys are rejected.
+- A bool is never accepted where a number is expected.
+- Money values are finite and positive with at most 2 dp. Internally they are converted to pence.
+- Keychain service names are compiled constants and are not configurable.
+- There is **no** `orders.mode` key. Mode comes only from `--mode` on the CLI.
+
+```json
+{
+ "schema_version": 1,
+ "profile": "default",
+ "jurisdiction": "com",
+ "api_host": "api.betfair.com",
+ "account_currency": "GBP",
+ "coexistence": {"bet_angel": "unverified"},
+ "credentials": {
+  "source": "keychain",
+  "login_method": "cert",
+  "cert_path": "~/.config/betangel-research/betfair/client-2048.crt",
+  "key_path": "~/.config/betangel-research/betfair/client-2048.key",
+  "key_passphrase_in_keychain": false
+ },
+ "session": {"keepalive_interval_s": 3600, "sso_http_method": "POST", "max_successful_logins_per_10min": 30,
+             "max_consecutive_failed_logins": 2, "ban_lockout_s": 1260},
+ "http": {"timeout_s": 10, "order_deadline_s": 10, "max_response_bytes": 33554432, "idle_reconnect_s": 170},
+ "read": {"app_key_slot": "delayed", "max_book_calls_per_second_per_market": 4, "order_projection_inflight": 2,
+          "cleared_inflight": 2, "retry_backoff_s": [1, 4, 16], "out_root": null, "catalogue_cache_max_age_s": 21600},
+ "stream": {"host": "stream-api.betfair.com", "port": 443, "app_key_slot": "delayed", "heartbeat_ms": 5000,
+            "conflate_ms": null, "connect_timeout_s": 15, "max_line_bytes": 16777216,
+            "reconnect_backoff_s": [5, 30, 120, 300], "max_reconnects_per_hour": 12},
+ "recorder": {"root": null,
+              "market_filter": {"event_type_ids": ["7"], "country_codes": ["GB", "IE"], "market_types": ["WIN"]},
+              "market_data_filter": {"fields": ["EX_BEST_OFFERS", "EX_TRADED", "EX_TRADED_VOL", "EX_LTP", "EX_MARKET_DEF"], "ladderLevels": 3},
+              "motif_compatible": true, "max_markets": 150, "refresh_s": 1800,
+              "max_duration_s": 57600, "max_bytes": 2000000000, "fsync_interval_s": 5, "allow_live_key": false},
+ "orders": {
+  "customer_strategy_ref": "bar-manual",
+  "caps": {"max_stake_per_order": 2.0, "max_liability_per_order": 10.0, "max_market_exposure": 20.0,
+           "max_total_exposure": 50.0, "max_daily_loss": 20.0, "max_orders_per_minute": 6, "max_orders_per_hour": 60,
+           "max_orders_per_day": 200, "max_transactions_per_hour": 300, "max_instructions_per_request": 1,
+           "max_price_deviation_ticks": 10, "max_book_age_s": 2.0, "funds_reserve": 0.0, "funds_max_age_s": 60,
+           "max_minutes_before_off": 30},
+  "rules": {"market_types": ["WIN"], "event_type_ids": ["7"], "min_stake": 1.0, "external_exposure_tolerance": 0.0},
+  "paper": {"model": "paper-v1", "submit_latency_ms": 500, "displayed_size_fraction": 0.5,
+            "passive_fills": "trd_queue_conservative", "traded_volume_divisor": 2, "max_snapshot_age_s": 10,
+            "commission_rate": 0.05, "commission_source": "community_secondary_rewards_5pct_conservative_unverified"},
+  "reconcile": {"poll_interval_s": 1.0, "window_s": 15, "grace_s": 5, "min_successful_polls": 3, "cleared_lookback_s": 3600},
+  "live": {"armed": false, "acknowledgements": [], "operator_attests_uk_egress": false,
+           "heartbeat_api_enabled": false, "kill_cancels_own_orders": true}
+ }
+}
+```
+- `paper.commission_rate` and `paper.commission_source` are **required**. `DEFAULTS` has no value for them. The example file uses 0.05, labelled as a conservative figure from a community source.
+- `commission_source` must be one of: `user_package_verified`, `user_package_unverified`, `official_example_basic_2pct`, `community_secondary_rewards_5pct_conservative_unverified`, `community_secondary_rewards_plus_8pct_unverified`.
+
+**Fixed in code, not configurable:**
+- persistence is `LAPSE`;
+- in-play betting is refused;
+- `marketVersion` is required;
+- `segmentationEnabled` is `false`;
+- the heartbeat API is unsupported;
+- the CLI never selects live mode on its own.
+
+**Ceilings** (`constants.ABSOLUTE_CEILINGS`). A value above its ceiling raises `ConfigError`. Raising a ceiling needs a reviewed code change.
+
+| Key | Ceiling |
+|---|---|
+| max_stake_per_order | 50 |
+| max_liability_per_order | 100 |
+| max_market_exposure | 200 |
+| max_total_exposure | 500 |
+| max_daily_loss | 200 |
+| max_orders_per_minute | 30 |
+| max_orders_per_hour | 600 |
+| max_orders_per_day | 2000 |
+| max_transactions_per_hour | 1000 |
+| max_instructions_per_request | 10 |
+| max_price_deviation_ticks | 50 |
+| max_book_age_s | 5 |
+| funds_max_age_s | 300 |
+| max_minutes_before_off | 120 |
+| external_exposure_tolerance | 200 |
+| http.order_deadline_s | 12 |
+| session.max_successful_logins_per_10min | 60 |
+| session.max_consecutive_failed_logins | 3 |
+| recorder.max_markets | 180 |
+
+**Other validation rules:**
+- `jurisdiction` must be in {`com`, `com.au`, `it`, `es`, `ro`}. Live mode requires `com`.
+- `api_host` must be in {`api.betfair.com`, `api.betfair.com.au`}.
+- `stream.host` must be in `STREAM_HOSTS`, and `stream.port` must be 443.
+- `keepalive_interval_s` bounds:
+  - `com`: 60–21599;
+  - `it` and `es`: 60–600;
+  - `com.au` and `ro`: 60–3600.
+- `customer_strategy_ref` must match `^[A-Za-z0-9-]{1,15}$`.
+- `cert_path` and `key_path` must resolve outside every git worktree (`require_outside_worktrees`).
+- `recorder.root` and `read.out_root` must be `null` (meaning under the state root) or absolute paths outside every git worktree.
+- `stream.conflate_ms` must be null or an int from 0 to 120000. `stream.heartbeat_ms` must be an int from 500 to 5000.
+- `recorder.market_filter` must pass `validate_neutral_filter`.
+- `recorder.market_data_filter` must pass `validate_market_data_filter(motif_compatible=recorder.motif_compatible)`.
+- `coexistence.bet_angel` must be in {`unverified`, `not_running_on_account`, `token_survival_verified`}.
+- `live.acknowledgements` must be a list drawn from `ACK_IDS`. Arming needs every entry, but loading the file does not.
+
+---
+
+## 5. Credentials and Keychain
+
+Services are compiled in. The Keychain account field is `<profile>`.
+
+| Service | Contents | Needed for |
+|---|---|---|
+| `betangel-research.betfair.username` | Betfair username | login |
+| `betangel-research.betfair.password` | Betfair password | login |
+| `betangel-research.betfair.app-key.delayed` | Delayed app key | read path and recorder |
+| `betangel-research.betfair.app-key.live` | Live app key, created with `-T ""` | live orders only |
+| `betangel-research.betfair.cert-key-passphrase` | optional | encrypted `client-2048.key` |
+| `betangel-research.betfair.journal-anchor` | **non-secret** JSON `{genesis_sha256, seq, last_sha256, updated_at}` | live journal anchor (§9.9) |
+
+**Reading a secret:**
+- Runs `/usr/bin/security find-generic-password -s <service> -a <profile> -w`.
+- Uses the absolute path, `env=minimal_env()`, `capture_output=True` and a 120 s timeout. The timeout allows time to answer a Keychain dialog.
+- The argv contains only service and account names.
+- A non-zero exit raises `CredentialError("keychain_item_unavailable:<kind>") from None`.
+- stdout and stderr are never kept. No exit code is interpreted.
+
+**`keychain-setup`** prints commands and never runs them. `-w` is always the last token, so `security` prompts for the value:
+```
+security add-generic-password -U -s betangel-research.betfair.username -a default -w
+security add-generic-password -U -s betangel-research.betfair.password -a default -w
+security add-generic-password -U -s betangel-research.betfair.app-key.delayed -a default -w
+security add-generic-password -U -s betangel-research.betfair.app-key.live -a default -T "" -w
+```
+The man page does not document `-T ""`. The intent is that no application is trusted, so every read of the live key raises a macOS authorization dialog. The operator clicks **Allow**, never **Always Allow**. T0 records whether this actually happens. Arming does not depend on it, because it cannot be detected.
+
+**Certificate and key:**
+- Files live outside every git worktree. The default is `~/.config/betangel-research/betfair/`.
+- The key must have no group or world permission bits.
+- The docs recommend encrypting the key (`openssl rsa -aes256`) and storing its passphrase in the Keychain.
+- The `.crt` is uploaded by hand at `https://myaccount.betfair.com/accountdetails/mysecurity?showAPI=1`.
+
+**What the code never does:**
+- persist session tokens (each CLI run logs in once and logs out at the end; the recorder keeps its token in memory only);
+- log headers, login bodies, tokens, usernames or app keys;
+- write anything without `refuse_forbidden` plus `assert_clean`;
+- store `errorDetails` or `sourceIdKey`.
+
+**Tests:** every test injects `keychain_runner` or `loader`. No test may call the real `/usr/bin/security` (§14).
+
+---
+
+## 6. Auth and session behaviour
+
+**Certificate login (the default):**
+- `POST https://identitysso-cert.<tld>/api/certlogin`.
+- Headers: `X-Application: <app key>` and `Content-Type: application/x-www-form-urlencoded`.
+- Body: `urllib.parse.urlencode({"username": u, "password": p}).encode("ascii")`.
+- The TLS context carries the client certificate, and certificate verification stays on. Betfair's sample uses `-k`; we do not.
+- Success is `{"sessionToken", "loginStatus": "SUCCESS"}`. Any other `loginStatus` raises `AuthError(status)`.
+- Login status codes are not secret and may be logged.
+
+**Interactive login (fallback):**
+- `POST https://identitysso.<tld>/api/login` with `Accept: application/json` (mandatory), `X-Application` and the same form body.
+- The response is `{token, product, status, error}`.
+- `LIMITED_ACCESS` gives a token but `can_bet=False`.
+- `LOGIN_RESTRICTED` and `FAIL` raise.
+- `STRONG_CODE_FAIL`, `TEMPORARY_BAN_TOO_MANY_REQUESTS` and `MULTI_FACTOR_AUTHENTICATION_REQUIRED` are matched on the `error` field whatever the `status` says.
+
+**keepAlive and logout:**
+- `<sso>/api/keepAlive` and `<sso>/api/logout`, with `Accept: application/json`, `X-Authentication` and `X-Application`.
+- The HTTP method comes from `session.sso_http_method` (default POST; F08 is unresolved, see T2).
+- Success requires `status == "SUCCESS"`. A missing or empty `error` is not an error.
+- On keepAlive `NO_SESSION`:
+  1. journal or ledger a `session_shorter_than_configured` note;
+  2. halve the interval for this process (minimum 60 s);
+  3. `invalidate_and_relogin()` once.
+
+**Login protection.** Everything is persisted in `auth/login-ledger.jsonl`.
+- **Successful-login cap.** If `max_successful_logins_per_10min` successful logins happened in the last 600 s, `login()` refuses with `LoginBudgetExceeded`. `emergency=True` skips this cap; `kill`, `cancel` and `reconcile` use it.
+- **Consecutive failures.** After `max_consecutive_failed_logins` failures in a row with no success between them, every login is refused with `AuthError("login_failures_need_operator")`, including emergency logins. The `login-reset` command, which needs a tty echo of `RESET LOGIN FAILURES`, appends a reset row and clears this.
+- **Ban.** `TEMPORARY_BAN_TOO_MANY_REQUESTS` writes a row with `ban_until = now + ban_lockout_s`. Until then `LoginBanned` is raised for every caller, across restarts.
+- **Relogin on invalid session.** `INVALID_SESSION_INFORMATION` or `NO_SESSION` on a read or stream call triggers exactly one relogin in that call chain. Order calls never relogin and resend (§9.4).
+
+**Bet Angel coexistence.** This runs before any login, in the CLI. When `coexistence.bet_angel == "unverified"`, every command that logs in needs `--bet-angel-paused`. That flag is the operator stating that Bet Angel is logged out or not managing positions. It is recorded as `coexistence_ack: true` in the ledger row. Without it the command exits 2 with `bet_angel_coexistence_unverified`.
+
+**Hosts** (`hosts_for`). The stream host for every jurisdiction is `stream-api.betfair.com:443`.
+
+| Jurisdiction | SSO | Cert SSO | API |
+|---|---|---|---|
+| com | identitysso.betfair.com | identitysso-cert.betfair.com | `api_host` (default api.betfair.com; NZ must set api.betfair.com.au) |
+| com.au | identitysso.betfair.com.au | identitysso-cert.betfair.com.au | api.betfair.com (AU unverified) |
+| it | identitysso.betfair.it | identitysso-cert.betfair.it | api.betfair.com |
+| es | identitysso.betfair.es | identitysso-cert.betfair.es | api.betfair.com (use the visible .es text; the page's .it links are a docs bug) |
+| ro | identitysso.betfair.ro | identitysso-cert.betfair.ro | api.betfair.com (unverified) |
+
+---
+
+## 7. Read path behaviour
+
+**Transport:**
+- JSON-RPC `POST https://<api>/exchange/betting/json-rpc/v1` for betting and `/exchange/account/json-rpc/v1` for accounts.
+- Body: `{"jsonrpc":"2.0","method":"SportsAPING/v1.0/<op>"|"AccountAPING/v1.0/<op>","params":{...},"id":<int>}`. No batching.
+- Headers: `X-Application`, `X-Authentication`, `Accept: application/json`, `Content-Type: application/json`, `Accept-Encoding: gzip`, `Connection: keep-alive`.
+
+**Which app key is used:**
+- Read subcommands use `read.app_key_slot`, default `delayed`.
+- In live mode the gateway's `JsonRpcClient` and its `ReadClient` both send the **live** key. A session token works with either key, because `X-Application` is set per request.
+
+**Error parsing (`parse_rpc_response`), in order:**
+1. Parse the body as JSON whatever the HTTP status. If it cannot be parsed, the error is `ApiError(surface="dsc", code="DSC-xxxx")` if a DSC fault code can be found, else `(surface="http", code="HTTP_<n>")`.
+2. If `error` is present:
+   - read `error.data[error.data.exceptionname]` (an `APINGException` or `AccountAPINGException`);
+   - otherwise search `error.data` recursively for a dict containing `errorCode`;
+   - keep `requestUUID`;
+   - **never** keep `errorDetails`.
+3. If there is no `errorCode` and `error.code == -32099`, the code is `error.message` (`ANGX-00nn`) with surface `angx`, which classifies as `unrecognized`.
+4. If there is no `errorCode`, fall back to the numeric `error.code` in {−32700, −32601, −32602, −32603} with surface `jsonrpc`.
+5. If `result` is present, return it.
+
+**Weight planner** (200-point limit):
+- **Book weights:** none=2, SP_AVAILABLE=3, SP_TRADED=7, EX_BEST_OFFERS=5, EX_ALL_OFFERS=17, EX_TRADED=17.
+- **Normalise first:** `EX_ALL_OFFERS` overrides `EX_BEST_OFFERS`.
+- **Combinations:** EX_BEST_OFFERS+EX_TRADED=20 and EX_ALL_OFFERS+EX_TRADED=32 replace the sum of those two components. Other components are then added.
+- **Depth override:** multiply the **total** by `max(depth, 3)/3`.
+- **Catalogue weights:** MARKET_DESCRIPTION=1, RUNNER_METADATA=1, all others 0.
+- **Chunk size:**
+  - weight > 0: `min(floor(200/weight), 250)` ids;
+  - weight 0: limited only by the 250-id cap or `maxResults`.
+- **Catalogue limits:** `list_market_catalogue` refuses `max_results > min(1000, floor(200/w))` when w > 0, and refuses `max_results > 1000` otherwise.
+- **Never sent:** `sort="RANK"`.
+- `TOO_MUCH_DATA` and `REQUEST_SIZE_EXCEEDS_LIMIT` raise as planner bugs and are never retried.
+
+**Catalogue join and cache:**
+- `market_snapshot(market_id)` loads `catalogue-cache/<id>.json`. If the file is missing or older than `catalogue_cache_max_age_s`, it calls `listMarketCatalogue(filter={"marketIds":[id]}, marketProjection=["MARKET_DESCRIPTION","RUNNER_DESCRIPTION","EVENT_TYPE","MARKET_START_TIME"], maxResults=1)` and caches the result through `atomic_write_json`.
+- Field mapping:
+  - `betting_type ← description.bettingType`
+  - `market_type ← description.marketType`
+  - `price_ladder_type ← description.priceLadderDescription.type`
+  - `market_time ← description.marketTime`
+  - `event_type_id ← eventType.id`
+  - `number_of_winners ← MarketBook.numberOfWinners`
+- CLOSED markets are absent from the catalogue (F70). Cached rows are kept for settlement.
+
+**OPEN and CLOSED markets.** If ids are missing from a multi-id `listMarketBook` response, each missing id is re-requested alone. A single-id CLOSED response is the source of runner WINNER/LOSER results for settlement.
+
+**Throttles.** These are counters only; the code is single-threaded.
+- At most `max_book_calls_per_second_per_market` (default 4, below Betfair's 5) calls per market id, in a sliding 1 s window. A call that would exceed it sleeps on the injected clock.
+- At most 2 in flight per account across `listMarketBook` with an order projection, `listCurrentOrders` and `listMarketProfitAndLoss`. Betfair's limit is 3, and its two documents disagree on whether queued or executing requests count.
+- At most 2 in flight for `listClearedOrders`.
+
+**Retry (reads only):**
+- Categories `unknown_outcome` and `rate_limited`, plus transport errors, are retried with backoff [1, 4, 16] s, 3 attempts in all.
+- `session` gets one relogin and one retry.
+- Never retried: `planner_bug`, `terminal_account`, `terminal_input`, `app_key`, `unrecognized`.
+
+**Other rules:**
+- `list_cleared_orders` requires `settled_from_utc`. `groupBy` is sent only when the status is SETTLED.
+- `list_current_orders` uses `dateRange={"from","to"}` with `orderBy`. The legacy `placedDateRange` is never used.
+- `get_account_details` returns only `{currencyCode, countryCode, discountRate, pointsBalance}`. No names are ever returned, printed or written.
+- Read subcommands print `{"status":"betfair_read_response_personal_use_not_for_redistribution","key_type","app_key_slot","request_started_at","received_at","result"}`.
+- `--out` writes `response.json` and `receipt.json` (sha256, clocks, key_type, code_sha256, config_sha256) under `read.out_root`, which defaults to `profiles/<p>/reads/`.
+
+---
+
+## 8. Stream client and recorder
+
+### 8.1 Protocol state machine (`esa.py`)
+
+**Connection sequence:**
+`DISCONNECTED → CONNECTING → AWAIT_CONNECTION (op=connection, at most 15 s) → AUTHENTICATING → AUTHENTICATED → SUBSCRIBING → STREAMING → CLOSED`
+
+**Framing:**
+- Outbound lines are `json.dumps(msg, separators=(",",":")).encode() + b"\r\n"`.
+- Inbound reads are buffered `recv(65536)`, split on `b"\n"`, with one trailing `b"\r"` removed.
+- A line longer than `max_line_bytes` raises `StreamError("line_too_long")`.
+- Lines are parsed with `json.loads`, which accepts the bare `Infinity` token.
+
+**Authentication:**
+- The message is `{"op":"authentication","id":n,"appKey":...,"session":...}`. It is written straight to the socket. It is never returned, logged or included in exception text.
+- The client waits for a `status` message with the matching id and stores `connectionsAvailable`.
+- `statusCode=FAILURE` raises `StreamError(code, connection_closed)`.
+
+**Subscriptions and clocks:**
+- Request ids come from a monotonic int32 counter.
+- A subscribe message always sends `"segmentationEnabled": false`.
+- Change messages whose `id` differs from the active subscription id are dropped and counted.
+- The active subscription message is stored exactly.
+- `initialClk` and `clk` are updated from every message where they are non-null.
+
+**Liveness:**
+- Before the first change message, the timeout is 2 × the requested `heartbeatMs`.
+- After it:
+  - `conflate_ms_echoed in (None, 0)`: timeout = `2 × heartbeat_ms_echoed`;
+  - otherwise: timeout = `conflate_ms_echoed + 2 × heartbeat_ms_echoed`.
+- A timeout raises `StreamError("liveness_timeout")`.
+- `status: 503` is counted and does not disconnect.
+
+**Errors:** see §11 for the `stream_status` surface.
+
+**Reconnect:** backoff follows `reconnect_backoff_s` with ±20% jitter from an injected RNG, capped by `max_reconnects_per_hour`.
+
+**INVALID_CLOCK:** drop the clocks and take a fresh image. This is used only by the future order-stream path, because the recorder never resumes with clocks.
+
+### 8.2 Recorder policy
+- **Sessions and segments.** One session is one invocation. One segment is one subscription. Every new subscription starts a new segment with a fresh `SUB_IMAGE`, and the recorder never resubscribes with clocks. So every segment file can be replayed on its own.
+- **Choosing markets before each segment (subscription-limit protection):**
+  1. `ids = market_lister(to_rest_market_filter(f, start_from_utc=now−1800 s))`. This uses the delayed key, `maxResults` 1000 and FIRST_TO_START.
+  2. If `len(ids) <= recorder.max_markets` and `len(ids) < 1000`: use the coarse stream filter `to_stream_market_filter(f)` (`subscription_mode="coarse"`).
+  3. Otherwise: use `marketIds = ids[:max_markets]` (`subscription_mode="explicit"`).
+  4. Record the requested count and `requested_market_ids_sha256` in the segment receipt.
+- **Refresh.** Every `refresh_s`, recompute the list and send a new subscription on the same connection. A subscription replaces the previous one; it is not additive. The current segment closes with gap reason `scheduled_refresh`, and the new segment starts at the new `SUB_IMAGE`. Messages for the superseded id are dropped and counted.
+- **`SUBSCRIPTION_LIMIT_EXCEEDED`.** Stop the session with reason `subscription_limit_exceeded`, write the receipt, log out. Never retry the same set.
+- **Line acceptance before writing** (`line_acceptance`):
+  - `op == "mcm"`;
+  - the line's `id` equals the active id;
+  - `pt` is an int and not a bool;
+  - `pt >= previous pt`;
+  - `segmentType is None`;
+  - `b"\r"` does not appear in `raw`.
+
+  Handling of failures:
+  - `not_mcm` and `superseded_id` lines are not written to the segment. Status and connection messages go to `events.jsonl`.
+  - Any other failure (`pt_not_int`, `pt_regression`, `segmented`, `carriage_return`) closes the segment with that reason as the gap reason, writes `{"rejected_line_sha256","reason","pt"}` to `events.jsonl`, and reconnects.
+- **Written lines** include `ct=HEARTBEAT` lines, `con:true` lines and `status:503` mcm lines.
+- **Gaps.** The time between segments is recorded as a gap. Nothing is forward-filled.
+- **Stopping.** `max_duration_s`, `max_seconds` (from the CLI), `max_bytes` (stops; never deletes), SIGTERM and SIGINT each close the segment, write the receipt and log out.
+- **Key policy:**
+  - `stream.app_key_slot` must be `delayed` unless `recorder.allow_live_key` is true. The docs explain that Betfair does not permit read-only use of the live key.
+  - The delayed key is conflated to 180000 ms (F44/F51). The receipt labels the data `delayed_conflated`. The docs state that this data cannot support features finer than 180 s, and that the motif pipeline will mark such records as stale.
+- **Housekeeping:** the lock is `recordings/.recorder.lock`. `session.maybe_keep_alive()` runs in the read loop.
+- **Progress output.** `emit()` sends compact JSON lines (`sort_keys=True`, `flush=True` in the CLI): `segment_opened`, `segment_closed`, `heartbeat_at` every 60 s, `gap`, `stopped`.
+
+### 8.3 Files in `<recordings_root>/<session_id>/`
+`session_id` is `rec-YYYYMMDDTHHMMSSZ-<8 hex>`. The directory must not already exist.
+- `seg-NNN.jsonl`: each accepted raw mcm line byte-for-byte, terminator stripped, followed by `\n`. There are no blank lines, so line *n* of the file is line *n* as counted by `stream.messages()`.
+- `seg-NNN.recv.jsonl`: one row per segment line, `{"line","byte_offset","bytes","sha256","received_at","monotonic_ns","pt","clk"}`.
+- `events.jsonl` contains, each with `at` and `monotonic_ns`:
+  - `connected{connection_id}`
+  - `auth_status{status_code,connections_available}`
+  - `subscribed{segment,request_id,subscription_mode,market_filter,market_data_filter,segmentation_enabled:false,requested_count}`
+  - `echo{heartbeat_ms,conflate_ms}`
+  - `status_message{id,status_code,error_code,connection_closed}`
+  - `rejected_line{...}`
+  - `disconnected{reason}`
+  - `gap{after_segment,from_received_at,to_received_at,reason}`
+  - `segment_closed{segment,sha256,bytes,lines}`
+  - `stopped{reason}`
+- `receipt.partial.json` is rewritten atomically at each segment close. `receipt.json` is written atomically when the session closes. After a crash only the partial receipt exists, with `"complete": false`.
+
+### 8.4 Receipt (`schema_version` 1)
+```json
+{"schema_version":1,"status":"betfair_stream_recording_not_profitability_evidence","complete":true,
+ "session_id":"...","created_at":"...","closed_at":"...","data_kind":"betfair_exchange_stream",
+ "key_type":"delayed","endpoint":"stream-api.betfair.com:443",
+ "data_freshness":{"conflate_ms_requested":null,"conflate_ms_echoed":180000,"heartbeat_ms_echoed":5000,
+   "label":"delayed_conflated|live_unconflated|live_conflated",
+   "note":"delayed key: 1-180 s delayed snapshots, 3 levels, stream conflated (official Betfair documentation, accessed 2026-10-10)"},
+ "subscription":{"market_filter":{...},"market_data_filter":{...},"segmentation_enabled":false},
+ "timestamp_provenance":{"received_at":"local_wall_clock_utc_at_line_read_not_independently_verified",
+   "monotonic_ns":"time.monotonic_ns_at_line_read_comparable_within_session_only","pt":"betfair_publish_time_ms"},
+ "segments":[{"index":0,"path":"seg-000.jsonl","sha256":"...","bytes":0,"lines":0,"recv_path":"seg-000.recv.jsonl",
+   "recv_sha256":"...","connection_id":"...","subscription_mode":"coarse|explicit","requested_count":0,
+   "requested_market_ids_sha256":"...|null","first_pt":0,"last_pt":0,"first_received_at":"...","last_received_at":"...",
+   "market_ids":["1.2"],"heartbeat_lines":0,"con_true_lines":0,"status_503_lines":0,"img_market_changes":0,
+   "superseded_dropped":0,"max_inter_line_gap_ms":0,"close_reason":"...",
+   "markets_without_initial_definition":[],
+   "replay_check":{"reader":"betangel_research.stream.messages","status":"passed|failed","error":null}}],
+ "gaps":[{"after_segment":0,"from_received_at":"...","to_received_at":"...","reason":"reconnect"}],
+ "coverage":"continuous_within_segment_only_gaps_listed",
+ "licence_note":"Betfair data: personal non-commercial use (General T&Cs cl.19.3, Wayback snapshot 2026-05-11); keep outside Git",
+ "config_sha256":"...","code_sha256":{...},"git_revision":"...","working_tree_dirty":false,"python":"3.x",
+ "limitations":["pt is publisher time","receipt clocks unauthenticated","gaps are not forward-filled",
+                "delayed-key data unsuitable for sub-180s features","motif compatibility checked on synthetic data only"],
+ "economic_result":null}
+```
+**`replay_check`:**
+- `stream.messages()` must consume the whole segment.
+- The first `mc` for every market id must carry `marketDefinition.marketTime`. If any market fails this, the status is `failed` and its ids are listed in `markets_without_initial_definition`.
+
+**Ledger.** Each closed session appends `{created_at, session_id, receipt_path, receipt_sha256, segments, status}` to `recordings/run-ledger.jsonl`.
+
+**`verify_recording` checks:**
+- receipt hashes match the files;
+- recv rows run contiguously from 1 to `lines`;
+- each row's sha256 matches its line;
+- `stream.messages()` consumes every segment;
+- `first_pt` and `last_pt` match the data;
+- the receipt parses with `receipts.strict_json_loads`.
+
+**Motif compatibility.** With `motif_compatible=true`, `ladderLevels` is at most 3 and the default fields give `batb/batl`, `trd`, `tv` and `ltp`. Whether runner `tv` is present on the delayed stream is unverified (test T6, "Total Matched by Selection: Not Available"). Test R3 is labelled synthetic-only.
+
+**Relation to existing docs.** The docs state that this delayed-key recorder is a use Betfair permits for read-only access. It is **not** the research feed that `docs/collection-pipeline.md` asks for, and `research/data-provider-options.json` is not edited.
+
+---
+
+## 9. Order path
+
+### 9.1 Modes
+- **`paper` (default):**
+  - The gateway is built with `rpc=None`, so it structurally cannot reach any order endpoint.
+  - Books come from a snapshot file, a recording, or a delayed-key read fetch, which makes read calls only.
+  - The programmatic API (`source="api"`) is allowed.
+- **`live`:**
+  - Every command must pass `--mode live` explicitly, and `orders.live.armed` must be true.
+  - The CLI default is `paper`. Config alone can never select live mode.
+  - `source="cli_manual"` is the only source allowed.
+  - Paper and live journals are separate files.
+  - `MODE=LIVE` is printed to stderr before every prompt.
+
+### 9.2 Live arming
+Each failure has a code. Every failure is listed, not just the first.
+
+**Static checks (before the lock and before login):**
+
+| # | Condition | Failure code |
+|---|---|---|
+| A1 | `--mode live` given **and** `orders.live.armed is True` | `not_armed` |
+| A2 | `--confirm-live` equals `expected_token(config, now)` = `live-<config_sha256[:12]>-<UTC YYYYMMDD>`. Environment variables are never read. | `confirm_token_mismatch` |
+| A3 | set of `acknowledgements` == set of `ACK_IDS` | `acknowledgements_incomplete` |
+| A4 | `sys.platform == "darwin"`, `credentials.source == "keychain"`, and the username, password and live app key items are present (`keychain_present`) | `keychain_credentials_missing` |
+| A5 | cert and key outside every git worktree; key mode has no group or world bits | `cert_files_unsafe` |
+| A6 | all caps present and at or below the ceilings | `caps_invalid` |
+| A7 | `kill_engaged(paths)` is False (fail-closed) and the fold is not `halted` | `halted` |
+| A8 | `jurisdiction == "com"` and `account_currency == "GBP"` | `jurisdiction_or_currency_unsupported` |
+| A9 | `heartbeat_api_enabled is False`. The Heartbeat API cancels **all** LIMIT bets on the account, including Bet Angel's (F58). | `heartbeat_unsupported_v1` |
+| A10 | `operator_attests_uk_egress is True` and no `CLOUD_ENV_MARKERS` variable is present in the environment | `egress_unattested_or_cloud` |
+| A11 | `confirmer.require_present()` passes: stdin is a tty and `/dev/tty` is readable | `operator_tty_required` |
+| A12 | `coexistence.bet_angel != "unverified"`, or `--bet-angel-paused` given | `bet_angel_coexistence_unverified` |
+| A13 | `paths.overridden is False`; the root is outside every git worktree; `check_anchor(journal.anchor(), anchor_read())` is empty | `state_root_invalid` / `journal_anchor_mismatch` / `journal_anchor_missing` |
+
+**Dynamic checks (after the lock, journal verify, login and startup reconcile):**
+
+| # | Condition | Failure code |
+|---|---|---|
+| A14 | login `SUCCESS` and `can_bet` | `login_cannot_bet` |
+| A15 | `accounts.json` maps the account fingerprint to this profile, or is empty for it (then registered); the journal meta fingerprint matches | `account_registered_to_other_profile` |
+| A16 | `get_account_details()["currencyCode"] == "GBP"`; an absent value fails | `account_currency_not_gbp_or_unknown` |
+| A17 | startup reconcile found no foreign orders, and the fold has no order in an `UNRESOLVED_STATES` state | `unresolved_or_foreign_orders` |
+| A18 | the self-fetched book has `fetched_by="gateway_self_fetch"`, `app_key_slot="live"`, `is_market_data_delayed is False`, `catalogue_present`, and in-process age `0 <= age <= max_book_age_s` measured from `monotonic_ns` | `market_data_delayed_or_stale` |
+| A19 | the journal fold has a `ref_roundtrip_verified` event | `ref_roundtrip_unverified` |
+
+**Checks required by each live command:**
+
+| Command | Checks |
+|---|---|
+| `place`, `replace` | A1–A19 |
+| `live-probe` | A1–A18 (not A19) |
+| `cancel` | A4, A5, A8, A10, A12, A13; then A14 (login only, `can_bet` not required) and A15. Allowed while halted or killed. |
+| `reconcile` | the same as `cancel`; `--accept` adds A1, A2, A11 |
+| `kill` own scope | A4 and A13 only. The kill file and the journal HALT are written before any check. The login is an emergency login. |
+| `kill --scope account` | adds A11 and a typed phrase (§9.8) |
+| `resume` (live) | A2, A11, A13; the kill file must be absent |
+
+`status`, `journal`, `doctor`, `keychain-setup` and `init-config` are offline and need no arming.
+
+### 9.3 The single choke point
+**Live place, step by step:**
+1. The CLI parses its arguments. Money and prices are parsed by `ticks.parse_money` and `parse_price`; `nan`, `inf`, `1e1` and values ≤ 0 are refused.
+2. Run `static_arming`. If anything fails, refuse and exit 2.
+3. Ask the operator to confirm: `confirmer.confirm_line(order_echo_line(...), banner="MODE=LIVE ...")`. Append an `operator_confirm` event.
+4. `gateway.open()`:
+   - take the global `.gateway.lock` and hold it for the process lifetime;
+   - verify the journal and check the anchor;
+   - in the fold, move SUBMITTING orders to UNKNOWN (`crash_between_submit_and_report`);
+   - log in;
+   - check the account registry;
+   - run `startup_reconcile` (§9.9);
+   - run `reconcile_unknown` for each UNKNOWN order (bounded time).
+5. Self-fetch the book: `read.market_snapshot(market_id, fetched_by="gateway_self_fetch")` with the live key.
+6. Run `dynamic_arming`, then `validate_place` and `guard.evaluate_place` (§10). If refused, journal `intent` and `risk_decision(refused)` and exit 2.
+7. Build the params (below). `prepared = rpc.prepare_order(PLACE_METHOD, params)`.
+8. `cap = guard.issue(decision, prepared, now_monotonic_ns=...)`. TTL 5 s, bound to `prepared["body_sha256"]`.
+9. Journal `submit` with the body sha, refs, decision id and params. It is committed with `F_FULLFSYNC`.
+10. Re-check `kill_engaged(paths)` (fail-closed). If engaged, journal `halt`, consume nothing and send nothing. The order becomes `REFUSED(kill_engaged_after_submit_journal)`.
+11. Block SIGINT and SIGTERM with `signal.pthread_sigmask`.
+12. `rpc.send_order(cap, prepared)`.
+13. Journal `report`, or `report` with an exception outcome.
+14. Unblock the signals.
+15. Classify and transition (§9.4). If anything is UNKNOWN, reconcile.
+16. Re-check the kill file. If it is engaged, cancel every order this process just placed by betId.
+17. In `close()`: `anchor_write`, release the lock. The CLI then logs out.
+
+**Rules for the step-5 book:**
+- In live mode, the `book=` argument must be None (`book_source_not_allowed_live`), and the CLI refuses `--book` with `--mode live`.
+- If the operator's confirmation took longer than `max_book_age_s`, the book is fetched again before evaluation. The confirmation covers market, selection, side, price and size. `marketVersion` comes from the fresh book.
+
+**Which strings live where:**
+- `gateway.py` alone contains `PLACE_METHOD = "SportsAPING/v1.0/placeOrders"`, `CANCEL_METHOD` and `REPLACE_METHOD`.
+- `updateOrders` and `HeartbeatAPING` appear nowhere (boundary test).
+- The transport digest gate (§2.10) refuses every non-read JSON-RPC body that is not bound by a consumed capability.
+
+**Place request params (v1):**
+```
+{"marketId", "customerRef": make_customer_ref(), "customerStrategyRef": orders.customer_strategy_ref,
+ "marketVersion": {"version": book.version},
+ "instructions":[{"orderType":"LIMIT","selectionId","handicap":0,"side","customerOrderRef",
+                  "limitOrder":{"size","price","persistenceType":"LAPSE"}}]}
+```
+- Never sent: `async`, `timeInForce`, `minFillSize`, `betTargetType`, MOC/LOC orders.
+- **Cancel:** `{"marketId","customerRef","instructions":[{"betId","sizeReduction":null|x}]}`. Bet ids must be ours (`validate_cancel`). There is no `allow_foreign`.
+- **Account-wide cancel** (killswitch only): `{"customerRef"}` with no `marketId` and no `instructions`.
+- **Replace:** `{"marketId","customerRef","marketVersion","instructions":[{"betId","newPrice"}]}`.
+- **No resubmission:** each `customerRef` and `customerOrderRef` is used once and never reused. A new attempt means a new intent with new refs, and it is possible only after the market is resolved. Betfair's 60 s de-dupe window is a backstop only.
+
+### 9.4 Order lifecycle state machine
+**States:** `RECORDED, REFUSED, SUBMITTING, EXECUTABLE, EXECUTION_COMPLETE, FAILED, UNKNOWN, ABSENT_UNCONFIRMED, ABSENT_ACCEPTED, LAPSED, CANCEL_PENDING, REPLACE_PENDING, REPLACED, SETTLED, VOIDED`
+
+- **Terminal:** `REFUSED, FAILED, ABSENT_ACCEPTED, LAPSED, REPLACED, SETTLED, VOIDED`.
+- **Unresolved** (blocks the market, or in live mode every market, and counts at full adverse exposure): `SUBMITTING, UNKNOWN, ABSENT_UNCONFIRMED, CANCEL_PENDING, REPLACE_PENDING`, plus any provisional replace child.
+
+**Classifying a place report, per instruction, first rule that matches:**
+1. `size_matched > 0`: EXECUTION_COMPLETE or EXECUTABLE, taken from `orderStatus`. Sizes are recorded and `error_code` is kept. If `orderStatus` is missing or invalid, the state is UNKNOWN with the matched size kept as a known minimum.
+2. `bet_id` not null, `size_matched` 0 or null, status FAILURE (including `BET_TAKEN_OR_LAPSED`): UNKNOWN (`bet_id_echoed_on_failure`), then confirmed with `listCurrentOrders(betIds=[id])`.
+3. Status SUCCESS with `orderStatus` in {EXECUTABLE, EXECUTION_COMPLETE}: that state.
+4. Status SUCCESS with any other `orderStatus` (null, PENDING, EXPIRED): UNKNOWN (`unexpected_order_status`).
+5. Status FAILURE, `bet_id` null, `size_matched` 0 or null, and a code in a definitive category (`terminal_*`, `market_state`, `planner_bug`): FAILED.
+6. TIMEOUT, or any `unknown_outcome` or `unrecognized` code: UNKNOWN.
+
+**At execution level:**
+- `PROCESSED_WITH_ERRORS`: classify each instruction.
+- FAILURE with a definitive `errorCode` and an empty or missing `instructionReports`: every instruction FAILED with that code.
+- TIMEOUT, or an unknown code, with no reports: every instruction UNKNOWN.
+- A mismatched ref or count: every instruction UNKNOWN.
+
+**Exceptions:**
+- `TransportError` with `may_have_arrived=False`: FAILED (`transport_not_sent`).
+- `TransportError` with `may_have_arrived=True`: UNKNOWN.
+- `ApiError` in category `session`, `app_key`, `rate_limited`, `planner_bug`, `terminal_account` or `terminal_input`: FAILED (rejected before processing). There is no relogin-and-resend.
+- `ApiError` in `unknown_outcome` or `unrecognized`: UNKNOWN.
+
+**Transitions.** Anything else raises `JournalError`.
+```
+RECORDED         -> REFUSED | SUBMITTING
+SUBMITTING       -> EXECUTABLE | EXECUTION_COMPLETE | FAILED | UNKNOWN
+UNKNOWN          -> EXECUTABLE | EXECUTION_COMPLETE (found by ref or betId)
+                  | LAPSED (found in listClearedOrders LAPSED/CANCELLED)
+                  | ABSENT_UNCONFIRMED (§9.7 conditions all met)
+                  | UNKNOWN (attempt journaled; attempts++)
+ABSENT_UNCONFIRMED -> EXECUTABLE | EXECUTION_COMPLETE | LAPSED (appears later)
+                  | ABSENT_ACCEPTED (operator `reconcile --accept REF` after a final clean search; live only)
+EXECUTABLE       -> EXECUTABLE (size refresh) | EXECUTION_COMPLETE | LAPSED | CANCEL_PENDING | REPLACE_PENDING
+CANCEL_PENDING   -> EXECUTABLE (partial or failed cancel) | EXECUTION_COMPLETE
+                  | UNKNOWN (cancel outcome unknown, or BET_TAKEN_OR_LAPSED pending refresh_open_orders(betIds))
+REPLACE_PENDING  -> REPLACED (child created with parent_ref/child_ref linked; child EXECUTABLE|EXECUTION_COMPLETE)
+                  | EXECUTION_COMPLETE (CANCELLED_NOT_PLACED: remaining cancelled; provisional child -> FAILED)
+                  | EXECUTABLE (replace failed; original intact; provisional child -> FAILED)
+                  | UNKNOWN (parent and provisional child both unresolved; market halted `unresolved_replace`)
+EXECUTION_COMPLETE -> SETTLED | VOIDED
+```
+A **provisional child** is journaled at replace submit, with its own `customer_order_ref`, side, the new price and the parent's remaining size. Until it resolves it is counted adversarially together with the parent (§10, R8).
+
+### 9.5 Journal (`journal.py`, SQLite)
+```sql
+CREATE TABLE journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- schema_version, mode, created_at, account_fingerprint
+CREATE TABLE events (
+  seq INTEGER PRIMARY KEY, event_id TEXT UNIQUE NOT NULL, recorded_at TEXT NOT NULL, monotonic_ns INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('intent','risk_decision','operator_confirm','submit','report','reconcile',
+       'cancel_intent','replace_intent','funds_check','startup_reconcile','halt','resume','kill','settle',
+       'probe_result','ref_roundtrip_verified','operator_accept','note')),
+  mode TEXT NOT NULL CHECK (mode IN ('paper','live')),
+  intent_id TEXT, customer_order_ref TEXT, customer_ref TEXT, bet_id TEXT, market_id TEXT, state_after TEXT,
+  payload_json TEXT NOT NULL, prev_sha256 TEXT NOT NULL, event_sha256 TEXT NOT NULL);
+CREATE UNIQUE INDEX one_intent_per_order_ref ON events(customer_order_ref) WHERE kind='intent';
+CREATE INDEX events_ref ON events(customer_order_ref);
+-- BEFORE UPDATE / BEFORE DELETE triggers on both tables: RAISE(ABORT,'journal is append-only')
+-- journal_meta inserts only; account_fingerprint is set once
+-- PRAGMA user_version=1
+```
+- `event_sha256 = canonical_sha256({every column except event_sha256, with payload parsed})`. The first event uses `prev_sha256 = "0"*64`.
+- On open: `PRAGMA journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`, `checkpoint_fullfsync=ON`. A test asserts the last two.
+- Every `append` runs inside `BEGIN IMMEDIATE`. It reads the last `event_sha256` and `seq` inside that transaction, then commits before returning. That is why `submit` returns before any network write, and why appends from several processes cannot fork the chain.
+- `append` calls `secret.refuse_forbidden(payload)` and `secret.assert_clean(payload_json)`.
+- On open the schema is checked: `user_version`, the tables, the triggers, and `meta.mode` equal to the requested mode.
+- `verify()` recomputes the whole chain.
+- `anchor()` returns the first event's sha, the last seq and the last sha.
+
+### 9.6 `fold()` output (the state given to RiskGuard)
+```
+{"orders": {customer_order_ref: order_record},
+ "halted": bool, "halt_reasons": [str],
+ "unresolved_markets": [market_id],
+ "submitted_instruction_wall_ns": [int],          # every submitted place/replace instruction, whatever its outcome (R6)
+ "transactions_by_clock_hour": {"YYYY-MM-DDTHH": n},
+ "orders_today": n, "realized_today_pence": int|None, "unsettled_matched_liability_today_pence": int,
+ "strategy_refs_seen": [str], "ref_roundtrip_verified": bool,
+ "last_submit_wall_ns": int|None, "consecutive_unknown": n, "clock_regression": bool,
+ "funds": {...}|None, "funds_checked_at": str|None,
+ "exchange_floor": {"orders_today": n, "realized_today_pence": int|None}|None}   # from the latest startup_reconcile event
+```
+- **Rate windows** count events with `recorded_at > now − window`, with no upper bound, using `receipts.parse_utc_ns`.
+- If `max(recorded_at) > now + 5 s`, then `clock_regression = True`, which means HALT.
+- The guard uses `max(journal, exchange_floor)` for `orders_today`, and the worse of the two for `realized_today_pence`.
+
+### 9.7 Reconciliation (live)
+`reconcile_unknown` runs straight after an UNKNOWN outcome, during `open()`, and when the `reconcile` command is run. One call blocks for at most about 40 s; attempts are persisted.
+
+1. **Window.**
+   - `t_obs` = the time the outcome was observed (`outcome_observed_at`, wall and monotonic).
+   - `deadline = max(submitted_at + window_s + grace_s, t_obs + window_s)`.
+2. **Polling.** Every `poll_interval_s`, call `listCurrentOrders(customerOrderRefs=[ref], marketIds=[m], orderProjection="ALL")`.
+   - A poll counts only if it returned a parsed result with no error.
+   - A found order takes its state and sizes from the response, and reconciliation ends.
+   - Any read error leaves the order **UNKNOWN**. A read error never counts as "not found".
+3. **Ref-independent search.** After the deadline, call `listCurrentOrders(marketIds=[m], customerStrategyRefs=[ours], dateRange={"from": iso(t0 − 5 s)}, orderBy="BY_PLACE_TIME", orderProjection="ALL")`. Any order on the same selection, side, price and size whose betId the journal does not know means: keep UNKNOWN and HALT with `unattributed_candidate_order`.
+4. **Cleared orders.** Call `listClearedOrders(betStatus=LAPSED, then CANCELLED, customerOrderRefs=[ref], settledDateRange.from=t0 − 60 s)`. `groupBy` is not sent. Found means LAPSED.
+5. **ABSENT_UNCONFIRMED** is reached only when all of these hold:
+   - at least `min_successful_polls` (3) successful polls after `t_obs`, spanning at least `window_s`;
+   - every poll in the final 5 s succeeded;
+   - the step-3 and step-4 queries succeeded and came back empty.
+
+   ABSENT_UNCONFIRMED stays unresolved and keeps full adverse exposure (§10). It never re-places.
+6. **ABSENT_ACCEPTED** happens only through `reconcile --accept REF --mode live --confirm-live TOKEN`. The operator must echo `ACCEPT ABSENT <ref>`, and a final step-2 to step-4 pass must be clean. The command appends `operator_accept`.
+7. **Unknown cancel:** check by `listCurrentOrders(betIds=[id])`.
+8. **Unknown replace:** check the parent by betId. Look for the child by its provisional ref, then with the step-3 search at the new price and the remaining size.
+   - A unique match is accepted with the flag `inferred_child_match`.
+   - No match or several matches keep the market halted until `reconcile --accept`.
+
+**Settlement** (`settle_from_cleared`):
+- Fetch SETTLED and VOIDED BET-level items for our refs since `since_utc`, plus `groupBy="MARKET"` SETTLED items for the actual `commission`.
+- Runner results come from a single-id CLOSED `listMarketBook`.
+- Our own P&L (`pnl.order_pnl_pence`) uses side, matched price, `sizeSettled` and the runner result.
+- The value used is `min(own, betfair_profit)` when both are present.
+- A difference above 1p means HALT `pnl_basis_mismatch`.
+- If any input is missing, the realised loss for those orders is their matched liability, the worst case.
+
+### 9.8 Kill switch
+**Engage.** `kill` (either scope), or `touch` on `STATE_ROOT/KILL`.
+1. `killswitch.engage(paths, reason)` writes the file with no lock and no login. It then appends `kill` and `halt` events to the live journal; `BEGIN IMMEDIATE` makes this safe even while another process holds the gateway lock.
+2. From that point, every place, replace and probe is refused (R1), including in other processes. The gateway re-checks the file after journaling `submit`, immediately before `send_order`, and again after every report.
+3. If `kill_cancels_own_orders` is set, acquire the gateway lock, waiting up to `order_deadline_s + 5` s. Then log in with an emergency login (this skips the successful-login cap but respects a ban and the failure cap). If login fails, exit 3 with `kill_incomplete_no_session` and tell the operator to cancel on the website or in Bet Angel.
+4. **Target set**, the union of:
+   - `listCurrentOrders(customerStrategyRefs=[config ref] ∪ strategy_refs_seen, orderProjection="EXECUTABLE")`;
+   - `listCurrentOrders(betIds=<every non-terminal betId in the fold, including replace children>, orderProjection="EXECUTABLE")`, in batches of at most 250;
+   - `listCurrentOrders(orderProjection="EXECUTABLE", includeSourceId=True)` filtered in memory where `sourceIdKey == live_app_key.reveal()`. This leg is skipped with a note if the field is absent. `sourceIdKey` is stripped from every stored record.
+5. Cancel by explicit betIds, market by market, at most 60 per request, one request at a time.
+6. **Verify** by re-running all three legs.
+   - If any order is UNKNOWN or SUBMITTING, or `last_submit_wall_ns` is within the last 20 s, repeat the sweep at `last_submit + 20 s` and again at `last_submit + 30 s`.
+   - If there is any EXECUTABLE hit after the final pass, or any read failure, the result is `kill_incomplete`: the HALT stays and the command exits 3.
+   - Otherwise the result is `kill_complete`.
+7. **Account-wide kill.**
+   - Requires `kill --scope account --confirm-account-wide` plus a tty echo of `CANCEL ALL UNMATCHED ON ACCOUNT INCLUDING BET ANGEL STOPS`.
+   - Sends one `cancelOrders` with no marketId and no instructions.
+   - Never sent concurrently: it runs under the gateway lock and is refused if an earlier account-wide `kill` event has no report.
+   - It is not the default. The docs warn that it removes Bet Angel's hedging and stop orders.
+8. **Limit.** Matched bets cannot be undone; the docs say so explicitly.
+
+**Resume:**
+- The operator removes the kill file by hand.
+- Live: `resume --mode live --confirm-live TOKEN` with a tty echo of `RESUME LIVE`.
+- Paper: `resume` with no token.
+- Resume appends a `resume` event that clears the journal HALT. It refuses if `kill_engaged` is still true.
+
+**Automatic HALT triggers (live):**
+- `terminal_account`;
+- `terminal_input` (journaled as `validator_gap`);
+- `planner_bug` on an order call;
+- `app_key`;
+- `unrecognized`;
+- unexplained account exposure (R12);
+- `kill_incomplete`;
+- 3 consecutive UNKNOWN outcomes;
+- `pnl_basis_mismatch`;
+- `clock_regression`;
+- `foreign_strategy_order`;
+- `unattributed_candidate_order`;
+- `unresolved_replace` (that market only, until reconciled).
+
+### 9.9 Startup exchange reconciliation and journal anchor (live)
+**At every live `open()`:**
+- **Anchor check (A13):**
+  - If a Keychain anchor exists and the journal file is missing, the genesis differs, or `seq` is below the anchor's seq, refuse with `journal_anchor_mismatch`.
+  - If no anchor exists but the journal has live events, refuse with `journal_anchor_missing`.
+  - There is no override in v1. Recovering means deliberately deleting the Keychain item by hand, which the docs explain.
+- **`startup_reconcile`** (`since_utc` = today at 00:00Z):
+  - `iter_current_orders(customerStrategyRefs=<config ref ∪ strategy_refs_seen>, orderProjection="ALL", dateRange={"from": since}, includeSourceId=True)`;
+  - `iter_cleared_orders(SETTLED|LAPSED|CANCELLED, settled_from_utc=since, customerStrategyRefs=..., includeSourceId=True)`;
+  - plus the `sourceIdKey == live key` leg from §9.8.
+- **Foreign orders.** Any order the journal does not know, matched by `customerOrderRef` or betId, gives HALT `foreign_strategy_order`, and A17 fails.
+- **Exchange floor.** `exchange_orders_today` and the realised P&L are journaled in a `startup_reconcile` event and become `exchange_floor`.
+- **After every live command:** `anchor_write(profile, journal.anchor() + updated_at)`.
+
+### 9.10 `live-probe` (the only way to set A19)
+- Fixed order: `LAY £1.00 @ 1.01` on a selection Yu chooses. Maximum loss if matched is £0.01, because liability = 1.00 × 0.01.
+- It passes every rule except V13, from which it is exempt. Caps are unchanged.
+- Flow:
+  1. place, with a tty echo of `PROBE <market> <selection> LAY 1.01 1.00`;
+  2. cancel by betId immediately;
+  3. `listCurrentOrders(customerOrderRefs=[ref])` and check the order is found;
+  4. `listClearedOrders(CANCELLED|LAPSED, customerOrderRefs=[ref])` (T10 observation);
+  5. write raw responses to `live-tests/probe-<ts>/`;
+  6. append `probe_result`, and, only if step 3 found the order by its `customerOrderRef`, `ref_roundtrip_verified`.
+- With `--replace-step`, before cancelling it replaces to 1.02 (liability £0.02) to observe whether the child inherits the refs (T11). The child is then cancelled.
+
+---
+
+## 10. Risk guard rules
+All money is in integer pence and all prices in integer hundredths. `evaluate_*` is pure: the same inputs give the same output. Rules are checked in the order below. The first failing rule is reported as `rule`, and `detail.failures` lists every failing rule.
+
+**Place** (each instruction, then the request as a whole):
+- **R1 `halted`**: the kill file is engaged (fail-closed), or the fold is `halted` or `clock_regression`.
+- **R2 `not_armed`** (live): `arming["failures"]` is non-empty.
+- **R3 `unresolved_orders`**: the market is in `unresolved_markets`. In live mode, any unresolved order anywhere also triggers it.
+- **R4 `validation:<V-code>`**:
+  - **V1** market id matches `^1\.\d{1,12}$`.
+  - **V2** `selection_id` is an int > 0, `handicap == 0`, and the selection is present in the book's runners.
+  - **V3** side is BACK or LAY.
+  - **V4** price is exactly on the CLASSIC ladder. There is no implicit snapping.
+  - **V5** size has exactly 2 dp, `min_stake ≤ size`, and the minimum is at least £1.00. Sub-£1 stakes are unsupported in v1.
+  - **V6** persistence is LAPSE.
+  - **V7** instruction count ≤ `min(max_instructions_per_request, 200)`.
+  - **V8** no self-match: a LAY price must be below every BACK price on the same selection (and the reverse), across this request plus our EXECUTABLE and unresolved orders.
+  - **V9** market gates:
+    - status OPEN;
+    - runner ACTIVE;
+    - `inplay` False (always required in v1);
+    - `version` not null;
+    - `betting_type` ODDS;
+    - `number_of_winners` 1;
+    - `market_type` and `event_type_id` in the config lists;
+    - ladder CLASSIC;
+    - `catalogue_present` (else `catalogue_missing`);
+    - `invalid_reason` is null.
+  - **V9b** (live): `market_time` is present and `0 < market_time − now ≤ max_minutes_before_off` (else `market_time_too_far` or `market_time_passed`).
+  - **V10** book age:
+    - live: the A18 conditions;
+    - paper: age ≤ `paper.max_snapshot_age_s` against simulation time.
+  - **V11** refs: `customerRef` ≤ 32 characters from `[A-Za-z0-9:\-._+*;~]`; `customerOrderRef` ≤ 32 characters from `[A-Za-z0-9-]`; strategy ref ≤ 15 characters.
+  - **V12** currency is GBP.
+  - **V13** `ticks_between(price, reference) ≤ max_price_deviation_ticks`. The reference is the best back price for a BACK, the best lay price for a LAY, otherwise ltp. With no reference: `no_reference_price`. A probe is exempt.
+  - **V14** `profit_ratio_ok`: compute the exact backer profit `size × (price − 1)` in hundredths of a penny, and round it to the penny both half-up and half-even. Refuse if either ratio is below 0.80 or above 1.25. The rule is from F39; the rounding mode is inferred.
+- **R5 `stake_cap`**: size ≤ `max_stake_per_order`. For a LAY, `size × (price − 1)` ≤ `max_liability_per_order`.
+- **R6 `rate_minute|rate_hour|rate_day`**: every **submitted** place or replace instruction counts, whatever its outcome. Count those in the last 60 s or 3600 s, or the current UTC day, plus this request; the total must be ≤ the cap.
+- **R7 `transactions_hour`**: transactions in the current UTC clock hour plus this request must be ≤ `max_transactions_per_hour`. Counting:
+  - a placement is 1;
+  - a failed placement is 1;
+  - a successful cancel is 0;
+  - a failed cancel is 1;
+  - a replace is 1, plus 1 if its cancel part fails.
+- **R8 `market_exposure`**: with the new instructions added as adversarial unmatched orders, `worst_case_market_loss ≤ max_market_exposure`.
+  - **Outcomes** O = the book's runners ∪ every selection we hold any order on (even if missing from the book) ∪ {other}.
+  - **P&L of order k at outcome o:**
+    - BACK: `+s(p−1)` if o is the selection, else `−s`;
+    - LAY: `−s(p−1)` if o is the selection, else `+s`.
+  - **Matched portions** are counted exactly, at the average matched price.
+  - **Adversarial portions** contribute `min(0, pnl_k(o))` at full remaining size. These are unmatched portions and orders in SUBMITTING, UNKNOWN, ABSENT_UNCONFIRMED or CANCEL_PENDING.
+  - **A REPLACE_PENDING parent together with its provisional child** contributes `min(parent_adverse(o), child_adverse(o))` for each outcome.
+  - `L_m = max(0, max_o −Σ_k contrib_k(o))`.
+- **R9 `total_exposure`**: Σ `L_m` over every market with open or unsettled orders ≤ `max_total_exposure`.
+- **R10 `daily_loss`**: `max(0, −realized_today) + Σ L_m(after) ≤ max_daily_loss`.
+  - Profits never extend the budget.
+  - Realised P&L comes from §9.7, net of commission, and is the worse of the journal and exchange values.
+  - In live mode, an unknown realised value counts as the matched liability of today's settled orders.
+- **R11 `funds`** (live): if the stored funds are older than `funds_max_age_s`, refresh them with `getAccountFunds` (journal `funds_check`). Required stake = Σ(BACK size + LAY size × (p − 1)), and it must be ≤ `availableToBetBalance − funds_reserve`.
+- **R12 `unexplained_account_exposure`** (live): `external = abs(api.exposure) − Σ L_m(before)`. The value is always journaled. If `external > external_exposure_tolerance`, HALT and refuse. There is no `warn` policy. The sign of the exposure field is unverified (T7), hence `abs()`.
+
+**Replace:**
+- R1, R2 (token mandatory in live), R3 (global in live) and R4 (V1–V14 and V9b on the **new** price, against a fresh self-fetched book) are evaluated first.
+- Then R5–R12 are evaluated for both outcomes:
+  - (a) the original order stays (its cancel fails);
+  - (b) the remaining size is re-placed at the new price.
+- R8–R10 use `max(L(a), L(b))`. R6 and R7 count one placement.
+
+**Cancel:**
+- Always allowed while halted or killed.
+- Only `validate_cancel` applies: bet ids must be ours, at most 60 per request, one market.
+- No rate cap applies beyond the 1000/s vendor ceiling.
+
+**Capability:** `issue()` refuses unless `decision["approved"]` and mode is live. TTL is 5 s. The capability is bound to the body sha256.
+
+**Properties the tests require** (§14):
+- no sequence of gateway calls leads to an accepted place that breaks R5–R10, measured after acceptance with adversarial settlement;
+- the rate windows hold at every instant;
+- after a kill there are zero accepted places;
+- rebuilding the guard from the journal gives identical decisions;
+- every order RPC seen by the fake transport matches exactly one consumed capability and one journal `submit` with the same body sha;
+- UNKNOWN and ABSENT_UNCONFIRMED orders are never counted as zero exposure.
+
+---
+
+## 11. Error taxonomy (`errors.ERROR_CATEGORIES`, keyed by `(surface, code)`)
+
+| Category | (surface: codes) | Read call | Order call | Stream |
+|---|---|---|---|---|
+| `session` | aping/account_aping: INVALID_SESSION_INFORMATION, NO_SESSION · sso_session: NO_SESSION · stream_status: INVALID_SESSION_INFORMATION, NO_SESSION | relogin once, retry once | FAILED (rejected), no resend | relogin; new segment |
+| `app_key` | aping/account_aping/stream_status: NO_APP_KEY, INVALID_APP_KEY | stop | FAILED + HALT | stop |
+| `rate_limited` | aping: TOO_MANY_REQUESTS | backoff, ≤ 3 attempts | FAILED (not processed); no resend | n/a |
+| `login_ban` | sso_login: TEMPORARY_BAN_TOO_MANY_REQUESTS | persisted lockout | persisted lockout | persisted lockout |
+| `planner_bug` | aping: TOO_MUCH_DATA, REQUEST_SIZE_EXCEEDS_LIMIT, INVALID_INPUT_DATA · jsonrpc: −32700, −32601, −32602 · dsc: DSC-0008/0009/0018/0021/0023/0024 | raise, no retry | FAILED + HALT (`validator_gap`) | n/a |
+| `terminal_account` | execution_report: INSUFFICIENT_FUNDS, LOSS_LIMIT_EXCEEDED, INVALID_ACCOUNT_STATE, INVALID_WALLET_STATUS, PERMISSION_DENIED, REJECTED_BY_REGULATOR, REGULATOR_IS_NOT_AVAILABLE, NO_CHASING · instruction_report: INSUFFICIENT_FUNDS, LOSS_LIMIT_EXCEEDED · aping: ACCESS_DENIED · dsc: DSC-0015/0034/0035/0036/0037/0038 | raise | FAILED + HALT | n/a |
+| `terminal_input` | instruction_report: INVALID_BET_SIZE, INVALID_RUNNER, INVALID_PRICE_EDIT, INVALID_ODDS, INVALID_PERSISTENCE_TYPE, INVALID_BACK_LAY_COMBINATION, INVALID_BID_TYPE, INVALID_BET_ID, TIME_IN_FORCE_CONFLICT, UNEXPECTED_PERSISTENCE_TYPE, INVALID_ORDER_TYPE, UNEXPECTED_MIN_FILL_SIZE, INVALID_CUSTOMER_ORDER_REF, INVALID_MIN_FILL_SIZE · execution_report: INVALID_ORDER, INVALID_MARKET_ID, DUPLICATE_BETIDS, TOO_MANY_INSTRUCTIONS, INVALID_MARKET_VERSION, INVALID_PROFIT_RATIO | raise | FAILED + HALT (`validator_gap`) | n/a |
+| `market_state` | execution_report: MARKET_SUSPENDED, MARKET_NOT_OPEN_FOR_BETTING · instruction_report: MARKET_NOT_OPEN_FOR_BETTING, MARKET_NOT_OPEN_FOR_BSP_BETTING, BET_TAKEN_OR_LAPSED, RUNNER_REMOVED, BET_LAPSED_PRICE_IMPROVEMENT_TOO_LARGE | n/a | FAILED with no halt, **subject to the §9.4 matched-size and betId rules** | n/a |
+| `unknown_outcome` | execution_report/instruction_report status: TIMEOUT · aping: TIMEOUT_ERROR, UNEXPECTED_ERROR, SERVICE_BUSY · instruction_report: BET_IN_PROGRESS, ERROR_IN_MATCHER · execution_report: ERROR_IN_MATCHER, SERVICE_UNAVAILABLE, DUPLICATE_TRANSACTION · dsc: DSC-0019 · jsonrpc: −32603 · http: HTTP_5xx · transport: may_have_arrived | retry | UNKNOWN → reconcile; never resend | n/a |
+| `partial` | execution_report: PROCESSED_WITH_ERRORS, BET_ACTION_ERROR | n/a | classify each instruction | n/a |
+| `replace_split` | instruction_report: CANCELLED_NOT_PLACED, RELATED_ACTION_FAILED, ERROR_IN_ORDER | n/a | §9.4 replace rows | n/a |
+| `no_change` | execution_report: NO_ACTION_REQUIRED, NO_CHANGE · instruction_report: NO_ACTION_REQUIRED | n/a | informational | n/a |
+| `stream_fatal` | stream_status: NOT_AUTHORIZED, INVALID_INPUT, INVALID_REQUEST, TIMEOUT | n/a | n/a | stop; journal |
+| `stream_backoff` | stream_status: MAX_CONNECTION_LIMIT_EXCEEDED, TOO_MANY_REQUESTS | n/a | n/a | backoff ≥ 60 s, exponential |
+| `stream_reconnect` | stream_status: UNEXPECTED_ERROR, CONNECTION_FAILED · local: liveness_timeout, line_too_long | n/a | n/a | new segment |
+| `stream_clock` | stream_status: INVALID_CLOCK | n/a | n/a | drop clocks, fresh image |
+| `stream_subscription_limit` | stream_status: SUBSCRIPTION_LIMIT_EXCEEDED | n/a | n/a | stop the session; never retry the same set |
+| `unrecognized` | anything not listed, including angx: ANGX-* | raise | UNKNOWN + HALT | stop |
+
+- Every lookup needs a surface. The same code means different things on different surfaces; for example `UNEXPECTED_ERROR` is `unknown_outcome` for aping but `stream_reconnect` for stream_status.
+- How `stream_fatal` and `stream_backoff` are handled is our own design. The stream doc lists the codes but not a recovery policy.
+
+**Login statuses** (`classify_login`):
+
+| Status or error | Outcome |
+|---|---|
+| `SUCCESS` | proceed |
+| `LIMITED_ACCESS` | reads only (`can_bet=False`) |
+| `CERT_AUTH_REQUIRED` | `cert_setup_required` |
+| any `*_REQUIRED` (terms, KYC, migration, password change) | `operator_action_on_website` |
+| `TEMPORARY_BAN_TOO_MANY_REQUESTS` | `login_ban` |
+| anything else | `AuthError(status)` |
+
+---
+
+## 12. CLI (`python3 -m betangel_research.betfair <cmd>`)
+
+**Common behaviour:**
+- **Global flags:** `--profile`. `--config` and `--state-root` work only under `BETANGEL_BETFAIR_FORBID_NETWORK=1`; otherwise they exit 2 with `override_not_allowed`.
+- **Order commands** also take `--mode paper|live` (default paper), `--confirm-live TOKEN` and `--bet-angel-paused`.
+- **Output:** one JSON document with `indent=2`, except `record`, which prints JSON lines.
+- **Exit codes:**
+  - **0:** success.
+  - **2:** input error or refusal, with `"Betfair input error: <safe text>\n"` or `"Betfair order refused: <rule>\n"`.
+  - **3:** `kill_incomplete*`.
+  - **4:** unexpected exception, with `"Betfair stopped: <ClassName>; inspect local configuration/state\n"`.
+  - No traceback or raw response text is ever shown.
+- **Signals:** long-running commands install SIGTERM and SIGINT handlers.
+- **Money and price flags** use `ticks.MONEY_RE`. `nan`, `inf`, exponent notation and values ≤ 0 are refused.
+
+| Subcommand | Network | What it does |
+|---|---|---|
+| `init-config` | no | Copies the example config to the profile path if absent. Prints the path and `config_sha256`. |
+| `doctor [--network]` | opt | Offline by default. Reports: config validity; resolved state paths (`StatePaths.describe`); cert and key location and permissions; Keychain item presence using `minimal_env` (`keychain_env_ok`), never values; whether this repo's `.gitignore` covers `*.crt *.key *.p12 *.pfx *.pem` (informational); arming status; anchor status. `--network` adds login, keepAlive and logout, and reports statuses only. |
+| `keychain-setup` | no | Prints the §5 commands. |
+| `login-reset` | no | tty echo `RESET LOGIN FAILURES`. Appends a reset row. |
+| `event-types` | yes | Read path. |
+| `catalogue --event-type 7 --countries GB,IE --market-types WIN [--from ISO --to ISO] [--max N]` | yes | Read path, through `filters.to_rest_market_filter`. |
+| `book --market ID[,ID] [--price-data EX_BEST_OFFERS,EX_TRADED] [--depth N] [--out]` | yes | Normalised snapshots (`fetched_by="read_command"`). |
+| `orders-current [--market] [--strategy-ref]` | yes | Read path. |
+| `orders-cleared --status SETTLED\|VOIDED\|LAPSED\|CANCELLED --from ISO [--to ISO]` | yes | Read path. |
+| `funds` | yes | `getAccountFunds`. |
+| `account` | yes | Whitelisted `getAccountDetails`. |
+| `record [--max-seconds N]` | yes | Stream recorder (§8). Prints progress as JSON lines, then the final summary. |
+| `verify-recording --session DIR` | no | `verify_recording`. |
+| `place --market --selection --side --price --size [--book FILE \| --fetch-book] [--mode paper\|live] [--confirm-live T]` | paper: no unless `--fetch-book`; live: yes | Gateway place. `--book` is refused with `--mode live`. |
+| `cancel --market --bet-id ID[,ID] [--size-reduction X] [--mode ...]` | live: yes | Gateway cancel (own bet ids only). |
+| `replace --market --bet-id ID --new-price P [--book FILE \| --fetch-book] [--mode ...] [--confirm-live T]` | live: yes | Gateway replace. |
+| `live-probe --market ID --selection ID --confirm-live T [--replace-step]` | yes | §9.10. Implicitly `--mode live`. |
+| `paper-step --market ID [--book FILE \| --fetch-book]` | opt | Advances paper orders on a new book. |
+| `paper-replay --input SEG.jsonl[,SEG...] --orders ORDERS.json --out outputs/<new>` | no | Deterministic simulation (§13). Refuses an existing `--out`. |
+| `reconcile [--accept REF] [--mode live] [--confirm-live T]` | live: yes | §9.7. |
+| `journal [--verify] [--state X] [--mode paper\|live]` | no | Orders from the fold; hash-chain verification. |
+| `status` | no | Mode availability, arming summary, halted, kill (fail-closed), rate counters, open and adversarial exposure, `config_sha256`, today's UTC date, resolved paths. |
+| `kill [--scope own\|account] [--confirm-account-wide] --reason TEXT` | yes, unless the kill file alone suffices | §9.8. Always engages the file first. |
+| `resume [--mode live] [--confirm-live T]` | no | §9.8. |
+
+There is no `arm-token` command. The token formula is documented, and `status` shows its inputs.
+
+**Each subcommand's help text states its limits,** for example: `"Paper by default; live needs --mode live, every arming condition in docs/betfair-order-path.md, and typing the order at a terminal"`.
+
+**`paper-replay` orders file:**
+```json
+{"schema_version":1,"orders":[{"submit_pt":1700000000000,"market_id":"1.1","selection_id":1,"side":"BACK","price":"3.50","size":"2.00"}]}
+```
+**`paper-replay` output:**
+- `outputs/<new>/report.json`, `summary.md` and `journal.sqlite`.
+- One row appended to `outputs/run-ledger.jsonl` with exactly these keys: `{created_at, experiment_id, source_sha256, config_sha256, code_sha256, report, report_sha256, status}`.
+  - `experiment_id` is `"paper-replay:<orders_sha256[:12]>"`.
+  - `status` is `"paper_simulation_not_execution_evidence"`.
+- The report includes `economic_result: null`, `simulated_execution: {...}`, `commission_source` and `limitations`.
+
+---
+
+## 13. Paper fill model `paper-v1`
+Parameters come from `orders.paper` and the model is deterministic: integer pence and hundredths, no randomness, sorted report keys.
+
+1. **Time basis.** `pt` for recordings, `observed_at` (parsed with `parse_utc_ns`) for REST snapshots. An order becomes active at `t_a = t_submit + submit_latency_ms`.
+2. **Book at activation.** The latest snapshot with time ≤ `t_a`. If it is older than `max_snapshot_age_s`, or `invalid_reason` is set, the order is REFUSED with `paper_book_stale` or `paper_book_invalid`. Delayed data therefore needs an explicit, labelled relaxation of the age limit.
+3. **Gate.** Status OPEN, not in-play, runner ACTIVE. Otherwise `paper_rejected_market_state`, which follows the `market_state` FAILED path.
+4. **Immediate match:**
+   - A BACK at p walks the `back` levels (availableToBack) with price ≥ p, best first.
+   - A LAY at p walks the `lay` levels (availableToLay) with price ≤ p.
+   - Each level fills `min(remaining, floor_pence(level_size × displayed_size_fraction))` at that level's price, which is price improvement.
+   - Nothing fills beyond the displayed depth.
+5. **Resting queue.**
+   - A resting **BACK** at p joins the unmatched backs shown in the **`lay`** (availableToLay) ladder at p.
+   - A resting **LAY** joins the **`back`** ladder at p.
+   - If p is inside the displayed range of that ladder, `queue_ahead` = the displayed size at p, or 0 if p is not shown.
+   - If p is beyond the displayed range, `queue_ahead = unknown` and the order never fills passively (`passive_fill_blocked_queue_unknown`).
+6. **Passive fills** (`trd_queue_conservative`):
+   - Only between consecutive OPEN snapshots: `Δ = traded[p]_now − traded[p]_prev`.
+   - A negative Δ, or a settlement-zeroing frame (§2.14), is ignored and flagged.
+   - `consumed = Δ / traded_volume_divisor` (default 2: the PRO basis counts backer's stake × 2; this is unverified for the live API and under-fills on purpose).
+   - Consumed volume reduces `queue_ahead` first, then fills our order at p.
+   - Cancellations ahead of us never improve our position. There are no trade-through fills.
+   - With no `traded` data there are no passive fills (`passive_fill_unavailable_no_trd`).
+7. **Lapse.** Unmatched size lapses at the first snapshot with `inplay=true`, when the runner is removed, or when `version` changes while the market is SUSPENDED (used as a stand-in for a material change). A plain suspension keeps the order but blocks fills. Ladders are empty while suspended and refresh from new data after reopening.
+8. **Settlement:**
+   - From a CLOSED market definition with runner statuses WINNER or LOSER.
+   - A REMOVED runner voids its matched bets, and the market is **excluded** from P&L totals (`rule4_adjustment_not_modelled`).
+   - More than one WINNER with `number_of_winners == 1` is excluded (`dead_heat_not_modelled`).
+   - P&L comes from `pnl.market_realized`. Commission uses `evaluation.settled_market_costs(gross_by_market, commission_rate)`, and `commission_source` is echoed.
+9. **Labels.** The report carries `model`, the parameters, input sha256s, the `PAPER_ASSUMPTIONS` text, `key_type`, data freshness and `commission_source`. Delayed input adds `delayed_data_paper_fills_unreliable`.
+10. **Unsupported in both paper and live,** so the two modes behave the same: in-play, PERSIST, FOK, minFill, betTarget, MOC/LOC, async, and stakes below £1.
+
+---
+
+## 14. Test plan
+
+**Rules for every test:**
+- Tests use `unittest` and are offline.
+- `test_betfair_support.block_network(self)` applies each patch with `p = patch(...); p.start(); self.addCleanup(p.stop)` on `socket.create_connection`, `socket.socket.connect`, `http.client.HTTPConnection.connect`, `http.client.HTTPSConnection.connect` and `urllib.request.urlopen`, plus `patch.dict(os.environ, {"BETANGEL_BETFAIR_FORBID_NETWORK": "1"})`. Nothing leaks into later test modules.
+- No test reads the real Keychain, the real `~/Library/Application Support/...` or the real config. In-process tests use `deps["home"]` set to a temp dir. Subprocess tests always pass `--state-root <tmp>` and `--config <tmp>/config.json`, with an env that includes `BETANGEL_BETFAIR_FORBID_NETWORK=1`.
+- Fixtures are labelled synthetic: market `1.1`, base time `timestamp_ms("2020-01-01T12:00:00Z")` for `pt`/`marketTime`, hosts like `example.invalid`.
+- `FakeClock` defaults to non-round microseconds (`2020-01-01T12:00:00.123457Z`).
+- The planted secret `"secret-session-must-not-escape"` is used for leak tests.
+- Run command: `PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests`.
+
+**Support modules** (`test_*.py` files with no TestCases, imported as siblings):
+- `test_betfair_support.py` (U1): `FakeClock`, `FakeKeychainRunner`, `FakeHttpTransport` (scripted responses, request log, can raise at a chosen phase, reports `bytes_written`), `block_network`, `temp_state_paths()`, `write_test_config()`.
+- `test_betfair_support_stream.py` (U3): `FakeStreamSocket`, mcm builders.
+- `test_betfair_support_orders.py` (U4): book snapshot builders, `random_sequence(seed, steps)`.
+- `test_betfair_support_gateway.py` (U5): `FakeConfirmer(lines)`, `FakeReadClient`, `build_live_gateway(tmp, ...)`.
+
+**Tests by file:**
+
+**U1:**
+- `test_betfair_constants.py`
+  - test_every_constant_has_provenance_fact_id
+  - test_fact_ids_exist_in_research_facts_json
+  - test_classic_ladder_350_ticks_101_to_100000
+  - test_ceilings_positive_and_below_vendor_limits
+  - test_no_order_method_names_in_constants
+  - test_read_methods_exact_set
+  - test_allowed_paths_exclude_heartbeat
+- `test_betfair_schemas.py`
+  - test_book_snapshot_exact_keys
+  - test_instruction_v1_exact_keys
+  - test_place_report_shape_paper_equals_live
+  - test_order_record_exact_keys
+- `test_betfair_config.py`
+  - test_example_config_validates
+  - test_unknown_key_rejected
+  - test_bool_not_number
+  - test_cap_above_ceiling_rejected
+  - test_commission_rate_and_source_required
+  - test_no_mode_key
+  - test_cert_paths_inside_worktree_rejected
+  - test_recorder_root_inside_worktree_rejected
+  - test_config_sha_stable_under_key_order
+  - test_hosts_for_each_jurisdiction
+  - test_api_and_stream_host_allowlists
+  - test_keepalive_bounds_by_jurisdiction
+  - test_ex_best_offers_disp_refused
+  - test_ex_market_def_required
+  - test_ladder_levels_capped_when_motif_compatible
+  - test_strategy_ref_pattern
+- `test_betfair_paths.py`
+  - test_fixed_root_uses_pwd_home
+  - test_override_refused_without_forbid_network
+  - test_override_allowed_under_test_env
+  - test_is_inside_git_worktree_dir_and_file_git
+  - test_kill_engaged_fail_closed_on_permission_error
+  - test_kill_global_across_profiles
+  - test_file_lock_timeout
+- `test_betfair_secret.py`
+  - test_secret_redacted_repr_str_format
+  - test_secret_pickle_refused
+  - test_registry_scan_blocks_write
+  - test_forbidden_keys_case_and_separator_insensitive
+  - test_scrub_drops_sourceidkey_and_names
+- `test_betfair_credentials.py`
+  - test_keychain_argv_absolute_path_no_secret
+  - test_minimal_env_passed
+  - test_missing_item_error_no_stdout_stderr_from_none
+  - test_non_darwin_refused
+  - test_key_file_group_readable_rejected
+  - test_setup_commands_w_last_live_key_T_empty
+  - test_live_purpose_requires_live_slot
+  - test_anchor_write_only_anchor_service
+- `test_betfair_receipts.py`
+  - test_parse_utc_ns_microseconds_and_offsets
+  - test_parse_utc_ns_rejects_naive
+  - test_canonical_sha_equals_collection_digest
+  - test_atomic_write_full_fsync_called
+  - test_append_jsonl_refuses_secret
+  - test_strict_json_loads_rejects_nan_infinity
+- `test_betfair_filters.py`
+  - test_rest_keys_never_stream_keys
+  - test_stream_keys_never_time
+  - test_neutral_filter_exact_keys
+- `test_betfair_transport.py`
+  - test_gzip_decoded_with_size_cap
+  - test_decompression_bomb_capped
+  - test_idle_reconnect_before_send
+  - test_read_retry_once_on_remote_disconnect
+  - test_order_call_not_resent_auto_open_zero
+  - test_byte_counter_may_have_arrived
+  - test_deadline_spans_dribbled_response
+  - test_no_expect_100_continue
+  - test_tls_context_verification_on
+  - test_forbid_network_env
+  - test_host_and_path_allowlist
+  - test_redirect_refused
+  - test_unbound_rpc_refused
+  - test_read_method_with_digest_refused
+  - test_batch_body_refused
+  - test_headers_never_in_exception_text
+- `test_betfair_syntax_floor.py`
+  - test_ast_parse_feature_version_3_10_all_betfair_files
+  - test_banned_names_absent (datetime.UTC, tomllib, file_digest, typing.Self, except*)
+  - test_no_lowercase_iterator_annotation
+  - test_temporal_imported_only_in_book_and_paper
+
+**U2:**
+- `test_betfair_auth.py`
+  - test_certlogin_success_token_secret
+  - test_certlogin_failure_raises_status_only
+  - test_certlogin_body_urlencoded_bytes_special_chars
+  - test_interactive_requires_accept_json
+  - test_limited_access_cannot_bet
+  - test_exceptional_codes_matched_outside_fail
+  - test_keepalive_success_requires_status_success
+  - test_keepalive_no_session_halves_interval_and_relogins
+  - test_sso_method_get_and_post
+  - test_logout_on_close
+  - test_ban_persisted_blocks_across_restart
+  - test_successful_login_cap
+  - test_emergency_bypasses_success_cap_not_ban_or_failures
+  - test_consecutive_failures_block_until_reset
+  - test_account_fingerprint_never_username
+  - test_token_never_in_state_files
+- `test_betfair_api.py`
+  - test_jsonrpc_envelope_headers_and_prefix
+  - test_call_refuses_non_read_method
+  - test_prepare_order_requires_live_slot
+  - test_send_order_consumes_capability_and_passes_digest
+  - test_capability_mismatch_reuse_expiry_mode
+  - test_apingexception_from_exceptionname
+  - test_angx_minus_32099_unrecognized
+  - test_errordetails_never_kept
+  - test_non_json_dsc_fallback
+  - test_planner_chunks_40_10_6_12_100
+  - test_planner_depth_below_3_conservative
+  - test_planner_all_offers_overrides_best
+  - test_planner_zero_weight_no_div
+  - test_catalogue_max_results_capped
+  - test_sort_rank_never_sent
+  - test_list_event_types_sends_empty_filter
+  - test_catalogue_none_filter_rejected
+  - test_book_throttle_four_per_second_per_market
+  - test_order_projection_inflight_two
+  - test_missing_ids_rerequested_singly
+  - test_market_snapshot_joins_catalogue_and_caches
+  - test_catalogue_missing_sets_invalid_reason
+  - test_iter_current_orders_follows_more_available
+  - test_cleared_requires_from_group_by_only_settled
+  - test_date_range_not_placed_date_range
+  - test_read_retry_and_no_retry_categories
+  - test_account_details_whitelist
+  - test_funds_fields
+
+**U3:**
+- `test_betfair_esa.py`
+  - test_handshake_connection_auth_subscribe
+  - test_auth_line_never_returned_or_logged
+  - test_first_message_timeout_15s
+  - test_crlf_and_partial_reads
+  - test_line_too_long
+  - test_failure_status_raises_with_connection_closed
+  - test_subscription_limit_raises_nonclosing
+  - test_liveness_2x_echoed_heartbeat
+  - test_liveness_with_conflation
+  - test_clocks_track_non_null_only
+  - test_superseded_id_dropped
+  - test_status_503_flag_no_disconnect
+  - test_backoff_with_jitter_capped_per_hour
+  - test_segmentation_disabled
+- `test_betfair_book.py`
+  - test_img_replaces_market
+  - test_sub_image_drops_absent_markets
+  - test_level_ladder_size_zero_deletes
+  - test_price_ladder_deletes
+  - test_empty_list_semantics_price_point_only
+  - test_bdat_empty_list_is_filtered_not_empty
+  - test_infinity_token_and_string_invalidates_snapshot
+  - test_settlement_zeroing_ignored
+  - test_suspension_clears_ladders_no_forward_fill
+  - test_duplicate_market_higher_version_kept
+  - test_ladder_type_object_and_string
+  - test_snapshot_schema_valid
+  - test_snapshots_from_recording_uses_stream_messages
+- `test_betfair_recorder.py`
+  - R1 test_segment_replays_through_stream_messages
+  - R2 test_segment_feeds_replay_snapshots_and_build_records
+  - R3 test_segment_classified_adv_by_microstructure_synthetic_only
+  - test_line_acceptance_each_reason (subTest)
+  - test_only_mcm_written_status_to_events
+  - test_recv_sidecar_aligns_lines_offsets_hashes
+  - test_reconnect_new_segment_fresh_image_gap
+  - test_refresh_new_subscription_new_segment
+  - test_precount_coarse_vs_explicit
+  - test_subscription_limit_stops_session
+  - test_pt_regression_closes_segment
+  - test_unexpected_segmentation_closes_segment
+  - test_replay_check_fails_without_market_time
+  - test_max_bytes_stops_without_delete
+  - test_delayed_key_receipt_labels_conflation
+  - test_live_key_refused_without_allow
+  - test_no_secret_in_any_output_file
+  - test_existing_session_dir_refused
+  - test_crash_leaves_partial_receipt_incomplete
+  - test_verify_recording_detects_tamper
+  - test_ledger_appended
+  - test_progress_events_emitted
+
+**U4:**
+- `test_betfair_ticks.py`
+  - test_count_and_bounds
+  - test_on_off_ladder
+  - test_tick_offset_distance
+  - test_snap_up_down
+  - test_integer_hundredths_no_float_drift
+  - test_money_regex_rejects_nan_inf_exponent_nonpositive
+  - test_wire_values_round_trip_2dp
+- `test_betfair_validate.py`
+  - test_min_stake
+  - test_two_dp_size
+  - test_off_ladder_refused
+  - test_self_match_request_open_and_unresolved
+  - test_instruction_count
+  - test_ref_formats_lengths_charsets
+  - test_refs_default_rng_secrets
+  - test_profit_ratio_13p_at_1_06_and_149p_at_1_01
+  - test_market_gates_each (subTest)
+  - test_catalogue_missing_refused
+  - test_v9b_minutes_before_off
+  - test_live_book_age_and_delayed_flag
+  - test_negative_age_refused
+  - test_price_deviation_and_probe_exempt
+  - test_lapse_only
+  - test_unsupported_order_features_refused
+  - test_refs_unique_across_10k_generations
+- `test_betfair_pnl.py`
+  - test_back_lay_win_lose_hand_computed
+  - test_compare_profit_min_and_mismatch
+  - test_commission_via_settled_market_costs
+- `test_betfair_risk.py`
+  - test_worst_case_hand_computed_back_lay
+  - test_unknown_absent_counted_full_adverse
+  - test_outcomes_include_selection_missing_from_book
+  - test_provisional_child_worse_of_two
+  - test_stake_and_liability_caps
+  - test_market_and_total_caps
+  - test_daily_loss_profits_do_not_extend
+  - test_rate_windows_count_submitted_instructions
+  - test_clock_step_back_does_not_reopen_window
+  - test_transactions_clock_hour_failed_cancel_counts
+  - test_cancel_allowed_when_halted
+  - test_place_refused_kill_or_halt
+  - test_unresolved_blocks_market_and_global_in_live
+  - test_replace_runs_r1_r4_on_new_price
+  - test_replace_max_of_both_outcomes
+  - test_funds_policy
+  - test_unexplained_exposure_halts_above_tolerance
+  - test_decision_pure_deterministic
+  - test_issue_refuses_unapproved_and_paper
+- `test_betfair_risk_properties.py`
+  - Seeded `random.Random`. Steps include place, cancel, replace, fill, partial fill, time-advance, clock step, restart, kill, timeout and transport failure. Default 40 seeds × 120 steps; `BETANGEL_BETFAIR_PROPERTY_SEEDS` and `..._STEPS` scale it.
+  - test_property_market_exposure_never_exceeded
+  - test_property_total_and_daily_budgets_hold_adverse_settlement
+  - test_property_rate_caps_hold_every_window
+  - test_property_kill_blocks_all_later_places
+  - test_property_restart_from_journal_same_decisions
+  - test_property_replace_cannot_raise_liability_over_cap
+  - test_property_unknown_never_zero_exposure
+  - test_property_capability_unforgeable_and_single_use
+- `test_betfair_journal.py`
+  - test_update_delete_blocked
+  - test_meta_append_only
+  - test_hash_chain_verify_and_tamper_detect
+  - test_begin_immediate_two_connections_no_fork
+  - test_fullfsync_pragmas_set
+  - test_submit_committed_before_transport_call
+  - test_order_ref_unique
+  - test_mode_mismatch_refused
+  - test_account_fingerprint_set_once
+  - test_schema_checked
+  - test_forbidden_payload_keys_recursive
+  - test_fold_reconstructs_states
+  - test_crash_submitting_becomes_unknown
+  - test_anchor_values
+- `test_betfair_lifecycle.py`
+  - test_transition_table_complete
+  - test_illegal_transition_raises
+  - test_timeout_unknown
+  - test_processed_with_errors_per_instruction
+  - test_matched_size_never_failed
+  - test_bet_id_echoed_on_failure_unknown
+  - test_success_unexpected_order_status_unknown
+  - test_failure_without_instruction_reports
+  - test_market_version_lapse_failed_market_state
+  - test_cancelled_not_placed
+  - test_cancel_bet_taken_or_lapsed_refresh
+  - test_report_matched_by_echoed_ref
+  - test_ref_mismatch_all_unknown
+  - test_duplicate_transaction_unknown
+- `test_betfair_paper.py`
+  - test_immediate_back_best_first_level_price
+  - test_lay_symmetric
+  - test_displayed_fraction_floor_pence
+  - test_resting_back_queues_on_lay_ladder
+  - test_resting_needs_trd_beyond_queue
+  - test_queue_unknown_beyond_depth_never_fills
+  - test_no_trd_no_passive_label
+  - test_negative_and_settlement_trd_ignored
+  - test_lapse_inplay_and_version_bump
+  - test_stale_or_invalid_book_refused
+  - test_removal_excludes_settlement
+  - test_dead_heat_excluded
+  - test_commission_source_echoed
+  - test_bit_identical_reports
+  - test_paper_exchange_has_no_transport
+  - test_delayed_label_propagates
+  - test_paper_replay_ledger_row_exact_keys
+
+**U5:**
+- `test_betfair_reconcile.py`
+  - test_found_executable_in_window
+  - test_found_complete
+  - test_cleared_lapsed
+  - test_window_anchored_at_outcome_observed
+  - test_http_timeout_after_window_still_polls
+  - test_read_error_never_absent
+  - test_absent_unconfirmed_needs_three_polls_span
+  - test_unattributed_candidate_halts
+  - test_absent_never_resubmitted
+  - test_accept_requires_tty_and_clean_search
+  - test_replace_unknown_unique_child_inferred
+  - test_replace_unknown_ambiguous_keeps_halt
+  - test_startup_foreign_order_halts
+  - test_exchange_floor_used
+  - test_settle_own_pnl_and_mismatch_halts
+  - test_fake_clock_no_real_sleep
+- `test_betfair_arming.py`
+  - test_paper_needs_no_credentials
+  - test_each_condition_refuses_live (subTest A1–A19)
+  - test_command_condition_matrix
+  - test_token_binds_config_and_utc_date
+  - test_env_token_ignored
+  - test_cloud_env_markers_refuse
+  - test_tty_required
+  - test_coexistence_unverified_needs_flag
+  - test_anchor_mismatch_and_missing
+  - test_second_profile_same_account_refused
+  - test_account_currency_absent_refuses
+  - test_heartbeat_enabled_refuses
+  - test_probe_exempt_from_a19_only
+- `test_betfair_killswitch.py`
+  - test_engage_without_lock_or_login
+  - test_kill_file_blocks_other_process_gateway
+  - test_kill_rechecked_after_submit_journal
+  - test_target_set_union_refs_betids_sourceid
+  - test_kill_covers_replace_child_without_strategy_ref
+  - test_cancel_by_bet_id_sequential_max60
+  - test_resweep_after_recent_submit
+  - test_kill_incomplete_keeps_halt_exit3
+  - test_kill_login_failure_kill_incomplete_no_session
+  - test_account_wide_needs_flag_phrase_runs_once
+  - test_resume_requires_file_removed_and_token
+  - test_halt_persists_restart
+- `test_betfair_presence.py`
+  - test_require_present_non_tty_refused
+  - test_echo_exact_match
+  - test_echo_mismatch_refused
+  - test_order_echo_line_format
+- `test_betfair_gateway.py`
+  - test_paper_sequence_intent_decision_submit_report
+  - test_paper_rpc_must_be_none
+  - test_api_source_refused_live
+  - test_live_place_body_shape
+  - test_live_book_argument_refused
+  - test_live_self_fetch_with_live_key
+  - test_refetch_after_slow_confirmation
+  - test_refusal_no_transport_call
+  - test_guard_raises_no_transport_call
+  - test_signals_masked_around_send
+  - test_startup_unknown_blocks
+  - test_terminal_account_halts
+  - test_terminal_input_validator_gap_halt
+  - test_market_state_no_halt
+  - test_foreign_bet_cancel_refused
+  - test_no_secret_in_journal_result_or_errors
+  - test_global_lock_blocks_second_live_gateway_from_other_cwd
+  - test_every_order_rpc_matches_one_capability_and_submit
+  - test_probe_sets_ref_roundtrip_marker
+- `test_betfair_boundaries.py` (AST only; never imports the modules; scans `betangel_research/betfair/*.py`; tests are exempt):
+  - test_order_method_literals_only_in_gateway
+  - test_no_update_orders_or_heartbeat_anywhere
+  - test_capability_mint_only_called_in_risk
+  - test_order_capability_constructed_only_in_capability
+  - test_reveal_only_in_transport_auth_esa_credentials_killswitch_gateway
+  - test_transport_request_called_only_in_auth_api
+  - test_order_digest_kw_only_in_api
+  - test_gateway_imported_only_by_cli
+  - test_api_transport_auth_esa_capability_risk_imported_only_within_package
+  - test_stdlib_only_imports
+  - test_no_logging_module
+  - test_root_modules_do_not_import_betfair
+  - test_betfair_init_has_no_imports
+  - test_main_guarded
+  - test_no_frozen_experiment_strings
+- `test_betfair_cli.py`
+  - In-process via `main(argv, deps=...)`:
+    - test_doctor_offline_without_credentials
+    - test_keychain_setup_prints_only
+    - test_place_paper_from_book_fixture
+    - test_live_without_token_exit2_no_traceback
+    - test_live_book_flag_refused
+    - test_kill_engages_file_then_incomplete_without_login
+    - test_overrides_refused_without_forbid_env
+    - test_deps_refused_without_forbid_env
+    - test_money_flags_regex
+  - Subprocess (help text, sanitised stop, `paper-replay`, `journal --verify`, `verify-recording`):
+    - test_help_lists_subcommands_with_limits
+    - test_paper_replay_writes_report_summary_and_ledger
+    - test_existing_out_dir_refused
+    - test_verify_recording_cli
+    - test_journal_verify_cli
+    - test_sanitized_stop_message
+    - test_missing_config_never_falls_back_to_real_default
+
+**U6:**
+- `test_betfair_facts_doc.py`
+  - test_every_fact_id_in_json_appears_once_in_doc
+  - test_fact_fields_exact
+  - test_evidence_type_vocabulary
+- `test_betfair_reports_no_account_data.py`
+  - test_reports_have_no_betids_refs_balances (scans `reports/betfair-*.json` and `*.md` for `\b\d{11,}\b`, `\bbr[qo]\d{12}-`, and the keys `availableToBetBalance`, `exposure`, `pointsBalance`, `currencyCode`, `connectionId`)
+  - test_handoff_protected_sha_present
+
+---
+
+## 15. Docs outline
+
+Every doc opens with a date and a scope line, then a bold Cantonese thesis line. Evidence labels use the repository vocabulary:
+- `evidence_type` ∈ {`official_documentation`, `official_current_policy`, `official_data_specification`, `vendor_documentation`, `vendor_current_pricing`, `forum_participant_opinion`, `self_report_unverified`, `primary_research_simulation`, `inferred`, `unverified`, `first_person_observation`};
+- `retrieval` ∈ {`official_rest_api_storage_read`, `official_page_read`, `official_four_page_pdf_read`, `zendesk_api_read`, `reader_proxy_read`, `wayback_snapshot_<ts>`, `man_page_read`, `local_python_check`}.
+
+Betfair is the exchange operator, so its pages are `official_*`. "Vendor" means Bet Angel only. `first_person_observation` is our own live-test receipt. "Independently verified" is never used unless someone independent reproduces a result. Paraphrases are at most one sentence each.
+
+**`docs/betfair-integration.md`**
+- Header: "Prepared **2026-10-10**. Implementation guide, not evidence of profitability. No credentials existed and no live call was made when this was written."
+- Thesis: **讀資料用 delayed key，落單有獨立閘門；key 唔係安全掣。**
+- Sections:
+  1. Evidence labels used.
+  2. Threat model (§0.2).
+  3. Account prerequisites: the Delayed vs Live key table, £499, KYC, the read-only rule.
+  4. Certificate setup: openssl steps, the manual upload URL, file location outside worktrees, permissions, optional passphrase.
+  5. Keychain setup: `keychain-setup` output; the `-w` prompt; `-T ""` for the live key and why to click Allow, never Always Allow.
+  6. State root and why it is outside every worktree (two worktrees exist); `doctor` path output.
+  7. Config walkthrough and `init-config`.
+  8. Read path commands, plus the weight and throttle table.
+  9. Stream recorder:
+     - segment policy; pre-count and explicit mode; refresh; file format; receipt; gaps;
+     - the delayed-key 180 s conflation caveat;
+     - replay and motif compatibility (synthetic-only R3, ladderLevels ≤ 3, runner `tv` on delayed unverified);
+     - "this recorder is permitted read-only use, not the research feed `docs/collection-pipeline.md` asks for; `research/data-provider-options.json` exclusions are superseded for this lane only".
+  10. Coexistence with Bet Angel: unverified; `--bet-angel-paused`; the T3 plan.
+  11. What is implemented / what is not.
+  12. Sources with access dates.
+- Mermaid `flowchart LR`: Keychain → SessionManager → ReadClient / StreamClient → Recorder → `stream.messages`.
+
+**`docs/betfair-order-path.md`**
+- Thesis: **預設 paper；live 要全部條件齊、人喺終端機逐張打返，任何未知結果先對數、唔重發。**
+- Sections:
+  1. Modes and `--mode live`.
+  2. Arming table A1–A19 and the command matrix.
+  3. Choke point, capability and transport digest gate (Mermaid).
+  4. Operator presence: tty echo; what it does and does not prove.
+  5. Lifecycle state machine (Mermaid `stateDiagram-v2`), including ABSENT_UNCONFIRMED.
+  6. Risk rules R1–R12 with worked exposure examples (BACK, LAY, UNKNOWN, provisional child).
+  7. Journal, hash chain, `F_FULLFSYNC`, anchor, startup reconcile.
+  8. Reconciliation timeline (5 s Betfair timeout / 15 s visibility / grace / 3 polls).
+  9. Kill switch: own scope vs account-wide; why the Heartbeat API is off; that matched bets cannot be undone; what to do on `kill_incomplete_no_session`.
+  10. Error taxonomy table.
+  11. Paper model assumptions, verbatim `PAPER_ASSUMPTIONS`.
+  12. Transaction charges: counted not computed; the archived and live-proxy rates conflict.
+  13. `live-probe` and the first-live-test checklist. Raw outputs stay in `live-tests/`; `reports/` hold codes and hashes only.
+  14. Compliance framing:
+      - personal account, own money (T&C 4.1.4, 11.2.5);
+      - the API is a betting channel (18.3, 12.1.4);
+      - data is for personal non-commercial use (19.3);
+      - IP geo-restriction (F64);
+      - UK tax position stated only as general and unverified;
+      - Betfair-side deposit and loss limits must be set by hand on the website (no API exists).
+  15. "No strategy may auto-trade": the boundary tests, and why `source="api"` is paper-only.
+  16. What is implemented.
+
+**`docs/betfair-facts.md`:** written by U6 from `research/betfair-facts.json`. There is one table per area with columns id, value used, evidence_type, retrieval, source, published_or_updated, accessed, code handling. It also holds the open questions and the first-live-test checklist (§18). `test_betfair_facts_doc.py` keeps the JSON and the doc consistent; nothing generates the doc automatically.
+
+**`reports/betfair-setup-2026-10-10.{md,json}`:**
+- The JSON has:
+  - `schema_version`, `checked_at`;
+  - `status: "tests_passed_no_credentials_no_network_calls"`;
+  - `code_sha256`;
+  - `tests{command, passed, log_sha256, property_seeds, property_steps, wall_seconds}`;
+  - `python_executed: "3.14.6"`, `python_310: "syntax_checked_only"`;
+  - `network_calls_made: 0`, `credentials_present: false`;
+  - `protected_sha256` (copied from the handoff);
+  - `limitations`.
+- Account data is never included.
+
+**`.team-work/betfair-exchange-20261010/brief.md` and `handoff.json`:**
+- `handoff.json` follows the existing key set.
+- `protected_sha256` covers:
+  - `betangel_research/{stream,microstructure,motifs,evaluation,temporal,collection,collector,feeds,__main__,__init__}.py`
+  - `Dockerfile`, `deploy/fly.toml`, `scripts/backup_metadata.py`, `research/collector-sources.json`
+  - `AGENTS.md`, `README.md`, `.gitignore`, `.dockerignore`
+- It records `depends_on_sha256` for `stream.py`, `microstructure.py`, `evaluation.py` and `temporal.py`, with the rule "re-run R1–R3, `test_betfair_paper` and `test_betfair_pnl` after merging Codex changes to these files".
+- It contains the S0 patch text and the merge gate.
+
+---
+
+## 16. Shared-file patch S0 (proposal for coordination; not applied by any implementer unit)
+
+S0 is one isolated commit. The coordinator applies it to `feat/betfair-exchange` only after Yu and Codex agree. **The betfair code must not merge to the main branch without S0.**
+
+```diff
+--- a/AGENTS.md   (line 9: change one sentence; add one bullet after it)
+-- Current implementation scope includes public-source research, offline analysis and explicitly configured direct-feed collection on a small Fly deployment. There is no betting-account integration, executable betting strategy or live order path. Source policy, attribution, publication clocks and collection gaps must remain explicit.
++- Current implementation scope includes public-source research, offline analysis and explicitly configured direct-feed collection on a small Fly deployment. There is no executable betting strategy, and no strategy may submit orders automatically. Source policy, attribution, publication clocks and collection gaps must remain explicit.
++- `betangel_research/betfair` is a Betfair Exchange client: read-only market data, a stream recorder, and one order gateway that defaults to paper mode. Live orders need every arming condition in docs/betfair-order-path.md, including the operator typing each order at a terminal. Betfair credentials live only in the macOS Keychain; certificates and live order state live outside every Git worktree (`~/Library/Application Support/betangel-research/betfair/`).
+--- a/betangel_research/__init__.py
+-"""Offline research only: no credentials, account clients, or order submission."""
++"""Research package. Root modules: offline analysis plus the configured public-feed collector.
++betangel_research.betfair: Keychain-gated Betfair client; its order path defaults to paper and needs explicit live arming."""
+--- a/.gitignore   (append)
++*.crt
++*.csr
++*.p12
++*.pfx
+--- a/.dockerignore   (append as the LAST lines; later rules win over !betangel_research/**)
++betangel_research/betfair/
++betangel_research/betfair/**
+```
+
+**Notes:**
+- The `.dockerignore` change is **mandatory**. It alters the `.dockerignore` hash recorded in `reports/direct-collection-2026-10-10.json`, so Codex's deploy receipt needs refreshing; the handoff says so.
+- `betangel_research/__main__.py` needs **no change**. The subpackage has its own `__main__`, and `run_replay`'s `code_sha256` globs only top-level `*.py`, which is correct because replay does not import betfair.
+- `docs/collection-pipeline.md` and `research/data-provider-options.json` are **not** changed. The new docs cross-reference them.
+- **README edits** go in a separate, final commit made after rebasing onto whatever Codex has merged:
+  - in "Start here", after the collection-pipeline link:
+    - `- [Betfair Exchange 接入：讀資料、stream recorder、證據等級](docs/betfair-integration.md)`
+    - `- [Betfair 落單路徑：paper 預設、live 閘門、對數同 kill switch](docs/betfair-order-path.md)`
+  - in "Current state", replace line 108 with: `- No purchases have been made. A Betfair client exists, but as of 2026-10-10 no credentials are configured and no live connection or order has been made; live orders stay disabled unless armed per docs/betfair-order-path.md.`
+
+---
+
+## 17. Work split (disjoint file ownership)
+
+Units own files. No file is owned by two units, and no unit edits `AGENTS.md`, `README.md`, `.gitignore`, `.dockerignore` or any existing module or test.
+
+| Unit | Owns | Depends on (interfaces only) |
+|---|---|---|
+| **U1 Foundations** | `betfair/__init__.py`, `constants.py`, `errors.py`, `schemas.py`, `config.py`, `paths.py`, `secret.py`, `credentials.py`, `capability.py`, `receipts.py`, `filters.py`, `transport.py`; `research/betfair-config.example.json`, `research/betfair-facts.json`; tests `test_betfair_support.py`, `test_betfair_constants.py`, `test_betfair_schemas.py`, `test_betfair_config.py`, `test_betfair_paths.py`, `test_betfair_secret.py`, `test_betfair_credentials.py`, `test_betfair_receipts.py`, `test_betfair_filters.py`, `test_betfair_transport.py`, `test_betfair_syntax_floor.py` | none |
+| **U2 Auth + REST read** | `auth.py`, `api.py`; tests `test_betfair_auth.py`, `test_betfair_api.py` | I1, I2, I3, I7, I10, I11, I13 |
+| **U3 Stream + recorder** | `esa.py`, `book.py`, `recorder.py`; tests `test_betfair_support_stream.py`, `test_betfair_esa.py`, `test_betfair_book.py`, `test_betfair_recorder.py` | I1, I2, I4, I5 (signature only, faked in tests), I7, I11, I12, I13, I16 |
+| **U4 Order core (pure)** | `ticks.py`, `validate.py`, `risk.py`, `pnl.py`, `journal.py`, `lifecycle.py`, `paper.py`; tests `test_betfair_support_orders.py`, `test_betfair_ticks.py`, `test_betfair_validate.py`, `test_betfair_pnl.py`, `test_betfair_risk.py`, `test_betfair_risk_properties.py`, `test_betfair_journal.py`, `test_betfair_lifecycle.py`, `test_betfair_paper.py` | I1, I2 (secret only), I7, I8, I9, I10, I11, I13, I14 |
+| **U5 Gateway + CLI** | `gateway.py`, `reconcile.py`, `arming.py`, `killswitch.py`, `presence.py`, `cli.py`, `betfair/__main__.py`; tests `test_betfair_support_gateway.py`, `test_betfair_gateway.py`, `test_betfair_reconcile.py`, `test_betfair_arming.py`, `test_betfair_killswitch.py`, `test_betfair_presence.py`, `test_betfair_cli.py`, `test_betfair_boundaries.py` | all interfaces |
+| **U6 Docs, report, handoff** | `docs/betfair-integration.md`, `docs/betfair-order-path.md`, `docs/betfair-facts.md`, `reports/betfair-setup-2026-10-10.{md,json}`, `.team-work/betfair-exchange-20261010/{brief.md,handoff.json}`; tests `test_betfair_facts_doc.py`, `test_betfair_reports_no_account_data.py`; the S0 patch text (in the handoff only) | CLI names (§12), facts JSON (U1), test command output (integration step) |
+
+**Interfaces fixed by this spec.** Signatures in §2 are binding; changing one needs a spec amendment.
+- **I1** `StatePaths`, `load_config`/`validate_config`/`config_sha256`/`hosts_for`, and the config dict (§4).
+- **I2** `Secret`, `assert_clean`, `refuse_forbidden`, `scrub`, `load_credentials`, `keychain_*`, `anchor_*`.
+- **I3** `HttpTransport.request` (digest gate, deadline), `TransportError`, `make_tls_context`.
+- **I4** `open_stream_socket`.
+- **I5** `SessionManager`.
+- **I6** `JsonRpcClient` (`call`, `prepare_order`, `send_order`), `ReadClient`.
+- **I7** book snapshot schema.
+- **I8** instruction v1, normalised reports, order record.
+- **I9** `OrderJournal` API and the `fold()` state (§9.6).
+- **I10** `OrderCapability` and `_mint`; `RiskGuard.issue(decision, prepared, ...)`.
+- **I11** clock protocol (`time_ns`, `monotonic_ns`, `sleep`, `utc_now`) and the `receipts` functions.
+- **I12** `filters` (neutral, REST, stream).
+- **I13** `classify(code, *, surface)` and the category names (§11).
+- **I14** the arming result dict `{"armed","failures","checked"}` consumed by `RiskGuard` R2.
+- **I15** the confirmer protocol (`require_present`, `confirm_line`).
+- **I16** recorder `market_lister(rest_filter) -> list[str]` and `emit(event)`.
+
+**Order of work:**
+1. U1 lands first: interface stubs that raise `NotImplementedError` where they are not yet implemented, plus `test_betfair_support.py`. It must include `READ_METHODS`, `ALLOWED_PATHS`, `STREAM_HOSTS`, the ceilings, `errors` and `schemas`.
+2. U2, U3, U4 and U6 work in parallel. U6 drafts the docs from §§0–18 and leaves the test counts and hashes as placeholders.
+3. U5 works last against the real U2, U3 and U4 modules.
+4. One integration commit:
+   - runs the full suite (the 142 existing tests plus the new ones);
+   - runs the property tests with 300 × 200;
+   - lets U6 fill in the report numbers.
+5. The coordinator applies S0 after Yu and Codex agree. The README commit comes last, after rebasing.
+
+---
+
+## 18. External facts the code depends on, with verification status
+
+Every entry was accessed on 2026-10-10. No fact here has been checked against the live API.
+
+Source key:
+- `DD/<id>` = `https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/<id>`. Read with `official_rest_api_storage_read` unless marked otherwise.
+- `SA/<id>` = `https://support.developer.betfair.com/hc/en-us/articles/<id>`, read with `zendesk_api_read`.
+
+The old `docs.developer.betfair.com` URLs now return a 301 to the atlassian site.
+
+| ID | Fact as the code uses it | Used by | evidence_type / source | Code handling |
+|---|---|---|---|---|
+| F01 | certlogin `POST identitysso-cert.<tld>/api/certlogin`; client cert in TLS; tld com/com.au/it/es/ro | auth | official_documentation, DD/2687915 v114 2026-07-01 | constant |
+| F02 | certlogin form-urlencoded username/password; `X-Application` (value not validated) | auth | official_documentation, DD/2687915 | constant |
+| F03 | certlogin response `{sessionToken, loginStatus}`; failure carries loginStatus only. Removing `-k` is our own advice | auth | official_documentation (corrected), DD/2687915 | parser |
+| F04 | 45 certlogin loginStatus values; the list may grow | auth | official_documentation, DD/2687915 | unknown status = failure |
+| F05 | 2048-bit RSA self-signed cert, openssl steps, manual upload | docs | official_documentation, DD/2687915 | docs only |
+| F06 | interactive `/api/login`; `Accept` mandatory; `{token, product, status, error}`; LIMITED_ACCESS returns a token; exceptional codes listed outside FAIL | auth | official_documentation (corrected), DD/2687772 | `can_bet=False`; match on `error` |
+| F07 | keepAlive/logout URLs, headers, response | auth | official_documentation, DD/2687869 | constant |
+| F08 | keepAlive/logout HTTP method | auth | **conflicting** (the page says POST; the curl sample sends GET) | config `sso_http_method`; T2 |
+| F09 | session 24 h UK/IE, 12 h other .com, 20 min IT/ES; API calls do not extend it; Logout Preferences can change it | auth | official_documentation, DD/2687869; forum staff 2023-12-19 | keepAlive bounds; NO_SESSION halving |
+| F10 | 100 successful logins/min, then a 20-min ban; existing sessions stay valid | auth | official_documentation, DD/2687869; SA/115003887351 (unclear whether failed logins count) | local caps (§6) |
+| F11 | Betting and Accounts JSON-RPC endpoints, prefixes, required headers, POST | api | official_documentation, DD/2687786 v73, DD/2687725 | constant |
+| F12 | NZ uses api.betfair.com.au; IT/ES use api.betfair.com | config | official_documentation, DD/2687158, DD/2687808 | `api_host` allowlist |
+| F13 | one shared session; gzip; keep-alive; idle close at 3 min; no `Expect: 100-Continue` | transport | official_documentation, DD/2687730, DD/2699882 | `idle_reconnect_s=170` |
+| F14 | JSON-RPC error envelope `error.data.exceptionname` + `APINGException.errorCode`; −32099 with `ANGX-00nn` | api | official_documentation (archived 2014 API-NG release note DD/2699907) | §7 precedence; T4 |
+| F15 | APINGException codes; JSON-RPC −32700/−32601/−32602/−32603; DSC fault codes | errors | official_documentation, DD/2687450 v36 2023-06-01, DD/2686993 v68 | taxonomy |
+| F16 | market data weights and the 200-point rule | api | official_documentation, DD/2687478 v48 | planner (conservative depth) |
+| F17 | listMarketBook ≤ 5/s per market (guidance); OPEN and CLOSED separate; betIds ≤ 250 | api | official_documentation, DD/2687510 v43 | throttle 4/s; single-id re-request |
+| F18 | 3-request concurrency per account across order-projection reads; listClearedOrders separate | api | official_documentation + SA/360000406111 (**conflict**: queued vs executing) | in-flight cap 2 |
+| F19 | > 1000 instructions/s gives TOO_MANY_REQUESTS | risk | official_documentation, SA/360000406111 | far below the caps |
+| F20 | per-request limits: place 200 (IT 50); cancel/replace/update 60; exceeding gives INVALID_INPUT_DATA | validate | official_documentation, DD/2687496, DD/2687491, DD/2687487 | V7; cancel ≤ 60 |
+| F21 | customerRef ≤ 32 chars, charset, 60 s de-dupe | validate, gateway | official_documentation, DD/2687496 v80 | unique per request, never reused |
+| F22 | whether customerRef is echoed in the report | gateway | **conflicting** (placeOrders page vs type definitions) | not relied on; T9 observes |
+| F23 | customerOrderRef ≤ 32; no uniqueness check; filterable | gateway, reconcile | official_documentation, DD/2687465, DD/2687504, DD/2687749; charset not stated | `[A-Za-z0-9-]`; local unique index; A19 via probe |
+| F24 | customerStrategyRef ≤ 15 | config | official_documentation, DD/2687496 | pattern |
+| F25 | marketVersion lapses the order on a material change; rejection = FAILURE / BET_ACTION_ERROR / BET_TAKEN_OR_LAPSED with a betId echoed | lifecycle | official_documentation, DD/2687496 (internal conflict on "higher version") | §9.4 rule 2 (UNKNOWN until confirmed) |
+| F26 | MarketBook.version monotonicity | risk | **conflicting** (MarketBook says "increments"; MarketVersion type says "non-monotonic") | no monotonic assumption |
+| F27 | placeOrders is atomic unless Best Execution is off (PROCESSED_WITH_ERRORS) | lifecycle | official_documentation, DD/2687496 v80 | per-instruction |
+| F28 | TIMEOUT: 5 s; allow 15 s to appear; then lapsed | reconcile | official_documentation, DD/2687455 v92, DD/2687450 | §9.7 window, grace, 3 polls |
+| F29 | Execution/Instruction status and error enums, OrderStatus, PersistenceType, Side | lifecycle, errors | official_documentation, DD/2687455 v92 2026-07-17 | (surface, code) tables |
+| F30 | BET_IN_PROGRESS vs TIMEOUT behaviour | lifecycle | **unverified** (undocumented) | UNKNOWN |
+| F31 | cancelOrders: no marketId and no instructions cancels everything; concurrent cancel-all rejected or ERROR_IN_MATCHER; LIMIT only | killswitch | official_documentation, DD/2687491 | own scope default; account-wide gated |
+| F32 | replaceOrders = cancel, then atomic place; no rollback; CANCELLED_NOT_PLACED; new betId in placeInstructionReport | lifecycle | official_documentation, DD/2687487, DD/2687465 | REPLACED/child; provisional child |
+| F33 | the replacement bet inherits customerOrderRef/strategyRef | reconcile, killswitch | **unverified** | provisional child; betId and sourceIdKey legs; T11 |
+| F34 | listCurrentOrders params incl. includeSourceId; page 1000; 250 refs; moreAvailable; BY_BET deprecated; `dateRange` (not `placedDateRange`) | api, reconcile | official_documentation, DD/2687504, DD/2687455 | BY_PLACE_TIME + dateRange |
+| F35 | listClearedOrders: betStatus required; groupBy only for SETTLED (BET needed for LAPSED/CANCELLED); 90-day default; `from` advised | reconcile | official_documentation, DD/2687749 v38 | `from` required by us |
+| F36 | lapsed/cancelled bets are visible in cleared orders before market settlement | reconcile | **unverified** | not sufficient for ABSENT on its own; T10 |
+| F37 | ClearedOrderSummary `profit` documented; `commission` only at EXCHANGE/EVENT_TYPE/EVENT/MARKET groupBy; sign/basis of `profit`, `priceMatched`/`sizeSettled` field use | risk, pnl | official_documentation, DD/2687465 (field exists); sign and basis **unverified** | own P&L, `min()`, mismatch HALT |
+| F38 | GBP min bet £1, min BSP liability £10, min payout £10 | validate | official_documentation, DD/2686993 v68 | V5 (≥ £1 only) |
+| F39 | INVALID_PROFIT_RATIO 20%-down / 25%-up rounding rule | validate | official_documentation (support), SA/360010423978; rounding mode **inferred** | V14, both rounding modes |
+| F40 | size precision 2 dp | validate | **unverified** | exact 2 dp required |
+| F41 | CLASSIC ladder (350 ticks); FINEST; LINE_RANGE; catalogue `priceLadderDescription.type`; stream `priceLadderDefinition` as an **object** (Swagger) vs a **string** (doc table) | ticks, book, api | official_documentation, DD/2686993, DD/2687455, DD/2687396 + ESA Swagger (**conflict** on shape) | CLASSIC only; `ladder_type()` accepts both |
+| F42 | in-play delay 1–12 s; PASSIVE/DYNAMIC; KEEP invalid on PASSIVE | validate | official_documentation, SA/360002825652, DD/2687455 | in-play refused in v1 |
+| F43 | MarketBook gating fields incl. `isMarketDataDelayed`, runner statuses; **no** bettingType/marketType/eventTypeId/ladder/marketTime in REST MarketBook | validate, api | official_documentation, DD/2687465 | catalogue join; V9/V10/A18 |
+| F44 | delayed key places real bets (key table); no sandbox; 1–180 s delay; 3 levels; no runner totalMatched; stream 2 connections / 200 markets; conflate 180000 | arming, recorder | official_documentation, DD/2687105 v143 (bet placement, table); SA/115003886111 (no sandbox); SA/360009638032; DD/2687396 (conflate) | arming independent of key; labels; gateway refuses delayed-key orders |
+| F45 | PERMISSION_DENIED wording about the delayed key | errors | **conflicting** (DD/2687455 vs SA/360015530311) | terminal_account; not probed (v1 never orders on the delayed key) |
+| F46 | live key £499 one-off, non-refundable; KYC; funded; read-only use of the live key not permitted | recorder, docs | official_current_policy, SA/115003864531 (updated 2026-10-08), SA/25033076334748, DD/2687105 | `allow_live_key=false` |
+| F47 | an unfunded or overridden live key returns delayed data | arming | official_documentation, SA/115003886711 | A18 |
+| F48 | stream: SSL socket, CRLF JSON, 15 s first message, connection message, auth fields, status fields | esa | official_documentation, DD/2687396 v185, SA/12937897844252, ESA Swagger 1.0.1423 | constants |
+| F49 | stream error codes; every error except SUBSCRIPTION_LIMIT_EXCEEDED closes the connection | esa | official_documentation, DD/2687396 (INVALID_REQUEST in Swagger only) | stream_status surface |
+| F50 | heartbeatMs 500–5000 requested, 500–30000 echoed; heartbeat ct carries clk; sent only when no other traffic in the interval | esa | official_documentation, Swagger + SA/360000402611 (**conflict** on bounds) | echoed value; conflation-aware liveness; T6 |
+| F51 | conflateMs 0–120000; delayed key 180000; default 0 inferred (only from ocm examples) | esa, recorder | official_documentation (corrected) | null default; record echo |
+| F52 | segmentation is size-based; whether `segmentationEnabled:false` reliably prevents segments | esa, recorder | official_documentation, SA/360000402331; effect **unverified** | close segment if seen |
+| F53 | clk/initialClk resubscribe, RESUB_DELTA, INVALID_CLOCK; pt ordering guaranteed | esa | official_documentation, DD/2687396, SA/360000391612, SA/25873962091420 | fresh image per segment |
+| F54 | ChangeMessage/MarketChange/RunnerChange fields; deletion semantics; GBP; Infinity; settlement zeroing; duplicate market (keep higher version) | book | official_documentation, DD/2687396, Swagger, SA/360003061798, SA/4802553453457 | cache rules |
+| F55 | default subscription limit 200; closed markets evicted about 1 h + 5 min after close | recorder | official_documentation, DD/2687396, SA/11741143435932 | pre-count; max_markets 150; stop on limit |
+| F56 | live-key stream connection limit | esa | **unknown** | read `connectionsAvailable` |
+| F57 | order stream initial image is E-only; runner-removal voids on the stream | (future) | official_documentation (**conflict** between DD/2687396 and SA/360000391492) | REST reconcile only in v1 |
+| F58 | Heartbeat API cancels all LIMIT bets "for the given customer on the given exchange" (not per app key); 10–300 s; can unregister silently | gateway, arming | official_documentation, DD/2687861 (2024-06-27) | A9; path not in the transport allowlist |
+| F59 | historical data format equals the stream format; ADV = batb/batl, trd, tv, ltp at 1 s | recorder compatibility | official_data_specification, SA/360000402211, spec PDF (official_four_page_pdf_read) | ADV fields default |
+| F60 | traded volume counted as backer's stake × 2 (PRO historical); live API basis | paper | official_documentation (PRO); live **unverified** | divisor 2, labelled; T8 |
+| F61 | transaction charge threshold 5000 per clock hour; counting rules | risk | official_documentation SA/20029343399836 (counting); rates **conflicting** (official_current_policy, Wayback 2025-07-17 at 0.2p vs reader-proxy per-type) | count only; cap 300 |
+| F62 | commission: UK uses My Betfair Rewards; Basic 2% (official example); 5% and 8% from a secondary source | paper, pnl | official_current_policy (Wayback) + forum_participant_opinion | required `commission_rate` + `commission_source` |
+| F63 | T&Cs: API is a betting channel (18.3, 12.1.4); personal non-commercial data use (19.3); one account (6.1); cancellation effective on confirmation (18.12) | docs, receipts | official_current_policy, wayback_snapshot_20260511012028 / 20251226113352 (live page returned 403) | docs; licence note |
+| F64 | geo-restricted IP regions (MaxMind), including US, DE, NL, FR, SG | arming | official_documentation, SA/28271961503516 (updated 2026-09-21) | A10 |
+| F65 | getAccountFunds fields | api, risk | official_documentation, DD/2687852 | `abs(exposure)` (sign **unverified**, T7) |
+| F66 | AccountDetails `currencyCode` field | arming | official_documentation, DD/2687852 (2022-03-02) | A16 (absent = fail) |
+| F67 | a new login does not invalidate other sessions (Bet Angel and website coexistence) | auth, CLI | **inferred**, low confidence | `--bet-angel-paused` until T3 |
+| F68 | `security add-generic-password ... -w` (last) prompts; `find-generic-password -w` prints only the password | credentials | man_page_read on this Mac, 2026-10-10 (no command run) | exit codes not relied on; T0 |
+| F69 | `ssl.load_cert_chain(certfile, keyfile, password)`; urlencode output needs `.encode()` | auth | local_python_check (3.14.6) | as specified |
+| F70 | `RANK` is not a MarketSort enum member; catalogue maxResults ≤ 1000; CLOSED markets not returned | api | official_documentation, DD/2687517, DD/2687455 | never send sort RANK; cache rows |
+| F71 | `includeSourceId` on listCurrentOrders/listClearedOrders; `sourceIdKey` = "App Key used to place order" | killswitch, reconcile | official_documentation, DD/2687504, DD/2687465; value format **unverified** | extra kill/startup leg; stripped from storage |
+| F72 | listEventTypes and listMarketCatalogue `filter` is required | api | official_documentation, DD/2687448, DD/2687517 | always send `{}` / refuse None |
+| F73 | `security add-generic-password -T ""` creates an item with no trusted apps, so every read prompts | credentials | **unverified** (the man page documents `-T appPath` only) | printed by setup; T0 |
+| F74 | macOS `fsync` does not flush the drive cache; `F_FULLFSYNC` does; SQLite `PRAGMA fullfsync` | journal, receipts | man_page_read (`man 2 fsync`); local_python_check (SQLite 3.53.2) | `full_fsync`, pragmas |
+| F75 | REST MarketFilter keys (`marketCountries`, `marketTypeCodes`, `marketStartTime`) differ from stream keys (`countryCodes`, `marketTypes`, no time) | filters | official_documentation, DD/2687465, DD/2687396 | `filters.py` mapping |
+| F76 | one person, one account (T&C 6.1); a second profile for the same account would split caps | arming | official_current_policy (Wayback) + design | `accounts.json` registry (A15) |
+
+**First-live-test checklist.** Each test needs Yu's explicit go-ahead and Yu present at the terminal.
+- **Where results go:** raw responses go to `STATE_ROOT/profiles/<p>/live-tests/`. Committed reports contain only test ids, status and error codes, field names, booleans, counts, durations and sha256 hashes of the private receipts.
+- **Labels:** each result is labelled `first_person_observation`.
+- **T0:** Keychain presence with `minimal_env`; whether `-T ""` triggers a dialog on every read; `security` behaviour on a locked Keychain.
+- **T1:** certificate login succeeds; record the `loginStatus`.
+- **T2:** keepAlive with GET vs POST.
+- **T3:** token A survives a Bet Angel or website login, checked by calling keepAlive on A. If it survives, set `coexistence.bet_angel = "token_survival_verified"`.
+- **T4:** capture the JSON-RPC error envelope, for example with an invalid marketId.
+- **T5:** `isMarketDataDelayed` with the delayed key and with the live key.
+- **T6:** delayed-key stream: echoed conflateMs, `connectionsAvailable`, whether HEARTBEAT lines appear during conflation, whether runner `tv` is present, whether the order stream is allowed.
+- **T7:** AccountDetails field names and the sign of funds exposure.
+- **T8:** listMarketBook traded-volume basis compared with the website.
+- **T9–T11** go through `live-probe` (LAY £1.00 @ 1.01, maximum loss £0.01, cancelled immediately):
+  - **T9:** customerRef echo. Deliberate duplicate submission is **not** tested, because it contradicts the no-reuse rule.
+  - **T10:** whether cleared orders show the cancelled probe before market settlement.
+  - **T11** (`--replace-step`, LAY @ 1.02, maximum loss £0.02): whether the replacement inherits customerOrderRef/strategyRef, and the `sourceIdKey` format.
+- **T12** (PERMISSION_DENIED on a new delayed key) is **dropped**. The v1 gateway refuses delayed-key orders, so testing it would mean placing a real bet through a path we deliberately do not build.
+
+Relevant paths:
+- Worktree: `/Users/macair/betangel-research-betfair`.
+- Codex's checkout: `/Users/macair/betangel-research` (not touched).
+- Scratch captures cited by the reviewers: `/private/tmp/claude-501/-Users-macair/68ae73bd-4b99-42bc-8429-293dcac21d40/scratchpad/{compliance-risk,apireview,bf}/`.

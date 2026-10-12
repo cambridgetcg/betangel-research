@@ -7,6 +7,10 @@ Research snapshot: **10 October 2026**. [Private GitHub repo](https://github.com
 ## Start here
 
 - [Collection pipeline：receipt、版本、連結與情境分析](docs/collection-pipeline.md)
+- [Betfair Exchange 接入：讀資料、stream recorder、證據等級](docs/betfair-integration.md)
+- [Betfair 落單路徑：paper 預設、live 閘門、對數同 kill switch](docs/betfair-order-path.md)
+- [Betfair 事實登記：每條依賴嘅 API 事實、證據等級同來源](docs/betfair-facts.md)
+- [Betfair client setup report：離線測試、限制同 merge gate](reports/betfair-setup-2026-10-10.md)
 - [NewsAPI 公開架構、publisher sources 同發佈時鐘](docs/newsapi-source-research.md)
 - [Collector 部署、備份、還原同操作](docs/collector-deployment.md)
 - [今次實際收集／cloud setup receipt](reports/direct-collection-2026-10-10.json)
@@ -105,12 +109,14 @@ The copy receives regenerated JSON/CSV. Optional plot reproduction needs `requir
 
 - Research and offline Python work run on the Mac.
 - Windows VPS specifications are a future hosting choice for Bet Angel, not evidence of profitability.
-- No purchases, live account connections or orders are part of this repository.
+- No purchases have been made. A Betfair client exists, but as of 2026-10-10 no credentials are configured and no live connection or order has been made; live orders stay disabled unless armed per docs/betfair-order-path.md.
 - Code, synthetic fixtures and research notes are published to the private GitHub repository; credentials, local databases and ignored raw data remain outside Git.
 
 The next research step is a consecutive, multi-date dataset with known access terms, followed by a frozen primary experiment. The public sample replay is not a holdout or profit test. See the [research plan](docs/research-plan.md).
 
 ## Local verification
+
+Betfair client: **all offline tests passed** with `BETANGEL_BETFAIR_FORBID_NETWORK=1` (counts, the property-test run and the log sha256 are in the [setup report](reports/betfair-setup-2026-10-10.md)). No credentials are configured and no live connection or order has been made.
 
 Collection starter: **84 tests passed** across the full suite. Synthetic receipt replay and an actual HTTP 429 failure receipt were checked; see [collection results](reports/collection-infra-2026-10-10.md). No cloud deployment or successful news-coverage trial is claimed.
 

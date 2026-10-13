@@ -26,8 +26,8 @@ flowchart LR
 - 每條外部事實都有 F-id，對應 [`research/betfair-facts.json`](../research/betfair-facts.json) 同 [fact register](betfair-facts.md)。值係最多一句嘅 paraphrase，唔係原文；要倚賴之前請睇返原頁。
 - `evidence_type` 用 repo 現有詞彙：`official_documentation`、`official_current_policy`、`official_data_specification`、`vendor_documentation`、`vendor_current_pricing`、`forum_participant_opinion`、`self_report_unverified`、`primary_research_simulation`，加上 `inferred`、`unverified` 同 `first_person_observation`。
 - `retrieval` 包括 `official_rest_api_storage_read`、`official_page_read`、`official_four_page_pdf_read`、`zendesk_api_read`、`reader_proxy_read`、`wayback_snapshot_<ts>`、`man_page_read` 同 `local_python_check`。
-- Betfair 係 exchange operator，佢自己嘅頁面算 `official_*`。`vendor_*` 只指 Bet Angel。`first_person_observation` 留畀我哋自己 first-live-test 嘅收據；而家一條都未有。
-- **冇任何事實喺 live Betfair API 上試過。** 有衝突或者未驗證嘅地方，代碼揀較保守嘅做法，詳情見 fact register 嘅 "Conflicts and open questions"。
+- Betfair 係 exchange operator，佢自己嘅頁面算 `official_*`。`vendor_*` 只指 Bet Angel。`first_person_observation` 留畀我哋自己 first-live-test 嘅收據；2026-10-13 之後 F01、F02、F03、F50、F51、F65、F66 有 `secondary` `first_person_observation`（收據 sha256 喺 [live-test report](../reports/betfair-live-tests-2026-10-13.json)）。
+- **只有少數事實喺 live Betfair API 上睇過：** 2026-10-13 Yu 用 delayed key 做咗 T1、T4、T6、T7 同 T8 嘅一部分（全部讀取，冇落單）；其餘未試。有衝突或者未驗證嘅地方，代碼揀較保守嘅做法（已知例外：F39 正好 0.80／1.25 嘅邊界，V14 而家收），詳情見 fact register 嘅 "Conflicts and open questions"。
 
 ## 2. Threat model
 
@@ -49,8 +49,8 @@ flowchart LR
 |---|---|---|
 | 用途 | development；准許 read-only | live betting applications |
 | 費用 | 免費 | 一次過 £499，唔退款（F46，`official_current_policy`，頁面 2026-10-08 更新） |
-| 開通條件 | 冇 | 先用 delayed key 測試、account 完成 KYC、有足夠資金扣 £499，再經 Developer Support 申請（F46） |
-| 價格資料 | 1–180 秒延遲 snapshot，3 層價位，冇 runner totalMatched（F44） | live；account 未入錢或者被 override 就變返 delayed（F47） |
+| 開通條件 | 冇 | 先用 delayed key 測試、account 完成 KYC、有足夠資金扣 £499，再喺 developer.betfair.com 嘅 get-started 頁揀 Exchange API > For My Personal Betting，填頁底嘅申請表（F46；[SA/115003860331](https://support.developer.betfair.com/hc/en-us/articles/115003860331-How-do-I-activate-my-Live-App-Key)，2026-10-12 讀） |
+| 價格資料 | 1–180 秒延遲 snapshot，3 層價位，冇 runner totalMatched（F44；但 2026-10-13 T8a 收據見到 delayed REST 嘅 runner 有返 `totalMatched` 欄位，收據只數咗有冇、冇記數值；register 今次冇改 F44，見 [fact register](betfair-facts.md#conflicts-and-open-questions) F60 嗰條） | live；account 未入錢或者被 override 就變返 delayed（F47） |
 | 只讀唔落注 | 准許 | **唔准許**，可能被限制或者停用（F46） |
 | 喺真 exchange 落注 | **可以**（F44），冇 sandbox | 可以 |
 | Stream | 2 條 connection、200 個 market，conflate 到 180000 ms（F44、F51） | connection 上限冇公佈（F56） |
@@ -66,7 +66,7 @@ flowchart LR
 
 ## 4. Certificate setup
 
-預設用 certificate login（non-interactive，F01、F05）。Betfair 嘅 interactive login 頁強烈建議自用嘅 bot 改用 non-interactive endpoint（[DD/2687772](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687772)，即 F06 嘅來源頁，`official_documentation`；F06 嘅 value 冇講呢句）。網站 2-Step Authentication 唔影響 certificate login：呢句據稱出自 [DD/2687915](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915)，但屬 non-load-bearing、冇經核對、唔喺 fact register（F01 嘅 value 冇講），所以呢度標 `unverified`，T1 先會睇到。interactive login 只係後備（F06）。
+預設用 certificate login（non-interactive，F01、F05）。Betfair 嘅 interactive login 頁強烈建議自用嘅 bot 改用 non-interactive endpoint（[DD/2687772](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687772)，即 F06 嘅來源頁，`official_documentation`；F06 嘅 value 冇講呢句）。網站 2-Step Authentication 唔影響 certificate login：[DD/2687915](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915)（v114）同 [SA/115003855392](https://support.developer.betfair.com/hc/en-us/articles/115003855392-Can-I-enable-2-Step-Authentication-and-still-use-the-API-non-interactive-login-method) 都咁寫（`official_documentation`，2026-10-12 讀；唔喺 fact register，F01 嘅 value 冇講）。T1 收據冇記低網站 2-Step Authentication 開咗未，所以 T1 冇驗證到呢句。interactive login 只係後備（F06）。
 
 Certificate 同 key 放喺 **所有 git worktree 以外**，預設 `~/.config/betangel-research/betfair/`。下面嘅命令喺呢部 Mac 用 Homebrew OpenSSL 3.6.2 同一條 synthetic key 試過，試完已刪；咁只證明命令行得通，唔代表 Betfair 接受結果。Betfair 官方步驟係將 `[ ssl_client ]` 加入 openssl.cnf（F05）；呢度改用一個獨立 cnf，加咗 `[ req ]`，令 `openssl req` 唔使互動問 subject。Betfair 文件冇要求特定 subject。
 
@@ -122,7 +122,7 @@ security add-generic-password -U -s betangel-research.betfair.app-key.live -a de
 ```
 
 - `-w` 一定係最後一個 token，`security` 就會提示你輸入個值（F68，`man_page_read`）。唔好將 secret 直接寫喺命令行，咁會入 shell history 同 `ps`。
-- Live key 用 `-T ""`，意圖係冇任何 application 可以靜靜讀佢，每次讀都彈 macOS 授權 dialog。**彈出嚟就撳 Allow，永遠唔好撳 Always Allow**；Always Allow 會將 `security` 加入信任名單，之後讀取再冇 dialog。man page 冇寫 `-T ""` 實際效果（F73，`unverified`），T0 會觀察；arming 唔依賴佢，因為代碼偵測唔到。
+- Live key 用 `-T ""`，意圖係冇任何 application 可以靜靜讀佢，每次讀都彈 macOS 授權 dialog。**彈出嚟就撳 Allow，永遠唔好撳 Always Allow**；Always Allow 應該會將 `security` 加入信任名單，之後讀取再冇 dialog（推斷：man page 冇提 Always Allow，所以呢個建議係保守做法、冇文件根據）。man page 寫明 `-T ""` 會拎走建立 item 嘅 application 預設嘅免警告讀取，但冇講之後係咪每次讀都彈 dialog（F73，`partially_unverified`），T0 會觀察；arming 唔依賴佢，因為代碼偵測唔到。
 - 未開 live key 嘅話，第四行可以遲啲先做。
 
 | Service | 內容 | 用途 |
@@ -182,7 +182,7 @@ security add-generic-password -U -s betangel-research.betfair.app-key.live -a de
 python3 -m betangel_research.betfair doctor
 ```
 
-佢預設離線，報告 config 有冇效、state 路徑、cert 同 key 嘅位置同權限、Keychain item 在唔在（只講在唔在，唔讀值）、`.gitignore` 覆蓋、arming 狀態同 anchor 狀態。`doctor --network` 先會 login、keepAlive、logout，而且只報 status。
+佢預設離線，報告 config 有冇效、state 路徑、cert 同 key 嘅位置同權限、Keychain item 在唔在（只講在唔在，唔讀值）、`.gitignore` 覆蓋、arming 狀態同 anchor 狀態。`doctor --network` 先會 login、keepAlive、logout，而且只報 status。2026-10-13 嘅 T1 就係用 delayed key 跑呢個命令：cert login、keepAlive 同 logout 都係 `SUCCESS`，`can_bet` true。
 
 ## 7. Config walkthrough
 
@@ -248,6 +248,8 @@ python3 -m betangel_research.betfair account --bet-angel-paused
 - `book --out` 會喺 `read.out_root`（預設 `profiles/<p>/reads/`）寫 `response.json` 同 `receipt.json`（sha256、時鐘、key_type、code_sha256、config_sha256）。
 - `account` 只會返 `currencyCode`、`countryCode`、`discountRate`、`pointsBalance`；任何名字都唔會返、唔會印、唔會寫。
 - `listMarketBook` 冇 marketTime、bettingType、marketType、eventTypeId 或 ladder type（F43），所以 `market_snapshot` 會同 catalogue row join；冇 catalogue row 就 `invalid_reason="catalogue_missing"`，落單會被拒。CLOSED market 唔喺 catalogue（F70），cache 落嚟嘅 row 會留低做 settlement。
+- **唔存在嘅 market id（T4，2026-10-13，delayed key）。** `book` 一個格式啱但唔存在嘅 market id，Betfair 冇返 JSON-RPC error envelope，淨係返一個空 list；`market_snapshot` 收唔到 book，報 `local:market_book_missing:unrecognized`（exit 2）。所以 T4 嘅 status 係 `no_envelope_observed`，F14、F15 嘅 error 拆解次序仲未喺 live 見過。
+- **Delayed REST 冇 traded ladder（T8a，2026-10-13）。** `book --price-data EX_BEST_OFFERS,EX_TRADED` 喺兩個 market 各讀兩次（相隔 302／303 秒），所有 ACTIVE runner 嘅 `tradedVolume` 都係空 list，但 `lastPriceTraded` 同 runner `totalMatched` 都有返；兩次讀取 `isMarketDataDelayed` 都係 true。同日 T6 嘅 delayed stream 就有 `trd`（§9）。用 delayed REST book 做 paper，掛單永遠唔會被動 fill（[落單路徑 §11](betfair-order-path.md#11-paper-model-assumptions) 第 6 步）。
 
 **Request weight（F16，每個 request 上限 200 分）**
 
@@ -271,7 +273,7 @@ Catalogue projection：`MARKET_DESCRIPTION` 同 `RUNNER_METADATA` 各 1 分，�
 |---|---|---|
 | 每個 market 嘅 `listMarketBook` | 每秒 4 次（滑動 1 秒） | 指引每秒 5 次（F17） |
 | order projection 讀取同 `listCurrentOrders` in-flight | 2 | 3，兩份文件對計法講法唔同（F18） |
-| `listClearedOrders` in-flight | 2 | 另計（F18） |
+| `listClearedOrders` in-flight | 2 | 計唔計入上面嗰 3 個，DD 同 SA 講法唔同（F18）；本地兩個上限加埋最多 4 |
 | 成功 login | 每 10 分鐘 30 次（ceiling 60） | 每分鐘 100 次之後 ban 20 分鐘（F10） |
 | 連續失敗 login | 2 次就停，要 `login-reset`（ceiling 3） | 失敗計唔計唔清楚（F10） |
 | login ban | 寫入 ledger，鎖 1260 秒，跨 restart 有效 | 20 分鐘（F10） |
@@ -342,7 +344,7 @@ Raw line 唔會包一層 envelope：`stream.messages()` 會丟棄冇 `op` 嘅 li
 - **Stream client 一定要用同一個 session 同 config。** `stream_factory()` 返嚟嘅 client 唔係用 recorder 收到嗰個 `SessionManager`，或者 host、port、heartbeat、conflation 同 config 唔同，就停 session（`stream_factory_mismatch:<field>`），唔會連線。`recorder.allow_live_key` 唔係 true 就唔准用 live key 錄。
 - **`verify-recording`** 核對 receipt hash 同檔案、recv row 由 1 連續到 `lines`、每行 sha256、`stream.messages()` 食晒每個 segment、`first_pt`／`last_pt` 同資料一致，同埋 receipt 用 `strict_json_loads` 讀得返。
 
-**Delayed key 嘅 180 秒 conflation。** Delayed key 嘅 stream 會 conflate 到 180000 ms（F44、F51）：每 3 分鐘一個 message，包晒過去 3 分鐘嘅變化。Receipt 會標 `delayed_conflated`。**呢啲資料唔支持任何細過 180 秒嘅 feature**；motif pipeline（`max_snapshot_age_s` 10 秒）會將佢哋當 stale 排除，咁係正確嘅。
+**Delayed key 嘅 180 秒 conflation。** Delayed key 嘅 stream 會 conflate 到 180000 ms（F44、F51）：每 3 分鐘一個 data message，包晒過去 3 分鐘嘅變化；HEARTBEAT 照 heartbeatMs 嚟（T6：conflateMs 冇要求、echo 180000，heartbeatMs echo 5000；600 秒入面 3 條 DELTA、116 條 HEARTBEAT，條條都有 `clk`）。Receipt 會標 `delayed_conflated`。**呢啲資料唔支持任何細過 180 秒嘅 feature**；motif pipeline（`max_snapshot_age_s` 10 秒）會將佢哋當 stale 排除，咁係正確嘅。
 
 **Replay 同 motif 相容性。** `motif_compatible: true` 時 `ladderLevels` 最多 3，預設 fields（`EX_BEST_OFFERS`、`EX_TRADED`、`EX_TRADED_VOL`、`EX_LTP`、`EX_MARKET_DEF`）會產生 `batb`／`batl`、`trd`、`tv`、`ltp`，同 ADV historical data 一樣格式（F59）。`EX_BEST_OFFERS_DISP` 會被拒，因為 microstructure 會當佢係 virtual。`motif_compatible: true` 仲要求有 `EX_BEST_OFFERS`（冇 `batb`／`batl` 嘅 record motif reader 當 `unsupported_basic_or_unknown_fields`），亦拒絕 `EX_ALL_OFFERS`、`SP_TRADED` 同 `SP_PROJECTED`（`atb`／`atl`、`spb`／`spl`、`spn`／`spf` 會令每個 record 變 `unsupported_pro_or_mixed_fields`）：`market_data_filter_fields_not_motif_compatible:<field>`。每個 segment 可以直接畀現有工具用：
 
@@ -352,7 +354,7 @@ python3 -m betangel_research replay --input <session_dir>/seg-000.jsonl \
 python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.jsonl --out outputs/<new-dir>
 ```
 
-限制：R3（segment 被 microstructure 判做 ADV）只喺 synthetic 資料上測過；delayed stream 有冇 runner `tv` 未驗證（T6；delayed key 冇 "Total Matched by Selection"，F44）；`replay_check` 要求每個 market 第一個 `mc` 有 `marketDefinition.marketTime`，否則 segment 標 `failed`。
+限制：R3（segment 被 microstructure 判做 ADV）只喺 synthetic 資料上測過；delayed stream 有 runner `tv` 同 `trd`（T6 收據：1739 個 runner change 入面 767 個有 `tv`、677 個 `tv` 大過 0、681 個 `trd` 非空），同 F44「delayed key 冇 "Total Matched by Selection"」唔夾，F44 今次冇改；`replay_check` 要求每個 market 第一個 `mc` 有 `marketDefinition.marketTime`，否則 segment 標 `failed`。
 
 **同現有文件嘅關係。** 用 delayed key 錄 stream 係 Betfair 准許嘅 read-only 用法（F44、F46）。但係：
 
@@ -390,7 +392,7 @@ python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.j
 
 **未做、或者刻意唔做：**
 
-- 未設定任何 credentials，未做過任何 live call，未落過任何單；£499 live key 未付。
+- 2026-10-10 交付時未設定任何 credentials、未做過 live call。2026-10-13 Yu 用 delayed key 做咗讀取嘅 first-live tests（T1、T4、T6、T7、T8 嘅一部分；[live-test report](../reports/betfair-live-tests-2026-10-13.json)）。未落過任何單；£499 live key 未付。
 - 冇自動交易策略；冇策略可以自動落單。程式 API（`source="api"`）只限 paper。
 - 冇 order stream 路徑（`subscribe_orders` 有實作但 v1 gateway 唔用）；v1 只用 REST 對數。
 - 冇 Heartbeat API、冇 in-play、冇 PERSIST／MOC／LOC／FOK／minFill／betTarget、冇 £1 以下注碼、冇非 GBP、live 只限 `com`。
@@ -400,7 +402,7 @@ python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.j
 
 ## 12. Sources with access dates
 
-全部 2026-10-10 讀取。完整清單（每條事實嘅來源、日期同等級）喺 [fact register](betfair-facts.md)。主要來源：
+2026-10-10 讀取（fact register 有 14 行 2026-10-12 重讀過）。完整清單（每條事實嘅來源、日期同等級）喺 [fact register](betfair-facts.md)。主要來源：
 
 - Betfair developer docs（`official_documentation`）：[Non-Interactive (bot) login](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915)（v114，2026-07-01）、[Interactive login](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687772)、[Login & Session Management](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869)、[Application Keys](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687105)（v143，2026-05-07）、[Market Data Request Limits](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687478)、[Exchange Stream API](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396)、[Betting Type Definitions](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465)。
 - Betfair developer support（`official_current_policy`／`official_documentation`，`zendesk_api_read`）：[API 費用](https://support.developer.betfair.com/hc/en-us/articles/115003864531-Are-there-any-costs-associated-with-API-access)（2026-10-08 更新）、[read-only access](https://support.developer.betfair.com/hc/en-us/articles/25033076334748-What-is-read-only-Betfair-API-access)、[Delayed 定 Live key](https://support.developer.betfair.com/hc/en-us/articles/360009638032-When-should-I-use-the-Delayed-or-Live-Application-Key)、[IP 地區限制](https://support.developer.betfair.com/hc/en-us/articles/28271961503516-Which-IP-regions-are-restricted-from-accessing-the-Betfair-API)（2026-09-21 更新）。

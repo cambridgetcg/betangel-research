@@ -56,8 +56,13 @@ COLUMNS = ["id", "value used", "evidence_type · status", "retrieval", "source",
            "code handling"]
 # Spec section 15: a paraphrase is at most one sentence. A second sentence starts after ". " and a capital.
 MULTI_SENTENCE_RE = re.compile(r"(?<![A-Za-z]\.[a-z])(?<=[A-Za-z0-9)\]\"'`])[.!?](?=\s+[A-Z])")
-# Values U1's JSON still writes as two sentences on 2026-10-10. New entries are refused; the list only shrinks.
-KNOWN_MULTI_SENTENCE = frozenset({"F03", "F10", "F18", "F25", "F37", "F63"})
+# Values U1's JSON still writes as two sentences (F18 and F25 became one on 2026-10-12). New entries are
+# refused; the list only shrinks.
+KNOWN_MULTI_SENTENCE = frozenset({"F03", "F10", "F37", "F63"})
+# Per-fact read dates: the 2026-10-10 register and the 2026-10-12 second round, whose ids the JSON lists under
+# rechecked and the doc's accessed bullet names. A date joins only with a new register round.
+ACCESSED_DATES = ("2026-10-10", "2026-10-12")
+ACCESSED_DOC_LEAD = "- **published_or_updated**："
 MULTI_SENTENCE_DOC_LEAD = "- **仲係兩句、等 JSON 擁有者收窄嘅 value：**"
 # "Independently verified" is never claimed (spec section 15). The one approved sentence says so in the negative.
 APPROVED_NEGATIONS = ("冇人獨立重做過任何結果，所以呢度冇任何事實標成「已獨立核實」。",)
@@ -174,7 +179,21 @@ def live_test_receipts(root=ROOT):
     return receipts
 
 
-def first_person_problems(fact, checklist, receipts):
+def withheld_relabels(root=ROOT):
+    """{(test id, receipt sha256): fact ids} that the committed report listing that receipt puts under
+    facts_not_relabelled: its receipts did not answer them (T4 no_envelope_observed for F14/F15, T8a for F60)."""
+    withheld = {}
+    for path in sorted((root / "reports").glob("betfair-*.json")):
+        data = json.loads(read_text(path))
+        facts = frozenset(data.get("facts_not_relabelled", {}))
+        for entry in data.get("first_live_tests_run", []):
+            if isinstance(entry, dict):
+                key = (entry.get("test_id"), entry.get("receipt_sha256"))
+                withheld[key] = withheld.get(key, frozenset()) | facts
+    return withheld
+
+
+def first_person_problems(fact, checklist, receipts, withheld=None):
     """Why fact may not carry first_person_observation; empty when a matching live-test receipt backs it."""
     if "first_person_observation" not in (fact["evidence_type"], fact["secondary_evidence_type"]):
         return []
@@ -190,6 +209,8 @@ def first_person_problems(fact, checklist, receipts):
             problems.append(f"the checklist row for {test_id} does not list {fact['id']}")
         if (test_id, digest) not in receipts:
             problems.append(f"no reports/betfair-*.json lists {test_id} with that receipt sha256")
+        if fact["id"] in (withheld or {}).get((test_id, digest), frozenset()):
+            problems.append(f"the report listing that {test_id} receipt puts {fact['id']} under facts_not_relabelled")
     return problems
 
 
@@ -285,7 +306,7 @@ class FactsDocTests(unittest.TestCase):
                 self.assertIsInstance(fact["code_handling"], str)
                 self.assertTrue(fact["sources"])
                 self.assertTrue(fact["used_by"])
-                self.assertEqual(fact["accessed"], "2026-10-10")
+                self.assertIn(fact["accessed"], ACCESSED_DATES)
                 area, cells = rows[fact["id"]]
                 self.assertEqual(area, fact["area"], "row sits under the wrong area heading")
                 self.assertEqual(len(cells), len(COLUMNS))
@@ -305,6 +326,14 @@ class FactsDocTests(unittest.TestCase):
         line = lead_line(read_text(FACTS_DOC), MULTI_SENTENCE_DOC_LEAD)
         listed = set(FACT_ID_RE.findall(line)) if line else set()
         self.assertEqual(listed, multi, "docs/betfair-facts.md must list exactly the two-sentence values")
+        # Re-read rows: the JSON's rechecked list and the doc's accessed bullet name exactly them.
+        self.assertEqual(data["accessed"], ACCESSED_DATES[0])
+        self.assertEqual(data["rechecked"]["accessed"], ACCESSED_DATES[1])
+        rechecked = {fact["id"] for fact in data["facts"] if fact["accessed"] == ACCESSED_DATES[1]}
+        self.assertEqual(rechecked, set(data["rechecked"]["facts"]))
+        line = lead_line(read_text(FACTS_DOC), ACCESSED_DOC_LEAD)
+        self.assertEqual(set(FACT_ID_RE.findall(line)) if line else set(), rechecked,
+                         "the doc's accessed bullet must name exactly the re-read rows")
 
     def test_multi_sentence_detector(self):
         for text in ("customerRef is at most 32 characters from letters, digits and : - . _ + * ; ~ and de-duplicates.",
@@ -320,7 +349,7 @@ class FactsDocTests(unittest.TestCase):
         data = load_facts()
         self.assertEqual(data["vocabulary"]["evidence_type"], SPEC_EVIDENCE_TYPES)
         self.assertEqual(data["vocabulary"]["retrieval"], SPEC_RETRIEVALS)
-        checklist, receipts = checklist_facts(), live_test_receipts()
+        checklist, receipts, withheld = checklist_facts(), live_test_receipts(), withheld_relabels()
         for fact in data["facts"]:
             with self.subTest(fact=fact["id"]):
                 self.assertIn(fact["evidence_type"], SPEC_EVIDENCE_TYPES)
@@ -350,7 +379,7 @@ class FactsDocTests(unittest.TestCase):
                     if fact["verification_status"] != "local_check":
                         self.assertIsNotNone(fact["secondary_evidence_type"])
                 # Our own observation only with a live-test receipt that a committed report lists.
-                self.assertEqual(first_person_problems(fact, checklist, receipts), [])
+                self.assertEqual(first_person_problems(fact, checklist, receipts, withheld), [])
                 # "Vendor" means Bet Angel only (spec section 15); Betfair pages are official_*.
                 if fact["evidence_type"].startswith("vendor_"):
                     self.assertTrue(any("betangel" in s.lower() for s in fact["sources"]))
@@ -383,6 +412,46 @@ class FactsDocTests(unittest.TestCase):
         self.assertEqual(first_person_problems(fact, checklist, {("T3", digest)}), [])
         fact["id"] = "F01"
         self.assertTrue(first_person_problems(fact, checklist, {("T3", digest)}), "T3 does not resolve F01")
+        # A receipt that did not answer: its report lists the fact under facts_not_relabelled.
+        fact["id"] = "F67"
+        self.assertTrue(first_person_problems(fact, checklist, {("T3", digest)}, {("T3", digest): frozenset({"F67"})}),
+                        "the report says this receipt did not answer F67")
+        self.assertEqual(first_person_problems(fact, checklist, {("T3", digest)}, {("T4", digest): frozenset({"F67"})}),
+                         [])
+
+    def test_unanswered_receipts_cannot_relabel(self):
+        """Regression (review): T8a is recorded as T8, whose row resolves F60, and T4's row resolves F14 and F15,
+        so the checklist alone would accept the relabels the 2026-10-13 receipts refuse."""
+        checklist, receipts, withheld = checklist_facts(), live_test_receipts(), withheld_relabels()
+        by_test = {test_id: digest for test_id, digest in receipts}
+        for fact_id, test_id in (("F60", "T8"), ("F14", "T4"), ("F15", "T4")):
+            with self.subTest(fact=fact_id):
+                self.assertIn(test_id, by_test)
+                self.assertIn(fact_id, checklist[test_id])
+                fact = {"id": fact_id, "evidence_type": "official_documentation",
+                        "secondary_evidence_type": "first_person_observation",
+                        "sources": [f"live-test:{test_id}:sha256:{by_test[test_id]}"]}
+                self.assertEqual(first_person_problems(fact, checklist, receipts), [], "checklist alone accepts it")
+                self.assertTrue(first_person_problems(fact, checklist, receipts, withheld))
+
+    def test_live_test_reports_match_register_labels(self):
+        """A dated live-test report names exactly the facts whose first_person_observation cites one of its receipts,
+        and never also lists them as not relabelled."""
+        facts = load_facts()["facts"]
+        for path in sorted((ROOT / "reports").glob("betfair-*.json")):
+            data = json.loads(read_text(path))
+            listed = {(entry["test_id"], entry["receipt_sha256"]) for entry in data.get("first_live_tests_run", [])}
+            if not listed:
+                continue
+            with self.subTest(report=path.name):
+                cited = {}
+                for fact in facts:
+                    for match in (LIVE_TEST_SOURCE_RE.fullmatch(s) for s in fact["sources"]):
+                        if match and match.groups() in listed:
+                            cited[fact["id"]] = match.group(1)
+                relabelled = data.get("facts_relabelled_secondary_first_person_observation", {})
+                self.assertEqual(relabelled, cited)
+                self.assertFalse(set(relabelled) & set(data.get("facts_not_relabelled", {})))
 
     def test_open_questions_cover_every_unsettled_fact(self):
         open_section = section(read_text(FACTS_DOC), "## Conflicts and open questions")

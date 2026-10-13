@@ -1,6 +1,7 @@
 """Betfair facts the code depends on, each tied to a fact id in research/betfair-facts.json.
 
-Values were read from official pages on 2026-10-10 and none has been checked against the live API.
+Values were read from official pages on 2026-10-10 (14 facts re-read 2026-10-12); only a few were seen in
+read-only delayed-key first-live tests on 2026-10-13, and no order path has been checked live.
 This module deliberately names no order-submission method: those literals live in gateway.py only,
 and the transport refuses any non-read JSON-RPC body that is not bound to a consumed capability.
 Local caps sit below the vendor limits they cite; raising a ceiling needs a reviewed code change.

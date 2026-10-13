@@ -295,7 +295,8 @@ def check_cert_files(cert_path, key_path):
 
 def keychain_setup_commands(profile, *, include_passphrase=False):
     """Commands for the operator to run by hand. "-w" is last so security prompts for each value;
-    the live key gets -T "" so no application is trusted to read it silently (effect unverified, T0)."""
+    the live key gets -T "", which the man page says removes the creator's default silent access; whether
+    every later read prompts is unverified (F73, T0)."""
     validate_profile(profile)
     kinds = ["username", "password", "app_key_delayed", "app_key_live"]
     if include_passphrase:

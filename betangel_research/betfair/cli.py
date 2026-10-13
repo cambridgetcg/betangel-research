@@ -1207,9 +1207,9 @@ def cmd_paper_step(args, ctx):
         result = gateway.advance(args.market, book=book)
     withheld = sum("passive_fill_unavailable_delayed_rest_trd_empty" in flags for flags in result["flags"].values())
     if withheld:
-        ctx.warnings.append(f"passive_fill_unavailable_delayed_rest_trd_empty ({withheld} order(s)): the delayed-key "
-                            "book carried an empty traded ladder, which is not evidence that nothing traded; for "
-                            "passive fills run record, then paper-replay on its segments")
+        ctx.warnings.append(f"passive_fill_unavailable_delayed_rest_trd_empty ({withheld} order(s)): a "
+                            "delayed-or-unknown REST interval had an empty traded ladder, which is not evidence that "
+                            "nothing traded; for passive fills run record, then paper-replay on its segments")
     ctx.print_json(result)
     return 0
 

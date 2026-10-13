@@ -31,6 +31,18 @@ def book(back=((3.5, 10.0),), lay=((3.55, 10.0),), traded=None, **changes):
     return orders.snapshot(runners={"12345": orders.runner(back=back, lay=lay, traded=traded)}, **changes)
 
 
+def rest_book(traded, *, key_type="delayed", delayed=True, total_matched=None, **changes):
+    """A listMarketBook-shaped book (traded {} is what tradedVolume [] normalises to); delayed None: field absent."""
+    value = book(traded=traded, source="rest_listMarketBook", fetched_by="gateway_self_fetch", key_type=key_type,
+                 app_key_slot=key_type, pt=None, is_market_data_delayed=delayed, **changes)
+    value["runners"]["12345"].update(ltp=3.6, total_matched=total_matched)
+    return value
+
+
+LIVE_REST = {"key_type": "live", "delayed": False}
+WITHHELD = ["passive_fill_unavailable_delayed_rest_trd_empty"]
+
+
 def open_record(ref=REF_A, **changes):
     changes.setdefault("bet_id", paper.paper_bet_id(ref))
     return orders.order_record(customer_order_ref=ref, **changes)
@@ -278,6 +290,75 @@ class FillModelTests(unittest.TestCase):
         self.assertEqual(self.advance(order, {"3.6": 50.0}, {"3.333": 60.0})[0]["flags"],
                          ["traded_volume_invalid_no_passive_fill"])
         self.assertEqual(self.exchange.queue_state()[REF_A], 0)
+
+    def rest_advance(self, order, prev_traded, now_traded, *, prev_kw=None, **kw):
+        # T8a shape: the runner's totalMatched rises between the two reads while tradedVolume stays [].
+        prev = rest_book(prev_traded, total_matched=5000.0, **(kw if prev_kw is None else prev_kw))
+        now = rest_book(now_traded, total_matched=10000.0, **kw)
+        return self.exchange.advance([order], prev_book=prev, book=now, now_ms=BOOK_MS + 1000)
+
+    def test_delayed_rest_empty_traded_flagged_not_silent(self):
+        """T8a: delayed listMarketBook returned tradedVolume [] while totalMatched rose, so an empty ladder
+        there is unknown, never a silent zero passive fill."""
+        self.exchange = resting({REF_A: 0})
+        order = open_record(price_h=360)
+        self.assertEqual(self.rest_advance(order, {}, {}), [{"customer_order_ref": REF_A, "state": "EXECUTABLE",
+                                                            "fields": {}, "flags": WITHHELD}])
+        # Delayed or unknown: the delayed key whatever the flag says, or isMarketDataDelayed not False (V10).
+        for kw in ({"delayed": None}, {"delayed": False}, {"key_type": "live", "delayed": None},
+                   {"key_type": "live", "delayed": True}):
+            with self.subTest(**kw):
+                self.assertEqual(self.rest_advance(order, {}, {}, **kw)[0]["flags"], WITHHELD)
+        # populated -> {} is no longer read as settlement zeroing on such books; None keeps its own flag.
+        self.assertEqual(self.rest_advance(order, {"3.6": 50.0}, {})[0]["flags"], WITHHELD)
+        self.assertEqual(self.rest_advance(order, None, {})[0]["flags"], ["passive_fill_unavailable_no_trd"])
+        self.assertEqual(self.rest_advance(order, {}, None)[0]["flags"], ["passive_fill_unavailable_no_trd"])
+        self.assertEqual(self.exchange.queue_state()[REF_A], 0)
+        # Nor does the empty ladder hide an unknown queue any more.
+        self.exchange = paper.PaperExchange(PARAMS, state={"activated_ms": {REF_A: BOOK_MS}})
+        self.assertEqual(self.rest_advance(order, {}, {})[0]["flags"], WITHHELD)
+
+    def test_delayed_rest_empty_then_populated_never_bursts(self):
+        """Regression: {} as a baseline counted a whole cumulative ladder as one interval's trading."""
+        self.exchange = resting({REF_A: 0})
+        order = open_record(price_h=360)
+        self.assertEqual(self.rest_advance(order, {}, {"3.6": 5000.0})[0]["flags"], WITHHELD)
+        self.assertEqual(self.exchange.queue_state()[REF_A], 0)
+        # The volume seen then is the high-water mark: only later trading at the price fills.
+        self.assertEqual(self.rest_advance(order, {"3.6": 5000.0}, {"3.6": 5000.0}), [])
+        updates = self.rest_advance(order, {"3.6": 5000.0}, {"3.6": 5001.0})
+        self.assertEqual((updates[0]["fields"]["size_matched_p"], updates[0]["flags"]), (50, ["passive_fill"]))
+        # Mixed sources (a --book FILE then a self-fetch): an empty ladder next to a delayed REST book is no baseline.
+        for name, prev, now in (("fixture_to_delayed", book(traded={}), rest_book({"3.6": 5000.0})),
+                                ("live_to_delayed", rest_book({}, **LIVE_REST), rest_book({"3.6": 5000.0})),
+                                ("delayed_to_live", rest_book({}), rest_book({"3.6": 5000.0}, **LIVE_REST))):
+            with self.subTest(name):
+                exchange = resting({REF_A: 0})
+                updates = exchange.advance([order], prev_book=prev, book=now, now_ms=BOOK_MS + 1000)
+                self.assertEqual(updates, [{"customer_order_ref": REF_A, "state": "EXECUTABLE", "fields": {},
+                                            "flags": WITHHELD}])
+
+    def test_empty_traded_outside_delayed_rest_unchanged(self):
+        """The guard is scoped: live-key REST, fixtures and stream recordings keep {} as nothing traded, and a
+        populated delayed REST ladder (never observed live) still fills from its increases."""
+        self.exchange = resting({REF_A: 0})
+        order = open_record(price_h=360)
+        self.assertEqual(self.rest_advance(order, {}, {}, **LIVE_REST), [])
+        self.assertEqual(self.advance(order, {}, {}), [])
+        recorded = {"source": "recording", "fetched_by": "recording", "key_type": "delayed", "app_key_slot": "delayed"}
+        self.assertEqual(self.exchange.advance([order], prev_book=book(traded={}, pt=BOOK_MS + 500, **recorded),
+                                               book=book(traded={}, pt=BOOK_MS + 180_500, **recorded),
+                                               now_ms=BOOK_MS + 180_500), [])
+        for name, prev, now in (
+                ("live_rest_from_empty", rest_book({}, **LIVE_REST), rest_book({"3.6": 4.0}, **LIVE_REST)),
+                ("delayed_recording", book(traded={"3.6": 100.0}, pt=BOOK_MS + 500, **recorded),
+                 book(traded={"3.6": 104.0}, pt=BOOK_MS + 180_500, **recorded)),
+                ("delayed_rest_populated", rest_book({"3.6": 100.0}), rest_book({"3.6": 104.0}))):
+            with self.subTest(name):
+                exchange = resting({REF_A: 0})
+                updates = exchange.advance([order], prev_book=prev, book=now, now_ms=paper.book_time_ms(now))
+                self.assertEqual([(u["state"], u["fields"]["size_matched_p"], u["flags"]) for u in updates],
+                                 [("EXECUTION_COMPLETE", 200, ["passive_fill"])])
 
     def test_lapse_inplay_and_version_bump(self):
         order = open_record(price_h=360)

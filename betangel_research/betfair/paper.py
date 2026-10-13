@@ -129,6 +129,14 @@ def _traded(runner):
     return out
 
 
+def _delayed_rest(book):
+    """A REST listMarketBook book on the delayed key or with isMarketDataDelayed not False (V10's test). Live
+    2026-10-13 (T8a) such books carried tradedVolume [] (traded {}) while ltp and totalMatched showed trading,
+    so an empty ladder there is unknown, not "nothing traded", and never a zero baseline."""
+    return book["source"] == "rest_listMarketBook" and (book["key_type"] == "delayed"
+                                                         or book["is_market_data_delayed"] is not False)
+
+
 def paper_bet_id(ref):
     """Deterministic synthetic bet id (digits) for a paper order reference."""
     return str(int(hashlib.sha256(ref.encode("utf-8")).hexdigest()[:15], 16))
@@ -503,6 +511,10 @@ class PaperExchange:
             if now_traded is None or prev_traded is None:
                 updates.append({"customer_order_ref": ref, "state": "EXECUTABLE", "fields": {},
                                 "flags": ["passive_fill_unavailable_no_trd"]})
+                continue
+            if (not now_traded or not prev_traded) and (_delayed_rest(book) or _delayed_rest(prev_book)):
+                updates.append({"customer_order_ref": ref, "state": "EXECUTABLE", "fields": {},
+                                "flags": ["passive_fill_unavailable_delayed_rest_trd_empty"]})
                 continue
             if prev_traded and not any(now_traded.values()):
                 updates.append({"customer_order_ref": ref, "state": "EXECUTABLE", "fields": {},

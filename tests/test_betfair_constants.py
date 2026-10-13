@@ -40,14 +40,16 @@ class ConstantsTests(unittest.TestCase):
         self.assertEqual(known, {f"F{n:02d}" for n in range(1, 78)})
         for fact in facts["facts"]:
             self.assertEqual(list(fact), facts["fields"])
-            self.assertEqual(fact["accessed"], "2026-10-10")
+            self.assertIn(fact["accessed"], ("2026-10-10", "2026-10-12"))   # register, second round
             self.assertIn(fact["evidence_type"], facts["vocabulary"]["evidence_type"])
             if fact["secondary_evidence_type"] is not None:
                 self.assertIn(fact["secondary_evidence_type"], facts["vocabulary"]["evidence_type"])
             self.assertIn(fact["verification_status"], facts["vocabulary"]["verification_status"])
             self.assertTrue(fact["sources"])
-            # Reserved for our own first-live-test receipts (spec section 15); none exist yet.
-            self.assertNotEqual(fact["evidence_type"], "first_person_observation")
+            # Reserved for our own first-live-test receipts (spec section 15): a fact carrying it cites one;
+            # test_betfair_facts_doc checks the receipt against the checklist and the committed reports.
+            if "first_person_observation" in (fact["evidence_type"], fact["secondary_evidence_type"]):
+                self.assertTrue(any(s.startswith("live-test:T") for s in fact["sources"]))
             if any(source.startswith("local:") for source in fact["sources"]) and len(fact["sources"]) == 1:
                 self.assertNotIn(fact["evidence_type"], ("official_documentation", "first_person_observation"))
         by_id = {fact["id"]: fact for fact in facts["facts"]}

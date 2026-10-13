@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-10-13",
+  "status": "delayed_key_first_live_tests_read_only_no_orders",
+  "scope": "Read-only first-live tests on the delayed application key, run by Yu at Yu's own terminal with an explicit go-ahead for each test, from a checkout at f73fcbb. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts, durations and short notes only; clock times are left out (run_date gives the day).",
+  "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory; the T8a receipt is recorded as T8",
+  "code_revision": "f73fcbb",
+  "key_type": "delayed",
+  "live_orders_placed": 0,
+  "first_live_tests_run": [
+    {
+      "test_id": "T1",
+      "receipt_sha256": "ca943553a59dff57ca9484d58dd1be87656fa33648c6b74622db21847cbedd1e"
+    },
+    {
+      "test_id": "T4",
+      "receipt_sha256": "bd4735f7bc7cc393fc9a2261cd3876634100764f795166170a9caccec6dc055e"
+    },
+    {
+      "test_id": "T7",
+      "receipt_sha256": "98d033020101b12fdfebc0cc3cbe3abda711b5a120f4ab30cf4e66b5ecb6d126"
+    },
+    {
+      "test_id": "T8",
+      "receipt_sha256": "f356d2dbcea12681f2317cceedef60493aa365350700f274c839644aaac2cda3"
+    },
+    {
+      "test_id": "T6",
+      "receipt_sha256": "e217e97c4a71592ff24527ae2cae7ec0fc00ac31e2b373c013dae37e1008fb35"
+    }
+  ],
+  "live_test_observations": {
+    "T1": {
+      "command": "doctor --network --bet-angel-paused",
+      "result": "pass",
+      "login_method": "cert",
+      "jurisdiction": "com",
+      "login_status": "SUCCESS",
+      "can_bet": true,
+      "keep_alive_status": "SUCCESS",
+      "logout_status": "SUCCESS",
+      "keychain_queries_minimal_env": true,
+      "live_app_key_in_keychain": false,
+      "journal_anchor": "absent",
+      "website_two_step_authentication": "not_checked",
+      "receipt_note": "doctor stdout pasted by Yu and transcribed by Claude; path and gitignore blocks omitted, values unchanged"
+    },
+    "T4": {
+      "command": "book --market <well-formed id that does not exist> --bet-angel-paused",
+      "status": "no_envelope_observed",
+      "exit": 2,
+      "stdout_empty": true,
+      "classified_code": "local:market_book_missing:unrecognized",
+      "betfair_answer": "empty_list",
+      "rest_read_path_worked": true
+    },
+    "T7": {
+      "commands": [
+        "account --bet-angel-paused --out",
+        "funds --bet-angel-paused"
+      ],
+      "result": "pass_partial",
+      "account_null_keys": [],
+      "funds_null_keys": [],
+      "account_currency_is_gbp": true,
+      "exposure_sign": "zero_no_open_position",
+      "exposureLimit_sign": "negative",
+      "login_and_read_ms": {
+        "account": 285,
+        "funds": 370
+      }
+    },
+    "T8": {
+      "scope": "T8a_partial_delayed_rest_ladder_presence",
+      "status": "answered_no",
+      "catalogue_rows": 3,
+      "price_data": [
+        "EX_BEST_OFFERS",
+        "EX_TRADED"
+      ],
+      "markets_read": 2,
+      "reads_per_market": 2,
+      "seconds_between_reads": [
+        302,
+        303
+      ],
+      "active_runners": [
+        7,
+        9
+      ],
+      "traded_volume_empty_runners": [
+        7,
+        9
+      ],
+      "ltp_present_runners": [
+        7,
+        9
+      ],
+      "runner_total_matched_present_runners": [
+        7,
+        9
+      ],
+      "traded_levels_total": [
+        0,
+        0
+      ],
+      "market_version_changed": false,
+      "is_market_data_delayed": true,
+      "t5_delayed_half": "is_market_data_delayed true on both markets and both reads; not listed as T5",
+      "f60_basis": "not_answered"
+    },
+    "T6": {
+      "wall_seconds": 602,
+      "command": "record --max-seconds 600 --bet-angel-paused",
+      "result": "pass",
+      "stop_reason": "max_seconds_reached",
+      "logout_status": "SUCCESS",
+      "verify_recording": "verified",
+      "replay_check": "passed",
+      "gaps": 0,
+      "subscription_mode": "coarse",
+      "markets_requested": 101,
+      "markets_seen": 108,
+      "markets_without_initial_definition": 0,
+      "segmentation_enabled_sent": false,
+      "heartbeat_ms_requested": 5000,
+      "heartbeat_ms_echoed": 5000,
+      "conflate_ms_requested": null,
+      "conflate_ms_echoed": 180000,
+      "data_freshness_label": "delayed_conflated",
+      "connections_available": 1,
+      "lines": 120,
+      "heartbeat_lines": 116,
+      "heartbeat_lines_with_clk": 116,
+      "delta_lines": 3,
+      "sub_image_lines": 1,
+      "max_gap_all_lines_s": 5.049,
+      "max_gap_non_heartbeat_s": 180.013,
+      "recorder_max_inter_line_gap_ms": 5188,
+      "runner_change_keys": [
+        "batb",
+        "batl",
+        "id",
+        "ltp",
+        "trd",
+        "tv"
+      ],
+      "runner_changes": 1739,
+      "runner_trd_nonempty": 681,
+      "runner_tv_present": 767,
+      "runner_tv_positive": 677,
+      "rejected_lines": 0,
+      "keepalive_failed": 0,
+      "disconnected": 0,
+      "order_stream_tested": false
+    }
+  },
+  "not_run": {
+    "T0": "partial only: the T1 doctor output shows the Keychain presence checks ran under minimal_env and reports the journal anchor absent, which the code returns only when both anchor lookups exit 44 (inferred from the code, not seen); the -T \"\" dialog and locked-Keychain halves were not run (no live app key in the Keychain), so there is no T0 receipt",
+    "T2": "deferred",
+    "T3": "not run: after T6 Yu set coexistence.bet_angel to not_running_on_account on Yu's machine (the config is not in Git); the config_sha256 in the receipts was the same from T1 through T6, and T1 still listed bet_angel_coexistence_unverified",
+    "T5": "delayed half seen inside the T8 receipt and not listed as T5; the live half (F47) needs the live key",
+    "T9": "needs the live key",
+    "T10": "needs the live key"
+  },
+  "facts_relabelled_secondary_first_person_observation": {
+    "F01": "T1",
+    "F02": "T1",
+    "F03": "T1",
+    "F50": "T6",
+    "F51": "T6",
+    "F65": "T7",
+    "F66": "T7"
+  },
+  "facts_not_relabelled": {
+    "F04": "one SUCCESS says nothing about the 45 documented statuses",
+    "F08": "T2 deferred; the T1 receipt does not record the keepAlive method",
+    "F14": "T4 saw no error envelope",
+    "F15": "T4 saw no error envelope",
+    "F43": "the T5 delayed half sits in the T8 receipt, which is not listed as T5",
+    "F47": "live half not run",
+    "F52": "in no checklist row; T6 had 101 markets with segmentation off and closed its only recorder segment at max_seconds, far below the documented size threshold",
+    "F56": "T6 read the delayed key only",
+    "F59": "a live stream does not show the historical file format",
+    "F60": "T8a cannot settle the x2 basis",
+    "F67": "T3 not run",
+    "F68": "no T0 receipt",
+    "F69": "not in the T1 checklist row",
+    "F73": "no T0 receipt; no live app key in the Keychain, so the -T \"\" dialog was not seen"
+  },
+  "findings_for_next_register_round": {
+    "F44": "delayed REST books carried runner totalMatched for every active runner (presence only) and the delayed stream carried runner tv (positive in 677 of 1739 runner changes), against the value's 'no runner totalMatched'; F44 is in no checklist row, so it is not relabelled",
+    "paper": "delayed REST tradedVolume was empty for every active runner while the delayed stream carried trd; paper passive fills fed by delayed REST books would never fill"
+  },
+  "economic_result": null,
+  "limitations": [
+    "Delayed key only: no live key, no order and no open position.",
+    "Each observation is one run on one account on one day; it shows behaviour seen, not a documented guarantee.",
+    "Raw responses, ledgers and stream files stay private; only SHA256SUMS digests, commands without ids, codes, field names, booleans, counts and durations are here."
+  ]
+}

@@ -50,7 +50,7 @@ flowchart LR
 | 用途 | development；准許 read-only | live betting applications |
 | 費用 | 免費 | 一次過 £499，唔退款（F46，`official_current_policy`，頁面 2026-10-08 更新） |
 | 開通條件 | 冇 | 先用 delayed key 測試、account 完成 KYC、有足夠資金扣 £499，再喺 developer.betfair.com 嘅 get-started 頁揀 Exchange API > For My Personal Betting，填頁底嘅申請表（F46；[SA/115003860331](https://support.developer.betfair.com/hc/en-us/articles/115003860331-How-do-I-activate-my-Live-App-Key)，2026-10-12 讀） |
-| 價格資料 | 1–180 秒延遲 snapshot，3 層價位，冇 runner totalMatched（F44；但 2026-10-13 T8a 收據見到 delayed REST 嘅 runner 有返 `totalMatched` 欄位，收據只數咗有冇、冇記數值；register 今次冇改 F44，見 [fact register](betfair-facts.md#conflicts-and-open-questions) F60 嗰條） | live；account 未入錢或者被 override 就變返 delayed（F47） |
+| 價格資料 | 1–180 秒延遲 snapshot，3 層價位，冇 runner totalMatched（F44 嘅文件講法；我哋收據唔夾：2026-10-13 T6 delayed stream 嘅 runner `tv` 喺 1739 個 runner change 入面 677 個大過 0，T8a delayed REST 嘅 runner 有返 `totalMatched` 欄位，收據只數咗有冇、冇記數值；見 [fact register](betfair-facts.md#conflicts-and-open-questions)） | live；account 未入錢或者被 override 就變返 delayed（F47） |
 | 只讀唔落注 | 准許 | **唔准許**，可能被限制或者停用（F46） |
 | 喺真 exchange 落注 | **可以**（F44），冇 sandbox | 可以 |
 | Stream | 2 條 connection、200 個 market，conflate 到 180000 ms（F44、F51） | connection 上限冇公佈（F56） |
@@ -249,7 +249,7 @@ python3 -m betangel_research.betfair account --bet-angel-paused
 - `account` 只會返 `currencyCode`、`countryCode`、`discountRate`、`pointsBalance`；任何名字都唔會返、唔會印、唔會寫。
 - `listMarketBook` 冇 marketTime、bettingType、marketType、eventTypeId 或 ladder type（F43），所以 `market_snapshot` 會同 catalogue row join；冇 catalogue row 就 `invalid_reason="catalogue_missing"`，落單會被拒。CLOSED market 唔喺 catalogue（F70），cache 落嚟嘅 row 會留低做 settlement。
 - **唔存在嘅 market id（T4，2026-10-13，delayed key）。** `book` 一個格式啱但唔存在嘅 market id，Betfair 冇返 JSON-RPC error envelope，淨係返一個空 list；`market_snapshot` 收唔到 book，報 `local:market_book_missing:unrecognized`（exit 2）。所以 T4 嘅 status 係 `no_envelope_observed`，F14、F15 嘅 error 拆解次序仲未喺 live 見過。
-- **Delayed REST 冇 traded ladder（T8a，2026-10-13）。** `book --price-data EX_BEST_OFFERS,EX_TRADED` 喺兩個 market 各讀兩次（相隔 302／303 秒），所有 ACTIVE runner 嘅 `tradedVolume` 都係空 list，但 `lastPriceTraded` 同 runner `totalMatched` 都有返；兩次讀取 `isMarketDataDelayed` 都係 true。同日 T6 嘅 delayed stream 就有 `trd`（§9）。用 delayed REST book 做 paper，掛單永遠唔會被動 fill（[落單路徑 §11](betfair-order-path.md#11-paper-model-assumptions) 第 6 步）。
+- **Delayed REST 嘅 traded ladder 見到係空（T8a，2026-10-13）。** `book --price-data EX_BEST_OFFERS,EX_TRADED` 喺兩個 market 各讀兩次（相隔 302／303 秒），所有 ACTIVE runner 嘅 `tradedVolume` 都係空 list，但 `lastPriceTraded` 同 runner `totalMatched` 欄位都有返（收據只數咗有冇）；兩次讀取 `isMarketDataDelayed` 都係 true。範圍只係呢 4 個 delayed REST book：係咪次次都空、live key 返乜，都未知。同日 T6 嘅 delayed stream 就有 `trd`（§9）。Paper 而家將 delayed（或者 `isMarketDataDelayed` 唔係 false）REST book 嘅空 ladder 當未知：唔 fill、唔當零 baseline，標 `passive_fill_unavailable_delayed_rest_trd_empty`，`paper-step` 喺 stderr 加一行 warning（exit code 照舊）；delayed REST ladder 如果有數，照佢嘅增幅計被動 fill（[落單路徑 §11](betfair-order-path.md#11-paper-model-assumptions) 第 6 步）。要模擬被動 fill，就用 `record` 錄，再 `paper-replay`（§9）；預設 `max_snapshot_age_s` 10 秒，conflate 咗嘅 recording 大部分單會 `paper_book_stale`（落單路徑 §11 第 2 步）。
 
 **Request weight（F16，每個 request 上限 200 分）**
 
@@ -354,7 +354,7 @@ python3 -m betangel_research replay --input <session_dir>/seg-000.jsonl \
 python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.jsonl --out outputs/<new-dir>
 ```
 
-限制：R3（segment 被 microstructure 判做 ADV）只喺 synthetic 資料上測過；delayed stream 有 runner `tv` 同 `trd`（T6 收據：1739 個 runner change 入面 767 個有 `tv`、677 個 `tv` 大過 0、681 個 `trd` 非空），同 F44「delayed key 冇 "Total Matched by Selection"」唔夾，F44 今次冇改；`replay_check` 要求每個 market 第一個 `mc` 有 `marketDefinition.marketTime`，否則 segment 標 `failed`。
+限制：R3（segment 被 microstructure 判做 ADV）只喺 synthetic 資料上測過；delayed stream 有 runner `tv` 同 `trd`（T6 收據：1739 個 runner change 入面 767 個有 `tv`、677 個 `tv` 大過 0、681 個 `trd` 非空），同 F44「delayed key 冇 "Total Matched by Selection"」唔夾（見 [fact register](betfair-facts.md#conflicts-and-open-questions)）；`replay_check` 要求每個 market 第一個 `mc` 有 `marketDefinition.marketTime`，否則 segment 標 `failed`。
 
 **同現有文件嘅關係。** 用 delayed key 錄 stream 係 Betfair 准許嘅 read-only 用法（F44、F46）。但係：
 

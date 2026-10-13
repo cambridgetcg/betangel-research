@@ -1247,9 +1247,9 @@ class ReadAndRecordCliTests(unittest.TestCase):
             steps.append((code, list(json.loads(out)["flags"].values()), err.splitlines()))
         self.assertEqual(steps[0], (0, [["passive_fill_skipped_pre_activation_interval"]], []))
         self.assertEqual(steps[1], (0, [["passive_fill_unavailable_delayed_rest_trd_empty"]], [
-            "Betfair warning: passive_fill_unavailable_delayed_rest_trd_empty (1 order(s)): the delayed-key book "
-            "carried an empty traded ladder, which is not evidence that nothing traded; for passive fills run "
-            "record, then paper-replay on its segments"]))
+            "Betfair warning: passive_fill_unavailable_delayed_rest_trd_empty (1 order(s)): a delayed-or-unknown "
+            "REST interval had an empty traded ladder, which is not evidence that nothing traded; for passive fills "
+            "run record, then paper-replay on its segments"]))
         self.assertEqual(self.router.order_requests, [])
 
     def test_doctor_network_statuses_only(self):

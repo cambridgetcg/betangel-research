@@ -903,7 +903,7 @@
     {
       "id": "F44",
       "area": "arming",
-      "value": "The delayed key places real bets (key table); there is no sandbox; delayed data is 1-180 s late with 3 levels and no runner totalMatched; the stream allows 2 connections and 200 markets and is conflated to 180000 ms.",
+      "value": "The delayed key places real bets (key table); there is no sandbox; delayed data is 1-180 s late with 3 levels and, per the key table, no runner totalMatched (our own delayed-key receipts conflict); the stream allows 2 connections and 200 markets and is conflated to 180000 ms.",
       "used_by": [
         "arming",
         "recorder"
@@ -919,8 +919,8 @@
       ],
       "published_or_updated": "2026-05-07",
       "accessed": "2026-10-10",
-      "verification_status": "documented_corrected",
-      "code_handling": "arming independent of key; labels; the gateway refuses delayed-key orders"
+      "verification_status": "conflicting",
+      "code_handling": "arming independent of key; labels; the gateway refuses delayed-key orders; runner totals (REST totalMatched, stream tv) are optional and no code relies on their absence"
     },
     {
       "id": "F45",

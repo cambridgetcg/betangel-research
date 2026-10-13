@@ -1230,6 +1230,28 @@ class ReadAndRecordCliTests(unittest.TestCase):
         code, _, err = run_main(["funds"], self.deps)           # coexistence unverified needs the flag
         self.assertEqual((code, err.strip()), (2, COEXISTENCE_REFUSAL))
 
+    def test_paper_step_fetch_book_on_the_delayed_key_flags_warns_and_exits_0(self):
+        """T8a through the CLI: paper --fetch-book uses the delayed key, whose REST tradedVolume [] gave
+        paper-step flags {} and nothing on stderr. Now the order is flagged, one warning steers to record +
+        paper-replay, the exit code stays 0 and nothing is sent."""
+        self.exchange.delayed = True
+        code, out, err = run_main(["place", "--market", "1.1", "--selection", str(gw.SELECTION), "--side", "BACK",
+                                   "--price", "3.55", "--size", "2.00", "--fetch-book", "--bet-angel-paused"],
+                                  self.deps)
+        self.assertEqual((code, json.loads(out)["orders"][0]["state"], err), (0, "EXECUTABLE", ""))
+        steps = []
+        for _ in range(2):
+            self.clock.advance(2)
+            code, out, err = run_main(["paper-step", "--market", "1.1", "--fetch-book", "--bet-angel-paused"],
+                                      self.deps)
+            steps.append((code, list(json.loads(out)["flags"].values()), err.splitlines()))
+        self.assertEqual(steps[0], (0, [["passive_fill_skipped_pre_activation_interval"]], []))
+        self.assertEqual(steps[1], (0, [["passive_fill_unavailable_delayed_rest_trd_empty"]], [
+            "Betfair warning: passive_fill_unavailable_delayed_rest_trd_empty (1 order(s)): the delayed-key book "
+            "carried an empty traded ladder, which is not evidence that nothing traded; for passive fills run "
+            "record, then paper-replay on its segments"]))
+        self.assertEqual(self.router.order_requests, [])
+
     def test_doctor_network_statuses_only(self):
         code, out, err = run_main(["doctor", "--network", "--bet-angel-paused"], self.deps)
         self.assertEqual(code, 0, err)

@@ -193,6 +193,32 @@ def withheld_relabels(root=ROOT):
     return withheld
 
 
+def report_label_problems(facts, report):
+    """Why a dated live-test report and the register disagree on which facts its receipts relabelled; empty when
+    facts_relabelled_secondary_first_person_observation names exactly the facts whose secondary_evidence_type is
+    first_person_observation and whose sources cite one of the report's receipts."""
+    listed = {(entry.get("test_id"), entry.get("receipt_sha256"))
+              for entry in report.get("first_live_tests_run", []) if isinstance(entry, dict)}
+    labelled, problems = {}, []
+    for fact in facts:
+        tests = [m.group(1) for m in (LIVE_TEST_SOURCE_RE.fullmatch(s) for s in fact["sources"])
+                 if m and m.groups() in listed]
+        if not tests:
+            continue
+        if fact["secondary_evidence_type"] == "first_person_observation":
+            labelled[fact["id"]] = tests[0]
+        else:
+            problems.append(f"{fact['id']} cites a receipt of this report but its secondary label is "
+                            f"{fact['secondary_evidence_type']!r}")
+    relabelled = report.get("facts_relabelled_secondary_first_person_observation", {})
+    if relabelled != labelled:
+        problems.append(f"the report lists {sorted(relabelled.items())}; the register labels {sorted(labelled.items())}")
+    both = set(relabelled) & set(report.get("facts_not_relabelled", {}))
+    if both:
+        problems.append(f"listed as both relabelled and not relabelled: {sorted(both)}")
+    return problems
+
+
 def first_person_problems(fact, checklist, receipts, withheld=None):
     """Why fact may not carry first_person_observation; empty when a matching live-test receipt backs it."""
     if "first_person_observation" not in (fact["evidence_type"], fact["secondary_evidence_type"]):
@@ -435,23 +461,33 @@ class FactsDocTests(unittest.TestCase):
                 self.assertTrue(first_person_problems(fact, checklist, receipts, withheld))
 
     def test_live_test_reports_match_register_labels(self):
-        """A dated live-test report names exactly the facts whose first_person_observation cites one of its receipts,
-        and never also lists them as not relabelled."""
+        """A dated live-test report names exactly the facts whose secondary first_person_observation cites one of
+        its receipts, and never also lists them as not relabelled."""
         facts = load_facts()["facts"]
         for path in sorted((ROOT / "reports").glob("betfair-*.json")):
             data = json.loads(read_text(path))
-            listed = {(entry["test_id"], entry["receipt_sha256"]) for entry in data.get("first_live_tests_run", [])}
-            if not listed:
+            if not data.get("first_live_tests_run"):
                 continue
             with self.subTest(report=path.name):
-                cited = {}
-                for fact in facts:
-                    for match in (LIVE_TEST_SOURCE_RE.fullmatch(s) for s in fact["sources"]):
-                        if match and match.groups() in listed:
-                            cited[fact["id"]] = match.group(1)
-                relabelled = data.get("facts_relabelled_secondary_first_person_observation", {})
-                self.assertEqual(relabelled, cited)
-                self.assertFalse(set(relabelled) & set(data.get("facts_not_relabelled", {})))
+                self.assertEqual(report_label_problems(facts, data), [])
+
+    def test_report_label_check_reads_the_secondary_label(self):
+        """Regression (Astra's review R1): the check compared receipt citations only, so F01 kept its T1 citation
+        with the label removed and still passed. A citation without the secondary label, a label in the primary
+        slot, or a report naming a fact the register does not label is now rejected."""
+        facts = load_facts()["facts"]
+        report = json.loads(read_text(ROOT / "reports" / "betfair-live-tests-2026-10-13.json"))
+        self.assertEqual(report_label_problems(facts, report), [])
+        for name, change in (("label_removed", {"secondary_evidence_type": None}),
+                             ("label_changed", {"secondary_evidence_type": "inferred"}),
+                             ("label_moved_to_primary", {"evidence_type": "first_person_observation",
+                                                         "secondary_evidence_type": None})):
+            with self.subTest(name):
+                mutant = [dict(fact, **change) if fact["id"] == "F01" else fact for fact in facts]
+                self.assertTrue(report_label_problems(mutant, report))
+        claims_more = dict(report, facts_relabelled_secondary_first_person_observation={
+            **report["facts_relabelled_secondary_first_person_observation"], "F04": "T1"})
+        self.assertTrue(report_label_problems(facts, claims_more))
 
     def test_open_questions_cover_every_unsettled_fact(self):
         open_section = section(read_text(FACTS_DOC), "## Conflicts and open questions")

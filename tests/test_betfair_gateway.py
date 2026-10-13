@@ -16,7 +16,7 @@ import sqlite3
 from betangel_research.betfair import arming
 from betangel_research.betfair import gateway as gateway_module
 from betangel_research.betfair import journal as journal_module
-from betangel_research.betfair.api import JsonRpcClient, ReadClient
+from betangel_research.betfair.api import JsonRpcClient, ReadClient, normalise_market_book
 from betangel_research.betfair.auth import SessionManager
 from betangel_research.betfair.credentials import (ANCHOR_SERVICE, SERVICES, anchor_write, load_credentials,
                                                     publish_anchor)
@@ -236,6 +236,39 @@ class PaperGatewayTests(unittest.TestCase):
         state = env.journal.last_paper_state()
         self.assertEqual(set(state["exchange"]), {"taken", "activated_ms", "traded_hwm", "activation", "sequence"})
         self.assertEqual(state["books"]["1.1"]["runners"][str(gw.SELECTION)]["traded"], {"3.55": 103.0})
+
+    def test_paper_step_on_delayed_self_fetched_books_is_flagged_not_a_silent_zero(self):
+        """T8a end to end through the paper gateway's own delayed-key fetch and the real normaliser: tradedVolume
+        [] while lastPriceTraded and totalMatched are present stepped to flags {} and 0 matched,
+        indistinguishable from a quiet market. Each interval is now flagged; the queue never moves."""
+        env, clock = self.env, self.env.clock
+        exchange = gw.SimExchange(clock)
+        exchange.delayed = True
+        matched = [4957.8]
+
+        def fetch(_self, market_id, fetched_by):
+            row = exchange.book_row(market_id)
+            matched[0] += 500.0                                       # trading goes on; the ladder stays []
+            for runner in row["runners"]:
+                runner["totalMatched"] = matched[0]
+            return normalise_market_book(row, catalogue_item=exchange.catalogue_row(market_id), key_type="delayed",
+                                         app_key_slot="delayed", observed_at=clock.utc_now(),
+                                         monotonic_ns=clock.mono_ns, fetched_by=fetched_by)
+
+        self.assertEqual(fetch(None, "1.1", "gateway_self_fetch")["runners"][str(gw.SELECTION)]["traded"], {})
+        env.gateway.read = type("Read", (), {"app_key_slot": "delayed", "market_snapshot": fetch})()
+        # A LAY below the best back rests, queued behind the displayed 40.00 at 3.45 (a known queue).
+        placed = env.gateway.place("1.1", [gw.instruction(side="LAY", price_h=345, size_p=200)], source="api")
+        self.assertEqual((placed["decision"], placed["orders"][0]["state"]), ("accepted", "EXECUTABLE"))
+        ref = placed["orders"][0]["customer_order_ref"]
+        clock.advance(180)
+        self.assertEqual(env.gateway.advance("1.1")["flags"], {ref: ["passive_fill_skipped_pre_activation_interval"]})
+        for _ in range(3):
+            clock.advance(180)
+            stepped = env.gateway.advance("1.1")
+            self.assertEqual(stepped["flags"], {ref: ["passive_fill_unavailable_delayed_rest_trd_empty"]})
+            self.assertEqual(stepped["orders"][0]["size_matched"], 0.0)
+        self.assertEqual(env.gateway.paper.queue_state()[ref], 4000)
 
     def test_paper_step_refuses_a_book_of_another_market(self):
         """Regression R3#6: paper-step --market 1.1 with a book of market 1.2 filled 1.1's resting order from

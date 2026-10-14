@@ -10,32 +10,52 @@ __init__ is its own package; level 2 is its parent); every module also runs its 
 every import runs the parent packages of what it names. "from X import Y" imports X.Y when that module or
 package exists; otherwise Y must be a name X's own file binds (any assignment, def, class, import alias or
 except name), else the import is unresolved. Unresolved also covers an internal X that does not exist, a
-relative import above the top package, a star import from an internal module, and any file the importer
-could load that the scan cannot read (a sourceless .pyc or an extension module outside __pycache__). Every
-unresolved import fails closed. The rules then walk the transitive closure inside betangel_research and
-report each offending chain.
+relative import above the top package, a star import from an internal module, any file the importer could
+load that the scan cannot read (a sourceless .pyc or an extension module outside __pycache__), and a module
+file beside a package directory of the same name (X.py and X/__init__.py: the name is read from the package,
+which the importer loads first, and the twin is still refused). Every unresolved import fails closed. The
+rules then walk the transitive closure inside betangel_research and report each offending chain.
 
-Backtest rule: from every backtest module, the closure reaches no FORBIDDEN_BETFAIR module; every module in
-it imports only standard-library modules on the BACKTEST_STDLIB allowlist (a FORBIDDEN_STDLIB module is
-reported with its reason, anything else as off the allowlist: third-party packages, private modules such as
-_socket or _frozen_importlib, and stdlib wrappers that reach the network, processes or import machinery, such
-as timeit, pickle, code, ctypes, wsgiref or concurrent.futures); no module in it uses a dynamic-import
-spelling the resolver could not follow (importlib, runpy, pkgutil, zipimport, builtins, _imp, __import__, any
-use of exec, eval or a bare compile, the import state __package__, __path__, __spec__ or __loader__, and
-sys.modules, sys.path, sys.meta_path, sys.path_hooks or sys.path_importer_cache); and a backtest module
-binds no internal package object outside the backtest package (attribute access on a package reaches any
-submodule already loaded). Root rule: from every module outside betangel_research.betfair (betangel_research/
-*.py and any other subpackage), the closure reaches nothing under betangel_research.betfair and imports only
-the standard library (a repo directory such as scripts or tests is outside the scan, so importing one is
-refused).
+Shadowing (shadow_sites, shadowing_names): an external name is trusted only if no repository file or directory
+can answer it first. The places searched are the directory beside the top package (sys.path[0] under -m from
+the repository root) and the directory of each module in the closure (sys.path[0] when that file runs as a
+script); every subdirectory and every file with an importable suffix (.py, a sourceless .pyc, an extension
+module) there counts, compared ignoring case (with PYTHONCASEOK, macOS and Windows match a module file
+regardless of case; elsewhere this is only conservative). Under both rules, before any allowlist is consulted,
+two things are refused: an imported external name one of them carries (Astra's SHADOW_REPRODUCTION, a
+fractions.py beside the package that imports the gateway, passed the allowlist alone), and any of them that
+carries a standard-library name, imported by the closure or not, because the standard library imports itself
+by absolute name (STDLIB_SHADOW_REPRODUCTION: pathlib imports fnmatch). The importer may load such a file or
+directory first, not always: a directory without __init__ is a namespace portion that loses to a module later
+on sys.path, and builtin and frozen modules come first. Refusing every one is the conservative reading.
 
-What this shows: no import statement in those closures names a forbidden or unlisted module, and none uses
-the listed dynamic spellings. What it cannot show: imports made inside the standard library itself are not
-traced (pathlib imports os; that is the library's own import, not ours), a string built at run time and
-passed to getattr is not seen, nor is attribute access through a module object to modules it imported, and
-a test is not a sandbox. Python does not stop a process from opening a file by path, so "never reads live
-state" also rests on code review; the backtest closure must not name the state root, the client certificate
-directory or the home directory (LIVE_STATE_TEXT, HOME_LOOKUPS). The runtime companion in
+Backtest rule: from every backtest module, the closure reaches no FORBIDDEN_BETFAIR module; every module in it
+imports only standard-library modules on the BACKTEST_STDLIB allowlist that nothing in the repository shadows
+(a FORBIDDEN_STDLIB module is reported with its reason, anything else as off the allowlist: third-party
+packages, private modules such as _socket or _frozen_importlib, and stdlib wrappers that reach the network,
+processes or import machinery, such as timeit, pickle, code, ctypes, wsgiref or concurrent.futures); no module
+in it uses a dynamic-import spelling the resolver could not follow (importlib, runpy, pkgutil, zipimport,
+builtins, _imp, __import__, any use of exec, eval or a bare compile, the import state __package__, __path__,
+__spec__ or __loader__, and sys.modules, sys.path, sys.meta_path, sys.path_hooks or sys.path_importer_cache);
+and a backtest module binds no internal package object outside the backtest package (attribute access on a
+package reaches any submodule already loaded). Root rule: from every module outside betangel_research.betfair
+(betangel_research/*.py and any other subpackage), the closure reaches nothing under betangel_research.betfair
+and imports only the standard library that nothing in the repository shadows (a repo directory such as
+scripts or tests is outside the scan, so importing one is refused).
+
+What this shows: no import statement in those closures names a forbidden or unlisted module, none uses the
+listed dynamic spellings, and no repository file or directory in the searched places carries an imported
+external name or any standard-library name, so neither our imports nor the standard library's own can load a
+repository file from those places in place of the library. What it cannot show: what the standard library
+imports internally is not traced (pathlib imports os; that is the library's own import, not ours), a string
+built at run time and passed to getattr is not seen, nor is attribute access through a module object to
+modules it imported; a shadowing file elsewhere on sys.path (another working directory, PYTHONPATH, user or
+site packages) is outside the repository and not seen, and neither is a repository directory that joins
+sys.path only in another launch mode (scripts/ when one of its scripts runs; tests/, sys.path[0] under
+unittest discover, is checked for standard-library names only, by the real-tree test); and a test is not a
+sandbox. Python does not stop a process from opening a file by path, so "never reads live state" also rests
+on code review; the backtest closure must not name the state root, the client certificate directory or the
+home directory (LIVE_STATE_TEXT, HOME_LOOKUPS). The runtime companion in
 tests/test_betfair_backtest_contract.py lists the modules the validator actually loads on this interpreter.
 
 Classification of every module directly in betangel_research/betfair (read in full or by its imports and
@@ -64,6 +84,7 @@ import ast
 from collections import deque
 from importlib import machinery
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -188,17 +209,26 @@ class ImportGraph:
 
     def __init__(self, source_root, top):
         self.source_root, self.top = Path(source_root), top
-        self.files = {}
+        self.files, twins = {}, []
         for path in sorted((self.source_root / top).rglob("*.py")):
             parts = path.relative_to(self.source_root).with_suffix("").parts
             is_package = parts[-1] == "__init__"
-            self.files[".".join(parts[:-1] if is_package else parts)] = (path, is_package)
+            name = ".".join(parts[:-1] if is_package else parts)
+            if name in self.files:
+                twins.append(name)
+            # X/__init__.py and X.py share a name; the importer finds the package directory first.
+            if is_package or name not in self.files:
+                self.files[name] = (path, is_package)
         # A directory holding modules is a package even without an __init__ (a namespace package).
         self.known = {".".join(name.split(".")[:i]) for name in self.files for i in range(1, name.count(".") + 2)}
         self._bound = {}
         self.internal, self.external, self.dynamic, self.unresolved, self.packages = {}, {}, {}, {}, {}
         for name in self.files:
             self._scan(name)
+        for name in twins:
+            leaf = name.rpartition(".")[2]
+            self.unresolved[name].append(f"{leaf}.py and {leaf}/__init__.py share the name; the importer loads the "
+                                         "package")
         # The importer also loads sourceless .pyc files and extension modules next to the sources.
         suffixes = tuple(suffix for suffix in machinery.all_suffixes() if suffix != ".py")
         for path in sorted((self.source_root / top).rglob("*")):
@@ -329,18 +359,70 @@ class ImportGraph:
             found += [(chain, site, "unresolved import") for site in self.unresolved[module]]
         return found
 
+    @staticmethod
+    def importable_names(directory):
+        """Every name a module search of directory can answer: each subdirectory (a package, or a namespace
+        portion) and each file with an importable suffix (source, sourceless .pyc, extension module)."""
+        suffixes = sorted(machinery.all_suffixes(), key=len, reverse=True)
+        names = set()
+        for path in Path(directory).iterdir():
+            if path.is_dir():
+                names.add(path.name)
+                continue
+            suffix = next((s for s in suffixes if path.name.endswith(s) and len(path.name) > len(s)), None)
+            if suffix:
+                names.add(path.name[:-len(suffix)])
+        return names
+
     def top_level_names(self):
-        """Modules and directories beside the top package (scripts, tests, ...): outside the scan."""
-        return {path.stem for path in self.source_root.iterdir()
-                if path.name != self.top and (path.is_dir() or path.suffix == ".py")}
+        """Modules, compiled modules and directories beside the top package (scripts, tests, ...): outside the
+        scan, and first on sys.path when a module of the package runs with -m from the repository root."""
+        return self.importable_names(self.source_root) - {self.top}
 
 
 def under(module, package):
     return module == package or module.startswith(package + ".")
 
 
-def backtest_rules(betfair, forbidden):
-    """(internal_rule, external_rule) of the backtest rule: forbidden {leaf name: reason} plus BACKTEST_STDLIB."""
+SHADOWED = "a repository file or directory of this name can be imported in its place (outside the scan)"
+STDLIB_SHADOWED = ("a repository file or directory carries a standard-library name: the standard library imports "
+                   "itself by absolute name, so any of its imports can load this instead")
+# Compared ignoring case: with PYTHONCASEOK the importer on macOS and Windows matches a file regardless of case.
+STDLIB_FOLDED = frozenset(name.casefold() for name in sys.stdlib_module_names)
+
+
+def shadow_sites(graph, starts):
+    """Sorted (place, name) for every name a repository file or directory can answer before the standard library or
+    any installed package, for the closure of starts: everything beside the top package (place "./", sys.path[0]
+    under -m from the repository root) and everything in the directory of each module in the closure (place
+    "<relative directory>/", sys.path[0] when that file runs as a script)."""
+    directories = {graph.source_root} | {graph.files[module][0].parent for module in graph.closure(starts)}
+    sites = set()
+    for directory in directories:
+        place = directory.relative_to(graph.source_root).as_posix() + "/"
+        names = graph.top_level_names() if directory == graph.source_root else graph.importable_names(directory)
+        sites.update((place, name) for name in names)
+    return sorted(sites)
+
+
+def shadowing_names(graph, starts):
+    """The names of shadow_sites. An external import whose first component is one of these, ignoring case, is
+    refused before any allowlist accepts it."""
+    return {name for _, name in shadow_sites(graph, starts)}
+
+
+def stdlib_shadow_violations(graph, starts):
+    """[(place, name, STDLIB_SHADOWED)] for every shadow site carrying a standard-library name, ignoring case,
+    whether or not the closure imports it: the standard library's own imports (pathlib imports fnmatch) are not
+    traced, so a repository file with such a name is refused wherever the importer could reach it first."""
+    return [(place, name, STDLIB_SHADOWED) for place, name in shadow_sites(graph, starts)
+            if name.casefold() in STDLIB_FOLDED]
+
+
+def backtest_rules(betfair, forbidden, shadows):
+    """(internal_rule, external_rule) of the backtest rule: forbidden {leaf name: reason}, then shadows (names a
+    repository file answers, compared ignoring case and refused first), then BACKTEST_STDLIB."""
+    folded = {name.casefold() for name in shadows}
 
     def internal_rule(module):
         if under(module, betfair) and not under(module, f"{betfair}.backtest"):
@@ -351,6 +433,8 @@ def backtest_rules(betfair, forbidden):
 
     def external_rule(dotted):
         first = dotted.split(".")[0]
+        if first.casefold() in folded:
+            return SHADOWED
         if first in FORBIDDEN_STDLIB:
             return f"forbidden stdlib module ({FORBIDDEN_STDLIB[first]})"
         return None if first in BACKTEST_STDLIB else "not on the backtest stdlib allowlist"
@@ -359,31 +443,35 @@ def backtest_rules(betfair, forbidden):
 
 
 def backtest_violations(graph, *, betfair, forbidden):
-    """The backtest rule from every module of graph's <betfair>.backtest package."""
+    """The backtest rule from every module of graph's <betfair>.backtest package, then every standard-library name
+    a repository file or directory carries in the searched places."""
     backtest = f"{betfair}.backtest"
     starts = [m for m in graph.files if under(m, backtest)]
-    found = graph.violations(starts, *backtest_rules(betfair, forbidden))
+    found = graph.violations(starts, *backtest_rules(betfair, forbidden, shadowing_names(graph, starts)))
     for module in sorted(starts):
         found += [(module, site, "binds an internal package object outside the backtest package")
                   for site in graph.packages[module] if not under(site.partition(": ")[2], backtest)]
-    return found
+    return found + stdlib_shadow_violations(graph, starts)
 
 
 def root_violations(graph, *, betfair):
     """The root rule: nothing outside <betfair> reaches <betfair>, directly or transitively, or imports a module
-    the scan cannot follow (a repo directory beside the package, or anything outside the standard library)."""
-    beside = graph.top_level_names()
+    the scan cannot follow (a repository file or directory that answers the name, beside the package or beside a
+    module in the closure, or anything outside the standard library); and no repository file or directory in
+    those places carries a standard-library name."""
+    starts = [m for m in graph.files if not under(m, betfair)]
+    folded = {name.casefold() for name in shadowing_names(graph, starts)}
 
     def external_rule(dotted):
         first = dotted.split(".")[0]
-        if first in beside:
-            return "a repo directory or module outside the scanned package"
+        if first.casefold() in folded:
+            return SHADOWED
         if first not in sys.stdlib_module_names and first not in ROOT_THIRD_PARTY:
             return "not standard library: the root rule cannot trace it"
         return None
 
-    starts = [m for m in graph.files if not under(m, betfair)]
-    return graph.violations(starts, lambda m: "betfair module" if under(m, betfair) else None, external_rule)
+    found = graph.violations(starts, lambda m: "betfair module" if under(m, betfair) else None, external_rule)
+    return found + stdlib_shadow_violations(graph, starts)
 
 
 def describe(found):
@@ -417,6 +505,26 @@ SYNTHETIC_BASE = {
     "pkg/betfair/backtest/run.py": "from . import util\n",
 }
 SYNTHETIC_FORBIDDEN = {"gateway": "synthetic gateway", "api": "synthetic api"}
+# Astra's R4 reproduction (2026-10-14), synthetic only: a fractions.py beside the package that imports the gateway.
+# The stdlib-allowlist check alone accepted "import fractions", while the importer loads the sibling first.
+SHADOW_REPRODUCTION = {
+    "pkg/__init__.py": "",
+    "pkg/betfair/__init__.py": "",
+    "pkg/betfair/gateway.py": 'MARKER = "synthetic-only"\n',
+    "pkg/betfair/backtest/__init__.py": "",
+    "pkg/betfair/backtest/run.py": "import fractions\n",
+    "fractions.py": "from pkg.betfair import gateway\n",
+}
+SHADOW_PROBE = ("import sys\nsys.path.insert(0, sys.argv[1])\nimport pkg.betfair.backtest.run\n"
+                "sys.stdout.write(str('pkg.betfair.gateway' in sys.modules))\n")
+# The same shape through the standard library's own import (internal review of R4, 2026-10-14), synthetic only:
+# run.py imports only the allowlisted pathlib, pathlib imports fnmatch (3.10 to 3.14), and the importer loads a
+# fnmatch.py beside the package first. Nothing in the closure imports fnmatch, so the name check alone missed it.
+STDLIB_SHADOW_REPRODUCTION = {
+    **{path: text for path, text in SHADOW_REPRODUCTION.items() if path != "fractions.py"},
+    "pkg/betfair/backtest/run.py": "from pathlib import Path\n",
+    "fnmatch.py": "from pkg.betfair import gateway\n",
+}
 
 
 class ResolverSelfTests(unittest.TestCase):
@@ -508,8 +616,14 @@ class ResolverSelfTests(unittest.TestCase):
 
     def test_hop_ancestor_and_unreadable_shapes_fail(self):
         """A forbidden reach through an ancestor package __init__, dynamic or unresolved imports in a hop module,
-        a sourceless .pyc beside the sources, a namespace subpackage, and a coding cookie that hides an import."""
+        a sourceless .pyc beside the sources, a namespace subpackage, a coding cookie that hides an import, and a
+        module file beside a same-named package (the importer loads the package, so the scan reads it too)."""
+        twin = {"pkg/betfair/helper/__init__.py": "from .. import gateway\n",
+                "pkg/betfair/backtest/run.py": "from .. import helper\n"}
         cases = {
+            "module and package twin": (twin, "helper.py and helper/__init__.py share the name; the importer loads "
+                                              "the package"),
+            "the twin's package is what is read": (twin, "pkg.betfair.gateway"),
             "ancestor __init__": ({"pkg/betfair/__init__.py": "from . import gateway\n",
                                    "pkg/betfair/backtest/run.py": "import json\n"}, "pkg.betfair.gateway"),
             "dynamic in hop": ({"pkg/betfair/backtest/run.py": "from .. import helper\n",
@@ -530,6 +644,107 @@ class ResolverSelfTests(unittest.TestCase):
             found = backtest_violations(self.graph(files), betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN)
             with self.subTest(case=label):
                 self.assert_endpoint(found, endpoint)
+
+    def test_repository_names_cannot_shadow_external_modules(self):
+        """R4: a repository file or directory with an external module's name is refused before any allowlist
+        accepts that name. Astra's reproduction first, exactly: statically it is now a violation, and a fresh
+        isolated interpreter shows the importer really loads the sibling (and with it the synthetic gateway)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        write_tree(tmp.name, SHADOW_REPRODUCTION)
+        graph = ImportGraph(tmp.name, "pkg")
+        self.assertEqual(backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN),
+                         [("pkg.betfair.backtest.run", "fractions", SHADOWED), ("./", "fractions", STDLIB_SHADOWED)])
+        self.assertEqual([m for m, sites in (*graph.unresolved.items(), *graph.dynamic.items()) if sites], [])
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", SHADOW_PROBE, tmp.name], cwd=tmp.name,
+                                env={"PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=60)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True", ""))
+        # Every importable shape of the name, beside the package or beside a module in the closure.
+        extension = machinery.EXTENSION_SUFFIXES[0]
+        shapes = {
+            "sourceless pyc beside": ({"fractions.pyc": b"\x00"}, "fractions"),
+            "extension module beside": ({f"fractions{extension}": b"\x00"}, "fractions"),
+            "package beside": ({"fractions/__init__.py": "from pkg.betfair import gateway\n"}, "fractions"),
+            "namespace directory beside": ({"fractions/notes.txt": "x\n"}, "fractions"),
+            "module beside the backtest module": ({"pkg/betfair/backtest/fractions.py": "x = 1\n"}, "fractions"),
+            "module beside a hop": ({"pkg/betfair/backtest/run.py": "from .. import helper\n",
+                                     "pkg/betfair/helper.py": "import math\n", "pkg/betfair/math.py": "x = 1\n"},
+                                    "math"),
+            "another case beside": ({"Fractions.py": "from pkg.betfair import gateway\n"}, "fractions"),
+        }
+        for label, (files, endpoint) in shapes.items():
+            graph = self.graph({"pkg/betfair/backtest/run.py": "import fractions\n", **files})
+            found = backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN)
+            with self.subTest(case=label):
+                self.assertIn(endpoint, [e for _, e, reason in found if reason == SHADOWED], describe(found))
+        # Clean twins: names that no import can resolve to the stdlib name.
+        for label, files in {"other module beside": {"notes.py": "x = 1\n"},
+                             "not importable suffix": {"fractions.txt": "x\n", "fractions.py.orig": "x\n"},
+                             "nested outside every closure directory": {"docs/fractions.py": "x = 1\n"}}.items():
+            graph = self.graph({"pkg/betfair/backtest/run.py": "import fractions\n", **files})
+            with self.subTest(clean=label):
+                self.assertEqual(backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN), [])
+        # The root rule had the same acceptance path for standard-library names; it refuses shadows the same way.
+        for label, files in {"pyc beside": {"json.pyc": b"\x00"}, "module in the top package": {"pkg/json.py": ""},
+                             "extension beside": {f"json{extension}": b"\x00"}}.items():
+            found = root_violations(self.graph(files), betfair="pkg.betfair")
+            with self.subTest(root=label):
+                self.assertIn(("pkg.other", "json", SHADOWED), found, describe(found))
+
+    def test_standard_library_names_are_refused_even_when_not_imported(self):
+        """Internal review of R4: a repository file named after a module the standard library imports internally is
+        loaded through the library's own import, which the scan does not trace (STDLIB_SHADOW_REPRODUCTION:
+        fnmatch.py beside the package, reached through the allowlisted pathlib). Any standard-library name in a
+        searched place is refused, imported or not and ignoring case; a fresh isolated interpreter shows the
+        importer really loads the file (and with it the synthetic gateway)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        write_tree(tmp.name, STDLIB_SHADOW_REPRODUCTION)
+        graph = ImportGraph(tmp.name, "pkg")
+        self.assertEqual(backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN),
+                         [("./", "fnmatch", STDLIB_SHADOWED)])
+        self.assertEqual(root_violations(graph, betfair="pkg.betfair"), [("./", "fnmatch", STDLIB_SHADOWED)])
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", SHADOW_PROBE, tmp.name], cwd=tmp.name,
+                                env={"PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=60)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True", ""))
+        # Every place and shape, under both rules; the standard-library name need not be imported anywhere.
+        shapes = {
+            "module beside the package": ({"fnmatch.py": "x = 1\n"}, ("./", "fnmatch")),
+            "another case beside the package": ({"FnMatch.py": "x = 1\n"}, ("./", "FnMatch")),
+            "package beside the package": ({"inspect/__init__.py": ""}, ("./", "inspect")),
+            "sourceless pyc beside the package": ({"random.pyc": b"\x00"}, ("./", "random")),
+            "module beside the backtest module": ({"pkg/betfair/backtest/fnmatch.py": ""},
+                                                  ("pkg/betfair/backtest/", "fnmatch")),
+            "module in an ancestor package": ({"pkg/betfair/random.py": ""}, ("pkg/betfair/", "random")),
+        }
+        for label, (files, site) in shapes.items():
+            graph = self.graph({"pkg/betfair/backtest/run.py": "from pathlib import Path\n", **files})
+            found = backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN)
+            with self.subTest(case=label):
+                self.assertIn((*site, STDLIB_SHADOWED), found, describe(found))
+        found = root_violations(self.graph({"pkg/lab/__init__.py": "", "pkg/lab/fnmatch.py": "",
+                                            "pkg/other.py": "from . import lab\n"}), betfair="pkg.betfair")
+        self.assertEqual(found, [("pkg/lab/", "fnmatch", STDLIB_SHADOWED)])
+        for label, files in {"not importable suffix": {"fnmatch.txt": "x\n", "fnmatch.py.orig": "x\n"},
+                             "nested outside every searched directory": {"docs/fnmatch.py": "x = 1\n"}}.items():
+            graph = self.graph({"pkg/betfair/backtest/run.py": "from pathlib import Path\n", **files})
+            with self.subTest(clean=label):
+                self.assertEqual(backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN), [])
+        # PYTHONCASEOK (read only without -E, so not under -I): where the platform and the file system both ignore
+        # case, a Fractions.py beside the package answers "import fractions".
+        tree = {**{p: t for p, t in SHADOW_REPRODUCTION.items() if p != "fractions.py"},
+                "Fractions.py": "from pkg.betfair import gateway\n"}
+        case_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(case_tmp.cleanup)
+        write_tree(case_tmp.name, tree)
+        self.assertEqual(backtest_violations(ImportGraph(case_tmp.name, "pkg"), betfair="pkg.betfair",
+                                             forbidden=SYNTHETIC_FORBIDDEN),
+                         [("pkg.betfair.backtest.run", "fractions", SHADOWED), ("./", "Fractions", STDLIB_SHADOWED)])
+        if sys.platform.startswith(("darwin", "win", "cygwin")) and (Path(case_tmp.name) / "fractions.py").exists():
+            result = subprocess.run([sys.executable, "-s", "-S", "-B", "-c", SHADOW_PROBE, case_tmp.name],
+                                    cwd=case_tmp.name, env={"PYTHONCASEOK": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True", ""))
 
     def test_relative_resolution_in_modules_and_package_inits(self):
         graph = self.graph({
@@ -600,14 +815,31 @@ class BacktestBoundaryTests(unittest.TestCase):
         self.assertEqual(found, [], describe(found))
 
     def test_backtest_imports_are_stdlib_or_relative(self):
-        stdlib = set(sys.stdlib_module_names)
-        for module in sorted(m for m in REAL.files if under(m, BACKTEST)):
+        """Every absolute import names a standard-library module that no repository file or directory shadows."""
+        starts = [m for m in REAL.files if under(m, BACKTEST)]
+        shadows = {name.casefold() for name in shadowing_names(REAL, starts)}
+        stdlib = {name for name in sys.stdlib_module_names if name.casefold() not in shadows}
+        for module in sorted(starts):
             for node in ast.walk(parse(REAL.files[module][0])):
                 with self.subTest(module=module, line=getattr(node, "lineno", 0)):
                     if isinstance(node, ast.Import):
                         self.assertTrue(all(a.name.split(".")[0] in stdlib for a in node.names))
                     elif isinstance(node, ast.ImportFrom) and not node.level:
                         self.assertIn(node.module.split(".")[0], stdlib)
+
+    def test_no_repository_name_shadows_an_allowed_or_standard_module(self):
+        """Today nothing beside the package, nothing beside any module of the backtest or root closures, and
+        nothing in tests/ (sys.path[0] under unittest discover, and outside both rules) carries the name of a
+        standard-library module, ignoring case (BACKTEST_STDLIB included)."""
+        for label, starts in (("backtest", [m for m in REAL.files if under(m, BACKTEST)]),
+                              ("root", [m for m in REAL.files if not under(m, BETFAIR)])):
+            with self.subTest(closure=label):
+                self.assertEqual({n for n in shadowing_names(REAL, starts) if n.casefold() in STDLIB_FOLDED}, set())
+                self.assertEqual(stdlib_shadow_violations(REAL, starts), [])
+        self.assertEqual({n for n in ImportGraph.importable_names(REPO / "tests") if n.casefold() in STDLIB_FOLDED},
+                         set())
+        self.assertIn("tests", REAL.top_level_names())
+        self.assertNotIn(TOP, REAL.top_level_names())
 
     def test_backtest_closure_names_no_live_state_or_home_and_starts_no_process(self):
         """Over the whole backtest closure: no state-root, certificate-directory or Keychain text, no home-directory
@@ -681,7 +913,8 @@ class BacktestBoundaryTests(unittest.TestCase):
         pulled_in = {m for m in reached if not under(m, BETFAIR) or m[len(BETFAIR) + 1:] not in FORBIDDEN_BETFAIR}
         self.assertEqual(pulled_in, set(REUSE_FINDINGS))
         for module in sorted(pulled_in):
-            found = REAL.violations([module], *backtest_rules(BETFAIR, FORBIDDEN_BETFAIR))
+            found = REAL.violations([module], *backtest_rules(BETFAIR, FORBIDDEN_BETFAIR,
+                                                              shadowing_names(REAL, [module])))
             betfair = tuple(sorted({e[len(BETFAIR) + 1:] for _, e, _ in found if under(e, BETFAIR)}))
             stdlib = tuple(sorted({e.split(".")[0] for _, e, reason in found
                                    if reason.startswith(("forbidden stdlib", "not on the backtest stdlib"))}))

@@ -191,6 +191,30 @@ class MappingTests(OutcomeCase):
                 self.assertEqual(cohort_ids(decision), (1, 2, 3))
                 self.assertEqual(market_outcome(record, decision).removed_after_decision, expected)
 
+    def test_unknown_before_removal_and_equal_pt_precedence(self):
+        """Astra's c2b1 acceptance note, pinned: an unknown interval before a later removal leaves removals unknown;
+        within one pt an explicit removal wins over an unknown entry; an unknown entry followed by ACTIVE at the same
+        pt stays unknown."""
+        three = [runner(1), runner(2), runner(3)]
+        removed_final = settled({1: "LOSER", 2: "WINNER", 3: "REMOVED"}, {1: 3.1, 2: 2.4})
+        at = OFF - timedelta(minutes=2)
+        cases = {
+            "unknown, then removed later": ([md(M, at, definition(OFF, three[:2] + [runner(3, None)])),
+                                             md(M, OFF - timedelta(minutes=1),
+                                                definition(OFF, three[:2] + [runner(3, "REMOVED")]))], None),
+            "removed and unlisted at one pt": ([md(M, at, definition(OFF, three[:2] + [runner(3, "REMOVED")])),
+                                                md(M, at, definition(OFF, three[:2]), img=True)], frozenset({3})),
+            "unknown then active at one pt": ([md(M, at, definition(OFF, three[:2] + [runner(3, None)])),
+                                               md(M, at, definition(OFF, three))], None),
+        }
+        for name, (middle, expected) in cases.items():
+            with self.subTest(case=name):
+                final = removed_final if expected or "removed" in name else settled(
+                    {1: "LOSER", 2: "WINNER", 3: "LOSER"}, {1: 3.1, 2: 2.4, 3: 7.0})
+                record, decision = self.decided(self.pre() + middle + final)
+                self.assertEqual(cohort_ids(decision), (1, 2, 3))
+                self.assertEqual(market_outcome(record, decision).removed_after_decision, expected)
+
     def test_a_record_that_is_not_the_decisions_refuses(self):
         record, decision = self.decided(self.pre() + settled({1: "WINNER", 2: "LOSER", 3: "LOSER"},
                                                              {1: 2.0, 2: 3.0, 3: 4.0}))

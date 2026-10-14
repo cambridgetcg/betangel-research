@@ -28,18 +28,33 @@ One record per (plan, market id) per archive (canonical JSON, one line each, sor
 id; two tiers of one market are two data products, never merged), each with separate top-level objects; ONLY
 decision_time may ever reach a strategy, every other object is for provenance, the audit or the evaluator:
 - provenance: archive and member sha256, member path, file type (market or event file), plan, month and date from
-  the path, inspected_month, and other_sources (every other member of the same plan holding the same market,
-  whether it was read whole, and whether its derived record agrees: agrees compares the decision, outcome and
-  coverage parts, so it is outcome-derived; agrees_decision_time compares decision_time only; both null for a
-  market file named after the market that failed before any message for it was applied, so holds no record of
-  it). The primary is the first source holding a record, ranked: a market file named after the market, then an
-  event file, then a market file named after another market, then by path: by name only, never by whether a
-  source was read whole or by what it says, since either would let a failure or a difference published after a
-  decision time choose that decision's view. Two cases leave the event file's record primary although a market
-  file is named after the market, and both change a decision only if the two files disagree (Betfair's should
-  not): the market file failed before any message for its market was applied (it is listed as above), or the
-  month gate refused the market file by content at ingest or the market in it by marketTime here while the event
-  file's months pass. other_sources is for the audit only and is never a decision input.
+  the path, inspected_month, and other_sources (every other member of the same plan holding the same market, and
+  every other market file named after it that was read and holds none; whether each was read whole, and whether
+  its derived record agrees: agrees compares the decision, outcome and coverage parts, so it is outcome-derived;
+  agrees_decision_time compares decision_time only; both null for a source holding no record). The primary (the
+  decision source) is chosen from member paths, or, when no market file is named after the market, from the
+  earliest mention of the market; never from what a member says later, whether it holds the market at the
+  end, or whether it was read whole, since each of those can be settled by what is published after a decision
+  time: a market file named after the market (the first by path) whenever the manifest lists one, kept or refused
+  (a member refused for what it says still exists), whatever it holds; else, from the member whose first message
+  for the market is the earliest (least pt, then path; a record the month gate refused counts), the event file of
+  that member's directory when the manifest lists one, kept or refused, whether it mentions the market or not,
+  else that member (a market file named after another market). A message published after a time t, appended or
+  cut, only adds or removes mentions after t, so a primary chosen from a mention at or before t never moves; one
+  chosen from a mention after t (no member mentions the market by t, so there is no view at t) can move to
+  another mention that is still after t. A member refused at ingest is not read, so its mentions are unknown:
+  the content gate (plan section 4.1, only at the 2025-12/2026-01 boundary), which already uses what is
+  published after a decision to refuse a member, can still move a source chosen by earliest mention (or refuse
+  the market, when the next mention is in the refused event file's directory).
+  A primary read whole or in part that holds no record of the market (only heartbeats or other markets, or failing
+  before any message for it) gives the record of a market it never mentions: decision_time no_view and an outcome
+  with nothing resolved. A primary refused (by the month gate at ingest or now, or its record of the market by
+  marketTime) refuses the market: no record, and each other member's record of it is listed in refused_markets as
+  primary_source_refused. No other source ever stands in for the primary, and other_sources is for the audit
+  only, never a decision input. A market has a record only when a member that was read mentions it and at least
+  one member's record of it passed the month gate: a market whose every record the gate refused has none, not
+  even a no_view one from an empty primary. The one real TAR inspected (plan section 2.8) holds only market files,
+  so there every market's primary is its own file.
 - checks: path_month, the month of the first-published marketTime, month_mismatch, date_mismatch (the path date
   against the UTC date of the first-published marketTime) and event_id_mismatch (the path event id against the
   first definition's eventId), each null when unknown, first_pt, whether a market file holds a market it is not
@@ -65,36 +80,48 @@ decision_time may ever reach a strategy, every other object is for provenance, t
   off is in it. Like every entry, view_ends is pt-stamped: a consumer keeps only entries with pt <= its decision
   time, and a decision at or after view_ends.pt has no complete view here (the market had a result-bearing
   definition, reached its off, or the member could not be read further), so task (c) must give it an explicit
-  abstain or unsupported reason, never simulate it from this truncated view and never drop it. A market with no
-  parseable first-published marketTime has an empty decision_time and view_ends null; when none was published
-  before complete_before_pt of a member not read whole (its first batch cut, say), decision_time is still empty
-  but view_ends is {complete_before_pt, member_unreadable_from_pt}.
-- evaluator_only_outcome: the cutoff and why, whether the member was read whole (read_complete, unreadable_reason,
-  complete_before_pt), every timeline from the cutoff on (all of them when there is no decision view: revised
-  metadata, later removals, in-play and status changes), OUTCOME_DEFINITION_FIELDS and runner bsp timelines
-  whatever their pt (raw values), final runner status and bsp (bsp null unless a finite number of at least
-  MIN_BSP; both null for a runner not listed at the end, that is not in the last definition or reset by a later
-  image: its old values are not a current result, as for runner1 when an image after CLOSED carries only
-  runner2), final market status, whether and when CLOSED was reached, settled time (null after an image without a
-  definition), winners observed (null unless the final state holds a result: final status CLOSED, or a runner
-  listed at the end WINNER, LOSER or PLACED; an image or definition after CLOSED can reopen the market or unlist
-  every runner), the declared number of winners at the end, dead_heat (see _dead_heat; null when not assessable,
-  including a market not CLOSED at the end), results_revised_after_close (a runner status, bsp or listing, or
-  numberOfWinners, changed after CLOSED; null when not closed), runners listed at the end missing a final bsp
-  (any final status but REMOVED, REMOVED_VACANT or HIDDEN) or whose final bsp is present but unusable (for
-  example the strings "NaN" or "Infinity"), every marketTime month, last pt and counts. Winners observed and
+  abstain or unsupported reason, never simulate it from this truncated view and never drop it. A view exists only
+  when the primary published a parseable marketTime for the market strictly before the cutoff. Otherwise (it holds
+  nothing of the market, publishes none or none parseable, first publishes it at or after the off it announces or
+  in an outcome-bearing definition, or stops being readable before it) decision_time is the one explicit empty
+  view, no_view(): no definition, runners or removals, first_published_market_time null and view_ends {pt null,
+  reason primary_source_no_observation_before_cutoff}. It is the same value whatever made it empty, so nothing
+  published or lost later can turn one empty view into another (the evaluator side still says why, in
+  decision_cutoff). It carries no decision time, and whether a no_view record exists at all is not prefix
+  invariant: a market no member mentions before its off has one only when some member mentions it later. So task
+  (c) must not treat its presence as a decision-time fact: it reports such markets with an explicit unsupported
+  reason, never dropping them silently, but keeps them out of the decision-time population and the
+  prefix-invariance comparison, or ties each to the first pt at which a member mentions the market (which index
+  v1 does not record); plan sections 4.1 and 13.
+- evaluator_only_outcome, always the primary's (one holding nothing of the market resolves nothing: no timelines or
+  final runners, final status null, closed_reached false, every result null, 0 definitions and changes): the cutoff
+  and why (where this source's view ends or would have; pt null when nothing gives one), whether the member was read
+  whole (read_complete, unreadable_reason, complete_before_pt), every timeline from the cutoff on (all of them when
+  there is no decision view: revised metadata, later removals, in-play and status changes),
+  OUTCOME_DEFINITION_FIELDS and runner bsp timelines whatever their pt (raw values), final runner status and bsp
+  (bsp null unless a finite number of at least MIN_BSP; both null for a runner not listed at the end, that is not in
+  the last definition or reset by a later image: its old values are not a current result, as for runner1 when an
+  image after CLOSED carries only runner2), final market status, whether and when CLOSED was reached, settled time
+  (null after an image without a definition), winners observed (null unless the final state holds a result: final
+  status CLOSED, or a runner listed at the end WINNER, LOSER or PLACED; an image or definition after CLOSED can
+  reopen the market or unlist every runner), the declared number of winners at the end, dead_heat (see _dead_heat;
+  null when not assessable, including a market not CLOSED at the end), results_revised_after_close (a runner status,
+  bsp or listing, or numberOfWinners, changed after CLOSED; null when not closed), runners listed at the end missing
+  a final bsp (any final status but REMOVED, REMOVED_VACANT or HIDDEN) or whose final bsp is present but unusable
+  (for example the strings "NaN" or "Infinity"), every marketTime month, last pt and counts. Winners observed and
   dead_heat count only those final statuses. Nothing in decision_time is derived from it.
 
 Months are UTC calendar months of marketTime (archive.market_month). A record whose marketTime months (every one
-seen, before any truncation) include one the gate refuses is not written (refused_markets in the head). The index
-lives at index/<archive sha256>/markets-v1.jsonl with head-v1.json beside it (canonical JSON: manifest sha256,
-markets sha256, every file's status, complete_before_pt and markets, refused markets); index_sha256 is the head's
-sha256, and the head covers the markets file through markets_sha256. Records are spilled to a temporary file as
-each member is read and merged from it, so memory holds one key per record rather than every record (the head,
-with one entry per member, is still built in memory). Writes are atomic as in archive.py; a leftover spill or
-.partial file refuses until a person removes it; an existing index with other bytes is refused (index_would_change,
-or gate_changed when the manifest was written under another month gate), never replaced: a change of meaning needs
-a new schema version and file name. Every file-system failure becomes a refusal with its place.
+seen, before any truncation) include one the gate refuses is not written (refused_markets in the head), nor is a
+market whose primary was refused (above). The index lives at index/<archive sha256>/markets-v1.jsonl with
+head-v1.json beside it (canonical JSON: manifest sha256, markets sha256, every file's status, complete_before_pt and
+markets, refused markets); index_sha256 is the head's sha256, and the head covers the markets file through
+markets_sha256. Records are spilled to a temporary file as each member is read and merged from it, so memory holds
+one key per record rather than every record (the head, with one entry per member, is still built in memory). Writes
+are atomic as in archive.py; a leftover spill or .partial file refuses until a person removes it; an existing index
+with other bytes is refused (index_would_change, or gate_changed when the manifest was written under another month
+gate), never replaced: a change of meaning needs a new schema version and file name. Every file-system failure
+becomes a refusal with its place.
 """
 
 import bz2
@@ -149,6 +176,16 @@ def usable_bsp(value):
 
 VALUED_FIELDS = {"md.runners.bsp": usable_bsp, "rc.ltp": lambda value: _number(value) and value > 0,
                  "rc.spf": _number, "rc.spn": _number}
+# view_ends.reason of the one explicit empty decision_time (no_view), and the refused_markets reason of a record not
+# written because its primary source was refused (both in the module docstring).
+NO_VIEW_REASON = "primary_source_no_observation_before_cutoff"
+PRIMARY_REFUSED_REASON = "primary_source_refused"
+
+
+def no_view():
+    """The explicit empty decision_time: no view at any decision time, the same value whatever made it empty."""
+    return {"definition": {}, "first_published_market_time": None, "removals": [], "runners": [],
+            "view_ends": {"pt": None, "reason": NO_VIEW_REASON}}
 
 
 class IndexProblem(Exception):
@@ -491,10 +528,10 @@ class _Market:
         truncate(complete_before_pt); None for one read whole."""
         first, cutoff, reason = self.cutoff()
         if unreadable is not None and (first is None or cutoff is not None and unreadable[1] < cutoff):
-            # With no first-published marketTime before complete_before_pt there is still no decision view, but it
-            # ends where the member stopped being readable, not for want of a marketTime the unread rest may hold.
             cutoff, reason = unreadable[1], "member_unreadable_from_pt"
-        viewable = first is not None and cutoff is not None        # else decision_time is empty
+        # A view only from a marketTime published strictly before the cutoff; else NO_VIEW, one value whatever the
+        # reason, since what came later (a first definition after the off, a failure) could otherwise choose it.
+        viewable = first is not None and cutoff is not None and first[0] < cutoff
 
         def before(timeline):
             return [entry for entry in timeline if entry[0] < cutoff] if viewable else []
@@ -554,12 +591,11 @@ class _Market:
         market_time_month = market_month(first[1]) if first else None
         event_id = _last((self.fields.get("eventId") or [])[:1])
         read_complete = unreadable is None
-        decision = {
-            "first_published_market_time": ({"pt": first[0], "value": first[1]}
-                                            if viewable and first[0] < cutoff else None),
+        decision = no_view() if not viewable else {
+            "first_published_market_time": {"pt": first[0], "value": first[1]},
             "definition": decision_definition, "runners": decision_runners,
-            "removals": [item for item in removals if viewable and item["pt"] < cutoff],
-            "view_ends": None if cutoff is None else {"pt": cutoff, "reason": reason},
+            "removals": [item for item in removals if item["pt"] < cutoff],
+            "view_ends": {"pt": cutoff, "reason": reason},
         }
         outcome = {
             "decision_cutoff": {"pt": cutoff, "reason": reason},
@@ -647,15 +683,23 @@ def _body(record):
     return canonical_json([record["decision_time"], record["evaluator_only_outcome"], record["coverage"]])
 
 
-# One spilled record: where it sits in the spill, how it ranks for primary (file type and path only), and what
-# other_sources needs; offset None for a market file that holds no record of its own market (see _spill).
-_Entry = namedtuple("_Entry", "key rank offset length body decision member_sha256 file_type read_complete")
+def _digests(record):
+    """(sha256 of the decision, outcome and coverage parts, sha256 of decision_time alone) for other_sources."""
+    return hashlib.sha256(_body(record)).digest(), hashlib.sha256(canonical_json(record["decision_time"])).digest()
+
+
+# What one member says of one market: where its spilled record sits (offset None when the month gate refused that
+# record, which is never written), its digests for other_sources, and first_pt, the pt of the first message in which
+# it mentions the market (for the primary rule). key sorts by plan and numeric market id and keeps market ids that
+# differ only in leading zeros apart.
+_Entry = namedtuple("_Entry", "key market_id path offset length body decision first_pt")
 
 
 def _spill(root, manifest, spill, limits):
-    """Read every member, write each record to spill as one canonical line; (files, entries, refused markets)."""
+    """Read every member, write each record to spill as one canonical line; (files, entries, refused markets, read:
+    {path: (member, unreadable reason or None, complete_before_pt or None)} for every member read, whole or not)."""
     sha = manifest["archive"]["sha256"]
-    files, entries, refused_markets, offset = [], [], [], 0
+    files, entries, refused_markets, read, offset = [], [], [], {}, 0
     for member in manifest["members"]:
         entry = {"path": member["path"], "member_sha256": member["sha256"], "plan": member["plan"],
                  "path_month": member["month"], "file_type": member["file_type"]}
@@ -679,56 +723,111 @@ def _spill(root, manifest, spill, limits):
         ids = sorted(markets, key=market_sort_key)
         files.append({**entry, "status": "unreadable" if reason else "indexed", "reason": reason,
                       "complete_before_pt": complete if reason else None, "markets": ids})
-        if reason and member["file_type"] == "market" and member["market_id"] not in markets:
-            # A market file that failed before any message for its own market was applied holds no record of it,
-            # so it cannot be primary; it is still listed among that market's other sources (no record to compare).
-            entries.append(_Entry((member["plan"], market_sort_key(member["market_id"])), (0, member["path"]), None,
-                                  0, None, None, member["sha256"], member["file_type"], False))
+        read[member["path"]] = (member, reason, complete if reason else None)
         for market_id in ids:
-            market = markets[market_id]
+            market, key = markets[market_id], (member["plan"], market_sort_key(market_id), market_id)
             gates = sorted({g for g in map(month_gate, market.market_time_months()) if g})
             if gates:
                 refused_markets.append({"market_id": market_id, "member_path": member["path"],
                                         "reason": f"market_time_{gates[0]}"})
+                entries.append(_Entry(key, market_id, member["path"], None, 0, None, None, market.first_pt))
                 continue
             if reason:
                 market.truncate(complete)
             record = market.record(_provenance(manifest, member), (reason, complete) if reason else None)
             line = canonical_json(record)
-            # Never by readability or content: a line that fails after the off must not move the decision view to
-            # another source (each source's own view already ends where it stopped being readable).
-            named = member["file_type"] == "market" and member["market_id"] == market_id
-            rank = (0 if named else 1 if member["file_type"] == "event" else 2, member["path"])
-            entries.append(_Entry((member["plan"], market_sort_key(market_id)), rank, offset, len(line),
-                                  hashlib.sha256(_body(record)).digest(),
-                                  hashlib.sha256(canonical_json(record["decision_time"])).digest(),
-                                  member["sha256"], member["file_type"], not reason))
+            entries.append(_Entry(key, market_id, member["path"], offset, len(line), *_digests(record),
+                                  market.first_pt))
             spill.write(line)
             offset += len(line)
-    return files, entries, refused_markets
+    return files, entries, refused_markets, read
 
 
-def _merged_lines(spill_path, entries):
-    """The primary record of each (plan, market) with other_sources filled in, as canonical lines in index order
-    (the primary is the first source holding a record, ranked: a market file named after the market, then an event
-    file, then a market file named after another market, then by path; never by whether a source was read whole or
-    what it says). A source holding no record (offset None) is listed with agrees and agrees_decision_time null."""
-    entries.sort(key=lambda entry: (entry.key, entry.rank))
+def _paths_by_name(manifest):
+    """({(plan, market id): sorted paths of the market files named after it}, {event file paths}) over every member
+    path in the manifest that parses, kept or refused: a member refused for what it says (a content month) still
+    exists for the primary rule."""
+    named, events = {}, set()
+    for item in manifest["members"] + manifest["refused"]:
+        parsed, _ = parse_member_path(item["path"])
+        if parsed is None:
+            continue
+        if parsed["file_type"] == "event":
+            events.add(item["path"])
+        else:
+            named.setdefault((parsed["plan"], parsed["market_id"]), []).append(item["path"])
+    return {key: sorted(paths) for key, paths in named.items()}, events
+
+
+def _primary_path(plan, market_id, group, named, events):
+    """The path of the market's primary (decision) source (module docstring): the first market file named after it
+    by path, whatever it holds; else, from the earliest mention of the market (group: every member's _Entry for it,
+    a record the month gate refused included; the least (first_pt, path)), the event file of that member's
+    directory when the manifest lists one, kept or refused, else that member. A message published after a time t,
+    appended or cut, only adds or removes mentions after t, so an earliest mention at or before t stays the
+    earliest."""
+    files = named.get((plan, market_id))
+    if files:
+        return files[0]
+    earliest = min(group, key=lambda entry: (entry.first_pt, entry.path))
+    folder = earliest.path.rpartition("/")[0]
+    event_file = f"{folder}/{folder.rpartition('/')[2]}.bz2"
+    return event_file if event_file in events else earliest.path
+
+
+def _resolve(manifest, entries, read):
+    """([(market id, primary, others)] in index order, refused markets) for every (plan, market) with at least one
+    record the month gate let through. primary is the _Entry of the primary's record, or the path of a primary
+    that was read and holds no record of the market; others are the other sources as (path, _Entry), and
+    (path, None) for another market file named after the market that was read and holds none. A market whose
+    primary was refused (not read: at ingest or by the gate now; or its record of the market by marketTime) gets
+    no record: each record of it in another member is listed as refused instead (PRIMARY_REFUSED_REASON)."""
+    named, events = _paths_by_name(manifest)
+    plans, refused = [], []
+    entries.sort(key=lambda entry: (entry.key, entry.path))
+    for key, group in itertools.groupby(entries, key=lambda entry: entry.key):
+        group = list(group)
+        market_id, seen = key[2], {entry.path for entry in group}
+        held = {entry.path: entry for entry in group if entry.offset is not None}
+        if not held:
+            continue
+        chosen = _primary_path(key[0], market_id, group, named, events)
+        if chosen not in held and (chosen in seen or chosen not in read):
+            refused += [{"market_id": market_id, "member_path": place, "reason": PRIMARY_REFUSED_REASON}
+                        for place in sorted(held)]
+            continue
+        others = [(place, entry) for place, entry in held.items() if place != chosen]
+        others += [(place, None) for place in named.get((key[0], market_id), ())
+                   if place in read and place not in seen and place != chosen]
+        plans.append((market_id, held.get(chosen, chosen), others))
+    return plans, refused
+
+
+def _merged_lines(spill_path, manifest, read, plans):
+    """The primary record of each planned market with other_sources filled in (ranked: market files named after the
+    market, event files, other market files, then by path), as canonical lines in index order. A primary that holds
+    no record of the market gives the record of a market it never mentions: no_view and nothing resolved. A source
+    holding no record is listed with agrees and agrees_decision_time null."""
     with open(spill_path, "rb") as spill:
-        for _, group in itertools.groupby(entries, key=lambda entry: entry.key):
-            group = list(group)
-            held = [entry for entry in group if entry.offset is not None]
-            if not held:
-                continue
-            primary = held[0]
-            spill.seek(primary.offset)
-            record = loads_strict(spill.read(primary.length))
-            record["provenance"]["other_sources"] = [
-                {"member_path": other.rank[1], "member_sha256": other.member_sha256, "file_type": other.file_type,
-                 "read_complete": other.read_complete,
-                 "agrees": None if other.offset is None else other.body == primary.body,
-                 "agrees_decision_time": None if other.offset is None else other.decision == primary.decision}
-                for other in group if other is not primary]
+        for market_id, primary, others in plans:
+            if isinstance(primary, _Entry):
+                spill.seek(primary.offset)
+                record = loads_strict(spill.read(primary.length))
+                body, decision = primary.body, primary.decision
+            else:
+                member, reason, complete = read[primary]
+                record = _Market(market_id, None).record(_provenance(manifest, member),
+                                                         (reason, complete) if reason else None)
+                body, decision = _digests(record)
+            sources = []
+            for place, entry in others:
+                member, reason, _ = read[place]
+                rank = 0 if member["market_id"] == market_id else 1 if member["file_type"] == "event" else 2
+                sources.append(((rank, place), {
+                    "member_path": place, "member_sha256": member["sha256"], "file_type": member["file_type"],
+                    "read_complete": reason is None, "agrees": None if entry is None else entry.body == body,
+                    "agrees_decision_time": None if entry is None else entry.decision == decision}))
+            record["provenance"]["other_sources"] = [item for _, item in sorted(sources, key=lambda pair: pair[0])]
             yield canonical_json(record) + b"\n"
 
 
@@ -772,8 +871,11 @@ def index_archive(root, archive_sha256, limits=DEFAULT_LIMITS):
     partial = None
     try:
         with spill:
-            files, entries, refused_markets = _spill(root, manifest, spill, limits)
-        partial, markets_sha, count = _write_partial(markets_path, _merged_lines(spill_path, entries), where)
+            files, entries, refused_markets, read = _spill(root, manifest, spill, limits)
+        plans, refused_by_primary = _resolve(manifest, entries, read)
+        refused_markets += refused_by_primary
+        partial, markets_sha, count = _write_partial(markets_path, _merged_lines(spill_path, manifest, read, plans),
+                                                     where)
         head = {"schema_version": INDEX_SCHEMA_VERSION, "kind": HEAD_KIND, "archive_sha256": archive_sha256,
                 "manifest_sha256": manifest_sha, "markets_file": MARKETS_FILE, "markets_sha256": markets_sha,
                 "markets": count, "files": files,

@@ -38,6 +38,9 @@ OUTCOME_TEXT = ("WINNER", "LOSER", "PLACED", "CLOSED")
 OUTCOME_KEYS = ("bsp", "bspReconciled", "settledTime")
 END = b"\0" * 1024
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+# The explicit empty decision_time, spelled out here rather than taken from market_index.no_view().
+NO_VIEW = {"definition": {}, "first_published_market_time": None, "removals": [], "runners": [],
+           "view_ends": {"pt": None, "reason": "primary_source_no_observation_before_cutoff"}}
 
 
 def ms(when):
@@ -83,6 +86,11 @@ def mcm(when, changes):
 
 def md_change(market_id, when, value):
     return mcm(when, [{"id": market_id, "marketDefinition": value}])
+
+
+def heartbeat(pt):
+    """An mcm heartbeat with no mc, at pt (milliseconds)."""
+    return {"op": "mcm", "clk": "h", "pt": pt, "ct": "HEARTBEAT"}
 
 
 def lines(messages):
@@ -1278,12 +1286,16 @@ class IndexTests(Workspace):
         self.assertIn(5, [r["id"] for r in record["evaluator_only_outcome"]["final_runners"]])
 
     def test_a_market_first_published_after_its_off_has_no_decision_view(self):
+        """The explicit empty view, whose end has no pt (the off it would name was published after it); the evaluator
+        still sees where this source's view would have ended, and every timeline."""
         late = [md_change("1.100000001", OFF + timedelta(minutes=1), definition(iso(OFF), [runner(1), runner(2)]))]
         sha, _ = self.build([(path("1.100000001"), stream(late))])
-        decision = self.records(sha)["1.100000001"]["decision_time"]
-        self.assertEqual(decision, {"definition": {}, "first_published_market_time": None, "removals": [],
-                                    "runners": [], "view_ends": {"pt": ms(OFF),
-                                                                 "reason": "first_published_scheduled_off"}})
+        record = self.records(sha)["1.100000001"]
+        self.assertEqual(record["decision_time"], NO_VIEW)
+        outcome = record["evaluator_only_outcome"]
+        self.assertEqual(outcome["decision_cutoff"], {"pt": ms(OFF), "reason": "first_published_scheduled_off"})
+        self.assertEqual(outcome["definition_after_cutoff"]["marketTime"], [[ms(OFF + timedelta(minutes=1)), iso(OFF)]])
+        self.assertEqual(record["coverage"]["before_cutoff"], [])
 
     def test_early_outcome_cuts_decision_time_before_the_scheduled_off(self):
         t = iso(OFF)
@@ -1423,6 +1435,10 @@ class IndexTests(Workspace):
         self.assertEqual(indexed["archives"][0]["markets"], 2)
 
     def test_disagreeing_sources_and_a_market_file_holding_another_market(self):
+        """Sources that disagree are listed, never consulted. With no market file named after a market, the event
+        file of a directory where it was seen is primary when it exists, holding the market or not (by path only);
+        a market held only by a file named after another market, in a directory with no event file, has that file
+        as primary and says so in checks."""
         venue = full_market()
         venue[0]["mc"][0]["marketDefinition"]["venue"] = "Other Park"          # differs before the cutoff
         late = full_market()[:-1]                                            # differs only after it
@@ -1431,6 +1447,7 @@ class IndexTests(Workspace):
         sha, _ = self.build([(path("1.100000001"), stream(full_market())), (path(EVENT), stream(event)),
                              (path("1.100000002"), stream(held)),
                              (path("1.100000005"), stream(full_market("1.100000006"))),
+                             (path("1.100000007", event="27000009"), stream(full_market("1.100000008"))),
                              (path("1.100000001", plan="PRO"), stream(full_market())),
                              (path(EVENT, plan="PRO"), stream(late))])
         records = {(r["provenance"]["plan"], r["market_id"]): r
@@ -1446,9 +1463,17 @@ class IndexTests(Workspace):
         self.assertEqual([s["member_path"] for s in held_record["provenance"]["other_sources"]],
                          [path("1.100000002")])
         self.assertFalse(held_record["checks"]["market_file_holds_other_market"])
-        only = records[("BASIC", "1.100000006")]
+        # 1.100000006 is only in the file named after 1.100000005, but the event file of that directory exists, so it
+        # is primary although it never mentions the market: the explicit empty view, nothing resolved.
+        absent = records[("BASIC", "1.100000006")]
+        self.assertEqual((absent["provenance"]["member_path"], absent["decision_time"]), (path(EVENT), NO_VIEW))
+        self.assertEqual([(s["member_path"], s["agrees"], s["agrees_decision_time"])
+                          for s in absent["provenance"]["other_sources"]], [(path("1.100000005"), False, False)])
+        self.assertEqual((absent["evaluator_only_outcome"]["winners_observed"],
+                          absent["evaluator_only_outcome"]["final_runners"]), (None, []))
+        only = records[("BASIC", "1.100000008")]
         self.assertEqual((only["provenance"]["member_path"], only["checks"]["market_file_holds_other_market"]),
-                         (path("1.100000005"), True))
+                         (path("1.100000007", event="27000009"), True))
 
     def test_the_primary_source_never_depends_on_later_readability(self):
         """R1, Astra's pair: market file M and event file E disagree 10 minutes before the off (M: runner 1 ACTIVE,
@@ -1456,9 +1481,10 @@ class IndexTests(Workspace):
         used to make E primary (read whole), changing the decision view; now the primary is chosen by name only and
         both TARs give the same decision_time, M's; only the settlement side differs (read_complete). A failure
         before the cutoff ends M's own view where it stopped; E is still not consulted. E cut after the off is
-        listed as not read whole. M cut inside its first batch keeps no marketTime: no view, ending where M did. M
-        that fails before any message for its market holds no record of it, so E's record is primary and M is
-        listed with agrees null (counted by the audit as a disagreeing source)."""
+        listed as not read whole. M cut inside its first batch keeps no marketTime: the explicit empty view (the
+        evaluator side says where M stopped). M that fails before any message for its market holds no record of it
+        and is still primary, since it exists: the same empty view, nothing resolved; E's record is only listed (it
+        used to be primary, with M listed with agrees null)."""
         mid = "1.100000001"
 
         def source(status):
@@ -1501,27 +1527,28 @@ class IndexTests(Workspace):
                          (path(mid), intact["decision_time"]))
         self.assertEqual([(s["member_path"], s["read_complete"], s["agrees_decision_time"])
                           for s in record["provenance"]["other_sources"]], [(path(EVENT), False, False)])
-        # M cut after its first batch: no first-published marketTime survives, so no view, ending where M did.
+        # M cut after its first batch: no first-published marketTime survives, so the explicit empty view.
         root = self.new_root()
         sha, _ = self.build([(path(mid), bz2.compress(lines(market_file[:1]) + b"not json\n"
                                                       + lines(market_file[1:]))),
                              (path(EVENT), stream(event_file))], root=root)
         record, first = self.records(sha, root)[mid], ms(OFF - timedelta(minutes=60))
-        self.assertEqual(record["provenance"]["member_path"], path(mid))
-        self.assertEqual(record["decision_time"], {"definition": {}, "first_published_market_time": None,
-                                                   "removals": [], "runners": [],
-                                                   "view_ends": {"pt": first, "reason": "member_unreadable_from_pt"}})
+        self.assertEqual((record["provenance"]["member_path"], record["decision_time"]), (path(mid), NO_VIEW))
         self.assertEqual(record["evaluator_only_outcome"]["decision_cutoff"],
                          {"pt": first, "reason": "member_unreadable_from_pt"})
-        # M unreadable before any message for its market: it holds no record, so E's is primary and M is listed
-        # with nothing to compare (the documented exception; it matters only when M and E disagree, as here).
+        # M unreadable before any message for its market: it holds no record of it but exists, so it is primary
+        # with the explicit empty view and an outcome with nothing resolved; E is listed, never used.
         root = self.new_root()
         sha, _ = self.build([(path(mid), bz2.compress(b"not json\n" + lines(market_file))),
                              (path(EVENT), stream(event_file))], root=root)
         record = self.records(sha, root)[mid]
-        self.assertEqual(record["provenance"]["member_path"], path(EVENT))
+        self.assertEqual((record["provenance"]["member_path"], record["decision_time"]), (path(mid), NO_VIEW))
+        outcome = record["evaluator_only_outcome"]
+        self.assertEqual((outcome["read_complete"], outcome["unreadable_reason"], outcome["complete_before_pt"],
+                          outcome["decision_cutoff"], outcome["winners_observed"], outcome["final_status"]),
+                         (False, "not_json", None, {"pt": None, "reason": "member_unreadable_from_pt"}, None, None))
         self.assertEqual([(s["member_path"], s["file_type"], s["read_complete"], s["agrees"], s["agrees_decision_time"])
-                          for s in record["provenance"]["other_sources"]], [(path(mid), "market", False, None, None)])
+                          for s in record["provenance"]["other_sources"]], [(path(EVENT), "event", True, False, False)])
         self.assertEqual([(f["path"], f["status"], f["markets"]) for f in self.head(sha, root)["files"]],
                          [(path(mid), "unreadable", []), (path(EVENT), "indexed", [mid])])
         report = audit(root)["totals"]
@@ -1790,21 +1817,22 @@ class IndexTests(Workspace):
         self.assertEqual(record["decision_time"]["view_ends"], {"pt": cut, "reason": "member_unreadable_from_pt"})
         self.assertTrue(max(all_pts(record["decision_time"])) < cut)
         self.assertEqual(len(record["decision_time"]["removals"]), 1)                 # the removal at off-90m
-        # Definitions without a marketTime give no decision view, read whole or cut; cut, the view's end says so,
-        # and what was read before the cut stays out of decision_time as it does for the whole file.
+        # Definitions without a marketTime give no decision view, read whole or cut: the one explicit empty view
+        # either way (it used to end null read whole and at the cut otherwise, so a later failure changed it); the
+        # evaluator side still says where the member stopped.
         bare = [md_change("1.500000004", OFF - timedelta(minutes=60), drop(definition(iso(OFF), [runner(1)]),
                                                                              "marketTime")),
                 md_change("1.500000004", OFF - timedelta(minutes=30), drop(definition(iso(OFF), [runner(1, "REMOVED")]),
                                                                              "marketTime"))]
-        empty = {"definition": {}, "first_published_market_time": None, "removals": [], "runners": []}
-        for data, view_ends in ((stream(bare), None),
-                                (bz2.compress(lines(bare) + b"not json\n"),
-                                 {"pt": ms(OFF - timedelta(minutes=30)), "reason": "member_unreadable_from_pt"})):
-            with self.subTest(read_whole=view_ends is None):
+        for data, cutoff in ((stream(bare), {"pt": None, "reason": "no_first_published_market_time"}),
+                             (bz2.compress(lines(bare) + b"not json\n"),
+                              {"pt": ms(OFF - timedelta(minutes=30)), "reason": "member_unreadable_from_pt"})):
+            with self.subTest(read_whole=cutoff["pt"] is None):
                 root = self.new_root()
                 sha4, _ = self.build([(path("1.500000004"), data)], root=root)
-                self.assertEqual(self.records(sha4, root)["1.500000004"]["decision_time"],
-                                 {**empty, "view_ends": view_ends})
+                record = self.records(sha4, root)["1.500000004"]
+                self.assertEqual(record["decision_time"], NO_VIEW)
+                self.assertEqual(record["evaluator_only_outcome"]["decision_cutoff"], cutoff)
 
     def test_index_is_deterministic_hashed_and_refuses_tampering(self):
         sha, indexed = self.build([(path("1.100000001"), stream(full_market())), (path(EVENT), stream(full_market()))])
@@ -1917,6 +1945,481 @@ class IndexTests(Workspace):
         self.assertEqual(audit(self.root)["refused_markets"], [{"archive_sha256": sha, "market_id": "1.100000002",
                                                                 "member_path": path("1.100000002"),
                                                                 "reason": "market_time_month_sealed_holdout"}])
+
+
+def post_off_lines(rng, mid, start, count):
+    """count random lines (bytes) for the property test below, each published from pt start on: heartbeats,
+    definitions (any status, runner results, bsp, img, sometimes no marketTime), images without a definition, runner
+    changes, another market's definition, and lines the reader fails on (not JSON, img 1, segmented, a pt from before
+    the off). Every marketTime is at or before the off, so no append announces a later off: that would be a new
+    decision after the append, not a change to an earlier one."""
+    out, pt = [], start
+    for _ in range(count):
+        pt += rng.randrange(600001)
+        # Mostly definitions, which could move a primary chosen by content; a failing line ends the member.
+        kind = rng.choices(range(10), weights=(2, 5, 5, 2, 2, 2, 1, 1, 1, 1))[0]
+        if kind == 6:
+            out.append(b"not json\n")
+            continue
+        if kind in (1, 2):
+            statuses = [rng.choice(("ACTIVE", "REMOVED", "WINNER", "LOSER")) for _ in range(rng.randrange(1, 4))]
+            value = definition(iso(OFF - timedelta(minutes=rng.choice((0, 30)))),
+                               [runner(i + 1, status, bsp=rng.choice((None, 2.0, "NaN")))
+                                for i, status in enumerate(statuses)],
+                               status=rng.choice(("OPEN", "SUSPENDED", "CLOSED")), in_play=rng.random() < 0.5)
+            value = drop(value, "marketTime") if rng.random() < 0.2 else value
+            message = {"op": "mcm", "pt": pt, "mc": [{"id": mid, "marketDefinition": value, "img": kind == 2}]}
+        else:
+            message = {0: heartbeat(pt), 3: {"op": "mcm", "pt": pt, "mc": [{"id": mid, "img": True}]},
+                       4: {"op": "mcm", "pt": pt, "mc": [{"id": mid, "rc": [{"id": 1, "ltp": 2.0}]}]},
+                       5: {"op": "mcm", "pt": pt, "mc": [{"id": "1.100000099",
+                                                          "marketDefinition": definition(iso(OFF), [runner(1)])}]},
+                       7: {"op": "mcm", "pt": pt, "mc": [{"id": mid, "img": 1}]},
+                       8: {"op": "mcm", "pt": ms(OFF) - 1, "mc": []},
+                       9: {"op": "mcm", "pt": pt, "segmentType": "SEG_START", "mc": []}}[kind]
+        out.append(json.dumps(message).encode() + b"\n")
+    return b"".join(out)
+
+
+class PrimarySourceTests(Workspace):
+    """R1 after Astra's second review: the decision source of a market is chosen from member paths, or, with no file
+    named after the market, from its earliest mention, so nothing published after a decision (whether a source holds
+    the market, what it says, whether it can be read) can move that decision to another source or erase its view.
+    Only a market that no member mentions by the decision (no view then) can have its source moved by a later
+    mention, to one that is still later; and a member refused at ingest is not read (docs/backtest-plan.md 4.1)."""
+
+    MID, OTHER = "1.100000001", "1.100000002"
+
+    def opening(self, mid=None, second="ACTIVE"):
+        """The normal definition 10 minutes before the off: GB WIN, OPEN, BSP, event 27000001, one winner, runners 1
+        and 2 (runner 2 with status second)."""
+        return md_change(mid or self.MID, OFF - timedelta(minutes=10),
+                         definition(iso(OFF), [runner(1), runner(2, second)]))
+
+    def results(self, mid=None):
+        return md_change(mid or self.MID, OFF + timedelta(minutes=20),
+                         definition(iso(OFF), [runner(1, "WINNER", bsp=2.0), runner(2, "LOSER", bsp=3.0)],
+                                    status="CLOSED", in_play=True, bspReconciled=True))
+
+    def build_all(self, tars):
+        """Ingest every TAR (a list of (path, bytes)) into one new root and index once; (the records of MID, one per
+        TAR in order, None where the market has none; the root; the archive sha256s). Equal TARs share one archive
+        (the manifest names the TAR file, so a second name would be refused as would_change)."""
+        root, shas, built = self.new_root(), [], {}
+        for members in tars:
+            key = tuple(members)
+            if key not in built:
+                result = ingest_archive(self.tar(members, f"tar{self.roots}-{len(built)}.tar"), root)
+                self.assertEqual(result["status"], "ingested", result)
+                built[key] = result["archive_sha256"]
+            shas.append(built[key])
+        self.assertEqual(index_archives(root)["status"], "indexed")
+        return [self.records(sha, root).get(self.MID) for sha in shas], root, shas
+
+    def test_a_named_market_file_is_primary_before_it_holds_anything(self):
+        """Astra's fully readable pair (OFF 1433167200000, market 1.100000001, event 27000001). M holds only
+        heartbeats; E holds the normal definition 10 minutes before the off and ends with a heartbeat after it. A
+        second TAR only appends M's first definition after the off, the same as E's: 10 minutes after it with one
+        heartbeat 10 minutes before (root's probe), or 20 minutes after it with heartbeats 10 minutes either side
+        (the independent reviewer's). The primary used to be the first source holding a record, so the append moved
+        it from E (first-published marketTime and two ACTIVE runners from 10 minutes before the off) to M (nothing):
+        a message published after the off erased the earlier view. M exists, so it is primary in both TARs with the
+        same explicit empty view and nothing resolved; E is only listed, read whole and disagreeing."""
+        off = ms(OFF)
+        self.assertEqual(off, 1433167200000)
+        event_file = stream([self.opening(), heartbeat(off + 600000)])
+        for beats, late in (([off - 600000], off + 600000), ([off - 600000, off + 600000], off + 1200000)):
+            with self.subTest(appended_at=late - off):
+                first = [heartbeat(pt) for pt in beats]
+                appended = first + [{**self.opening(), "pt": late}]
+                records, root, shas = self.build_all([[(path(self.MID), stream(market_file)), (path(EVENT), event_file)]
+                                                      for market_file in (first, appended)])
+                before, after = records
+                self.assertEqual((before["decision_time"], after["decision_time"]), (NO_VIEW, NO_VIEW))
+                for record, final_status in zip(records, (None, "OPEN")):
+                    self.assertEqual(record["provenance"]["member_path"], path(self.MID))
+                    self.assertEqual([(s["member_path"], s["read_complete"], s["agrees_decision_time"])
+                                      for s in record["provenance"]["other_sources"]], [(path(EVENT), True, False)])
+                    outcome = record["evaluator_only_outcome"]
+                    self.assertEqual((outcome["read_complete"], outcome["final_status"], outcome["closed_reached"],
+                                      outcome["winners_observed"], outcome["dead_heat"],
+                                      outcome["results_revised_after_close"]), (True, final_status, False, None, None,
+                                                                                None))
+                self.assertEqual(before["evaluator_only_outcome"]["decision_cutoff"],
+                                 {"pt": None, "reason": "no_first_published_market_time"})
+                self.assertEqual((before["evaluator_only_outcome"]["final_runners"], before["checks"]["first_pt"]),
+                                 ([], None))
+                self.assertEqual(after["evaluator_only_outcome"]["definition_after_cutoff"]["marketTime"],
+                                 [[late, iso(OFF)]])
+                for sha, held in zip(shas, ([], [self.MID])):
+                    self.assertEqual({f["path"]: (f["status"], f["markets"]) for f in self.head(sha, root)["files"]},
+                                     {path(self.MID): ("indexed", held), path(EVENT): ("indexed", [self.MID])})
+                # E's earlier view, which used to be the primary's, is in the index only as an audit hash.
+                totals = audit(root)["totals"]
+                self.assertEqual((totals["multiple_sources"], totals["sources_disagree_decision_time"]), (1, 1))
+
+    def test_a_named_market_files_view_is_kept_whatever_the_event_file_says_later(self):
+        """M publishes the market 10 minutes before the off with two ACTIVE runners; E differs then (runner 2
+        REMOVED). M's view is the decision view with or without E, and nothing E publishes or loses after the off
+        changes it: results, a marketTime revision with a runner added, an image without a definition, a line it
+        cannot read, or E cut back to its definition."""
+        market_file = stream([self.opening(), heartbeat(ms(OFF + timedelta(minutes=10))), self.results()])
+        event_base = [self.opening(second="REMOVED"), heartbeat(ms(OFF + timedelta(minutes=10)))]
+        later = [self.results(), md_change(self.MID, OFF + timedelta(minutes=20),
+                                           definition(iso(OFF + timedelta(minutes=30)),
+                                                      [runner(1), runner(2), runner(3)])),
+                 mcm(OFF + timedelta(minutes=20), [{"id": self.MID, "img": True}])]
+        events = [None, stream(event_base), *(stream(event_base + [message]) for message in later),
+                  bz2.compress(lines(event_base) + b"not json\n"), stream(event_base[:1])]
+        records, _, _ = self.build_all([[(path(self.MID), market_file)] + ([(path(EVENT), data)] if data else [])
+                                        for data in events])
+        view = records[0]["decision_time"]
+        self.assertEqual((view["first_published_market_time"]["pt"], view["removals"],
+                          [r["status"] for r in view["runners"]]),
+                         (ms(OFF - timedelta(minutes=10)), [],
+                          [[[ms(OFF - timedelta(minutes=10)), "ACTIVE"]]] * 2))
+        for n, record in enumerate(records):
+            with self.subTest(event_variant=n):
+                self.assertEqual((record["provenance"]["member_path"], record["decision_time"]), (path(self.MID), view))
+                self.assertEqual(record["evaluator_only_outcome"]["winners_observed"], 1)
+
+    def test_with_no_named_market_file_the_event_files_view_survives_later_appends(self):
+        """No member is named after the market. E holds it 10 minutes before the off and ends with a heartbeat after
+        it, so E is primary (the event file of the directory of its earliest mention); appending to E after the off
+        (results, a revision to a later off, an image, another market, a line it cannot read) never changes the
+        view. A file named after another market in the same directory that first mentions the market after the off
+        changes nothing either. And the other way round: when the market is held before the off only by a file
+        named after another market, E (existing, in that directory) is still primary although it never mentions
+        it, with the explicit empty view; E's own later definition of the market used to make E primary only then,
+        erasing the other file's earlier view."""
+        tail = heartbeat(ms(OFF + timedelta(minutes=10)))
+        base = [self.opening(), self.opening(self.OTHER), tail]
+        other_file = [self.opening(self.OTHER), tail]
+        appended = [self.results(), md_change(self.MID, OFF + timedelta(minutes=20),
+                                              definition(iso(OFF + timedelta(minutes=30)), [runner(1), runner(2)])),
+                    mcm(OFF + timedelta(minutes=20), [{"id": self.MID, "img": True}]), self.results(self.OTHER)]
+        tars = [[(path(EVENT), stream(base)), (path(self.OTHER), stream(other_file))]]
+        tars += [[(path(EVENT), stream(base + [message])), (path(self.OTHER), stream(other_file))]
+                 for message in appended]
+        tars += [[(path(EVENT), bz2.compress(lines(base) + b"not json\n")), (path(self.OTHER), stream(other_file))],
+                 [(path(EVENT), stream(base)), (path(self.OTHER), stream(other_file + [self.results()]))],
+                 [(path(EVENT), stream(base))]]
+        records, _, _ = self.build_all(tars)
+        view = records[0]["decision_time"]
+        self.assertEqual((view["first_published_market_time"]["pt"], [r["id"] for r in view["runners"]]),
+                         (ms(OFF - timedelta(minutes=10)), [1, 2]))
+        for n, record in enumerate(records):
+            with self.subTest(variant=n):
+                self.assertEqual((record["provenance"]["member_path"], record["decision_time"]), (path(EVENT), view))
+        # Held before the off only by the file named after OTHER; E exists in that directory and never mentions it.
+        held = [self.opening(self.OTHER), self.opening(), tail]
+        event_only_other = [self.opening(self.OTHER), tail]
+        records, _, _ = self.build_all([[(path(EVENT), stream(event_file)), (path(self.OTHER), stream(held))]
+                                        for event_file in (event_only_other,
+                                                           event_only_other + [{**self.opening(), "pt": ms(
+                                                               OFF + timedelta(minutes=20))}])])
+        for record in records:
+            self.assertEqual((record["provenance"]["member_path"], record["decision_time"]), (path(EVENT), NO_VIEW))
+            self.assertEqual([(s["member_path"], s["agrees_decision_time"])
+                              for s in record["provenance"]["other_sources"]], [(path(self.OTHER), False)])
+
+    def test_a_refused_primary_refuses_its_market_instead_of_falling_back(self):
+        """M and E both publish the market 10 minutes before the off, but only M revises its marketTime after the off
+        into a sealed month (2026-02). M is refused by its content at ingest, and the market used to keep E's record
+        (the event file standing in for a refused market file, so a month only M showed could not refuse it). M
+        still exists, so it is the primary: the market has no record, and E's record of it is listed as refused
+        because its primary was. The same with the revision hidden from the ingest scan by an escaped key, refused
+        here by marketTime instead. A market only E holds is indexed as before."""
+        sealed = datetime(2026, 2, 1, 14, tzinfo=timezone.utc)
+        revision = json.dumps(md_change(self.MID, OFF + timedelta(minutes=20),
+                                        definition(iso(sealed), [runner(1), runner(2)]))).encode() + b"\n"
+        third = "1.100000003"
+        event_file = stream(sorted([self.opening(), self.opening(third), heartbeat(ms(OFF + timedelta(minutes=10)))],
+                                   key=lambda m: m["pt"]))
+        for label, tail, refused in (
+                ("content scan", revision, [(path(EVENT), "primary_source_refused")]),
+                ("index", revision.replace(b'"marketTime"', b'"market\\u0054ime"'),
+                 [(path(EVENT), "primary_source_refused"), (path(self.MID), "market_time_month_sealed_holdout")])):
+            with self.subTest(refused_by=label):
+                root = self.new_root()
+                result = ingest_archive(self.tar([(path(self.MID), bz2.compress(lines([self.opening()]) + tail)),
+                                                  (path(EVENT), event_file)], f"refused-{label[0]}.tar"), root)
+                self.assertEqual(result["refused_by_reason"],
+                                 {"content_month_sealed_holdout": 1} if label == "content scan" else {})
+                self.assertEqual(index_archives(root)["status"], "indexed")
+                sha = result["archive_sha256"]
+                records = self.records(sha, root)
+                self.assertEqual(sorted(records), [third])
+                self.assertEqual(records[third]["provenance"]["member_path"], path(EVENT))
+                self.assertEqual([(item["market_id"], item["member_path"], item["reason"])
+                                  for item in self.head(sha, root)["refused_markets"]],
+                                 sorted((self.MID, place, reason) for place, reason in refused))
+                self.assertEqual(audit(root)["status"], "audited")
+
+    def test_other_sources_are_ranked_and_event_files_taken_by_path(self):
+        """MID has two files named after it (events 27000001 and 27000009): the first by path holds it and is
+        primary; the second holds only heartbeats and is listed with nothing to compare. Its other sources are ranked
+        by name (that file), then event file, then a file named after another market, whatever their paths. A market
+        no file is named after, held by the event files of both events, has the first of them by path."""
+        third, second_event = "1.100000003", "27000009"
+        beats = [heartbeat(ms(OFF - timedelta(minutes=10))), heartbeat(ms(OFF + timedelta(minutes=10)))]
+        sha, _ = self.build([
+            (path(self.MID), stream([self.opening()])),
+            (path(self.MID, event=second_event), stream(beats)),
+            (path(self.OTHER), stream([self.opening(), self.opening(self.OTHER)])),
+            (path(EVENT), stream([self.opening(), self.opening(third)])),
+            (path(second_event, event=second_event), stream([self.opening(third)]))])
+        records = self.records(sha)
+        self.assertEqual(records[self.MID]["provenance"]["member_path"], path(self.MID))
+        self.assertEqual([(s["member_path"], s["agrees"], s["agrees_decision_time"])
+                          for s in records[self.MID]["provenance"]["other_sources"]],
+                         [(path(self.MID, event=second_event), None, None), (path(EVENT), True, True),
+                          (path(self.OTHER), True, True)])
+        self.assertEqual((records[third]["provenance"]["member_path"],
+                          [s["member_path"] for s in records[third]["provenance"]["other_sources"]]),
+                         (path(EVENT), [path(second_event, event=second_event)]))
+
+    def test_market_ids_differing_in_leading_zeros_are_two_markets(self):
+        """They sort together but are two ids, so each has its own primary: the file named after 1.100000001, and the
+        event file for 1.0100000001 (no file is named after it). They used to share one record."""
+        zero = "1.0100000001"
+        sha, _ = self.build([(path(self.MID), stream([self.opening()])),
+                             (path(EVENT), stream([self.opening(), self.opening(zero)]))])
+        records = self.records(sha)
+        self.assertEqual({mid: record["provenance"]["member_path"] for mid, record in records.items()},
+                         {self.MID: path(self.MID), zero: path(EVENT)})
+
+    def assert_held_view_survives(self, pairs, holder):
+        """pairs: {label: (base TAR, changed TAR)}, each change made only after the off. In both TARs the primary is
+        holder with the view it published 10 minutes before the off (runners 1 and 2)."""
+        records, _, _ = self.build_all([tar for pair in pairs.values() for tar in pair])
+        for n, label in enumerate(pairs):
+            before, after = records[2 * n:2 * n + 2]
+            with self.subTest(case=label):
+                for record in (before, after):
+                    self.assertEqual(record["provenance"]["member_path"], holder[label])
+                    view = record["decision_time"]
+                    self.assertEqual((view["first_published_market_time"]["pt"], [r["id"] for r in view["runners"]]),
+                                     (ms(OFF - timedelta(minutes=10)), [1, 2]))
+                self.assertEqual(after["decision_time"], before["decision_time"])
+
+    def test_with_no_named_market_file_the_earliest_mention_picks_the_source(self):
+        """R1 after the verification of Astra's second review. With no file named after the market, the primary was
+        the first event file of any directory where the market was seen, else the first member that saw it, however
+        late: a mention published after the off, or the loss of one, moved the source and erased or made a view. Now
+        it is the member with the earliest mention (least pt, then path), or its directory's event file. The market
+        is held 10 minutes before the off by one member and each pair changes another only after the off:
+        A1, an event-file-only TAR (the layout of the three sample TARs): E0 (event 27000001, first by path, holding
+        another market) appends the market's definition 30 minutes after the off, while E1 (27000002) holds it;
+        A3, no event file: the file named after 1.100000000 (first by path) appends it, while the file named after
+        1.100000002 holds it; A5, a cut: E0 mentions it 15 minutes after the off and is cut after its first line
+        published after the off (a heartbeat), which removes the mention. The same shapes as the verifier's probe."""
+        tail = [heartbeat(ms(OFF + timedelta(minutes=10))), heartbeat(ms(OFF + timedelta(minutes=20)))]
+        third, low = "1.100000003", "1.100000000"
+        e0, e1 = path(EVENT), path("27000002", event="27000002")
+        late = {**self.opening(), "pt": ms(OFF + timedelta(minutes=30))}
+        e0_lines = [self.opening(third)] + tail
+        e1_file = stream([self.opening(), self.opening("1.100000005")] + tail)
+        mentions = [self.opening(third), tail[0], {**self.opening(), "pt": ms(OFF + timedelta(minutes=15))}, tail[1]]
+        holder_lines = [self.opening(self.OTHER), self.opening()] + tail
+        pairs = {
+            "A1": ([(e0, stream(e0_lines)), (e1, e1_file)], [(e0, stream(e0_lines + [late])), (e1, e1_file)]),
+            "A3": ([(path(low), stream([self.opening(low)] + tail)), (path(self.OTHER), stream(holder_lines))],
+                   [(path(low), stream([self.opening(low)] + tail + [late])),
+                    (path(self.OTHER), stream(holder_lines))]),
+            "A5": ([(e0, stream(mentions)), (e1, e1_file)], [(e0, stream(mentions[:2])), (e1, e1_file)]),
+        }
+        self.assert_held_view_survives(pairs, {"A1": e1, "A3": path(self.OTHER), "A5": e1})
+
+    def test_a_late_mention_in_another_directory_never_makes_its_event_file_primary(self):
+        """A4, the case that tells the three rules apart. E1 (event 27000002) holds the market 10 minutes before the
+        off; E0 (27000001) exists and never mentions it; a file named after another market in E0's directory
+        appends the market's definition 30 minutes after the off. 0db64db kept E1 (the first holder); the rule that
+        replaced it (an event file of any directory where the market was seen) made E0 primary with the empty view
+        although neither event file changed; the earliest mention keeps E1."""
+        tail = [heartbeat(ms(OFF + timedelta(minutes=10))), heartbeat(ms(OFF + timedelta(minutes=20)))]
+        e0, e1 = path(EVENT), path("27000002", event="27000002")
+        e0_file = stream([self.opening("1.100000003")] + tail)
+        e1_file = stream([self.opening(), self.opening("1.100000005")] + tail)
+        misfiled = [self.opening(self.OTHER)] + tail
+        late = {**self.opening(), "pt": ms(OFF + timedelta(minutes=30))}
+        pairs = {"A4": ([(e0, e0_file), (path(self.OTHER), stream(misfiled)), (e1, e1_file)],
+                        [(e0, e0_file), (path(self.OTHER), stream(misfiled + [late])), (e1, e1_file)])}
+        self.assert_held_view_survives(pairs, {"A4": e1})
+
+    def test_the_first_named_file_by_path_stays_primary_whatever_follows(self):
+        """Two files named after the market (events 27000001 and 27000009). The first by path is primary whether it
+        holds the market before the off or not, and whatever it publishes or loses after the off: (a) heartbeats
+        only, then the same with the market's first definition appended after the off; (b) holding the market before
+        the off, then the same with a line it cannot read after the off. The second file (holding the market before
+        the off with runner 2 REMOVED) is never chosen, so neither holding the market (verifier mutant M21) nor being
+        read whole (M11) picks among named files."""
+        second = path(self.MID, event="27000009")
+        tail = heartbeat(ms(OFF + timedelta(minutes=10)))
+        other_named = stream([self.opening(second="REMOVED"), tail])
+        beats = [heartbeat(ms(OFF - timedelta(minutes=10))), tail]
+        late_definition = {**self.opening(), "pt": ms(OFF + timedelta(minutes=20))}
+        holder = [self.opening(), tail]
+        variants = {"a-base": stream(beats), "a-append": stream(beats + [late_definition]),
+                    "b-base": stream(holder), "b-cut": bz2.compress(lines(holder) + b"not json\n")}
+        records, _, _ = self.build_all([[(path(self.MID), data), (second, other_named)] for data in variants.values()])
+        got = dict(zip(variants, records))
+        for label, record in got.items():
+            with self.subTest(variant=label):
+                self.assertEqual(record["provenance"]["member_path"], path(self.MID))
+        self.assertEqual((got["a-base"]["decision_time"], got["a-append"]["decision_time"]), (NO_VIEW, NO_VIEW))
+        self.assertEqual(got["b-cut"]["decision_time"], got["b-base"]["decision_time"])
+        self.assertEqual([r["status"] for r in got["b-base"]["decision_time"]["runners"]],
+                         [[[ms(OFF - timedelta(minutes=10)), "ACTIVE"]]] * 2)
+
+    def test_a_market_whose_only_records_are_gate_refused_gets_no_record(self):
+        """The file named after the market holds only heartbeats; the event file holds the market 10 minutes before
+        the off, then revises it into a sealed month (2026-02) 20 minutes after the off, the key escaped so the
+        ingest scan misses it. The event file's record is refused by marketTime, so the market has no record at all,
+        not even the empty primary's no_view one (that would put a sealed-holdout market into the index; verifier
+        mutant M15): a record needs a member that saw the market and a record of it that passed the gate."""
+        root = self.new_root()
+        sealed = datetime(2026, 2, 1, 14, tzinfo=timezone.utc)
+        revision = json.dumps(md_change(self.MID, OFF + timedelta(minutes=20),
+                                        definition(iso(sealed), [runner(1), runner(2)]))).encode() + b"\n"
+        beats = [heartbeat(ms(OFF - timedelta(minutes=10))), heartbeat(ms(OFF + timedelta(minutes=10)))]
+        event_file = bz2.compress(lines([self.opening()]) + revision.replace(b'"marketTime"', b'"market\\u0054ime"'))
+        result = ingest_archive(self.tar([(path(self.MID), stream(beats)), (path(EVENT), event_file)], "gate.tar"),
+                                root)
+        self.assertEqual((result["status"], result["refused_by_reason"]), ("ingested", {}), result)
+        self.assertEqual(index_archives(root)["status"], "indexed")
+        sha = result["archive_sha256"]
+        self.assertEqual(self.records(sha, root), {})
+        self.assertEqual([(item["market_id"], item["member_path"], item["reason"])
+                          for item in self.head(sha, root)["refused_markets"]],
+                         [(self.MID, path(EVENT), "market_time_month_sealed_holdout")])
+
+    def test_an_earliest_mention_refused_by_the_gate_still_picks_the_source(self):
+        """No file is named after the market and no event file is in its directory. The file named after OTHER
+        mentions it first (10 minutes before the off); the file named after 1.100000000, first by path, 5 minutes
+        later. Base: the earliest mention is primary with its view (not the first by path). The same TAR with OTHER's
+        file revising the market's marketTime into a sealed month (2026-02) 20 minutes after the off, the key escaped
+        so the ingest scan misses it: that record is refused by marketTime, but its mention still counts as the
+        earliest, so the market is refused (primary_source_refused) rather than handed to the later mention's view.
+        Ignoring refused records when taking the earliest mention would let a message published after the off move
+        the source, and put a market one source places in the sealed holdout into the index."""
+        low = "1.100000000"
+        sealed = datetime(2026, 2, 1, 14, tzinfo=timezone.utc)
+        revision = json.dumps(md_change(self.MID, OFF + timedelta(minutes=20),
+                                        definition(iso(sealed), [runner(1), runner(2)]))).encode() + b"\n"
+        first = lines([self.opening(self.OTHER), self.opening(), heartbeat(ms(OFF + timedelta(minutes=10)))])
+        later = stream([self.opening(low), {**self.opening(), "pt": ms(OFF - timedelta(minutes=5))},
+                        heartbeat(ms(OFF + timedelta(minutes=10)))])
+        root = self.new_root()
+        shas = []
+        for n, data in enumerate((first, first + revision.replace(b'"marketTime"', b'"market\\u0054ime"'))):
+            result = ingest_archive(self.tar([(path(low), later), (path(self.OTHER), bz2.compress(data))],
+                                             f"earliest-gate-{n}.tar"), root)
+            self.assertEqual((result["status"], result["refused_by_reason"]), ("ingested", {}), result)
+            shas.append(result["archive_sha256"])
+        self.assertEqual(index_archives(root)["status"], "indexed")
+        base, revised = (self.records(sha, root) for sha in shas)
+        self.assertEqual(base[self.MID]["provenance"]["member_path"], path(self.OTHER))
+        self.assertEqual(base[self.MID]["decision_time"]["first_published_market_time"]["pt"],
+                         ms(OFF - timedelta(minutes=10)))
+        self.assertEqual(sorted(revised), [low, self.OTHER])
+        self.assertEqual([(item["market_id"], item["member_path"], item["reason"])
+                          for item in self.head(shas[1], root)["refused_markets"]],
+                         [(self.MID, path(low), "primary_source_refused"),
+                          (self.MID, path(self.OTHER), "market_time_month_sealed_holdout")])
+
+    def test_an_event_file_refused_at_ingest_is_still_the_primary(self):
+        """No file is named after the market; it is held before the off only by the file named after OTHER, in a
+        directory whose event file is refused at ingest by its content (another market revised into a sealed month
+        after the off). That event file exists, so it is the market's primary: no record, and OTHER's record of it is
+        listed as primary_source_refused. Taking event files only from kept members (verifier mutant M08) would let
+        that content, published after the off, hand the market to OTHER's view."""
+        root = self.new_root()
+        third = "1.100000003"
+        sealed = datetime(2026, 2, 1, 14, tzinfo=timezone.utc)
+        sealed_line = json.dumps(md_change(third, OFF + timedelta(minutes=20),
+                                           definition(iso(sealed), [runner(1)]))).encode() + b"\n"
+        event_file = bz2.compress(lines([self.opening(third)]) + sealed_line)
+        held = stream([self.opening(self.OTHER), self.opening(), heartbeat(ms(OFF + timedelta(minutes=10)))])
+        result = ingest_archive(self.tar([(path(EVENT), event_file), (path(self.OTHER), held)], "refused-e.tar"), root)
+        self.assertEqual(result["refused_by_reason"], {"content_month_sealed_holdout": 1}, result)
+        self.assertEqual(index_archives(root)["status"], "indexed")
+        sha = result["archive_sha256"]
+        self.assertEqual(sorted(self.records(sha, root)), [self.OTHER])
+        self.assertEqual([(item["market_id"], item["member_path"], item["reason"])
+                          for item in self.head(sha, root)["refused_markets"]],
+                         [(self.MID, path(self.OTHER), "primary_source_refused")])
+
+    def test_post_decision_appends_and_cuts_never_change_decision_time(self):
+        """Property-style, fixed seed (from hashlib): seven base TARs, each with every member ending in lines published
+        after the off. One event directory: A, Astra's M of heartbeats with E; B, M holding the market before the off
+        with a disagreeing E; C, E holding it with a file named after another market in the same directory; D, the
+        market held before the off only by that other file while E (existing) never mentions it. Two event
+        directories, no file named after the market: E, event files only, the first by path (E0) mentioning the
+        market only after the off while E1 holds it; F, E0 never mentioning it and a file named after another market
+        in E0's directory, E1 holding it. No event file: G, two files named after other markets, the second by path
+        holding it. Each variant replaces one member: for every member, the market's definition appended after the
+        off, and a cut at the end of its first line published after the off; and 24 random variants per base, a
+        random cut at or after that point, random appends after the off (post_off_lines), or both. decision_time and
+        the primary never change. A cut inside that first line is the documented exception (a line whose pt cannot
+        be read ends a view at the last pt applied) and is not drawn."""
+        rng = random.Random(int.from_bytes(hashlib.sha256(b"backtest (b) R2 primary source").digest()[:8], "big"))
+        t10, t20, t30, t40 = (ms(OFF + timedelta(minutes=m)) for m in (10, 20, 30, 40))
+        holder = [self.opening(), heartbeat(t10), self.results(), heartbeat(t30)]
+        disagreeing = [self.opening(second="REMOVED"), heartbeat(t10), self.results(), heartbeat(t30)]
+        both = [self.opening(), self.opening(self.OTHER), heartbeat(t10), self.results(), heartbeat(t30)]
+        other_only = [self.opening(self.OTHER), heartbeat(t10), self.results(self.OTHER), heartbeat(t30)]
+        third, low = "1.100000003", "1.100000000"
+        e1 = path("27000002", event="27000002")
+        bases = {
+            "A": {path(self.MID): [heartbeat(ms(OFF) - 600000), heartbeat(t10), heartbeat(t20)], path(EVENT): holder},
+            "B": {path(self.MID): holder, path(EVENT): disagreeing},
+            "C": {path(EVENT): both, path(self.OTHER): [self.opening(self.OTHER), heartbeat(t10), heartbeat(t20)]},
+            "D": {path(EVENT): other_only, path(self.OTHER): [self.opening(self.OTHER), self.opening(), heartbeat(t10),
+                                                              heartbeat(t20)]},
+            "E": {path(EVENT): [self.opening(third), heartbeat(t10), {**self.opening(), "pt": t20}, heartbeat(t30)],
+                  e1: holder},
+            "F": {path(EVENT): [self.opening(third), heartbeat(t10), heartbeat(t20)],
+                  path(self.OTHER): [self.opening(self.OTHER), heartbeat(t10), heartbeat(t20)], e1: holder},
+            "G": {path(low): [self.opening(low), heartbeat(t10), heartbeat(t20)],
+                  path(self.OTHER): [self.opening(self.OTHER), self.opening(), heartbeat(t10), self.results(),
+                                     heartbeat(t30)]},
+        }
+        expected_primary = {"A": path(self.MID), "B": path(self.MID), "C": path(EVENT), "D": path(EVENT), "E": e1,
+                            "F": e1, "G": path(self.OTHER)}
+        late = lines([{**self.opening(), "pt": t40}])
+        for name, members in bases.items():
+            tars, labels = [[(place, stream(messages)) for place, messages in members.items()]], ["base"]
+
+            def variant(place, data):
+                return [(other, bz2.compress(data) if other == place else stream(messages))
+                        for other, messages in members.items()]
+
+            def first_cut(place):
+                first_after = next(i for i, m in enumerate(members[place]) if m["pt"] >= ms(OFF))
+                return len(lines(members[place][:first_after + 1]))
+
+            for place in sorted(members):
+                data = lines(members[place])
+                tars += [variant(place, data + late), variant(place, data[:first_cut(place)])]
+                labels += [f"append the market to {place}", f"cut {place} after its first line after the off"]
+            for n in range(24):
+                place = rng.choice(sorted(members))
+                data = lines(members[place])
+                safe = first_cut(place)
+                operation = rng.choice(("cut", "append", "both"))
+                cut = rng.randrange(safe, len(data) + 1) if operation != "append" else len(data)
+                extra = post_off_lines(rng, self.MID, t30, rng.randrange(1, 5)) if operation != "cut" else b""
+                tars.append(variant(place, data[:cut] + extra))
+                labels.append(f"{n}: {operation} {place} at {cut}/{len(data)} + {extra[:300]!r}")
+            records, _, _ = self.build_all(tars)
+            base = records[0]
+            self.assertEqual(base["provenance"]["member_path"], expected_primary[name])
+            self.assertEqual(base["decision_time"] == NO_VIEW, name in ("A", "D"))
+            for label, record in zip(labels, records):
+                with self.subTest(base=name, variant=label):
+                    self.assertEqual((record["provenance"]["member_path"], record["decision_time"]),
+                                     (base["provenance"]["member_path"], base["decision_time"]))
 
 
 class AuditTests(Workspace):

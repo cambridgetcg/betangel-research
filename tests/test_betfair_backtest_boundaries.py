@@ -149,6 +149,9 @@ BACKTEST_STDLIB = frozenset({
     "argparse", "bisect", "bz2", "collections", "copy", "csv", "dataclasses", "datetime", "decimal", "fractions",
     "functools", "gzip", "hashlib", "heapq", "itertools", "json", "math", "numbers", "operator", "pathlib", "re",
     "statistics", "sys", "typing",
+    # archive.py reads Betfair Historical Data TARs as a header stream ("r|"); it never calls extract or creation.
+    # Package-wide here; tests/test_betfair_backtest_archive.py pins that only archive.py imports it, "r|" only.
+    "tarfile",
 })
 # Non-stdlib packages root modules may import (none today): the root rule cannot trace into them.
 ROOT_THIRD_PARTY = frozenset()
@@ -527,6 +530,21 @@ STDLIB_SHADOW_REPRODUCTION = {
 }
 
 
+# One standard-library module that pathlib imports internally on the running interpreter and that a source file can
+# shadow: loaded by SourceFileLoader (frozen, built-in and extension modules cannot be shadowed by a .py), preferring
+# leaf modules (3.10 to 3.14 give fnmatch; 3.15 under -I -S gives only operator).
+STDLIB_SHADOW_PICK = ("import sys\nbefore = set(sys.modules)\nimport pathlib\n"
+                      "names = sorted(n for n in set(sys.modules) - before if '.' not in n and n != 'pathlib'\n"
+                      "               and type(getattr(sys.modules[n].__spec__, 'loader', None)).__name__\n"
+                      "               == 'SourceFileLoader')\n"
+                      "preferred = [n for n in ('fnmatch', 'glob', 'reprlib', 'keyword', 'operator') if n in names]\n"
+                      "sys.stdout.write((preferred or names or [''])[0])\n")
+# Like SHADOW_PROBE, but a shadow that breaks pathlib still counts: the question is only whether it was loaded.
+STDLIB_SHADOW_PROBE = ("import sys\nsys.path.insert(0, sys.argv[1])\n"
+                       "try:\n    import pkg.betfair.backtest.run\nexcept Exception:\n    pass\n"
+                       "sys.stdout.write(str('pkg.betfair.gateway' in sys.modules))\n")
+
+
 class ResolverSelfTests(unittest.TestCase):
     """The checker on synthetic packages: each forbidden shape must fail, each clean twin must pass."""
 
@@ -691,12 +709,37 @@ class ResolverSelfTests(unittest.TestCase):
             with self.subTest(root=label):
                 self.assertIn(("pkg.other", "json", SHADOWED), found, describe(found))
 
+    def test_stdlib_internal_import_really_loads_a_shadow(self):
+        """Runtime half of the R4 internal review, per interpreter: which pure-Python standard-library modules the
+        allowlisted pathlib imports internally differs by version (fnmatch on 3.10 to 3.14; on 3.15 under -I -S only
+        operator is source-loaded), so a hard-coded fnmatch failed on 3.15 (lab MacBook Pro, 2026-10-14). A fresh
+        isolated interpreter names one such module; a file of that name beside the package is refused by the static
+        rule and, in a second fresh interpreter, really is loaded (and with it the synthetic gateway), even if pathlib
+        then breaks."""
+        pick = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", STDLIB_SHADOW_PICK],
+                              env={"PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=60)
+        self.assertEqual((pick.returncode, pick.stderr), (0, ""))
+        name = pick.stdout.strip()
+        if not name:
+            self.skipTest("pathlib imports no shadowable pure-Python standard-library module on this interpreter")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tree = {**{p: text for p, text in STDLIB_SHADOW_REPRODUCTION.items() if p != "fnmatch.py"},
+                f"{name}.py": "from pkg.betfair import gateway\n"}
+        write_tree(tmp.name, tree)
+        graph = ImportGraph(tmp.name, "pkg")
+        self.assertEqual(backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN),
+                         [("./", name, STDLIB_SHADOWED)])
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", STDLIB_SHADOW_PROBE, tmp.name], cwd=tmp.name,
+                                env={"PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=60)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True", ""))
+
     def test_standard_library_names_are_refused_even_when_not_imported(self):
         """Internal review of R4: a repository file named after a module the standard library imports internally is
         loaded through the library's own import, which the scan does not trace (STDLIB_SHADOW_REPRODUCTION:
         fnmatch.py beside the package, reached through the allowlisted pathlib). Any standard-library name in a
-        searched place is refused, imported or not and ignoring case; a fresh isolated interpreter shows the
-        importer really loads the file (and with it the synthetic gateway)."""
+        searched place is refused, imported or not and ignoring case. The runtime proof is in
+        test_stdlib_internal_import_really_loads_a_shadow, which picks its module on the running interpreter."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         write_tree(tmp.name, STDLIB_SHADOW_REPRODUCTION)
@@ -704,9 +747,6 @@ class ResolverSelfTests(unittest.TestCase):
         self.assertEqual(backtest_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN),
                          [("./", "fnmatch", STDLIB_SHADOWED)])
         self.assertEqual(root_violations(graph, betfair="pkg.betfair"), [("./", "fnmatch", STDLIB_SHADOWED)])
-        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", SHADOW_PROBE, tmp.name], cwd=tmp.name,
-                                env={"PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=60)
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "True", ""))
         # Every place and shape, under both rules; the standard-library name need not be imported anywhere.
         shapes = {
             "module beside the package": ({"fnmatch.py": "x = 1\n"}, ("./", "fnmatch")),
@@ -874,8 +914,10 @@ class BacktestBoundaryTests(unittest.TestCase):
         top_level_calls = [ast.unparse(n) for n in main.body[:-1] if isinstance(n, ast.Expr)
                            and not isinstance(n.value, ast.Constant)]
         self.assertEqual(top_level_calls, [])
+        # The archive subcommands import their three backtest modules inside a function (task (b)).
         self.assertEqual(REAL.internal[f"{BACKTEST}.__main__"],
-                         {TOP, BETFAIR, BACKTEST, f"{BACKTEST}.contract"})
+                         {TOP, BETFAIR, BACKTEST, f"{BACKTEST}.contract", f"{BACKTEST}.archive",
+                          f"{BACKTEST}.coverage_audit", f"{BACKTEST}.market_index"})
 
     def test_backtest_syntax_floor_is_python_3_10(self):
         for module in sorted(m for m in REAL.files if under(m, BACKTEST)):

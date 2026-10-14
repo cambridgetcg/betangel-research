@@ -15,6 +15,12 @@ always explicit and must lie outside every Git worktree and this repository. Tho
 inside _archive_command, so validate-contract still loads contract.py alone
 (tests/test_betfair_backtest_contract.py lists what it loads).
 
+run-backtest --contract PATH --data-root DIR --lab-state-root DIR --run-id ID --code-identity TEXT runs one frozen
+contract over every indexed archive under the data root (runner.py) and prints one JSON line: status completed (exit
+0), or refused, failed or uncertain (exit 2). reconcile-trials --contract PATH --lab-state-root DIR --code-identity
+TEXT closes, as aborted, the contract's trials that started and never closed (exit 0 when reconciled, else 2).
+runner is imported inside _runner_command, as the archive modules are.
+
 Everything here imports only the standard library and this package: no Betfair client CLI, gateway, account,
 credential, profile or network module (tests/test_betfair_backtest_boundaries.py). Nothing here places an order,
 logs in or reads an account.
@@ -45,6 +51,17 @@ def build_parser():
     index.add_argument("--archive", help="sha256 of one ingested archive (default: every archive)")
     audit = commands.add_parser("archive-audit", help="print the capability and coverage report")
     audit.add_argument("--data-root", required=True, help="existing directory outside every Git worktree")
+    run = commands.add_parser("run-backtest", help="run one frozen contract over the indexed archives")
+    run.add_argument("--contract", required=True, help="path to a local frozen experiment contract JSON file")
+    run.add_argument("--data-root", required=True, help="existing directory outside every Git worktree")
+    run.add_argument("--lab-state-root", required=True, help="existing directory for ledgers, runs and receipts")
+    run.add_argument("--run-id", required=True, help="one path component naming this run")
+    run.add_argument("--code-identity", required=True, help="printable text naming the code, for instance a commit")
+    reconcile = commands.add_parser("reconcile-trials", help="abort a contract's unfinished trials, record "
+                                    "unaccounted runs as spent and publish missing receipts")
+    reconcile.add_argument("--contract", required=True, help="path to a local frozen experiment contract JSON file")
+    reconcile.add_argument("--lab-state-root", required=True, help="existing directory for ledgers, runs and receipts")
+    reconcile.add_argument("--code-identity", required=True, help="printable text naming who reconciles")
     return parser
 
 
@@ -58,8 +75,23 @@ def _archive_command(args):
     return coverage_audit.audit(args.data_root)
 
 
+def _runner_command(args):
+    """(result, exit code) of one runner subcommand; imported here so validate-contract never loads the runner."""
+    from . import runner
+    if args.command == "run-backtest":
+        result = runner.run_backtest(args.contract, args.data_root, args.lab_state_root, args.run_id,
+                                     args.code_identity)
+        return result, 0 if result["status"] == "completed" else EXIT_INVALID
+    result = runner.reconcile(args.contract, args.lab_state_root, args.code_identity)
+    return result, 0 if result["status"] == "reconciled" else EXIT_INVALID
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command in ("run-backtest", "reconcile-trials"):
+        result, code = _runner_command(args)
+        sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")
+        return code
     if args.command != "validate-contract":
         result = _archive_command(args)
         sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")

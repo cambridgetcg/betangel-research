@@ -1075,10 +1075,11 @@ class BacktestBoundaryTests(unittest.TestCase):
         top_level_calls = [ast.unparse(n) for n in main.body[:-1] if isinstance(n, ast.Expr)
                            and not isinstance(n.value, ast.Constant)]
         self.assertEqual(top_level_calls, [])
-        # The archive subcommands import their three backtest modules inside a function (task (b)).
+        # The archive subcommands import their three backtest modules inside a function (task (b)), and the
+        # runner subcommands import runner inside another (task c2b2).
         self.assertEqual(REAL.internal[f"{BACKTEST}.__main__"],
                          {TOP, BETFAIR, BACKTEST, f"{BACKTEST}.contract", f"{BACKTEST}.archive",
-                          f"{BACKTEST}.coverage_audit", f"{BACKTEST}.market_index"})
+                          f"{BACKTEST}.coverage_audit", f"{BACKTEST}.market_index", f"{BACKTEST}.runner"})
 
     def test_backtest_syntax_floor_is_python_3_10(self):
         for module in sorted(m for m in REAL.files if under(m, BACKTEST)):

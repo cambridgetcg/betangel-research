@@ -18,6 +18,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import tarfile
 import tempfile
 import time
@@ -132,14 +133,14 @@ def path(market, when=OFF, plan="BASIC", event=EVENT):
 
 
 def make_tar(target, members, fmt=tarfile.PAX_FORMAT, **options):
-    """members: (name, bytes) for a regular file, or a TarInfo (no data) for any other type."""
+    """members: (name or TarInfo, bytes) for a regular file, or a TarInfo (no data) for any other type."""
     with tarfile.open(target, "w", format=fmt, **options) as tar:
         for member in members:
             if isinstance(member, tarfile.TarInfo):
                 tar.addfile(member, io.BytesIO(b"\0" * member.size) if member.size else None)
                 continue
             name, data = member
-            info = tarfile.TarInfo(name)
+            info = name if isinstance(name, tarfile.TarInfo) else tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     return target
@@ -394,6 +395,115 @@ class ArchiveRefusalTests(Workspace):
         doubled = bz2.compress(b'{"op":"mcm","pt":1,"mc":[]}\n') + good
         self.assertEqual(self.ingest([self.good(), (name, doubled)])["status"], "ingested")
 
+    def test_failed_members_spend_the_decompression_allowance(self):
+        """R3: the work spent on a member that fails is charged to the archive's allowance, and once the allowance
+        is spent nothing more is decompressed, so total work stays within the allowance plus one chunk however many
+        members fail. Work is measured on BZ2Decompressor itself: each call's output, or its max_length when it
+        raises, because libbz2 checks a block's CRC only after producing the block and a failed call drops that
+        output, which yielded bytes cannot show. Astra's case: three 2 MiB members of random bytes under a 1 MiB
+        allowance (5,399,886 bytes of work before). Second: three members each cut inside their last bz2 block, so
+        each decompresses about 1.8 MB before truncated_bz2, under a 2 MiB allowance. Third: forty 48-byte members
+        whose block CRC is corrupt; each failing call has made 1,000,000 bytes, so they used to cost about 40 MB
+        against a 1 MiB allowance, charged nothing; now each failed call is charged a whole chunk."""
+        real, work, raised = bz2.BZ2Decompressor, [], []
+
+        class Counting:
+            def __init__(self):
+                self.inner = real()
+
+            def decompress(self, data, max_length=-1):
+                try:
+                    out = self.inner.decompress(data, max_length)
+                except Exception:
+                    work.append(max_length)
+                    raised.append(max_length)
+                    raise
+                work.append(len(out))
+                return out
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        names = [path(f"1.1000000{n:02d}") for n in range(1, 41)]
+        noise = bz2.compress(random.Random(7).randbytes(2 << 20))
+        cut = bz2.compress(random.Random(8).randbytes(2 << 20))[:-1000]
+        corrupt = bytearray(bz2.compress(b"\0" * 1_000_000))
+        corrupt[10] ^= 0xFF                                         # the block CRC stored after the block magic
+        corrupt = bytes(corrupt)
+        self.assertEqual(len(real().decompress(corrupt, 999_999)), 999_999)     # output made before the CRC check
+        with self.assertRaises(OSError):
+            real().decompress(corrupt, archive.CHUNK_BYTES)
+        cases = {"over the allowance": (noise, 3, 1 << 20, ["archive:total_decompressed_over_limit"], 0),
+                 "truncated members": (cut, 3, 2 << 20, [f"{names[0]}:truncated_bz2",
+                                                         "archive:total_decompressed_over_limit"], 0),
+                 "block CRC mismatch": (corrupt, 40, 1 << 20, [f"{names[0]}:not_bz2", f"{names[1]}:not_bz2",
+                                                               "archive:total_decompressed_over_limit"], 2)}
+        for label, (data, count, allowance, problems, failed_calls) in cases.items():
+            with self.subTest(case=label):
+                work.clear()
+                raised.clear()
+                with mock.patch.object(archive.bz2, "BZ2Decompressor", Counting):
+                    result = self.ingest([(name, data) for name in names[:count]], root=self.new_root(),
+                                         max_total_decompressed_bytes=allowance)
+                self.assertEqual(result, {"status": "refused", "problems": problems})
+                self.assertEqual(len(raised), failed_calls)
+                self.assertLessEqual(max(work), archive.CHUNK_BYTES)
+                self.assertLessEqual(sum(work), allowance + archive.CHUNK_BYTES, work)
+
+    def test_pax_gnu_sparse_is_refused_before_tarfile_reads_a_sparse_map(self):
+        """R4: a pax GNU sparse 1.0 member (major 1, minor 0, realsize 0) whose data opens with a 50,000-entry map
+        (200 KB), under a 1 KiB member limit. tarfile's own hook reads that whole map, after fetching the member's
+        header and before any check in _scan, so the refusal must come first. The stdlib hooks are wrapped: plain
+        tarfile runs one and builds 50,000 sparse entries (the probe is live), the ingest runs none. Every other
+        GNU.sparse keyword, alone or in another version's set, in any case, is refused too before tarfile acts on
+        it; libarchive's ordinary pax keywords still pass (RealContainerShapeTests)."""
+        hooks = ("_proc_gnusparse_00", "_proc_gnusparse_01", "_proc_gnusparse_10")
+        originals, built = {hook: getattr(tarfile.TarInfo, hook) for hook in hooks}, []
+
+        def probe(hook):
+            def run(self, member, *args):
+                originals[hook](self, member, *args)
+                built.append((hook, len(member.sparse)))
+            return run
+
+        name = path("1.100000002")
+
+        def sparse_tar(headers, data):
+            info = tarfile.TarInfo(name)
+            info.pax_headers = headers
+            return self.tar([self.good(), (info, data)], name="sparse.tar")
+
+        mapped = sparse_tar({"GNU.sparse.major": "1", "GNU.sparse.minor": "0", "GNU.sparse.realsize": "0"},
+                            b"50000\n" + b"0\n0\n" * 50000)
+        with mock.patch.multiple(tarfile.TarInfo, **{hook: probe(hook) for hook in hooks}):
+            with tarfile.open(mapped, "r|") as tar:
+                self.assertEqual([info.issparse() for info in tar], [False, True])
+            self.assertEqual(built, [("_proc_gnusparse_10", 50000)])
+            built.clear()
+            result = ingest_archive(mapped, self.root, DEFAULT_LIMITS.stricter(max_member_bytes=1024))
+            self.assertEqual(result, {"status": "refused", "problems": [f"{name}:not_regular"]})
+            self.assertEqual(built, [])
+            data = stream(full_market("1.100000002"))           # a member that is fine without the keyword
+            variants = {
+                "0.0": {"GNU.sparse.size": "10", "GNU.sparse.numblocks": "1", "GNU.sparse.offset": "0",
+                        "GNU.sparse.numbytes": "10"},
+                "0.1": {"GNU.sparse.map": "0,10", "GNU.sparse.size": "10", "GNU.sparse.name": name},
+                "1.0": {"GNU.sparse.major": "1", "GNU.sparse.minor": "0", "GNU.sparse.name": name,
+                        "GNU.sparse.realsize": "10"},
+                "another version": {"GNU.sparse.major": "2", "GNU.sparse.minor": "0"},
+                "name": {"GNU.sparse.name": name}, "realsize": {"GNU.sparse.realsize": str(len(data))},
+                "size": {"GNU.sparse.size": str(len(data))}, "numblocks": {"GNU.sparse.numblocks": "0"},
+                "offset": {"GNU.sparse.offset": "0"}, "minor": {"GNU.sparse.minor": "0"},
+                "any case": {"gnu.SPARSE.realsize": str(len(data))},          # stdlib ignores it; refused anyway
+            }
+            for label, headers in variants.items():
+                with self.subTest(variant=label):
+                    result = ingest_archive(sparse_tar(headers, data), self.new_root())
+                    self.assertEqual(result, {"status": "refused", "problems": [f"{name}:not_regular"]})
+                    self.assertEqual(built, [])
+            plain = ingest_archive(sparse_tar({"mtime": "1557303870.6957880"}, data), self.new_root())
+            self.assertEqual((plain["status"], plain["members"]), ("ingested", 2))
+
     def test_not_a_tar_and_empty_tar(self):
         junk = self.tmp / "junk.tar"
         junk.write_bytes(b"\x01" * 4096)
@@ -633,6 +743,77 @@ class MonthGateTests(Workspace):
             result = self.ingest([(path("1.100000001"), stream(full_market())), (smuggled, content)])
         self.assertEqual(result["refused_by_reason"], {"content_month_sealed_holdout": 1})
 
+    def test_a_market_time_cut_by_a_chunk_boundary_counts_once_by_its_utc_month(self):
+        """N1: the first 1 MiB decompressed chunk ends just after "2026-01" of "2026-01-01T00:00:00+01:00", which is
+        2025-12-31T23:00 in UTC. The cut value is carried into the next chunk and read whole, so the member's only
+        content month is 2025-12 and it is kept; the literal 2026-01 used to be recorded too and refused it as
+        sealed holdout. A value the member itself ends inside still counts by its literal month, and so does one cut
+        after its month whose match (200 spaces before the colon here) starts too early to be carried in the tail:
+        it would otherwise be lost in both chunks and a sealed-holdout member stored."""
+        when, mid = datetime(2025, 12, 31, tzinfo=timezone.utc), "1.100000043"
+        opening, closing = b'{"op": "mcm", "pt": 1, "mc": [], "pad": "', b'"}\n'
+
+        def cut_after(head, rest):
+            """Content whose first 1 MiB chunk ends right after head (bz2 compresses the random hex pad little)."""
+            size = archive.CHUNK_BYTES - len(head) - len(opening) - len(closing)
+            return opening + random.Random(3).randbytes(size).hex()[:size].encode() + closing + head + rest
+
+        line = lines([md_change(mid, when, definition("2026-01-01T00:00:00+01:00", [runner(1)]))])
+        cut = line.index(b'"marketTime": "2026-01') + len(b'"marketTime": "2026-01')
+        original, chunks = archive._decompressed, []
+
+        def recorded(read):
+            for chunk in original(read):
+                chunks.append(chunk)
+                yield chunk
+
+        with mock.patch.object(archive, "_decompressed", recorded):
+            result = self.ingest([(path(mid, when, event="29000043"), bz2.compress(cut_after(line[:cut], line[cut:])))])
+        self.assertTrue(chunks[0].endswith(b'"marketTime": "2026-01'), chunks[0][-40:])       # the cut is real
+        self.assertEqual((result["status"], result["refused_by_reason"]), ("ingested", {}), result)
+        manifest = json.loads((self.root / "manifests" / f"{result['archive_sha256']}.json").read_bytes())
+        self.assertEqual(manifest["members"][0]["content_months"], ["2025-12"])
+        self.assertEqual(archive.content_months(b'"marketTime":"2026-01', final=False), set())
+        ended = iter([bz2.compress(b'{"marketTime":"2026-01')])
+        self.assertEqual(archive._decompress_check(lambda n: next(ended, b""), 100, DEFAULT_LIMITS, 1 << 20),
+                         (22, {"2026-01"}))
+        # A match longer than the carried tail, cut after its month: counted by that literal (sealed) month.
+        head = b'{"op":"mcm","pt":1,"mc":[{"id":"1.100000001","x":{"marketTime"' + b" " * 200 + b': "2026-03'
+        rest = b'-01T12:00:00.000Z"}}]}\n' + lines(full_market())
+        chunks.clear()
+        with mock.patch.object(archive, "_decompressed", recorded):
+            result = self.ingest([(path("1.100000001"), bz2.compress(cut_after(head, rest))),
+                                  (path("1.100000002"), stream(full_market("1.100000002")))], root=self.new_root())
+        self.assertTrue(chunks[0].endswith(b' : "2026-03'), chunks[0][-40:])
+        self.assertEqual((result["status"], result["members"], result["refused_by_reason"]),
+                         ("ingested", 1, {"content_month_sealed_holdout": 1}), result)
+
+    def test_every_cut_of_a_market_time_value_counts_its_utc_month_once(self):
+        """N1 at every position: _decompress_check's chunks are cut once anywhere in or around a marketTime value
+        whose literal month (2026-01) is not its UTC month (2025-12), or twice anywhere inside it; every cut gives
+        2025-12 alone. Real chunks are 1 MiB; content_months only cares where the window ends."""
+        line = (b'{"op":"mcm","pt":1,"mc":[{"id":"1.1","marketDefinition":{"marketTime": '
+                b'"2026-01-01T00:00:00+01:00","x":1}}]}\n')
+        start, stop = line.index(b'"marketTime"'), line.index(b',"x"')
+
+        def months(data, *cuts):
+            pieces = [data[a:b] for a, b in zip((0, *cuts), (*cuts, len(data)))]
+            with mock.patch.object(archive, "_decompressed", lambda read: iter(pieces)):
+                return archive._decompress_check(lambda n: b"", len(data), DEFAULT_LIMITS, 1 << 20)
+
+        for first in range(start - 2, stop + 3):
+            self.assertEqual(months(line, first), (len(line), {"2025-12"}), first - start)
+            for second in range(first + 1, stop + 1):
+                self.assertEqual(months(line, first, second), (len(line), {"2025-12"}), (first - start, second - start))
+        # The tail's edge: a match cut after its month that fits the 128-byte tail exactly is carried and read
+        # whole; one a byte longer is counted by its literal month. With more whitespace still, a cut before the
+        # month is complete finds nothing in either chunk: the documented limit (the index is the authoritative gate).
+        for spaces, cut, expected in ((106, b'"2026-01', {"2025-12"}), (107, b'"2026-01', {"2026-01"}),
+                                      (140, b'"2026-0', set())):
+            with self.subTest(spaces=spaces):
+                long = b'{"marketTime"' + b" " * spaces + b': "2026-01-01T00:00:00+01:00"}\n'
+                self.assertEqual(months(long, long.index(cut) + len(cut)), (len(long), expected))
+
     def test_any_refused_content_month_refuses_the_member(self):
         """E5: a 31 Dec race revised after the off to 1 Jan is refused whole (its event file too, with the unaffected
         13:00 race in it): a population exclusion task (c) must report, recorded with the content months."""
@@ -773,6 +954,53 @@ class IdempotencyTests(Workspace):
         self.assertFalse(raw.exists())
         partial.unlink()
         self.assertEqual(self.ingest(self.members())["written"], 2)
+
+    def test_a_leftover_manifest_partial_refuses_before_any_write(self):
+        """N2: a manifests/<sha>.json.partial left by an interrupted run is found with the raw partials, before any
+        raw member is written (it used to surface only at the manifest write, after the raw copy), and both kinds
+        are listed together. A dangling symlink left as a partial counts too (it used to pass the check and fail
+        only at the write, after earlier raw members were copied). A manifest partial refuses even beside the
+        identical manifest of a complete ingest, and beside a manifest that would change it is listed with that."""
+        tar = self.tar(self.members())
+        sha = hashlib.sha256(tar.read_bytes()).hexdigest()
+        manifest = self.root / "manifests" / f"{sha}.json"
+        partial = manifest.with_name(manifest.name + ".partial")
+        partial.parent.mkdir()
+        refused = {"status": "refused", "problems": [f"manifest:{sha}:partial_file_present"]}
+        partial.symlink_to(self.tmp / "nowhere")
+        self.assertEqual(ingest_archive(tar, self.root), refused)
+        self.assertFalse((self.root / "raw").exists())
+        partial.unlink()
+        partial.write_bytes(b"half")
+        self.assertEqual(ingest_archive(tar, self.root), refused)
+        self.assertFalse((self.root / "raw").exists())
+        self.assertEqual(partial.read_bytes(), b"half")
+        partial.unlink()
+        self.assertEqual(ingest_archive(tar, self.root)["status"], "ingested")
+        partial.write_bytes(b"half")
+        self.assertEqual(ingest_archive(tar, self.root), refused)
+        complete = manifest.read_bytes()
+        manifest.write_bytes(b"{}")
+        self.assertEqual(ingest_archive(tar, self.root)["problems"],
+                         [f"manifest:{sha}:partial_file_present", f"manifest:{sha}:would_change"])
+        manifest.write_bytes(complete)
+        partial.unlink()
+        self.assertEqual(ingest_archive(tar, self.root)["status"], "already_ingested")
+        raw = self.root / "raw" / sha / path("1.100000001")
+        raw.rename(raw.with_name(raw.name + ".partial"))
+        manifest.rename(partial)
+        self.assertEqual(ingest_archive(tar, self.root)["problems"],
+                         [f"manifest:{sha}:partial_file_present", f"raw:{path('1.100000001')}:partial_file_present"])
+        self.assertFalse(raw.exists())
+        # A dangling raw partial of the second member: the first, missing, is not written either.
+        partial.unlink()
+        raw.with_name(raw.name + ".partial").unlink()
+        event_raw = self.root / "raw" / sha / path(EVENT)
+        event_raw.unlink()
+        event_raw.with_name(event_raw.name + ".partial").symlink_to(self.tmp / "nowhere")
+        self.assertEqual(ingest_archive(tar, self.root),
+                         {"status": "refused", "problems": [f"raw:{path(EVENT)}:partial_file_present"]})
+        self.assertFalse(raw.exists() or event_raw.exists())
 
     def test_a_tar_that_changes_between_the_passes_is_refused(self):
         kept, refused = path("1.100000001"), path("1.100000002", datetime(2026, 3, 1, tzinfo=timezone.utc))
@@ -1005,6 +1233,10 @@ class IndexTests(Workspace):
                 self.assertTrue(max(all_pts(record["decision_time"])) < ms(mark))
                 views.add(json.dumps(record["decision_time"], sort_keys=True))
         self.assertEqual(len(views), 1)
+        # Winners are counted only when the final state holds a result (CLOSED, or a listed runner's result status).
+        self.assertEqual({mid: records[mid]["evaluator_only_outcome"]["winners_observed"] for mid in markers},
+                         {"1.100000011": 0, "1.100000012": None, "1.100000013": None, "1.100000014": None,
+                          "1.100000015": 0, "1.100000016": 0, "1.100000017": 1})
 
     def test_a_market_closed_before_the_decision_time_says_where_its_view_ends(self):
         """E6: suspended 30 minutes before the off, then CLOSED with every runner REMOVED 20 minutes before it."""
@@ -1218,14 +1450,258 @@ class IndexTests(Workspace):
         self.assertEqual((only["provenance"]["member_path"], only["checks"]["market_file_holds_other_market"]),
                          (path("1.100000005"), True))
 
-    def test_a_source_read_whole_is_primary_over_a_partial_one(self):
-        event = sorted(full_market() + full_market("1.100000002"), key=lambda m: m["pt"])
-        sha, _ = self.build([(path("1.100000001"), bz2.compress(lines(full_market()) + b"bad\n")),
-                             (path(EVENT), stream(event))])
-        provenance = self.records(sha)["1.100000001"]["provenance"]
-        self.assertEqual(provenance["member_path"], path(EVENT))
+    def test_the_primary_source_never_depends_on_later_readability(self):
+        """R1, Astra's pair: market file M and event file E disagree 10 minutes before the off (M: runner 1 ACTIVE,
+        E: REMOVED) and both end with a heartbeat 10 minutes after it. One line M cannot read after that heartbeat
+        used to make E primary (read whole), changing the decision view; now the primary is chosen by name only and
+        both TARs give the same decision_time, M's; only the settlement side differs (read_complete). A failure
+        before the cutoff ends M's own view where it stopped; E is still not consulted. E cut after the off is
+        listed as not read whole. M cut inside its first batch keeps no marketTime: no view, ending where M did. M
+        that fails before any message for its market holds no record of it, so E's record is primary and M is
+        listed with agrees null (counted by the audit as a disagreeing source)."""
+        mid = "1.100000001"
+
+        def source(status):
+            return [md_change(mid, OFF - timedelta(minutes=60), definition(iso(OFF), [runner(1), runner(2)])),
+                    md_change(mid, OFF - timedelta(minutes=10), definition(iso(OFF), [runner(1, status), runner(2)])),
+                    {"op": "mcm", "clk": "2", "pt": ms(OFF + timedelta(minutes=10)), "mc": []}]
+
+        market_file, event_file = source("ACTIVE"), source("REMOVED")
+        records = {}
+        for label, data in (("intact", stream(market_file)),
+                            ("cut after the off", bz2.compress(lines(market_file) + b"not json\n")),
+                            ("cut before the off", bz2.compress(lines(market_file[:2]) + b"not json\n"))):
+            root = self.new_root()
+            sha, _ = self.build([(path(mid), data), (path(EVENT), stream(event_file))], root=root)
+            records[label] = self.records(sha, root)[mid]
+            self.assertEqual(records[label]["provenance"]["member_path"], path(mid), label)
+        intact, late = records["intact"], records["cut after the off"]
+        self.assertEqual(late["decision_time"], intact["decision_time"])
+        decision, active = late["decision_time"], [[ms(OFF - timedelta(minutes=60)), "ACTIVE"]]
+        self.assertEqual(({r["id"]: r["status"] for r in decision["runners"]}, decision["removals"],
+                          decision["view_ends"]),
+                         ({1: active, 2: active}, [], {"pt": ms(OFF), "reason": "first_published_scheduled_off"}))
+        outcomes = [record["evaluator_only_outcome"] for record in (intact, late)]
+        self.assertEqual([(outcome["read_complete"], outcome["complete_before_pt"]) for outcome in outcomes],
+                         [(True, None), (False, ms(OFF + timedelta(minutes=10)))])
+        # E stays an audit-only other source either way: its disagreement is recorded, never used.
+        for record in (intact, late):
+            self.assertEqual([(s["member_path"], s["read_complete"], s["agrees_decision_time"])
+                              for s in record["provenance"]["other_sources"]], [(path(EVENT), True, False)])
+        early = records["cut before the off"]["decision_time"]
+        self.assertEqual(early["view_ends"], {"pt": ms(OFF - timedelta(minutes=10)),
+                                              "reason": "member_unreadable_from_pt"})
+        self.assertEqual(early["runners"], decision["runners"])
+        # The other way round: E cut after the off is still only an other source, now one not read whole.
+        root = self.new_root()
+        sha, _ = self.build([(path(mid), stream(market_file)),
+                             (path(EVENT), bz2.compress(lines(event_file) + b"not json\n"))], root=root)
+        record = self.records(sha, root)[mid]
+        self.assertEqual((record["provenance"]["member_path"], record["decision_time"]),
+                         (path(mid), intact["decision_time"]))
         self.assertEqual([(s["member_path"], s["read_complete"], s["agrees_decision_time"])
-                          for s in provenance["other_sources"]], [(path("1.100000001"), False, True)])
+                          for s in record["provenance"]["other_sources"]], [(path(EVENT), False, False)])
+        # M cut after its first batch: no first-published marketTime survives, so no view, ending where M did.
+        root = self.new_root()
+        sha, _ = self.build([(path(mid), bz2.compress(lines(market_file[:1]) + b"not json\n"
+                                                      + lines(market_file[1:]))),
+                             (path(EVENT), stream(event_file))], root=root)
+        record, first = self.records(sha, root)[mid], ms(OFF - timedelta(minutes=60))
+        self.assertEqual(record["provenance"]["member_path"], path(mid))
+        self.assertEqual(record["decision_time"], {"definition": {}, "first_published_market_time": None,
+                                                   "removals": [], "runners": [],
+                                                   "view_ends": {"pt": first, "reason": "member_unreadable_from_pt"}})
+        self.assertEqual(record["evaluator_only_outcome"]["decision_cutoff"],
+                         {"pt": first, "reason": "member_unreadable_from_pt"})
+        # M unreadable before any message for its market: it holds no record, so E's is primary and M is listed
+        # with nothing to compare (the documented exception; it matters only when M and E disagree, as here).
+        root = self.new_root()
+        sha, _ = self.build([(path(mid), bz2.compress(b"not json\n" + lines(market_file))),
+                             (path(EVENT), stream(event_file))], root=root)
+        record = self.records(sha, root)[mid]
+        self.assertEqual(record["provenance"]["member_path"], path(EVENT))
+        self.assertEqual([(s["member_path"], s["file_type"], s["read_complete"], s["agrees"], s["agrees_decision_time"])
+                          for s in record["provenance"]["other_sources"]], [(path(mid), "market", False, None, None)])
+        self.assertEqual([(f["path"], f["status"], f["markets"]) for f in self.head(sha, root)["files"]],
+                         [(path(mid), "unreadable", []), (path(EVENT), "indexed", [mid])])
+        report = audit(root)["totals"]
+        self.assertEqual((report["multiple_sources"], report["sources_disagree"],
+                          report["sources_disagree_decision_time"]), (1, 1, 1))
+
+    def test_a_failing_message_whose_pt_was_read_ends_the_view_at_that_pt(self):
+        """R1 after review: M's last definition is 10 minutes before the off, and the next line, 10 minutes after
+        it, is read as far as its pt and then fails (a bad runner change, img 1, segmentType, a bad market id,
+        duplicate runner ids). Every message published before that pt was applied, so complete_before_pt is that pt
+        and decision_time equals the intact file's; it used to end at the last pt applied, 10 minutes before the
+        off, and leave a decision 5 minutes before the off with no view. The same failure 5 minutes before the off
+        ends the view there and keeps the batch 10 minutes before it. A line whose pt cannot be read (not JSON)
+        still ends the view at the last pt applied, as its time is unknown."""
+        mid = "1.100000001"
+        opening = [md_change(mid, OFF - timedelta(minutes=60), definition(iso(OFF), [runner(1), runner(2)])),
+                   md_change(mid, OFF - timedelta(minutes=10),
+                             definition(iso(OFF), [runner(1), runner(2, "REMOVED")]))]
+        root = self.new_root()
+        sha, _ = self.build([(path(mid), stream(opening))], root=root)
+        intact = self.records(sha, root)[mid]["decision_time"]
+
+        def bad(pt):
+            return {"malformed_runner_change": {"op": "mcm", "pt": pt, "mc": [{"id": mid, "rc": 5}]},
+                    "malformed_image_flag": {"op": "mcm", "pt": pt, "mc": [{"id": mid, "img": 1}]},
+                    "segmented": {"op": "mcm", "pt": pt, "segmentType": "SEG_START", "mc": []},
+                    "malformed_market_id": {"op": "mcm", "pt": pt, "mc": [{"id": "x"}]},
+                    "malformed_runner": {"op": "mcm", "pt": pt, "mc": [{"id": mid, "marketDefinition": definition(
+                        iso(OFF), [runner(1), runner(1)])}]}}
+
+        late, soon = ms(OFF + timedelta(minutes=10)), ms(OFF - timedelta(minutes=5))
+        for pt, view_ends in ((late, intact["view_ends"]), (soon, {"pt": soon, "reason": "member_unreadable_from_pt"})):
+            for reason, message in bad(pt).items():
+                with self.subTest(reason=reason, after_the_off=pt == late):
+                    root = self.new_root()
+                    sha, _ = self.build([(path(mid), bz2.compress(lines(opening + [message])))], root=root)
+                    record = self.records(sha, root)[mid]
+                    self.assertEqual(record["decision_time"], {**intact, "view_ends": view_ends})
+                    outcome = record["evaluator_only_outcome"]
+                    self.assertEqual((outcome["read_complete"], outcome["unreadable_reason"],
+                                      outcome["complete_before_pt"]), (False, reason, pt))
+                    self.assertEqual([(f["reason"], f["complete_before_pt"]) for f in self.head(sha, root)["files"]],
+                                     [(reason, pt)])
+        root = self.new_root()
+        sha, _ = self.build([(path(mid), bz2.compress(lines(opening) + b"not json\n"))], root=root)
+        self.assertEqual(self.records(sha, root)[mid]["decision_time"]["view_ends"],
+                         {"pt": ms(OFF - timedelta(minutes=10)), "reason": "member_unreadable_from_pt"})
+
+    def test_an_image_replaces_the_market_state_at_its_pt(self):
+        """R2, plan section 5 img_replaces_market_state. Astra's first probe: OPEN with two ACTIVE runners 10 minutes
+        before the off, then an image with no definition 6 minutes before it. The image empties the published state
+        at its pt (every definition field null, every runner null and unlisted) and keeps what came before; with img
+        false the change merges as before. An image whose definition has fewer runners makes the omitted runner no
+        longer current at its pt (a plain definition only marks it unlisted). A non-boolean img is unreadable."""
+        mid = "1.100000001"
+        opened, reset = ms(OFF - timedelta(minutes=10)), ms(OFF - timedelta(minutes=6))
+        opening = md_change(mid, OFF - timedelta(minutes=10), definition(iso(OFF), [runner(1), runner(2)]))
+        views = {}
+        for img in (False, True):
+            image = mcm(OFF - timedelta(minutes=6), [{"id": mid, "img": img, "rc": [{"id": 1, "ltp": 2.0}]}])
+            root = self.new_root()
+            sha, _ = self.build([(path(mid), stream([opening, image]))], root=root)
+            views[img] = self.records(sha, root)[mid]["decision_time"]
+        self.assertEqual(views[False]["definition"]["status"], [[opened, "OPEN"]])
+        self.assertEqual(views[False]["runners"][0]["status"], [[opened, "ACTIVE"]])
+        self.assertEqual(views[True]["definition"]["status"], [[opened, "OPEN"], [reset, None]])
+        self.assertEqual({key: timeline[-1] for key, timeline in views[True]["definition"].items()},
+                         dict.fromkeys(views[True]["definition"], [reset, None]))
+        for state in views[True]["runners"]:
+            self.assertEqual((state["status"], state["listed"], state["name"]),
+                             ([[opened, "ACTIVE"], [reset, None]], [[opened, True], [reset, False]],
+                              [[opened, f"Horse {state['id']}"], [reset, None]]))
+        self.assertEqual({key: views[True][key] for key in ("first_published_market_time", "removals", "view_ends")},
+                         {key: views[False][key] for key in ("first_published_market_time", "removals", "view_ends")})
+        # An image whose definition leaves runner 3 out, against a plain definition leaving it out.
+        listed, fewer = ms(OFF - timedelta(minutes=60)), ms(OFF - timedelta(minutes=30))
+        three = md_change(mid, OFF - timedelta(minutes=60), definition(iso(OFF), [runner(1), runner(2), runner(3)]))
+        for img, status in ((True, [[listed, "ACTIVE"], [fewer, None]]), (False, [[listed, "ACTIVE"]])):
+            with self.subTest(img=img):
+                two = mcm(OFF - timedelta(minutes=30), [{"id": mid, "img": img,
+                                                         "marketDefinition": definition(iso(OFF),
+                                                                                        [runner(1), runner(2)])}])
+                root = self.new_root()
+                sha, _ = self.build([(path(mid), stream([three, two]))], root=root)
+                runners = {r["id"]: r for r in self.records(sha, root)[mid]["decision_time"]["runners"]}
+                self.assertEqual((runners[3]["status"], runners[3]["listed"]),
+                                 (status, [[listed, True], [fewer, False]]))
+                self.assertEqual([runners[rid]["status"] for rid in (1, 2)], [[[listed, "ACTIVE"]]] * 2)
+        for flag in (b"1", b'"true"', b"[]"):
+            with self.subTest(img=flag):
+                line = b'{"op":"mcm","pt":1,"mc":[{"id":"1.100000002","img":%s}]}\n' % flag
+                root = self.new_root()
+                sha, _ = self.build([(path("1.100000002"), bz2.compress(line))], root=root)
+                self.assertEqual([f["reason"] for f in self.head(sha, root)["files"]], ["malformed_image_flag"])
+
+    def test_runners_left_out_of_the_last_definition_are_not_current_results(self):
+        """R2, Astra's second probe: CLOSED with runner 1 WINNER at BSP 2.0 and runner 2 LOSER at 3.0, then an image
+        definition carrying only runner 2, now WINNER at 3.0. Runner 1's old WINNER and BSP stay in its timelines
+        but are not a current result: one winner, no dead heat (the audit counts none), results revised after
+        CLOSED, no missing BSP for runner 1. A plain definition leaving runner 1 out ends the same way. A runner
+        reset by an image and removed again is one removal, and a marketTime reset and republished is no revision."""
+        def settled(market_id, img):
+            closed = [runner(1, "WINNER", bsp=2.0), runner(2, "LOSER", bsp=3.0)]
+            image = definition(iso(OFF), [runner(2, "WINNER", bsp=3.0)], status="CLOSED", in_play=True,
+                               bspReconciled=True)
+            return [md_change(market_id, OFF - timedelta(hours=1), definition(iso(OFF), [runner(1), runner(2)])),
+                    md_change(market_id, OFF + timedelta(minutes=5),
+                              definition(iso(OFF), closed, status="CLOSED", in_play=True, bspReconciled=True)),
+                    mcm(OFF + timedelta(minutes=10), [{"id": market_id, "img": img, "marketDefinition": image}])]
+
+        removed = [md_change("1.100000003", OFF - timedelta(hours=1), definition(iso(OFF), [runner(1), runner(2)])),
+                   md_change("1.100000003", OFF - timedelta(minutes=40),
+                             definition(iso(OFF), [runner(1), runner(2, "REMOVED")])),
+                   mcm(OFF - timedelta(minutes=30), [{"id": "1.100000003", "img": True}]),
+                   mcm(OFF - timedelta(minutes=20), [{"id": "1.100000003", "img": True, "marketDefinition":
+                                                      definition(iso(OFF), [runner(1), runner(2, "REMOVED")])}])]
+        sha, _ = self.build([(path("1.100000001"), stream(settled("1.100000001", True))),
+                             (path("1.100000002"), stream(settled("1.100000002", False))),
+                             (path("1.100000003"), stream(removed))])
+        records, closed_at, reset = self.records(sha), ms(OFF + timedelta(minutes=5)), ms(OFF + timedelta(minutes=10))
+        for mid in ("1.100000001", "1.100000002"):
+            with self.subTest(market=mid):
+                outcome = records[mid]["evaluator_only_outcome"]
+                self.assertEqual(outcome["final_runners"], [{"id": 1, "status": None, "bsp": None, "listed": False},
+                                                            {"id": 2, "status": "WINNER", "bsp": 3.0, "listed": True}])
+                self.assertEqual((outcome["winners_observed"], outcome["dead_heat"],
+                                  outcome["results_revised_after_close"], outcome["missing_final_bsp_runner_ids"],
+                                  outcome["unusable_final_bsp_runner_ids"]), (1, False, True, [], []))
+        history = {r["id"]: r for r in records["1.100000001"]["evaluator_only_outcome"]["runners_after_cutoff"]}
+        self.assertEqual((history[1]["status"], history[1]["bsp"]),
+                         ([[closed_at, "WINNER"], [reset, None]], [[closed_at, 2.0], [reset, None]]))
+        plain = {r["id"]: r for r in records["1.100000002"]["evaluator_only_outcome"]["runners_after_cutoff"]}
+        self.assertEqual(plain[1]["status"], [[closed_at, "WINNER"]])           # history kept, not a current result
+        decision = records["1.100000003"]["decision_time"]
+        self.assertEqual([(item["id"], item["pt"]) for item in decision["removals"]],
+                         [(2, ms(OFF - timedelta(minutes=40)))])
+        self.assertEqual([value for _, value in decision["definition"]["marketTime"]], [iso(OFF), None, iso(OFF)])
+        totals = audit(self.root)["totals"]
+        self.assertEqual((totals["dead_heats"], totals["results_revised_after_close"], totals["market_time_revised"],
+                          totals["removals_before_cutoff"]), (0, 2, 0, 1))
+
+    def test_a_result_reset_reopened_or_unlisted_after_close_is_not_current(self):
+        """R2 after review, each after a CLOSED definition with a settled time (runner 1 WINNER at 2.0, runner 2
+        LOSER at 3.0). An image with no definition resets every field, the settlement fields too: settled_time is
+        null and both outcome_definition timelines end null; no runner is listed, so there is no winner count (null,
+        not 0) and no dead heat to judge. An image whose definition reopens the market: no winner count or dead heat
+        either (both used to read the history: 0 winners, dead heat false). A plain CLOSED definition that only
+        drops runner 2, statuses and bsp unchanged, is a revision of the result."""
+        closed_at, later = OFF + timedelta(minutes=5), OFF + timedelta(minutes=10)
+        settled = [runner(1, "WINNER", bsp=2.0), runner(2, "LOSER", bsp=3.0)]
+
+        def closed(runners):
+            return definition(iso(OFF), runners, status="CLOSED", in_play=True, bspReconciled=True,
+                              settledTime=iso(closed_at))
+
+        last = {"1.100000001": {"img": True},
+                "1.100000002": {"img": True, "marketDefinition": definition(iso(OFF), [runner(1), runner(2)],
+                                                                            in_play=True)},
+                "1.100000003": {"marketDefinition": closed(settled[:1])}}
+        sha, _ = self.build([(path(mid), stream([
+            md_change(mid, OFF - timedelta(hours=1), definition(iso(OFF), [runner(1), runner(2)])),
+            md_change(mid, closed_at, closed(settled)), mcm(later, [{"id": mid, **change}])]))
+            for mid, change in last.items()])
+        outcomes = {mid: record["evaluator_only_outcome"] for mid, record in self.records(sha).items()}
+        keys = ("final_status", "closed_reached", "settled_time", "winners_observed", "dead_heat",
+                "results_revised_after_close")
+        self.assertEqual({mid: tuple(outcome[key] for key in keys) for mid, outcome in outcomes.items()},
+                         {"1.100000001": (None, True, None, None, None, True),
+                          "1.100000002": ("OPEN", True, None, None, None, True),
+                          "1.100000003": ("CLOSED", True, iso(closed_at), 1, False, True)})
+        opened = ms(OFF - timedelta(hours=1))
+        self.assertEqual(outcomes["1.100000001"]["outcome_definition"],
+                         {"bspReconciled": [[opened, False], [ms(closed_at), True], [ms(later), None]],
+                          "settledTime": [[ms(closed_at), iso(closed_at)], [ms(later), None]]})
+        self.assertEqual(outcomes["1.100000003"]["final_runners"],
+                         [{"id": 1, "status": "WINNER", "bsp": 2.0, "listed": True},
+                          {"id": 2, "status": None, "bsp": None, "listed": False}])
+        totals = audit(self.root)["totals"]
+        self.assertEqual((totals["dead_heats"], totals["closed_dead_heat_not_assessable"],
+                          totals["results_revised_after_close"]), (0, 2, 3))
 
     def test_tiers_of_one_market_stay_separate_records(self):
         sha, indexed = self.build([(path(EVENT), stream(full_market())),
@@ -1314,6 +1790,21 @@ class IndexTests(Workspace):
         self.assertEqual(record["decision_time"]["view_ends"], {"pt": cut, "reason": "member_unreadable_from_pt"})
         self.assertTrue(max(all_pts(record["decision_time"])) < cut)
         self.assertEqual(len(record["decision_time"]["removals"]), 1)                 # the removal at off-90m
+        # Definitions without a marketTime give no decision view, read whole or cut; cut, the view's end says so,
+        # and what was read before the cut stays out of decision_time as it does for the whole file.
+        bare = [md_change("1.500000004", OFF - timedelta(minutes=60), drop(definition(iso(OFF), [runner(1)]),
+                                                                             "marketTime")),
+                md_change("1.500000004", OFF - timedelta(minutes=30), drop(definition(iso(OFF), [runner(1, "REMOVED")]),
+                                                                             "marketTime"))]
+        empty = {"definition": {}, "first_published_market_time": None, "removals": [], "runners": []}
+        for data, view_ends in ((stream(bare), None),
+                                (bz2.compress(lines(bare) + b"not json\n"),
+                                 {"pt": ms(OFF - timedelta(minutes=30)), "reason": "member_unreadable_from_pt"})):
+            with self.subTest(read_whole=view_ends is None):
+                root = self.new_root()
+                sha4, _ = self.build([(path("1.500000004"), data)], root=root)
+                self.assertEqual(self.records(sha4, root)["1.500000004"]["decision_time"],
+                                 {**empty, "view_ends": view_ends})
 
     def test_index_is_deterministic_hashed_and_refuses_tampering(self):
         sha, indexed = self.build([(path("1.100000001"), stream(full_market())), (path(EVENT), stream(full_market()))])

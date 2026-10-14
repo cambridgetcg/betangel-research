@@ -819,7 +819,7 @@
       "published_or_updated": "2026-07-21",
       "accessed": "2026-10-12",
       "verification_status": "partially_unverified",
-      "code_handling": "V14 checks both half-up and half-even rounding"
+      "code_handling": "V14 checks both half-up and half-even rounding and refuses exactly 0.80 or 1.25"
     },
     {
       "id": "F40",

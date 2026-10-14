@@ -1708,7 +1708,7 @@ class OrderGateway:
         that an ignored CLOSED book of a market not yet closed closes it (_note_paper_closed, one note).
         Every event journaled here carries the paper state after this step (its new book and, at CLOSED, the
         market's closed marker included); a step that changes that state without moving an order journals it
-        in a note (paper_advance_state). A gateway that lost its paper lock refuses first, before any read
+        in a note (paper_advance_state), which also carries the step's non-empty flags. A gateway that lost its paper lock refuses first, before any read
         (gateway_lock_lost, _require_paper_lock): every step may journal its paper state."""
         if self.mode != "paper":
             raise OrderRefused("advance_is_paper_only")
@@ -1746,6 +1746,11 @@ class OrderGateway:
             # Re-review R2: from this step on, every event's paper state marks the market closed.
             self._mark_paper_closed(market_id, book_ms)
         journaled = len(self._seqs)
+        # A move report carries every order's flags. A step without one keeps its non-empty flags in the next
+        # event it journals anyway (the closing lapses or the paper_advance_state note) and adds no event for
+        # them, so the journal keeps at most one flag list per order per journaled step; a step that journals
+        # nothing keeps its flags only in the result.
+        pending_flags = {} if moves else {ref: f for ref, f in flags.items() if f}
         if moves:
             self._append_moves("report", {"action": "place", "paper_advance": True, "flags": flags}, moves,
                                reason="paper_advance", market_id=market_id)
@@ -1759,8 +1764,10 @@ class OrderGateway:
                     lapses[order["customer_order_ref"]] = (target, {
                         "size_lapsed_p": order["size_lapsed_p"] + order["size_remaining_p"], "size_remaining_p": 0})
             if lapses:
-                self._append_moves("report", {"action": "place", "paper_advance": True}, lapses,
-                                   reason="paper_market_closed", market_id=market_id)
+                closing = {"action": "place", "paper_advance": True}
+                if pending_flags:
+                    closing["flags"], pending_flags = pending_flags, {}
+                self._append_moves("report", closing, lapses, reason="paper_market_closed", market_id=market_id)
             state = self.journal.fold(now_ns=self.clock.time_ns(), submitting_as_unknown=False)
             market_orders = [o for o in state["orders"].values() if o["market_id"] == market_id
                              and o["state"] in ("EXECUTION_COMPLETE", "REPLACED")]
@@ -1776,8 +1783,10 @@ class OrderGateway:
         journaled_state = (canonical_sha256(self._last_event["payload"]["paper_state"])
                            if len(self._seqs) > journaled and "paper_state" in self._last_event["payload"] else before)
         if canonical_sha256(self._paper_state()) != journaled_state:
-            self._append("note", {"reason": "paper_advance_state", "paper_state": self._paper_state()},
-                         market_id=market_id)
+            note = {"reason": "paper_advance_state", "paper_state": self._paper_state()}
+            if pending_flags:
+                note["flags"] = pending_flags
+            self._append("note", note, market_id=market_id)
         state = self._state()
         refs = sorted(r for r, o in state["orders"].items() if o["market_id"] == market_id)
         return self._result(None, refs, decision="advanced", extra={"settlement": settlement, "flags": flags})

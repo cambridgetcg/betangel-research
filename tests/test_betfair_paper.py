@@ -292,14 +292,15 @@ class FillModelTests(unittest.TestCase):
         self.assertEqual(self.exchange.queue_state()[REF_A], 0)
 
     def rest_advance(self, order, prev_traded, now_traded, *, prev_kw=None, **kw):
-        # T8a shape: the runner's totalMatched rises between the two reads while tradedVolume stays [].
+        # T8a-like books: tradedVolume [] with runner totalMatched present (T8a recorded presence only; the
+        # rising values here are made up).
         prev = rest_book(prev_traded, total_matched=5000.0, **(kw if prev_kw is None else prev_kw))
         now = rest_book(now_traded, total_matched=10000.0, **kw)
         return self.exchange.advance([order], prev_book=prev, book=now, now_ms=BOOK_MS + 1000)
 
     def test_delayed_rest_empty_traded_flagged_not_silent(self):
-        """T8a: delayed listMarketBook returned tradedVolume [] while totalMatched rose, so an empty ladder
-        there is unknown, never a silent zero passive fill."""
+        """T8a: delayed listMarketBook returned tradedVolume [] while runner totalMatched was present (only its
+        presence was recorded), so an empty ladder there is unknown, never a silent zero passive fill."""
         self.exchange = resting({REF_A: 0})
         order = open_record(price_h=360)
         self.assertEqual(self.rest_advance(order, {}, {}), [{"customer_order_ref": REF_A, "state": "EXECUTABLE",

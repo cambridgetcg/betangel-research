@@ -5,9 +5,29 @@
   "frozen_on": null,
   "registration": {
     "kind": "engineering_check",
-    "note": "Engineering run of the P0 BSP pipeline on the free 2015-05..2016-04 BASIC corpus, not a registered hypothesis. hypothesis, primary_metric.decision_threshold, primary_metric.decision_rule and stopping_rule.max_trials are deliberately null: no result of this run can support or refute an edge, the 2015-2016 year says nothing about a current edge, and the engineering months count as inspected from the first run on, so they can never serve as a holdout. decision_timing.delay_s stays null until task (c) fixes the intent delay, before any run."
+    "note": "Engineering run of the P0 BSP pipeline on the free 2015-05..2016-04 BASIC corpus, not a registered hypothesis: it is judged only by engineering_acceptance, and its financial_rule is not_applicable. decision_timing.delay_s and stopping_rule.max_trials stay null until task (c) fixes them, before the freeze and before any run."
   },
-  "hypothesis": null,
+  "financial_rule": {
+    "kind": "not_applicable",
+    "reason": "Engineering check: no financial hypothesis, ROI threshold or decision rule applies. No result of this run can support or refute an edge: the 2015-2016 year says nothing about a current edge, and the engineering months count as inspected from the first run on."
+  },
+  "engineering_acceptance": {
+    "criteria": [
+      {
+        "name": "issuance_exposure_reconciliation",
+        "definition": "Per variant: the issuance ledger has exactly one row per cohort (market, runner, decision point), none dropped after outcomes; every row has exactly one outcome: issued; not_selected (the variant did not abstain for the market and backed another runner, or none: the plan's watch); abstained, with its decision-time reason; or unsupported, with the missing capabilities.decision input. The counts by outcome and reason sum to the row count; issued bets equal resolved plus unresolved bets, and issued stakes equal S_R plus S_U."
+      },
+      {
+        "name": "known_accounting_answers",
+        "definition": "Every synthetic fixture in docs/backtest-plan.md section 9 reproduces its hand-computed answer to the penny at the fixture's own declared commission rate (at 2%: separate £1 BACK @ 2.0 win and loss net -£0.02; +£10 and -£10 in one market net 0 with no commission; the same in separate markets net -£0.20), and void, dead-heat, removal and missing-BSP fixtures come out unresolved with their stake kept as exposure."
+      },
+      {
+        "name": "prefix_invariance",
+        "definition": "For every decision time t, a run on the stream truncated at t, and a run with every final BSP, result, removal and market definition published after t removed or revised, give decision records at or before t identical to the full run (decision IDs, abstain and unsupported reasons, intents); only settlement may change, including from resolved to unresolved."
+      }
+    ],
+    "rule": "all_criteria_must_hold_outcome_metrics_not_judged"
+  },
   "population": {
     "provider": "betfair_historical_data",
     "tier": "BASIC",
@@ -17,7 +37,7 @@
     "splits": {
       "engineering": {"start_month": "2015-05", "end_month": "2016-04"},
       "research": {"start_month": "2023-01", "end_month": "2025-12"},
-      "holdout": {"start_month": "2026-01", "end_month": "2026-09", "state": "sealed_not_downloaded"}
+      "holdout": {"start_month": "2026-01", "end_month": "2026-08", "state": "sealed_not_downloaded"}
     },
     "evaluate_split": "engineering"
   },
@@ -27,7 +47,7 @@
     "exclusions": [
       "No market definition published at or before the decision time: abstain (market_not_published_by_decision).",
       "Market not OPEN, or already in play, in the latest definition at or before the decision time: abstain (market_not_open_pre_off).",
-      "A required capability missing for the market or runner: abstain with that capability's unsupported reason; missing is never zero."
+      "A required decision-time capability (capabilities.decision) missing for the market or runner in the observed prefix at the decision time: abstain with that capability's unsupported reason; missing is never zero. A missing final BSP or result is no exclusion: the decision stands and its settlement is unresolved."
     ]
   },
   "decision_timing": {
@@ -38,7 +58,10 @@
     "equal_pt_order": "timer_after_equal_pt_batch",
     "image_handling": "img_replaces_market_state"
   },
-  "capabilities": {"required": ["final_bsp", "ltp", "market_definition", "results"], "on_missing": "unsupported_abstain"},
+  "capabilities": {
+    "decision": {"required": ["ltp", "market_definition"], "on_missing": "unsupported_abstain"},
+    "outcome": {"required": ["final_bsp", "results"], "on_missing": "unresolved_settlement"}
+  },
   "features": [
     {
       "name": "active_runner_count",
@@ -80,9 +103,7 @@
   },
   "primary_metric": {
     "name": "roi",
-    "definition": "sum_net_over_sum_stakes_resolved",
-    "decision_threshold": null,
-    "decision_rule": null
+    "definition": "sum_net_over_sum_stakes_resolved"
   },
   "secondary_metrics": [
     "abstentions_by_reason",

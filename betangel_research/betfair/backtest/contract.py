@@ -1,48 +1,87 @@
 """Experiment contracts for offline backtests (schema_version 1): strict validation and a canonical sha256.
 
 A contract writes down, before any outcome is inspected, everything a backtest could otherwise tune after
-seeing results: the population and its month splits (the holdout pinned to SEALED_HOLDOUT, recorded as sealed
-by not being downloaded), the cohort and exclusions, a decision time anchored only to information known then
-with its delay, equal-pt order and image handling, the data capabilities a run needs, features, whether
-anything is fitted, staking, settlement, costs, the primary and secondary metrics, the uncertainty method, the
-variants and the features each may see, the stopping rule and the seeds. validate_contract reports every
-problem, never just the first, as sorted "<path>:<reason>" codes; an empty list means valid. Unknown keys are
-refused at every level, set-like lists must be sorted and unique and features and variants sorted by name and
-id (so one meaning has one hash), a bool is never a number, and a fraction field must be a JSON float other
-than -0.0 (so 0 and 0.0 cannot give two hashes).
+seeing results: what it is for (registration, a typed financial rule and deterministic engineering acceptance
+criteria), the population and its month splits (the holdout pinned to SEALED_HOLDOUT, recorded as sealed by
+not being downloaded), the cohort and exclusions, a decision time anchored only to information known then
+with its delay, equal-pt order and image handling, the data capabilities a run needs (decision-time inputs
+apart from outcomes), features, whether anything is fitted, staking, settlement, costs, the primary and
+secondary metrics, the uncertainty method, the variants and the features each may see, the stopping rule and
+the seeds. validate_contract reports every problem, never just the first, as sorted "<path>:<reason>" codes;
+an empty list means valid. Unknown keys are refused at every level, set-like lists must be sorted and unique
+and features, criteria and variants sorted by name and id (so one meaning has one hash), a bool is never a
+number, and a fraction field must be a JSON float other than -0.0 (so 0 and 0.0 cannot give two hashes).
 
-Draft and frozen: a draft may leave exactly the DRAFT_NULLABLE fields null (hypothesis, the primary decision
-threshold and rule, the trial budget, the intent delay) and must leave frozen_on null; a frozen contract
-leaves nothing null and carries a frozen_on date no earlier than SCHEMA_V1_DATE. A frozen contract also needs
-at least one exclusion, no placeholder text (PLACEHOLDER_WORDS, PLACEHOLDER_TEXTS) in any text field, and at
-least MIN_FROZEN_TEXT characters in the rules a reader must be able to apply (FROZEN_RULE_TEXTS); this is a
-heuristic against an empty freeze, not a check that the text is meaningful. registration.kind says what the
-contract is for: an engineering_check evaluates the engineering split only and supports no edge claim; a
-registered_hypothesis evaluates the research split. The holdout split must be exactly SEALED_HOLDOUT, no other
-split may overlap it, it may not contain an already-inspected month (INSPECTED_MONTHS), and it cannot be
-evaluated under schema_version 1 at all; changing any of that is a schema change.
+Draft and frozen: a draft may leave exactly the DRAFT_NULLABLE fields null (the intent delay, the trial
+budget, and a registered hypothesis's hypothesis, ROI threshold and decision rule) and must leave frozen_on
+null; a frozen contract leaves nothing null and carries a frozen_on date no earlier than SCHEMA_V1_DATE. A
+frozen contract also needs at least one exclusion, no placeholder text (PLACEHOLDER_WORDS, PLACEHOLDER_TEXTS)
+in any text field, and at least MIN_FROZEN_TEXT characters in the rules a reader must be able to apply
+(FROZEN_RULE_TEXTS); this is a heuristic against an empty freeze, not a check that the text is meaningful.
+
+registration.kind says what the contract is for and fixes the kind of its financial_rule
+(FINANCIAL_RULE_FOR_KIND). An engineering_check evaluates the engineering split only, supports no edge claim
+and carries financial_rule not_applicable with a reason: no financial hypothesis, ROI threshold or decision
+rule exists for it, and none is invented to pass the freeze. A registered_hypothesis evaluates the research
+split and carries roi_threshold: its hypothesis, ROI threshold and decision rule, all required at freeze.
+Every contract carries engineering_acceptance: each of the deterministic ENGINEERING_CRITERIA (known
+accounting answers, prefix invariance, issuance/exposure reconciliation) with a definition, and a rule that
+is one of ENGINEERING_RULES (every criterion must hold; outcome metrics such as ROI are reported, never
+judged). The rule is a fixed token, so no wording can bring an ROI pass condition back through it. The
+criteria's definitions are free text, checked only for placeholders and length, like feature definitions: the
+freeze review, not this validator, keeps an outcome condition out of them. The operational choices (delay,
+costs, cohort, variants, seeds, trial budget and stopping rule) are mandatory at freeze for both kinds;
+nothing here lets a draft pass as frozen.
+
+The holdout split must be exactly SEALED_HOLDOUT, no other split may overlap it, it may not contain an
+already-inspected month (INSPECTED_MONTHS), and it cannot be evaluated under schema_version 1 at all; changing
+any of that is a schema change. Outcome-bearing data downloaded before any freeze is recorded with its file
+hash, the known minimum that was viewed and an unknown full inspection extent (deleting a file does not restore
+untouched status): EXPOSED_MONTHS by month, and NOT_PROSPECTIVE_DATES by race date, never prospective evidence
+(v1 has no prospective split, so it is the record later schemas and the trial ledger start from). No split may
+hold an exposed month or the month of a not-prospective date (exposed_not_holdout for the holdout,
+exposed_exploratory_only for the others): that data is exploratory only. Neither record shows that nobody saw
+the sealed months: they are sealed because this project's record says they were never downloaded, not because
+an audit proved it.
 
 Decision time is first_published_scheduled_off plus a negative offset_s, over the observed prefix only; the
 intent takes effect delay_s later, still before that scheduled off. A timer at time T sees the equal-pt batch
 at T (timer_after_equal_pt_batch), and a message carrying img replaces the market state. Retrospective anchors
 (actual off, the last pre-off update, closing, in-play, results, BSP reconciliation, a revised or latest
-schedule) are refused: they are known only after the decision they would time. Final BSP and results settle
-bets; they may be required capabilities but never features. Every feature is computed as of decision time
-with a declared lookback_s, and every variant names the declared features it uses (uses_features), so a
-runner can expose only those. Free-text definitions and descriptions are not checked for leakage: the runtime
-observed-prefix view, not this validator, is the guard. A required capability that a market lacks must become
-an explicit unsupported/abstain reason downstream, never a zero. fitting.kind is none in v1 (no parameter is
-estimated from outcomes); walk-forward fitting is deferred.
+schedule) are refused: they are known only after the decision they would time. Every feature is computed as
+of decision time with a declared lookback_s, and every variant names the declared features it uses
+(uses_features), so a runner can expose only those. Free-text definitions and descriptions are not checked
+for leakage: the runtime observed-prefix view, not this validator, is the guard. fitting.kind is none in v1
+(no parameter is estimated from outcomes); walk-forward fitting is deferred.
+
+Capabilities come in two machine-readable classes. capabilities.decision lists decision-time inputs
+(DECISION_CAPABILITIES): one a market or runner lacks in its observed prefix at decision time becomes an
+explicit unsupported/abstain reason (on_missing unsupported_abstain), never a zero, and features may draw only
+on these. capabilities.outcome lists outcomes (OUTCOME_CAPABILITIES: final BSP and results), which only settle
+bets: a missing or later-revised outcome never changes an earlier decision, so the bet stays issued with its
+exposure and its settlement is unresolved (on_missing unresolved_settlement). Abstaining on a missing outcome
+is refused because it would make the population depend on outcome availability. cohort.exclusions and the
+variant descriptions are free text and cannot override this: a runner takes abstain and unsupported reasons
+only from decision-time information (the cohort's fixed reasons in docs/backtest-plan.md section 6, a missing
+capabilities.decision input, or a variant's own rule over its declared features), never from a missing or
+revised outcome. A whole data product (a provider or tier) whose specification or audit shows a capability
+absent across the product, judged without reference to which markets have outcomes, may be refused before the
+freeze by choosing another in the contract; within an accepted product, one market's missing outcome never
+becomes a strategy abstention.
 
 P0 staking is fixed-stake BACK at BSP with unconditional pre-off acceptance and assumed negligible impact;
 LAY and limit-on-close are deferred. Every settlement case P0 cannot price (void, a removal after the
 decision, a dead heat, a result revised after close, a missing BSP or result) is unresolved, which is the only
 rule v1 allows. Commission applies to positive net market winnings at a declared rate and rounding;
-marketBaseRate alone does not establish an account's effective charge, so it is not a rate source. The
-primary metric is ROI = sum(net) / sum(stakes) over resolved bets; coverage, unresolved exposure and the
-worst-case ROI with every unresolved bet lost must be reported beside it. Uncertainty is a block bootstrap
-over race days or longer blocks after netting each market. CLV against BSP is refused as a metric: it is zero
-by construction for an entry at BSP. Brier score and log loss are deferred: no v1 variant declares a forecast.
+marketBaseRate alone does not establish an account's effective charge, so it is not a rate source. Metrics
+are per variant; a candidate is never netted against a baseline. With N_R the net of resolved bets, S_R their
+stakes and S_U the stakes of unresolved bets, the primary metric is resolved ROI = N_R / S_R, which is
+conditional on settlement being available, so its sign alone says nothing about every issued bet. Beside it
+coverage, unresolved exposure and roi_worst_case_unresolved_lost must be reported: the pessimistic all-issued
+ROI (N_R - S_U) / (S_R + S_U), every unresolved bet lost, exact for P0's one BACK per market. A zero
+denominator leaves a ROI undefined, never zero. Uncertainty is a block bootstrap over race days or longer
+blocks after netting each market. CLV against BSP is refused as a metric: it is zero by construction for an
+entry at BSP. Brier score and log loss are deferred: no v1 variant declares a forecast.
 
 What a valid contract establishes: that these choices were written in this shape, with this hash. It does not
 show when they were written relative to anyone looking at outcomes (frozen_on cannot be checked against a
@@ -65,24 +104,38 @@ SCHEMA_VERSION = 1
 SCHEMA_V1_DATE = "2026-10-14"
 MAX_CONTRACT_BYTES = 1 << 20
 JSON_INT_RANGE = (-(2 ** 63), 2 ** 63 - 1)
-TOP_LEVEL_KEYS = ("schema_version", "experiment_id", "status", "frozen_on", "registration", "hypothesis",
-                  "population", "cohort", "decision_timing", "capabilities", "features", "fitting", "staking",
-                  "settlement", "costs", "primary_metric", "secondary_metrics", "uncertainty", "variants",
-                  "stopping_rule", "seeds")
-DRAFT_NULLABLE = ("hypothesis", "decision_timing.delay_s", "primary_metric.decision_threshold",
-                  "primary_metric.decision_rule", "stopping_rule.max_trials")
+TOP_LEVEL_KEYS = ("schema_version", "experiment_id", "status", "frozen_on", "registration", "financial_rule",
+                  "engineering_acceptance", "population", "cohort", "decision_timing", "capabilities", "features",
+                  "fitting", "staking", "settlement", "costs", "primary_metric", "secondary_metrics", "uncertainty",
+                  "variants", "stopping_rule", "seeds")
+# Operational choices (delay_s, max_trials) stay nullable only in a draft; so do a registered hypothesis's
+# financial fields. An engineering check has no financial fields to leave null: its rule is typed not_applicable.
+DRAFT_NULLABLE = ("decision_timing.delay_s", "financial_rule.decision_rule", "financial_rule.decision_threshold",
+                  "financial_rule.hypothesis", "stopping_rule.max_trials")
 STATUSES = ("draft", "frozen")
 RESULT_STATUSES = ("valid_draft", "valid_frozen", "invalid")
 REGISTRATION_KINDS = ("engineering_check", "registered_hypothesis")
 # Each registration kind evaluates exactly one split: engineering outcomes count as inspected from the first run.
 SPLIT_FOR_KIND = {"engineering_check": "engineering", "registered_hypothesis": "research"}
+# The financial rule each kind must carry, and the keys of each rule kind.
+FINANCIAL_RULE_FOR_KIND = {"engineering_check": "not_applicable", "registered_hypothesis": "roi_threshold"}
+FINANCIAL_RULE_KEYS = {"not_applicable": ("kind", "reason"),
+                       "roi_threshold": ("kind", "hypothesis", "decision_threshold", "decision_rule")}
+# Deterministic engineering acceptance every contract states, judged without looking at any observed ROI:
+# hand-computed accounting answers reproduced exactly, earlier decisions unchanged by later or removed data,
+# and the issuance ledger reconciling with issued, resolved and unresolved stakes.
+ENGINEERING_CRITERIA = ("issuance_exposure_reconciliation", "known_accounting_answers", "prefix_invariance")
+# How the criteria combine, as a token rather than text: every criterion must hold, and outcome metrics (ROI, net
+# P&L, drawdown) are reported but can neither pass nor fail the run.
+ENGINEERING_RULES = ("all_criteria_must_hold_outcome_metrics_not_judged",)
 
 # Frozen-text heuristics: a word anywhere, or a whole text, that marks an unfinished field.
 PLACEHOLDER_WORDS = ("fixme", "lorem", "placeholder", "tba", "tbc", "tbd", "todo", "xxx")
 PLACEHOLDER_TEXTS = ("-", "--", ".", "...", "?", "n/a", "na", "none", "null", "x")
 MIN_FROZEN_TEXT = 20
-FROZEN_RULE_TEXTS = ("hypothesis", "cohort.market_rule", "cohort.runner_rule", "features[].definition",
-                     "primary_metric.decision_rule", "variants[].description", "stopping_rule.rule")
+FROZEN_RULE_TEXTS = ("cohort.market_rule", "cohort.runner_rule", "engineering_acceptance.criteria[].definition",
+                     "features[].definition", "financial_rule.decision_rule", "financial_rule.hypothesis",
+                     "financial_rule.reason", "stopping_rule.rule", "variants[].description")
 
 PROVIDERS = ("betfair_historical_data",)
 TIERS = ("BASIC", "ADVANCED", "PRO")
@@ -93,9 +146,27 @@ MARKET_TYPES = ("WIN",)
 SPLITS = ("engineering", "research", "holdout")
 EVALUABLE_SPLITS = ("engineering", "research")
 HOLDOUT_STATES = ("sealed_not_downloaded",)
-# The months deliberately not downloaded (docs/backtest-plan.md section 3), and months already inspected.
-SEALED_HOLDOUT = ("2026-01", "2026-09")
+# The months deliberately not downloaded (docs/backtest-plan.md section 3; Astra's technical decision of
+# 2026-10-14, adopted by Claude, narrowed it from the superseded 2026-01..2026-09), and months already inspected.
+SEALED_HOLDOUT = ("2026-01", "2026-08")
 INSPECTED_MONTHS = ("2017-04",)
+# Months whose outcome-bearing data was downloaded before any freeze: in no split, exploratory only. Deleting the
+# file did not restore untouched status. Outcome rows are known to have been seen (known_minimum); how much more
+# research read was not recorded (inspection_extent).
+EXPOSED_MONTHS = {
+    "2026-09": {"file": "uk_ie_2026-09.csv", "source": "Betfair Data Scientists hub, with WIN_BSP and WIN_RESULT",
+                "sha256": "8e999e30a7fc17b2dd981cc8d223071b63d94797fbe08884d7ef67d0ec22ec92",
+                "deleted_on": "2026-10-14", "inspection_extent": "unknown",
+                "known_minimum": "header and first one to three rows viewed 2026-10-14 for the plan"},
+}
+# Race dates whose outcome-bearing data was downloaded before any freeze: never prospective evidence, and their
+# month is in no split.
+NOT_PROSPECTIVE_DATES = {
+    "2026-10-12": {"file": "sample_ukwin_13102026.csv", "source": "Betfair BSP CSV (promo.betfair.com)",
+                   "sha256": "e1bdc0816bac5ebac2a1fdefa4a46f661cfb65ab0fbbd080ab3dc3545c5e2244",
+                   "deleted_on": "2026-10-14", "inspection_extent": "unknown",
+                   "known_minimum": "header and first one to three rows viewed 2026-10-14 for the plan"},
+}
 
 ANCHORS = ("first_published_scheduled_off",)
 # Substrings that mark an anchor known only after the decision it would time (refused as "retrospective").
@@ -107,10 +178,20 @@ DELAY_RANGE_S = (0, 3600)
 EQUAL_PT_ORDERS = ("timer_after_equal_pt_batch",)
 IMAGE_HANDLING = ("img_replaces_market_state",)
 
-CAPABILITIES = ("all_offers", "best_offers", "final_bsp", "ltp", "market_definition", "results", "sp_projected",
-                "sp_traded", "traded_ladder", "traded_volume")
+# Decision-time inputs (missing in the observed prefix at decision time: unsupported/abstain) and outcomes
+# (missing or revised: the earlier decision stands and its settlement is unresolved).
+DECISION_CAPABILITIES = ("all_offers", "best_offers", "ltp", "market_definition", "sp_projected", "sp_traded",
+                         "traded_ladder", "traded_volume")
 OUTCOME_CAPABILITIES = ("final_bsp", "results")
-ON_MISSING = ("unsupported_abstain",)
+CAPABILITIES = tuple(sorted(DECISION_CAPABILITIES + OUTCOME_CAPABILITIES))
+CAPABILITY_CLASSES = ("decision", "outcome")
+ON_MISSING = {"decision": ("unsupported_abstain",), "outcome": ("unresolved_settlement",)}
+# The other class's policy, refused with its reason.
+REFUSED_ON_MISSING = {"decision": {"unresolved_settlement": "not_for_decision_inputs"},
+                      "outcome": {"unsupported_abstain": "would_change_an_earlier_decision"}}
+# A capability listed in the wrong class.
+MISCLASSED = {"decision": dict.fromkeys(OUTCOME_CAPABILITIES, "is_an_outcome"),
+              "outcome": dict.fromkeys(DECISION_CAPABILITIES, "is_a_decision_input")}
 FEATURE_AS_OF = ("decision_time",)
 LOOKBACK_RANGE_S = (0, 86400)
 FITTING_KINDS = ("none",)
@@ -250,8 +331,11 @@ def _is_int(value):
 
 
 def _month(text):
+    """(year, month) of a YYYY-MM text, or None; year 0000 is not a calendar year, so it is refused."""
     match = _MONTH_RE.fullmatch(text) if isinstance(text, str) else None
-    return (int(match.group(1)), int(match.group(2))) if match else None
+    if not match or int(match.group(1)) < 1:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def _placeholder(text):
@@ -426,15 +510,16 @@ class _Checker:
         registration = self.section(top, "registration", ("kind", "note"))
         kind = self.choice(registration, "registration", "kind", REGISTRATION_KINDS)
         self.text(registration, "registration", "note")
-        self.text(top, "", "hypothesis")
+        self.financial_rule(top, kind)
+        self.engineering_acceptance(top)
         self.population(top, kind)
         self.cohort(top)
         self.decision_timing(top)
-        required = self.capabilities(top)
-        features = self.features(top, required)
+        decision, outcome = self.capabilities(top)
+        features = self.features(top, decision)
         fitting = self.section(top, "fitting", ("kind",))
         self.choice(fitting, "fitting", "kind", FITTING_KINDS, dict.fromkeys(DEFERRED_FITTING, "deferred"))
-        self.staking(top, required)
+        self.staking(top, outcome)
         settlement = self.section(top, "settlement", SETTLEMENT_CASES)
         for case in SETTLEMENT_CASES:
             self.choice(settlement, "settlement", case, SETTLEMENT_RULES)
@@ -472,6 +557,50 @@ class _Checker:
         elif value < SCHEMA_V1_DATE:
             self.add("frozen_on", "before_schema_v1")
 
+    def financial_rule(self, top, kind):
+        """The typed financial rule: its keys follow its kind, and its kind must be the registration kind's."""
+        ok, rule = self.get(top, "", "financial_rule")
+        if not ok:
+            return
+        if not isinstance(rule, dict):
+            self.add("financial_rule", "not_an_object")
+            return
+        if "kind" not in rule:
+            self.add("financial_rule.kind", "missing")
+        rule_kind = self.choice(rule, "financial_rule", "kind", tuple(FINANCIAL_RULE_KEYS))
+        if rule_kind is None:                                   # keys cannot be judged; only refuse unknown ones
+            known = {key for keys in FINANCIAL_RULE_KEYS.values() for key in keys}
+            for key in rule:
+                if key not in known:
+                    self.add(_join("financial_rule", key), "unknown_key")
+            return
+        self.fields(rule, "financial_rule", FINANCIAL_RULE_KEYS[rule_kind])
+        if kind is not None and FINANCIAL_RULE_FOR_KIND[kind] != rule_kind:
+            self.add("financial_rule.kind", f"{FINANCIAL_RULE_FOR_KIND[kind]}_required_for_{kind}")
+        if rule_kind == "not_applicable":
+            self.text(rule, "financial_rule", "reason")
+            return
+        self.text(rule, "financial_rule", "hypothesis")
+        self.fraction(rule, "financial_rule", "decision_threshold", *ROI_THRESHOLD_RANGE)
+        self.text(rule, "financial_rule", "decision_rule")
+
+    def engineering_acceptance(self, top):
+        """Every ENGINEERING_CRITERIA name once, sorted, each with a definition, and an ENGINEERING_RULES token."""
+        path = "engineering_acceptance"
+        section = self.section(top, path, ("criteria", "rule"))
+        found = self.objects(section, path, "criteria", ("name", "definition"), allow_empty=False)
+        names = self.identifiers(found, f"{path}.criteria", "name", "not_sorted_by_name")
+        for item_path, criterion in found:
+            name = criterion.get("name")
+            if isinstance(name, str) and _NAME_RE.fullmatch(name) and name not in ENGINEERING_CRITERIA:
+                self.add(f"{item_path}.name", "not_allowed")
+            self.text(criterion, item_path, "definition")
+        if section is not None and isinstance(section.get("criteria"), list):
+            for needed in ENGINEERING_CRITERIA:
+                if needed not in names:
+                    self.add(f"{path}.criteria", f"missing_{needed}")
+        self.choice(section, path, "rule", ENGINEERING_RULES)
+
     def population(self, top, kind):
         keys = ("provider", "tier", "sport", "countries", "market_types", "splits", "evaluate_split")
         population = self.section(top, "population", keys)
@@ -500,7 +629,11 @@ class _Checker:
         if "holdout" in ranges and any(ranges[name][1] >= ranges["holdout"][0] for name in names if name != "holdout"):
             self.add("population.splits.holdout", "not_after_other_splits")
         sealed = tuple(_month(month) for month in SEALED_HOLDOUT)
+        exposed = {_month(month) for month in EXPOSED_MONTHS} | {_month(day[:7]) for day in NOT_PROSPECTIVE_DATES}
         for name, (start, end) in ranges.items():
+            if any(start <= month <= end for month in exposed):
+                self.add(f"population.splits.{name}",
+                         "exposed_not_holdout" if name == "holdout" else "exposed_exploratory_only")
             if name == "holdout":
                 if (start, end) != sealed:
                     self.add("population.splits.holdout", "not_the_sealed_holdout")
@@ -577,19 +710,24 @@ class _Checker:
         self.choice(timing, "decision_timing", "image_handling", IMAGE_HANDLING)
 
     def capabilities(self, top):
-        section = self.section(top, "capabilities", ("required", "on_missing"))
-        self.choice(section, "capabilities", "on_missing", ON_MISSING)
-        names = self.name_set(section, "capabilities", "required", CAPABILITIES, allow_empty=False)
-        if names is None:
-            return None
-        required = set(names)
-        for needed in ("market_definition", "results"):           # the decision anchor and settlement
-            if needed not in required:
-                self.add("capabilities.required", f"missing_{needed}")
-        return required
+        """(decision names, outcome names), each None when its list cannot be read."""
+        section = self.section(top, "capabilities", CAPABILITY_CLASSES)
+        found = {}
+        for cls, allowed in zip(CAPABILITY_CLASSES, (DECISION_CAPABILITIES, OUTCOME_CAPABILITIES)):
+            path = f"capabilities.{cls}"
+            ok, value = self.get(section, "capabilities", cls)
+            value = self.fields(value, path, ("required", "on_missing")) if ok else None
+            self.choice(value, path, "on_missing", ON_MISSING[cls], REFUSED_ON_MISSING[cls])
+            names = self.name_set(value, path, "required", allowed, MISCLASSED[cls], allow_empty=False)
+            found[cls] = None if names is None else set(names)
+        # The decision anchor needs market definitions; settlement needs results.
+        for cls, needed in (("decision", "market_definition"), ("outcome", "results")):
+            if found[cls] is not None and needed not in found[cls]:
+                self.add(f"capabilities.{cls}.required", f"missing_{needed}")
+        return found["decision"], found["outcome"]
 
-    def features(self, top, required):
-        """The valid declared feature names."""
+    def features(self, top, decision):
+        """The valid declared feature names; each feature draws on one required decision-time capability."""
         keys = ("name", "capability", "as_of", "lookback_s", "definition")
         found = self.objects(top, "", "features", keys, allow_empty=True)
         names = self.identifiers(found, "features", "name", "not_sorted_by_name")
@@ -597,22 +735,22 @@ class _Checker:
             capability = self.choice(feature, path, "capability", CAPABILITIES)
             if capability in OUTCOME_CAPABILITIES:
                 self.add(f"{path}.capability", "outcome_not_a_feature")
-            elif capability is not None and required is not None and capability not in required:
+            elif capability is not None and decision is not None and capability not in decision:
                 self.add(f"{path}.capability", "not_required")
             self.choice(feature, path, "as_of", FEATURE_AS_OF)
             self.integer(feature, path, "lookback_s", LOOKBACK_RANGE_S)
             self.text(feature, path, "definition")
         return set(names)
 
-    def staking(self, top, required):
+    def staking(self, top, outcome):
         staking = self.section(top, "staking", ("side", "price", "acceptance", "market_impact", "stake_pence"))
         self.choice(staking, "staking", "side", SIDES, dict.fromkeys(DEFERRED_STAKING["side"], "deferred"))
         price = self.choice(staking, "staking", "price", PRICES, dict.fromkeys(DEFERRED_STAKING["price"], "deferred"))
         self.choice(staking, "staking", "acceptance", ACCEPTANCE)
         self.choice(staking, "staking", "market_impact", MARKET_IMPACT)
         self.integer(staking, "staking", "stake_pence", STAKE_RANGE_PENCE)
-        if price == "BSP" and required is not None and "final_bsp" not in required:
-            self.add("capabilities.required", "missing_final_bsp")
+        if price == "BSP" and outcome is not None and "final_bsp" not in outcome:
+            self.add("capabilities.outcome.required", "missing_final_bsp")
 
     def costs(self, top):
         costs = self.section(top, "costs", ("commission_rate", "rate_source", "basis", "rounding", "note"))
@@ -623,11 +761,9 @@ class _Checker:
         self.text(costs, "costs", "note")
 
     def metrics(self, top):
-        primary = self.section(top, "primary_metric", ("name", "definition", "decision_threshold", "decision_rule"))
+        primary = self.section(top, "primary_metric", ("name", "definition"))
         self.choice(primary, "primary_metric", "name", PRIMARY_METRICS)
         self.choice(primary, "primary_metric", "definition", PRIMARY_DEFINITIONS)
-        self.fraction(primary, "primary_metric", "decision_threshold", *ROI_THRESHOLD_RANGE)
-        self.text(primary, "primary_metric", "decision_rule")
         names = self.name_set(top, "", "secondary_metrics", SECONDARY_METRICS, REFUSED_METRICS, allow_empty=False)
         for needed in REQUIRED_SECONDARY if names is not None else ():
             if needed not in names:

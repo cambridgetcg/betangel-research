@@ -20,7 +20,8 @@ from unittest import mock
 from betangel_research.betfair import receipts
 from betangel_research.betfair.backtest import contract as contract_module
 from betangel_research.betfair.backtest.__main__ import main
-from betangel_research.betfair.backtest.contract import DRAFT_NULLABLE, check_contract_file, validate_contract
+from betangel_research.betfair.backtest.contract import (DRAFT_NULLABLE, ENGINEERING_CRITERIA, check_contract_file,
+                                                         validate_contract)
 
 import test_betfair_support as support
 
@@ -42,9 +43,12 @@ sys.stderr.write(json.dumps([code, sorted(m for m in sys.modules if m.split(".")
                              sorted(m for m in sys.modules if m.split(".")[0] in network
                                     or m in ("urllib.request", "urllib.response"))]))
 """
-TEXT_LEAVES = ("registration.note", "hypothesis", "cohort.market_rule", "cohort.runner_rule",
-               "features[0].definition", "features[1].definition", "costs.note", "primary_metric.decision_rule",
-               "variants[0].description", "variants[1].description", "stopping_rule.rule")
+TEXT_LEAVES = ("registration.note", "financial_rule.reason", "engineering_acceptance.criteria[0].definition",
+               "engineering_acceptance.criteria[1].definition", "engineering_acceptance.criteria[2].definition",
+               "cohort.market_rule", "cohort.runner_rule", "features[0].definition", "features[1].definition",
+               "costs.note", "variants[0].description", "variants[1].description", "stopping_rule.rule")
+REGISTERED_RULE = {"kind": "roi_threshold", "hypothesis": "Synthetic: a hypothesis for the test only.",
+                   "decision_threshold": 0.0, "decision_rule": "Synthetic rule for the test only."}
 
 
 def draft():
@@ -52,12 +56,20 @@ def draft():
 
 
 def frozen():
-    """The draft with every draft-nullable field filled and status frozen (synthetic values)."""
+    """The engineering draft frozen: its operational nulls filled (synthetic values), nothing financial invented."""
     value = draft()
-    value.update(status="frozen", frozen_on="2026-10-14", hypothesis="Synthetic: the pipeline reproduces hand totals.")
+    value.update(status="frozen", frozen_on="2026-10-14")
     value["decision_timing"]["delay_s"] = 1
-    value["primary_metric"].update(decision_threshold=0.0, decision_rule="Synthetic rule for the test only.")
     value["stopping_rule"]["max_trials"] = 4
+    return value
+
+
+def registered():
+    """frozen() as a registered hypothesis over the research split, with a synthetic roi_threshold rule."""
+    value = frozen()
+    value["registration"]["kind"] = "registered_hypothesis"
+    value["population"]["evaluate_split"] = "research"
+    value["financial_rule"] = dict(REGISTERED_RULE)
     return value
 
 
@@ -134,15 +146,22 @@ class ContractTests(unittest.TestCase):
         self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
         self.assertEqual((value["status"], value["registration"]["kind"]), ("draft", "engineering_check"))
         self.assertIn("not a registered hypothesis", value["registration"]["note"])
-        nulls = sorted(path for path in ("frozen_on", *DRAFT_NULLABLE) if get_path(value, path) is None)
-        self.assertEqual(nulls, sorted(("frozen_on", *DRAFT_NULLABLE)))
+        # Only the operational choices are still open; the engineering check states its purpose in full.
+        nulls = sorted(path for path in leaf_paths(value) if get_path(value, path) is None)
+        self.assertEqual(nulls, ["decision_timing.delay_s", "frozen_on", "stopping_rule.max_trials"])
+        self.assertEqual(sorted(value["financial_rule"]), ["kind", "reason"])
+        self.assertEqual(value["financial_rule"]["kind"], "not_applicable")
+        self.assertEqual([c["name"] for c in value["engineering_acceptance"]["criteria"]], list(ENGINEERING_CRITERIA))
+        self.assertEqual(value["capabilities"], {
+            "decision": {"required": ["ltp", "market_definition"], "on_missing": "unsupported_abstain"},
+            "outcome": {"required": ["final_bsp", "results"], "on_missing": "unresolved_settlement"}})
         population = value["population"]
         self.assertEqual((population["tier"], population["sport"], population["countries"], population["market_types"]),
                          ("BASIC", "horse_racing", ["GB", "IE"], ["WIN"]))
         self.assertEqual(population["splits"], {
             "engineering": {"start_month": "2015-05", "end_month": "2016-04"},
             "research": {"start_month": "2023-01", "end_month": "2025-12"},
-            "holdout": {"start_month": "2026-01", "end_month": "2026-09", "state": "sealed_not_downloaded"}})
+            "holdout": {"start_month": "2026-01", "end_month": "2026-08", "state": "sealed_not_downloaded"}})
         self.assertEqual(population["evaluate_split"], "engineering")
         self.assertEqual(value["fitting"], {"kind": "none"})
         self.assertEqual(set(value["settlement"].values()), {"unresolved"})
@@ -152,7 +171,7 @@ class ContractTests(unittest.TestCase):
 
     def test_only_draft_nullable_fields_may_be_null_in_a_draft(self):
         paths = leaf_paths(draft())
-        self.assertGreater(len(paths), 60)
+        self.assertGreater(len(paths), 70)
         for path in paths:
             if path == "frozen_on" or path in DRAFT_NULLABLE:
                 continue
@@ -160,14 +179,26 @@ class ContractTests(unittest.TestCase):
             set_path(value, path, None)
             with self.subTest(path=path):
                 self.assertIn(f"{path}:null", problems(value))
+        # A registered hypothesis's financial fields may wait in a draft; nothing operational beyond delay and budget.
+        value = draft()
+        value["registration"]["kind"] = "registered_hypothesis"
+        value["population"]["evaluate_split"] = "research"
+        value["financial_rule"] = dict.fromkeys(REGISTERED_RULE, None) | {"kind": "roi_threshold"}
+        self.assertEqual(problems(value), [])
+        # Exactly these: nothing else, such as offset_s or the stopping rule's text, may wait in a draft.
+        self.assertEqual(DRAFT_NULLABLE, ("decision_timing.delay_s", "financial_rule.decision_rule",
+                                          "financial_rule.decision_threshold", "financial_rule.hypothesis",
+                                          "stopping_rule.max_trials"))
 
     def test_frozen_contract_needs_every_field_non_null(self):
-        value = frozen()
-        found, _ = validate_contract(value)
-        self.assertEqual(found, [])
-        self.assertEqual(contract_module.result_status(value, found), "valid_frozen")
+        for base in (frozen, registered):
+            value = base()
+            found, _ = validate_contract(value)
+            with self.subTest(base=base.__name__):
+                self.assertEqual(found, [])
+                self.assertEqual(contract_module.result_status(value, found), "valid_frozen")
         for path in DRAFT_NULLABLE:
-            value = frozen()
+            value = registered()
             set_path(value, path, None)
             with self.subTest(path=path):
                 self.assertEqual(problems(value), [f"{path}:null_in_frozen"])
@@ -191,30 +222,37 @@ class ContractTests(unittest.TestCase):
         value = draft()
         value["status"] = "registered"
         self.assertIn("status:not_allowed", problems(value))
-        self.assertIn("hypothesis:null_in_frozen", problems(value))
+        self.assertIn("decision_timing.delay_s:null_in_frozen", problems(value))
 
     def test_frozen_text_must_not_be_a_placeholder(self):
-        value = frozen()
-        value.update(hypothesis="TBD")
+        value = registered()
+        value["financial_rule"]["hypothesis"] = "TBD"
         value["cohort"].update(market_rule="-", runner_rule="TBD", exclusions=[])
         value["features"][0]["definition"] = "x"
         value["stopping_rule"]["rule"] = "?"
         value["costs"]["note"] = "."
         value["registration"]["note"] = "n/a"
         value["variants"][0]["description"] = "TODO: describe"
-        value["primary_metric"]["decision_rule"] = "Lorem ipsum dolor sit amet, placeholder."
+        value["financial_rule"]["decision_rule"] = "Lorem ipsum dolor sit amet, placeholder."
+        value["engineering_acceptance"]["criteria"][0]["definition"] = "tbc"
         self.assertEqual(problems(value), sorted([
-            "hypothesis:placeholder_in_frozen", "cohort.market_rule:placeholder_in_frozen",
+            "financial_rule.hypothesis:placeholder_in_frozen", "cohort.market_rule:placeholder_in_frozen",
             "cohort.runner_rule:placeholder_in_frozen", "cohort.exclusions:empty_in_frozen",
             "features[0].definition:placeholder_in_frozen", "stopping_rule.rule:placeholder_in_frozen",
             "costs.note:placeholder_in_frozen", "registration.note:placeholder_in_frozen",
-            "variants[0].description:placeholder_in_frozen", "primary_metric.decision_rule:placeholder_in_frozen"]))
-        for path in ("hypothesis", "cohort.market_rule", "cohort.runner_rule", "features[1].definition",
-                     "primary_metric.decision_rule", "variants[1].description", "stopping_rule.rule"):
-            value = frozen()
+            "variants[0].description:placeholder_in_frozen", "financial_rule.decision_rule:placeholder_in_frozen",
+            "engineering_acceptance.criteria[0].definition:placeholder_in_frozen"]))
+        for base, path in ((registered, "financial_rule.hypothesis"), (frozen, "cohort.market_rule"),
+                           (frozen, "cohort.runner_rule"), (frozen, "features[1].definition"),
+                           (registered, "financial_rule.decision_rule"), (frozen, "variants[1].description"),
+                           (frozen, "stopping_rule.rule"), (frozen, "financial_rule.reason"),
+                           (frozen, "engineering_acceptance.criteria[2].definition")):
+            value = base()
             set_path(value, path, "Too short a rule.")
             with self.subTest(path=path):
                 self.assertEqual(problems(value), [f"{path}:too_short_in_frozen"])
+        self.assertEqual(problems(edited(frozen, financial_rule__reason="n/a")),
+                         ["financial_rule.reason:placeholder_in_frozen"])
         value = frozen()
         value["cohort"]["exclusions"] = ["TBD"]
         self.assertEqual(problems(value), ["cohort.exclusions[0]:placeholder_in_frozen"])
@@ -222,12 +260,91 @@ class ContractTests(unittest.TestCase):
         value = draft()
         value["cohort"].update(market_rule="TBD", exclusions=[])
         self.assertEqual(problems(value), [])
-        for threshold, expected in ((-5.0, ["primary_metric.decision_threshold:out_of_range"]), (-1.0, []),
-                                    (998.5, []), (999.0, ["primary_metric.decision_threshold:out_of_range"])):
-            value = frozen()
-            value["primary_metric"]["decision_threshold"] = threshold
+        for threshold, expected in ((-5.0, ["financial_rule.decision_threshold:out_of_range"]), (-1.0, []),
+                                    (998.5, []), (999.0, ["financial_rule.decision_threshold:out_of_range"]),
+                                    (0, ["financial_rule.decision_threshold:not_float"])):
+            value = registered()
+            value["financial_rule"]["decision_threshold"] = threshold
             with self.subTest(threshold=threshold):
                 self.assertEqual(problems(value), expected)
+
+    def test_engineering_check_has_an_honest_frozen_form(self):
+        """Astra's R3 root reproduction: the committed draft with status frozen, frozen_on, delay_s=1 and
+        max_trials=2 was refused for hypothesis, decision_rule and decision_threshold being null. An engineering
+        check now states that no financial rule applies and fixes deterministic engineering criteria instead; the
+        operational choices stay mandatory at freeze and no draft passes as frozen."""
+        def freeze(delay_s, max_trials):
+            value = draft()
+            value.update(status="frozen", frozen_on="2026-10-14")
+            value["decision_timing"]["delay_s"] = delay_s
+            value["stopping_rule"]["max_trials"] = max_trials
+            return value
+
+        value = freeze(1, 2)
+        found, _ = validate_contract(value)
+        self.assertEqual((found, contract_module.result_status(value, found)), ([], "valid_frozen"))
+        self.assertEqual(problems(freeze(None, None)), ["decision_timing.delay_s:null_in_frozen",
+                                                        "stopping_rule.max_trials:null_in_frozen"])
+        self.assertEqual(problems(freeze(1, None)), ["stopping_rule.max_trials:null_in_frozen"])
+        self.assertEqual(problems(freeze(None, 2)), ["decision_timing.delay_s:null_in_frozen"])
+        # Each kind carries its own typed financial rule; the other kind's is refused, not ignored.
+        value = freeze(1, 2)
+        value["financial_rule"] = dict(REGISTERED_RULE)
+        self.assertEqual(problems(value), ["financial_rule.kind:not_applicable_required_for_engineering_check"])
+        value = registered()
+        value["financial_rule"] = draft()["financial_rule"]
+        self.assertEqual(problems(value), ["financial_rule.kind:roi_threshold_required_for_registered_hypothesis"])
+        value = freeze(1, 2)
+        value["financial_rule"]["decision_threshold"] = 0.0
+        self.assertEqual(problems(value), ["financial_rule.decision_threshold:unknown_key"])
+        value = freeze(1, 2)
+        value["financial_rule"] = {"kind": "skip", "reason": "Synthetic reason for the test only.", "extra": 1}
+        self.assertEqual(problems(value), ["financial_rule.extra:unknown_key", "financial_rule.kind:not_allowed"])
+        value = freeze(1, 2)
+        del value["financial_rule"]["kind"]
+        self.assertEqual(problems(value), ["financial_rule.kind:missing"])
+        for bad, reason in ((None, "null"), ([], "not_an_object")):
+            value = freeze(1, 2)
+            value["financial_rule"] = bad
+            with self.subTest(financial_rule=bad):
+                self.assertEqual(problems(value), [f"financial_rule:{reason}"])
+        value = registered()
+        del value["financial_rule"]["decision_rule"]
+        self.assertEqual(problems(value), ["financial_rule.decision_rule:missing"])
+        # Every engineering criterion, once, by name; nothing outcome-based can be added as one.
+        for name in ENGINEERING_CRITERIA:
+            value = freeze(1, 2)
+            criteria = value["engineering_acceptance"]["criteria"]
+            criteria[:] = [c for c in criteria if c["name"] != name]
+            with self.subTest(missing=name):
+                self.assertEqual(problems(value), [f"engineering_acceptance.criteria:missing_{name}"])
+        value = freeze(1, 2)
+        value["engineering_acceptance"]["criteria"].append({"name": "roi_above_zero",
+                                                            "definition": "Synthetic: observed ROI above zero."})
+        self.assertEqual(problems(value), ["engineering_acceptance.criteria[3].name:not_allowed"])
+        value = freeze(1, 2)
+        value["engineering_acceptance"]["criteria"].reverse()
+        self.assertEqual(problems(value), ["engineering_acceptance.criteria:not_sorted_by_name"])
+        value = freeze(1, 2)
+        value["engineering_acceptance"]["criteria"][1]["name"] = ENGINEERING_CRITERIA[0]
+        self.assertEqual(problems(value), ["engineering_acceptance.criteria:missing_known_accounting_answers",
+                                           "engineering_acceptance.criteria[1].name:duplicate"])
+        value = freeze(1, 2)
+        value["engineering_acceptance"]["criteria"] = []
+        missing = [f"engineering_acceptance.criteria:missing_{name}" for name in ENGINEERING_CRITERIA]
+        self.assertEqual(problems(value), ["engineering_acceptance.criteria:empty", *missing])
+        # How the criteria combine is a token, not text: no wording can turn observed ROI into a pass condition,
+        # in a draft or a frozen contract.
+        self.assertEqual(contract_module.ENGINEERING_RULES, ("all_criteria_must_hold_outcome_metrics_not_judged",))
+        self.assertEqual(draft()["engineering_acceptance"]["rule"], contract_module.ENGINEERING_RULES[0])
+        for bad in ("The run passes only if the observed ROI is above zero percent.", "tbc", "", 7, ["x"]):
+            for base in (draft, lambda: freeze(1, 2)):
+                value = base()
+                value["engineering_acceptance"]["rule"] = bad
+                with self.subTest(rule=bad, status=value["status"]):
+                    self.assertEqual(problems(value), ["engineering_acceptance.rule:not_allowed"])
+        # The gate is unchanged: a draft is never valid_frozen, and the CLI's --require-frozen still exits 3 for it.
+        self.assertEqual(contract_module.result_status(draft(), []), "valid_draft")
 
     def test_unknown_and_missing_keys_refused_at_every_level(self):
         for path, _ in list(object_paths(draft())):
@@ -359,24 +476,75 @@ class ContractTests(unittest.TestCase):
         value["features"][1]["lookback_s"] = 86400
         self.assertEqual(problems(value), [])
         value = draft()
-        value["capabilities"]["required"] = ["ltp", "market_definition"]
-        self.assertEqual(problems(value), ["capabilities.required:missing_final_bsp",
-                                           "capabilities.required:missing_results"])
-        value = draft()
-        value["capabilities"]["required"] = ["final_bsp", "ltp", "results"]
-        self.assertEqual(problems(value), ["capabilities.required:missing_market_definition",
+        value["capabilities"]["decision"]["required"] = ["ltp"]
+        self.assertEqual(problems(value), ["capabilities.decision.required:missing_market_definition",
                                            "features[0].capability:not_required"])
         value = draft()
-        value["capabilities"]["required"] = ["market_definition", "ltp", "final_bsp", "results"]
-        self.assertEqual(problems(value), ["capabilities.required:not_sorted_unique"])
-        value = draft()
-        value["capabilities"]["on_missing"] = "zero"
-        self.assertEqual(problems(value), ["capabilities.on_missing:not_allowed"])
+        value["capabilities"]["decision"]["required"] = ["ltp", "market_definition", "best_offers"]
+        self.assertEqual(problems(value), ["capabilities.decision.required:not_sorted_unique"])
         value = draft()
         value["features"] = []
         for variant in value["variants"]:
             variant["uses_features"] = []
         self.assertEqual(problems(value), [])
+
+    def test_missing_outcomes_never_become_abstentions(self):
+        """R1: decision-time inputs and outcomes are separate classes. A missing decision-time input may abstain
+        (unsupported); a missing final BSP or result must leave the earlier decision standing with an unresolved
+        settlement, so abstaining on it, or listing an outcome as a decision input, is refused."""
+        self.assertEqual(set(contract_module.DECISION_CAPABILITIES) & set(contract_module.OUTCOME_CAPABILITIES), set())
+        self.assertEqual(sorted(contract_module.DECISION_CAPABILITIES + contract_module.OUTCOME_CAPABILITIES),
+                         list(contract_module.CAPABILITIES))
+        self.assertEqual(contract_module.OUTCOME_CAPABILITIES, ("final_bsp", "results"))
+        self.assertEqual(contract_module.ON_MISSING, {"decision": ("unsupported_abstain",),
+                                                      "outcome": ("unresolved_settlement",)})
+        # The outcome policy and the settlement rule for a missing BSP or result say the same thing.
+        self.assertEqual(contract_module.SETTLEMENT_RULES, ("unresolved",))
+        self.assertIn("missing_bsp_or_result", contract_module.SETTLEMENT_CASES)
+        cases = [
+            (("outcome", "on_missing"), "unsupported_abstain",
+             "capabilities.outcome.on_missing:would_change_an_earlier_decision"),
+            (("decision", "on_missing"), "unresolved_settlement",
+             "capabilities.decision.on_missing:not_for_decision_inputs"),
+            (("decision", "on_missing"), "zero", "capabilities.decision.on_missing:not_allowed"),
+            (("outcome", "on_missing"), "zero", "capabilities.outcome.on_missing:not_allowed"),
+            (("decision", "required"), ["final_bsp", "ltp", "market_definition"],
+             "capabilities.decision.required:final_bsp_is_an_outcome"),
+            (("decision", "required"), ["ltp", "market_definition", "results"],
+             "capabilities.decision.required:results_is_an_outcome"),
+            (("outcome", "required"), ["final_bsp", "ltp", "results"],
+             "capabilities.outcome.required:ltp_is_a_decision_input"),
+            (("outcome", "required"), ["final_bsp"], "capabilities.outcome.required:missing_results"),
+            (("outcome", "required"), ["results"], "capabilities.outcome.required:missing_final_bsp"),
+            (("outcome", "required"), [], "capabilities.outcome.required:empty"),
+            (("decision", "required"), [], "capabilities.decision.required:empty"),
+            (("outcome", "required"), ["results", "final_bsp"], "capabilities.outcome.required:not_sorted_unique"),
+        ]
+        for (cls, key), bad, expected in cases:
+            value = draft()
+            value["capabilities"][cls][key] = bad
+            with self.subTest(field=f"{cls}.{key}", value=bad):
+                self.assertIn(expected, problems(value))
+        # Every misclassification names itself; nothing else in the contract is blamed.
+        value = draft()
+        value["capabilities"]["outcome"]["on_missing"] = "unsupported_abstain"
+        self.assertEqual(problems(value), ["capabilities.outcome.on_missing:would_change_an_earlier_decision"])
+        # The old single-list shape (one on_missing policy for outcomes and inputs alike) is no longer v1.
+        value = draft()
+        value["capabilities"] = {"required": ["final_bsp", "ltp", "market_definition", "results"],
+                                 "on_missing": "unsupported_abstain"}
+        self.assertEqual(problems(value), ["capabilities.decision:missing", "capabilities.on_missing:unknown_key",
+                                           "capabilities.outcome:missing", "capabilities.required:unknown_key"])
+        # An outcome is never a feature, whichever class lists it.
+        for capability in contract_module.OUTCOME_CAPABILITIES:
+            value = draft()
+            value["features"][1]["capability"] = capability
+            with self.subTest(feature_capability=capability):
+                self.assertEqual(problems(value), ["features[1].capability:outcome_not_a_feature"])
+        # The draft's cohort exclusions make the same split in words.
+        exclusions = " ".join(draft()["cohort"]["exclusions"])
+        self.assertIn("capabilities.decision", exclusions)
+        self.assertIn("A missing final BSP or result is no exclusion", exclusions)
 
     def test_variants_see_only_declared_features_and_nothing_is_fitted(self):
         for uses, reason in ((["final_bsp"], "undeclared_feature"), (["winner_known"], "undeclared_feature"),
@@ -479,14 +647,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(problems(value), ["variants[1].id:duplicate"])
 
     def test_huge_integers_never_crash_the_validator(self):
-        expected = {"costs.commission_rate": "not_float", "primary_metric.decision_threshold": "not_float",
+        expected = {"costs.commission_rate": "not_float", "financial_rule.decision_threshold": "not_float",
                     "uncertainty.confidence_level": "not_float", "staking.stake_pence": "out_of_range",
                     "uncertainty.resamples": "out_of_range", "seeds.selection": "out_of_range",
                     "seeds.bootstrap": "out_of_range", "stopping_rule.max_trials": "out_of_range",
                     "decision_timing.delay_s": "out_of_range", "features[0].lookback_s": "out_of_range"}
         for path, reason in expected.items():
             for huge in (10 ** 400, -10 ** 400):
-                value = frozen()
+                value = registered()
                 set_path(value, path, huge)
                 with self.subTest(path=path, huge=huge > 0):
                     self.assertIn(f"{path}:{reason}", problems(value))
@@ -530,8 +698,8 @@ class ContractTests(unittest.TestCase):
         value["population"]["splits"]["holdout"].update(start_month="2014-01", end_month="2014-12")
         self.assertEqual(problems(value), ["population.splits.holdout:not_after_other_splits",
                                            "population.splits.holdout:not_the_sealed_holdout"])
-        value = frozen()
-        value["registration"]["kind"] = "registered_hypothesis"
+        value = registered()
+        value["population"]["evaluate_split"] = "engineering"
         self.assertEqual(problems(value), ["population.evaluate_split:not_research_for_registered_hypothesis"])
         value["population"]["evaluate_split"] = "research"
         self.assertEqual(problems(value), [])
@@ -546,33 +714,92 @@ class ContractTests(unittest.TestCase):
             with self.subTest(schema_version=bad):
                 self.assertEqual(problems(value), ["schema_version:unsupported"])
 
-    def test_the_sealed_holdout_cannot_move(self):
-        def splits(engineering, research, holdout):
+    def test_split_months_refuse_year_zero(self):
+        """N2: year 0000 is not a calendar year; an otherwise valid frozen contract with it was valid_frozen."""
+        for path in ("engineering.start_month", "engineering.end_month", "research.start_month",
+                     "holdout.start_month"):
             value = frozen()
-            value["registration"]["kind"] = "registered_hypothesis"
-            value["population"]["evaluate_split"] = "research"
+            set_path(value, f"population.splits.{path}", "0000-01")
+            with self.subTest(path=path):
+                self.assertIn(f"population.splits.{path}:malformed", problems(value))
+        self.assertEqual(problems(edited(frozen, population__splits__engineering__start_month="0000-01")),
+                         ["population.splits.engineering.start_month:malformed"])
+        self.assertEqual(problems(edited(frozen, population__splits__engineering__start_month="0001-01")), [])
+
+    def test_the_sealed_holdout_cannot_move(self):
+        """R2: the holdout is 2026-01..2026-08 (Astra's technical decision of 2026-10-14, adopted by Claude);
+        2026-09 is exposed and exploratory, so the superseded 2026-01..2026-09 holdout is refused."""
+        def splits(engineering, research, holdout):
+            value = registered()
             value["population"]["splits"] = {
                 "engineering": {"start_month": engineering[0], "end_month": engineering[1]},
                 "research": {"start_month": research[0], "end_month": research[1]},
                 "holdout": {"start_month": holdout[0], "end_month": holdout[1], "state": "sealed_not_downloaded"}}
             return problems(value)
 
-        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2025-12"), ("2026-01", "2026-09")), [])
+        self.assertEqual(contract_module.SEALED_HOLDOUT, ("2026-01", "2026-08"))
+        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2025-12"), ("2026-01", "2026-08")), [])
+        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2025-12"), ("2026-01", "2026-09")),
+                         ["population.splits.holdout:exposed_not_holdout",
+                          "population.splits.holdout:not_the_sealed_holdout"])
+        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2025-12"), ("2026-01", "2026-07")),
+                         ["population.splits.holdout:not_the_sealed_holdout"])
         self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2026-09"), ("2026-10", "2026-12")),
-                         ["population.splits.holdout:not_the_sealed_holdout",
+                         ["population.splits.holdout:exposed_not_holdout",
+                          "population.splits.holdout:not_the_sealed_holdout",
+                          "population.splits.research:exposed_exploratory_only",
                           "population.splits.research:overlaps_sealed_holdout"])
-        self.assertEqual(splits(("2026-01", "2026-09"), ("2015-05", "2016-04"), ("2026-10", "2027-06")),
+        self.assertEqual(splits(("2026-01", "2026-08"), ("2015-05", "2016-04"), ("2026-10", "2027-06")),
                          ["population.splits.engineering:overlaps_sealed_holdout",
+                          "population.splits.holdout:exposed_not_holdout",
                           "population.splits.holdout:not_the_sealed_holdout"])
         self.assertEqual(splits(("2015-05", "2015-12"), ("2016-05", "2016-12"), ("2017-01", "2017-06")),
                          ["population.splits.holdout:inspected_not_holdout",
                           "population.splits.holdout:not_the_sealed_holdout"])
-        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2025-12"), ("2026-01", "2026-08")),
-                         ["population.splits.holdout:not_the_sealed_holdout"])
-        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2026-01"), ("2026-01", "2026-09")),
+        self.assertEqual(splits(("2015-05", "2016-04"), ("2023-01", "2026-01"), ("2026-01", "2026-08")),
                          sorted(["population.splits.holdout:not_after_other_splits",
                                  "population.splits.research:overlaps_sealed_holdout",
                                  "population.splits:research_overlaps_holdout"]))
+        # Exposed data fits no split and the refusal names it, not only the ordering rule: 2026-09 (EXPOSED_MONTHS)
+        # and 2026-10, the month of the not-prospective 2026-10-12 (NOT_PROSPECTIVE_DATES), in any split.
+        for month in ("2026-09", "2026-10"):
+            with self.subTest(research=month):
+                self.assertEqual(splits(("2015-05", "2016-04"), (month, month), ("2026-01", "2026-08")),
+                                 ["population.splits.holdout:not_after_other_splits",
+                                  "population.splits.research:exposed_exploratory_only"])
+            with self.subTest(engineering=month):
+                self.assertEqual(splits((month, month), ("2023-01", "2025-12"), ("2026-01", "2026-08")),
+                                 ["population.splits.engineering:exposed_exploratory_only",
+                                  "population.splits.holdout:not_after_other_splits"])
+            with self.subTest(holdout=month):
+                self.assertIn("population.splits.holdout:exposed_not_holdout",
+                              splits(("2015-05", "2016-04"), ("2023-01", "2025-12"), ("2026-01", month)))
+        # Astra's root reproduction, inverted: the committed draft holds 2026-08, and 2026-09 is refused.
+        value = draft()
+        value["population"]["splits"]["holdout"]["end_month"] = "2026-09"
+        self.assertEqual(problems(value), ["population.splits.holdout:exposed_not_holdout",
+                                           "population.splits.holdout:not_the_sealed_holdout"])
+
+    def test_exposures_are_recorded_with_their_evidence(self):
+        """R2: the exposed September file and the 2026-10-12 BSP CSV are recorded with their hashes; deletion does
+        not restore untouched status, the full inspection extent stays unknown, and the known minimum is kept."""
+        exposed, dates = contract_module.EXPOSED_MONTHS, contract_module.NOT_PROSPECTIVE_DATES
+        self.assertEqual(list(exposed), ["2026-09"])
+        self.assertEqual(exposed["2026-09"]["sha256"],
+                         "8e999e30a7fc17b2dd981cc8d223071b63d94797fbe08884d7ef67d0ec22ec92")
+        self.assertEqual(list(dates), ["2026-10-12"])
+        self.assertEqual(dates["2026-10-12"]["sha256"],
+                         "e1bdc0816bac5ebac2a1fdefa4a46f661cfb65ab0fbbd080ab3dc3545c5e2244")
+        for record in (*exposed.values(), *dates.values()):
+            self.assertEqual((record["inspection_extent"], record["deleted_on"]), ("unknown", "2026-10-14"))
+            self.assertRegex(record["sha256"], r"\A[0-9a-f]{64}\Z")
+            # The full extent is unknown, but outcome rows are known to have been seen: the record keeps both.
+            self.assertEqual(record["known_minimum"],
+                             "header and first one to three rows viewed 2026-10-14 for the plan")
+        sealed = contract_module.SEALED_HOLDOUT
+        self.assertTrue(all(month > sealed[1] for month in exposed))
+        self.assertTrue(all(day[:7] > sealed[1] for day in dates))
+        self.assertTrue(all(not sealed[0] <= month <= sealed[1] for month in contract_module.INSPECTED_MONTHS))
 
     def test_hash_is_canonical_and_stable_under_key_order(self):
         value = draft()

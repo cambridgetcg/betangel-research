@@ -292,8 +292,8 @@ class FillModelTests(unittest.TestCase):
         self.assertEqual(self.exchange.queue_state()[REF_A], 0)
 
     def rest_advance(self, order, prev_traded, now_traded, *, prev_kw=None, **kw):
-        # T8a-like books: tradedVolume [] with runner totalMatched present (T8a recorded presence only; the
-        # rising values here are made up).
+        # REST books with runner totalMatched set (made-up 5000 -> 10000; T8a recorded presence only); callers
+        # choose the traded ladders.
         prev = rest_book(prev_traded, total_matched=5000.0, **(kw if prev_kw is None else prev_kw))
         now = rest_book(now_traded, total_matched=10000.0, **kw)
         return self.exchange.advance([order], prev_book=prev, book=now, now_ms=BOOK_MS + 1000)

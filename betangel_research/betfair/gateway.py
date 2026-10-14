@@ -1708,7 +1708,8 @@ class OrderGateway:
         that an ignored CLOSED book of a market not yet closed closes it (_note_paper_closed, one note).
         Every event journaled here carries the paper state after this step (its new book and, at CLOSED, the
         market's closed marker included); a step that changes that state without moving an order journals it
-        in a note (paper_advance_state), which also carries the step's non-empty flags. A gateway that lost its paper lock refuses first, before any read
+        in a note (paper_advance_state), which carries the step's non-empty flags when no report of the step
+        carried them. A gateway that lost its paper lock refuses first, before any read
         (gateway_lock_lost, _require_paper_lock): every step may journal its paper state."""
         if self.mode != "paper":
             raise OrderRefused("advance_is_paper_only")

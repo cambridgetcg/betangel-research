@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "experiment_id": "backtest-p0-bsp-v1",
+  "status": "draft",
+  "frozen_on": null,
+  "registration": {
+    "kind": "engineering_check",
+    "note": "Engineering run of the P0 BSP pipeline on the free 2015-05..2016-04 BASIC corpus, not a registered hypothesis. hypothesis, primary_metric.decision_threshold, primary_metric.decision_rule and stopping_rule.max_trials are deliberately null: no result of this run can support or refute an edge, the 2015-2016 year says nothing about a current edge, and the engineering months count as inspected from the first run on, so they can never serve as a holdout. decision_timing.delay_s stays null until task (c) fixes the intent delay, before any run."
+  },
+  "hypothesis": null,
+  "population": {
+    "provider": "betfair_historical_data",
+    "tier": "BASIC",
+    "sport": "horse_racing",
+    "countries": ["GB", "IE"],
+    "market_types": ["WIN"],
+    "splits": {
+      "engineering": {"start_month": "2015-05", "end_month": "2016-04"},
+      "research": {"start_month": "2023-01", "end_month": "2025-12"},
+      "holdout": {"start_month": "2026-01", "end_month": "2026-09", "state": "sealed_not_downloaded"}
+    },
+    "evaluate_split": "engineering"
+  },
+  "cohort": {
+    "market_rule": "Every GB or IE horse-racing WIN market in the evaluated months whose first market definition was published at or before the decision time. Nothing published after the decision time admits or drops a market.",
+    "runner_rule": "Every runner ACTIVE in the latest market definition published at or before the decision time. A runner removed later keeps its decision in the issuance ledger.",
+    "exclusions": [
+      "No market definition published at or before the decision time: abstain (market_not_published_by_decision).",
+      "Market not OPEN, or already in play, in the latest definition at or before the decision time: abstain (market_not_open_pre_off).",
+      "A required capability missing for the market or runner: abstain with that capability's unsupported reason; missing is never zero."
+    ]
+  },
+  "decision_timing": {
+    "anchor": "first_published_scheduled_off",
+    "offset_s": -300,
+    "view": "observed_prefix_only",
+    "delay_s": null,
+    "equal_pt_order": "timer_after_equal_pt_batch",
+    "image_handling": "img_replaces_market_state"
+  },
+  "capabilities": {"required": ["final_bsp", "ltp", "market_definition", "results"], "on_missing": "unsupported_abstain"},
+  "features": [
+    {
+      "name": "active_runner_count",
+      "capability": "market_definition",
+      "as_of": "decision_time",
+      "lookback_s": 0,
+      "definition": "Number of ACTIVE runners in the latest market definition published at or before the decision time."
+    },
+    {
+      "name": "ltp_at_decision",
+      "capability": "ltp",
+      "as_of": "decision_time",
+      "lookback_s": 0,
+      "definition": "Each runner's last traded price published at or before the decision time (BASIC samples LTP at one minute); a runner with none has a missing value, not zero."
+    }
+  ],
+  "fitting": {"kind": "none"},
+  "staking": {
+    "side": "BACK",
+    "price": "BSP",
+    "acceptance": "unconditional_pre_off",
+    "market_impact": "assumed_negligible",
+    "stake_pence": 100
+  },
+  "settlement": {
+    "market_void": "unresolved",
+    "own_runner_removed_after_decision": "unresolved",
+    "other_runner_removed_after_decision": "unresolved",
+    "dead_heat": "unresolved",
+    "result_revised_after_close": "unresolved",
+    "missing_bsp_or_result": "unresolved"
+  },
+  "costs": {
+    "commission_rate": 0.05,
+    "rate_source": "declared_assumption",
+    "basis": "positive_net_market_winnings",
+    "rounding": "per_market_ceil_penny",
+    "note": "Declared assumption, not any account's effective charge: 5% is the conservative example-config rate from a secondary source (fact F62; Betfair's own example is Basic 2%). marketBaseRate in the files does not establish the charge."
+  },
+  "primary_metric": {
+    "name": "roi",
+    "definition": "sum_net_over_sum_stakes_resolved",
+    "decision_threshold": null,
+    "decision_rule": null
+  },
+  "secondary_metrics": [
+    "abstentions_by_reason",
+    "bet_count",
+    "coverage",
+    "ltp_to_bsp_movement_non_executable",
+    "max_drawdown_global_chronology",
+    "net_pnl",
+    "roi_worst_case_unresolved_lost",
+    "total_stakes",
+    "unresolved_exposure"
+  ],
+  "uncertainty": {
+    "method": "block_bootstrap",
+    "net_by": "market",
+    "block": "race_day",
+    "resamples": 10000,
+    "confidence_level": 0.95
+  },
+  "variants": [
+    {
+      "id": "ltp_favourite",
+      "role": "candidate",
+      "uses_features": ["ltp_at_decision"],
+      "description": "Back at BSP the runner with the lowest ltp_at_decision; a tie or any missing ltp_at_decision abstains for the market."
+    },
+    {
+      "id": "seeded_random_runner",
+      "role": "baseline",
+      "uses_features": [],
+      "description": "Back at BSP one ACTIVE runner chosen from seeds.selection and the market id. An empirical baseline reported with its uncertainty, not an engine oracle."
+    }
+  ],
+  "stopping_rule": {
+    "max_trials": null,
+    "rule": "Each declared variant runs over the whole engineering split; no variant, feature, cohort rule or cost is added, dropped or changed after outcomes are seen without a new contract and hash. Every started, failed, aborted or completed trial goes to the trial ledger with this contract's sha256."
+  },
+  "seeds": {"selection": 1, "bootstrap": 2}
+}

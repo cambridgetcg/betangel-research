@@ -53,10 +53,12 @@ modules it imported; a shadowing file elsewhere on sys.path (another working dir
 site packages) is outside the repository and not seen, and neither is a repository directory that joins
 sys.path only in another launch mode (scripts/ when one of its scripts runs; tests/, sys.path[0] under
 unittest discover, is checked for standard-library names only, by the real-tree test); and a test is not a
-sandbox. Python does not stop a process from opening a file by path, so "never reads live state" also rests
-on code review; the backtest closure must not name the state root, the client certificate directory or the
-home directory (LIVE_STATE_TEXT, HOME_LOOKUPS). The runtime companion in
-tests/test_betfair_backtest_contract.py lists the modules the validator actually loads on this interpreter.
+sandbox. Python does not stop a process from opening a file by path, so "never reads live state" also rests on
+code review; the backtest closure must not name the state root, the client certificate directory or the home
+directory (LIVE_STATE_TEXT, HOME_LOOKUPS), with one reviewed exception: path_guard, which denies those two trees,
+may name them only in its exact top-level deny literal (PATH_GUARD_DENIED; live_state_checked_text). The runtime
+companion in tests/test_betfair_backtest_contract.py lists the modules the validator actually loads on this
+interpreter.
 
 Classification of every module directly in betangel_research/betfair (read in full or by its imports and
 docstring at 8b0da84, 2026-10-14) is in FORBIDDEN_BETFAIR and ALLOWED_BETFAIR with one reason each. Allowed
@@ -81,6 +83,7 @@ Reuse feasibility (REUSE_FINDINGS, asserted below as the current truth; nothing 
 """
 
 import ast
+import io
 from collections import deque
 from importlib import machinery
 from pathlib import Path
@@ -171,6 +174,77 @@ LIVE_STATE_TEXT = ("Application Support", "StatePaths", "account_home", "journal
                    ".config/betangel-research", "betangel-research/betfair")
 # The runner works only from explicit paths: no home-directory lookups (Path.home, expanduser, pwd, $HOME).
 HOME_LOOKUPS = ("expanduser", "getpwnam", "getpwuid", "home")
+# The one reviewed exception to LIVE_STATE_TEXT (Astra's c2 design agreement, D12): path_guard may name the two
+# client trees it denies, only as literals in this exact top-level assignment; everything else in it is checked as
+# in every other backtest module.
+PATH_GUARD = f"{BACKTEST}.path_guard"
+PATH_GUARD_ASSIGNMENT = "DENIED_COMPONENT_SEQUENCES"
+PATH_GUARD_DENIED = (("Library", "Application Support", "betangel-research", "betfair"),
+                     (".config", "betangel-research", "betfair"))
+
+
+def name_bindings(tree, name):
+    """Every node of tree that binds or deletes name: a Name stored or deleted (assignment, augmented or annotated
+    assignment, walrus, for or with target, comprehension target), a def or class, an import alias, an argument, an
+    except-as, a match capture, or a global or nonlocal declaration of it."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+            found.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == name:
+            found.append(node)
+        elif isinstance(node, ast.alias) and (node.asname or node.name.split(".")[0]) == name:
+            found.append(node)
+        elif isinstance(node, ast.arg) and node.arg == name:
+            found.append(node)
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            found.append(node)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+            found.append(node)
+        elif isinstance(node, ast.MatchMapping) and node.rest == name:
+            found.append(node)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            found.append(node)
+    return found
+
+
+def live_state_checked_text(module, text, tree):
+    """The text of a module that LIVE_STATE_TEXT is checked against. Every module but path_guard: its whole text. For
+    path_guard, its tokens (tokenize, so lines are counted as Python counts them) with the string tokens inside its
+    one top-level PATH_GUARD_ASSIGNMENT left out, after checking that the assignment is a plain assignment of exactly
+    PATH_GUARD_DENIED written as a tuple of tuples of string literals, that it is never assigned again, and that its
+    lines hold nothing else (no other statement, before or after it); comments, inside the literal included, are
+    always kept. AssertionError when any check fails."""
+    if module != PATH_GUARD:
+        return text
+    found = [node for node in tree.body if isinstance(node, ast.Assign)
+             and [ast.unparse(target) for target in node.targets] == [PATH_GUARD_ASSIGNMENT]]
+    if len(found) != 1:
+        raise AssertionError("path_guard: exactly one top-level DENIED_COMPONENT_SEQUENCES assignment expected")
+    node, value = found[0], found[0].value
+
+    def text_literals(item):
+        return isinstance(item, ast.Tuple) and all(isinstance(part, ast.Constant) and isinstance(part.value, str)
+                                                   for part in item.elts)
+
+    if not (isinstance(value, ast.Tuple) and all(text_literals(item) for item in value.elts)
+            and ast.literal_eval(value) == PATH_GUARD_DENIED):
+        raise AssertionError("path_guard: DENIED_COMPONENT_SEQUENCES is not exactly the reviewed literal")
+    if [binding for binding in name_bindings(tree, PATH_GUARD_ASSIGNMENT) if binding is not node.targets[0]]:
+        raise AssertionError("path_guard: DENIED_COMPONENT_SEQUENCES is bound more than once")
+    first, last = (node.lineno, node.col_offset), (node.end_lineno, node.end_col_offset)
+    layout = (tokenize.NEWLINE, tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER)
+    strings = tuple(getattr(tokenize, name) for name in ("STRING", "FSTRING_MIDDLE", "TSTRING_MIDDLE")
+                    if hasattr(tokenize, name))
+    kept = []
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        inside = first <= token.start and token.end <= last
+        on_its_lines = first[0] <= token.start[0] <= last[0] or first[0] <= token.end[0] <= last[0]
+        if on_its_lines and not inside and token.type not in layout:
+            raise AssertionError("path_guard: the deny assignment's lines hold something else")
+        if not (inside and token.type in strings):
+            kept.append(token.string)
+    return "\n".join(kept)
 
 REUSE = ("paper", "book", "validate", "pnl", "ticks", "schemas", "constants")
 # Off-allowlist stdlib modules every receipts importer pulls in (receipts itself imports them).
@@ -201,6 +275,24 @@ REUSE_FINDINGS = {
 def parse(path):
     """The AST of one source file, decoded from its bytes as the importer decodes it (PEP 263 cookie)."""
     return ast.parse(Path(path).read_bytes(), filename=str(path))
+
+
+def path_guard_reuse_problems(tree):
+    """What one module's AST does with path_guard beyond guard_path, PathDenied and denied_sequence: a forbidden
+    import (the module whole, or another name) or a name of the deny list or its folded form."""
+    allowed, private = {"PathDenied", "denied_sequence", "guard_path"}, {PATH_GUARD_ASSIGNMENT, "_DENIED", "_folded"}
+    problems = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            from_guard = isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == "path_guard"
+            for alias in node.names:
+                if alias.name.split(".")[-1] == "path_guard" or (from_guard and alias.name not in allowed):
+                    problems.append(f"import:{alias.name}")
+        elif isinstance(node, ast.Name) and node.id in private:
+            problems.append(f"name:{node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in private:
+            problems.append(f"name:{node.attr}")
+    return sorted(problems)
 
 
 class ImportGraph:
@@ -897,9 +989,78 @@ class BacktestBoundaryTests(unittest.TestCase):
             home = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr in HOME_LOOKUPS]
             home += [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value == "HOME"]
             with self.subTest(module=module):
-                self.assertEqual([s for s in LIVE_STATE_TEXT if s in text], [])
+                checked = live_state_checked_text(module, text, tree)
+                self.assertEqual([s for s in LIVE_STATE_TEXT if s in checked], [])
                 self.assertEqual(spawned, [])
                 self.assertEqual(home, [])
+
+    def test_the_path_guard_exception_is_exactly_one_reviewed_literal(self):
+        """Only the exact top-level deny assignment is exempt: any other protected literal, a changed or extended
+        assignment, a computed one or a second assignment still fails (negative cases on synthetic sources)."""
+        real = REAL.files[PATH_GUARD][0].read_text(encoding="utf-8")
+        checked = live_state_checked_text(PATH_GUARD, real, ast.parse(real))
+        self.assertEqual([s for s in LIVE_STATE_TEXT if s in checked], [])
+        self.assertIn("Application Support", real)
+        self.assertEqual(live_state_checked_text(f"{BACKTEST}.replay", real, ast.parse(real)), real)
+        good = ('DENIED_COMPONENT_SEQUENCES = (("Library", "Application Support", "betangel-research", "betfair"),\n'
+                '                              (".config", "betangel-research", "betfair"))\n')
+        cases = {
+            "another literal": good + 'STATE = "Application Support"\n',
+            "a docstring": '"""Reads ~/.config/betangel-research/betfair."""\n' + good,
+            "a comment": good + "# Library/Application Support/betangel-research/betfair\n",
+            "a comment inside the literal": good.replace("),\n", "),  # .config/betangel-research/x\n", 1),
+            "a line-separator comment above": '# note\u2028\nLIVE = "journal-live"\n' + good,
+            "a form-feed comment above": '# note\x0c\nLIVE = "journal-live"\n' + good,
+            "an f-string elsewhere": good + 'LIVE = f"{1}journal-live"\n',
+            "bytes elsewhere": good + 'LIVE = b"Application Support"\n',
+        }
+        for name, source in cases.items():
+            with self.subTest(case=name):
+                text = live_state_checked_text(PATH_GUARD, source, ast.parse(source))
+                self.assertNotEqual([s for s in LIVE_STATE_TEXT if s in text], [])
+        refused = {
+            "extended": good.replace('"betfair"))', '"betfair"), ("Library", "Keychains"))'),
+            "changed": good.replace('"betfair"),\n', '"betfair", "journal-live"),\n', 1),
+            "computed": 'DENIED_COMPONENT_SEQUENCES = tuple([("Library",)])\n',
+            "missing": 'DENIED = ()\n',
+            "assigned twice": good + good,
+            "reassigned later": good + 'DENIED_COMPONENT_SEQUENCES += (("x",),)\n',
+            "annotated later": good + 'DENIED_COMPONENT_SEQUENCES: tuple = ()\n',
+            "a walrus later": good + '(DENIED_COMPONENT_SEQUENCES := ())\n',
+            "a for target": good + 'for DENIED_COMPONENT_SEQUENCES in [()]:\n    pass\n',
+            "a with target": good + 'with open("x") as DENIED_COMPONENT_SEQUENCES:\n    pass\n',
+            "a def": good + 'def DENIED_COMPONENT_SEQUENCES():\n    pass\n',
+            "a class": good + 'class DENIED_COMPONENT_SEQUENCES:\n    pass\n',
+            "an import alias": good + 'from pathlib import Path as DENIED_COMPONENT_SEQUENCES\n',
+            "a global rebinding": good + 'def f():\n    global DENIED_COMPONENT_SEQUENCES\n    pass\n',
+            "a deletion": good + 'del DENIED_COMPONENT_SEQUENCES\n',
+            "a comprehension target": good + 'X = [0 for DENIED_COMPONENT_SEQUENCES in ()]\n',
+            "an except name": good + 'try:\n    pass\nexcept Exception as DENIED_COMPONENT_SEQUENCES:\n    pass\n',
+            "a statement after it on its line": good.rstrip("\n") + '; LIVE = "journal-live"\n',
+            "a statement before it on its line": 'X = "journal-live"; ' + good,
+        }
+        for name, source in refused.items():
+            with self.subTest(case=name), self.assertRaises(AssertionError):
+                live_state_checked_text(PATH_GUARD, source, ast.parse(source))
+
+    def test_only_path_guard_reads_its_deny_list(self):
+        """Another backtest module may import only guard_path, PathDenied and denied_sequence from path_guard, and may
+        not name the deny list or its folded form, so the exception cannot be borrowed to reach the trees."""
+        for module in self.closure_modules():
+            if module != PATH_GUARD:
+                with self.subTest(module=module):
+                    self.assertEqual(path_guard_reuse_problems(parse(REAL.files[module][0])), [])
+        borrowed = ast.parse("from .path_guard import DENIED_COMPONENT_SEQUENCES as _TREES\n"
+                             "from . import path_guard\nTREES = path_guard._DENIED\n"
+                             "MORE = _folded(DENIED_COMPONENT_SEQUENCES)\n")
+        self.assertEqual(path_guard_reuse_problems(borrowed),
+                         ["import:DENIED_COMPONENT_SEQUENCES", "import:path_guard", "name:DENIED_COMPONENT_SEQUENCES",
+                          "name:_DENIED", "name:_folded"])
+        tree = parse(REAL.files[PATH_GUARD][0])
+        imports = {alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                   for alias in node.names}
+        imports |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        self.assertEqual(imports, {"Path", "pathlib"})
 
     def test_backtest_init_docstring_only_and_main_guarded(self):
         init = parse(REAL.files[BACKTEST][0])

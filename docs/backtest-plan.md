@@ -17,7 +17,7 @@ Prepared **2026-10-14**. 計劃同實驗合約，唔係 edge 或者盈利證據�
 | 部分 | 狀態 |
 |---|---|
 | 本文件、AGENTS.md 嘅 scope bullet、P0 experiment contract 同佢嘅 validator、兩個測試 | task (a) 交付（§4） |
-| Archive manifest、index、capability audit | task (b)，計劃中 |
+| Archive manifest、index、capability audit | task (b) 交付（§4.1；TAR 格式事實喺 §2.8）；內部 review 嘅修正已做，等 Astra review |
 | BSP runner、會計、metrics、trial ledger、report | task (c)，計劃中 |
 | LIMIT 單、flumine 對照、付費資料、racing data、prospective | P1–P4，暫定，未批（§4） |
 
@@ -63,7 +63,7 @@ Prepared **2026-10-14**. 計劃同實驗合約，唔係 edge 或者盈利證據�
   - **決定時間嘅 input**（`ltp`、`market_definition` 等）：決定時間嘅 observed prefix 入面冇，就要有明確嘅 `unsupported` 或者 `abstain` 原因寫入 ledger（§6），唔可以靜靜跳過（`on_missing` `unsupported_abstain`）。有冇係睇決定時間嘅 prefix，唔係睇成個檔之後有冇。
   - **結果**（`final_bsp`、`results`）：只係用嚟結算。冇或者之後改咗，**都唔可以改變之前已經做咗嘅決定**：張單照出、照留喺 ledger、exposure 照計，結算做 unresolved（`on_missing` `unresolved_settlement`；§7 `missing_bsp_or_result`）。因為結果冇而 abstain，會令 population 跟結果有冇而變，違反 prefix-invariance（§5），所以 validator 拒絕（`would_change_an_earlier_decision`）；將結果寫入 decision 類亦拒絕（`final_bsp_is_an_outcome`）。
   - 一整個 data product（一個 tier 或者 provider）嘅 spec 或者 audit 顯示成個 product 都冇某個 capability（例如成個 tier 都冇 BSP 欄位），而且判斷唔睇邊啲 market 有冇結果，就可以喺凍結之前喺 contract 入面拒絕（例如 `population.tier` 或者 `population.provider` 揀另一個）。已接受嘅 product 入面個別 market 或者檔冇 BSP，照留喺 cohort，張單照出，結算 unresolved；唔可以按結果有冇揀走一批檔，單一 market 冇結果亦唔可以事後變成策略嘅 abstain。
-- P0 contract：decision 要 `ltp`、`market_definition`，outcome 要 `final_bsp`、`results`。Decision 類亦識 `best_offers`、`all_offers`、`traded_volume`、`traded_ladder`、`sp_projected`、`sp_traded`，留畀 ADV／PRO 嘅 contract。邊個檔真係有邊個 capability，要等 task (b) 嘅 audit，contract 本身證明唔到。
+- P0 contract：decision 要 `ltp`、`market_definition`，outcome 要 `final_bsp`、`results`。Decision 類亦識 `best_offers`、`all_offers`、`traded_volume`、`traded_ladder`、`sp_projected`、`sp_traded`，留畀 ADV／PRO 嘅 contract。邊個檔真係有邊個 capability，要等 task (b) 嘅 audit，contract 本身證明唔到；audit 嘅 `fields_present_before_cutoff` 同 `fields_valued_before_cutoff` 就係按 cutoff 之前嘅 prefix 數（`fields_present` 係成個檔，連結果都計埋，唔可以用嚟判斷 decision capability，§4.1）。
 
 ### 2.4 Strategy class and minimum tier
 
@@ -107,6 +107,16 @@ Yu 2026-10-14 問咗 greyhound racing 同 soccer 要唔要，之後（約 13:57Z
 - Contract schema v1 嘅 `population.sport` 只收 `horse_racing`；`greyhound_racing` 同 `soccer` 會被拒（`not_in_schema_v1`）。呢個範圍同 Yu 嘅決定一致；將來 Yu 要加，要開 schema v2 同新 contract。`countries` 只收 GB、IE，`market_types` 只收 WIN。
 - 引擎保持 sport-agnostic：market、runner、決定、結算同會計嘅 interface 唔寫死 horse racing。將來加一個 sport，要先做佢自己嘅價錢查核同 capability audit（例如 soccer 有好多 market type、`numberOfWinners` 唔一定係 1、有 handicap market），再開一份新 contract。
 
+### 2.8 What a Historical Data TAR looks like (task (b), read 2026-10-14)
+
+- **Betfair 自己寫嘅**：portal FAQ 寫 "The files are downloaded as compressed .tar files"，資料係 ".json format"；"File are provided by both marketId and eventId"，event 檔包晒成個 event 所有 market，按 published time 排；下載 filter 有 File Type（M=market、E=event），FAQ 建議淨係揀 M 或者 E 嚟減細下載量，即係一個 TAR 可以兩樣都有，同一個 market 會出現兩次。Spec PDF 就寫 "provided as tar.bz2 files"。
+- **Betfair 嘅文字冇講 TAR 入面嘅路徑格式。** 唯一寫咗嘅路徑係 historic API `DownloadListOfFiles` 嘅例子 `/data/xds/historic/BASIC/28139610/1.130129050.bz2`，即係 `<PLAN>/<eventId>/<marketId>.bz2`，**冇日期**。Betfair Data Scientists 兩個教學用 `tarfile.TarFile`（冇外層壓縮）開 TAR，再逐個 member `bz2.open`；flumine 教學由 member 檔名攞 market id。
+- **Task (b) 嘅假設（`unverified`）**：TAR 入面係 `<PLAN>/<YYYY>/<Mon>/<D>/<eventId>/<marketId 或 eventId>.bz2`（用家普遍報告嘅格式，本文件冇 Betfair 原文證明）。`archive.py` 只認呢個格式；其他格式（包括上面 API 嗰個冇日期嘅）一律報 `no_parseable_month` 拒絕，唔估月份。第一個真 TAR 嘅 manifest 會話畀我哋知：如果所有 member 都係 `no_parseable_month`，就要改 layout（新 manifest schema），唔可以放寬去估。外層 TAR 有冇再壓縮都未見過：`archive.py` 只收冇壓縮嘅 TAR（同教學一樣），壓縮咗嘅報 `archive:not_a_readable_tar`。
+- **真 TAR 證實咗（2026-10-14，Yu 喺 portal 下載嘅 BASIC GB/IE WIN M 檔；只列 header 同檔名，冇解壓、冇讀內容）**：52,561 個 member 全部係 `BASIC/<YYYY>/<Mon>/<D>/<eventId>/<marketId>.bz2`（例如 `BASIC/2015/May/1/27434261/1.118541020.bz2`），即係上面嘅假設啱；全部係普通檔（type `0`）、冇 E 檔。外層 TAR 冇壓縮，header magic `ustar\0` `00`，Python 讀到係 PAX format：**每個 member 都有一個 pax extended header**，入面淨係 `atime`、`ctime`、`mtime`、`LIBARCHIVE.creationtime`（大約 150 bytes，mtime 例如 1557303870 即係 2019-05-08），冇 `path`／`size` 覆寫，冇 global header；最後一個 member 之後正好 1,024 個 zero byte，冇補到 10,240 byte 嘅 record。即係用 libarchive 砌嘅。檔案 496,945,664 bytes，sha256 `3a16add79316fccb1a44bb86098fdc9eee2e090888c48656ec76978d88aad2cb`。`tests/test_betfair_backtest_archive.py` 有一個照呢個容器格式砌嘅 regression test。
+- **路徑上嗰個日期係乜嘢日期，未知**（可能係 event 日期）。所以 index 另外由第一次公佈嘅 `marketTime` 計月份，唔夾就標 `month_mismatch`；ingest 亦會掃 member 內容入面嘅 `marketTime` 月份做第二重把關（§4.1）。
+- **Smoke run 見到嘅**（2026-10-14；2017 Punchestown 三個 sample，已經睇過嘅資料，抄去 scratch 砌成上面嘅 layout，只做格式測試，冇入 repo）：event 檔壓縮比 BASIC 20.2、ADVANCED 10.0、PRO 12.3；每個 tier 34 個 market（8 WIN、7 PLACE、12 OTHER_PLACE、7 EACH_WAY），全部有 CLOSED、冇 dead heat、冇 `marketTime` 修改、路徑同 `marketTime` 月份全部夾；removal 喺 cutoff 前 50 個、後 5 個（每個 tier）。PRO 嘅 runner change 有 `tv`（spec 表寫 PRO 嘅 runner `tv` 係 N），而且每個 `mc` 都有 `con` 同 `img` key（`img` true 只喺 34 個入面 22 個 market）；ADVANCED 有 `batb`／`batl`、冇 `atb`／`atl`，PRO 相反；`spn`／`spf`／`spb`／`spl` 只喺 PRO 嘅 BSP market（7 WIN、7 PLACE）。**8 個 WIN market 入面有 1 個 `bspMarket` 係 false**（`1m7f Charity Stks`），即係冇 BSP；`bspMarket` 係決定時間已知嘅欄位，P0 要點處理未定（§13）。另外有兩個 WIN market 嘅 `name` 喺開跑前改過（例如 `3m Chs` → `3m XC Chs`）。
+- **Review 修正之後再跑一次**（同日，同一個 TAR，sha256 `f2dcfde8…`）：上面嘅數照舊。另外：每個 tier 有 20 個 market `bspMarket` false（1 WIN、7 EACH_WAY、12 OTHER_PLACE），缺最終 BSP 嘅就係呢 20 個，BSP market 一個都冇缺。EACH_WAY 嘅 `numberOfWinners` 係名次數（2、3 或 4），結算係 1 個 WINNER 加其餘 PLACED，所以 dead heat 要按 market type 判（§4.1）；三個 tier 21 個 EACH_WAY 全部判到，冇 dead heat。PRO 嘅 runner change 入面 `spn`／`spf` 有引號字串：`spf` `"NaN"` 14,656 個、`"Infinity"` 271 個，`spn` `"NaN"` 14 個、`"Infinity"` 1,168 個（數字嘅 `spn` 51,355、`spf` 37,610）；market definition 嘅 1,181 個 runner `bsp` 全部係數字。Cutoff 之前：三個 tier 所有 WIN 同 EACH_WAY market 都有 > 0 嘅 `ltp`；PRO 8 個 WIN 入面 7 個（BSP market）有數字嘅 `spn`／`spf`。冇 allowlist 以外嘅 definition 欄位、冇未知 runner status、路徑日期同 event id 全部夾、冇 CLOSED 之後改結果。Python `tarfile`（GNU format）同 bsdtar 3.5.3 寫嘅 TAR 都以兩個以上 zero block 結尾，過到 end-of-archive 規則；但 macOS `/usr/bin/tar` 預設會加 AppleDouble `._*` member，成個 TAR 會因 `unsafe_name` 被拒（`COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs` 砌嘅就收）。Ingest 290 MB（解壓後）大約 3.6 秒，index 大約 11 秒，audit 0.1 秒，呢部 MacBook Air 上量；每行 record 平均 14 KB（7.7–27 KB）。
+
 ## 3. Date ranges and roles
 
 | 範圍 | 角色 | 規則 |
@@ -117,6 +127,8 @@ Yu 2026-10-14 問咗 greyhound racing 同 soccer 要唔要，之後（約 13:57Z
 | 2026-09 | **已暴露：只做 exploratory** | 研究時下載過有結果嘅 hub CSV（見下面「已知暴露」）；永遠唔係 holdout，v1 冇任何 split 收得佢 |
 | 2026-10 起 | **Prospective**，有條件 | 只有喺凍結之後、事件之前記錄咗嘅決定先算；2026-10-12 嘅賽事已經暴露，永遠唔算 |
 | 2017-04-29 Punchestown samples（BASIC／ADV／PRO）、兩個 2017 IE BSP CSV、繼承嘅兩場 pilot | 已經睇過 | **永遠唔係 holdout**，只可以做 exploratory／engineering |
+
+**月份點計。** 上面所有月份（holdout、ingest 嘅 month gate、audit 嘅分組、`month_mismatch`）都係 `marketTime` 嘅 UTC 曆月；例如澳洲當地 2026-01-01、`marketTime` 係 `2025-12-31T23:30Z` 嘅賽事屬於 2025-12。TAR 路徑上嘅日期係乜嘢日期（UTC、當地、event 日）未知（§2.8）。
 
 **原本嘅提議作廢（superseded）。** 9716526 嗰版將 holdout 定做 2026-01..2026-09；呢個範圍已經作廢，因為 2026-09 有已知暴露（見下面）。v1 未被接受，所以直接更正 v1（`schema_version` 照係 1，P0 contract 嘅 hash 變咗）。
 
@@ -149,7 +161,7 @@ flowchart LR
     EVAL --> LEDGER[trial ledger and report]
 ```
 
-**Raw archive。** 放喺 Git 同所有 worktree 以外，用一個可設定嘅 data root。每個 archive（tar）同入面每個檔都記 sha256，記咗就唔改。解壓要有界同安全：拒絕絕對路徑、`..`、symlink／hardlink，限制檔數、大細同壓縮比。Manifest 同 index 有 schema version。Index 由 market definition 記 market、event、venue、country、type、`marketTime`、runner、removal、`marketBaseRate`；BSP 同結果都喺 index 入面，但只畀 evaluator 用，策略睇唔到（§5）。
+**Raw archive。** 放喺 Git 同所有 worktree 以外，用一個可設定嘅 data root。每個 archive（tar）同入面每個檔都記 sha256，記咗就唔改。解壓要有界同安全：拒絕絕對路徑、`..`、symlink／hardlink，限制檔數、大細同壓縮比。Manifest 同 index 有 schema version。Index 由 market definition 記 market、event、venue、country、type、`marketTime`、runner、removal、`marketBaseRate`；BSP 同結果都喺 index 入面，但只畀 evaluator 用，策略睇唔到（§5）。Task (b) 已經照呢段實作，用法同細節喺 §4.1。
 
 **代碼位置。** 全部喺 `betangel_research/betfair/backtest/`，用獨立嘅 `python3 -m betangel_research.betfair.backtest` 行，唔經現有兩個 CLI。佢只收明確畀佢嘅本地檔案，冇 storage client、冇 account client。Root module 唔 import betfair 嘅規則保留。Repo 已經有 forecast replay／scoring、motif trace 同固定 order 嘅 `PaperExchange` replay；欠嘅係一個統一嘅 strategy／corpus runner。Reuse 要留意（Astra）：
 
@@ -174,7 +186,7 @@ flowchart LR
 | Task | 交付 |
 |---|---|
 | (a) plan 同 contract | 本文件；AGENTS.md scope bullet（coordinator 套用）；`betangel_research/betfair/backtest/` 嘅 `__init__.py`（只有 docstring）、`contract.py`（schema v1 validator 同 canonical sha256）同 `__main__.py`（`validate-contract`）；P0 draft contract [`research/experiments/backtest-p0-bsp-v1.json`](../research/experiments/backtest-p0-bsp-v1.json)；[`tests/test_betfair_backtest_contract.py`](../tests/test_betfair_backtest_contract.py) 同 [`tests/test_betfair_backtest_boundaries.py`](../tests/test_betfair_backtest_boundaries.py)。冇 loader、冇 simulator、冇會計 |
-| (b) archive | manifest、index、安全解壓、capability／coverage audit（計劃中） |
+| (b) archive | `archive.py`（有界、安全、按月份把關嘅 TAR ingest 同 manifest）、`market_index.py`（逐 market index，`decision_time` 同 `evaluator_only_outcome` 分開）、`coverage_audit.py`（只有整數計數嘅 capability／coverage audit）、`__main__.py` 三個 subcommand、[`tests/test_betfair_backtest_archive.py`](../tests/test_betfair_backtest_archive.py)；boundary test 加咗 `tarfile`（§4.1）。已交付；內部 review 嘅修正已做（§4.1），等 Astra review |
 | (c) BSP runner | streaming loader、point-in-time view、strategy API、BSP simulator、會計、metrics、trial ledger、report，同 §9 嘅 synthetic 測試；一定要包括 §5 嘅 prefix-invariance 測試，連「之後嘅 BSP 同結果刪走或者改咗，之前嘅決定一模一樣」（計劃中） |
 
 **之後（暫定，Yu 同 Astra 未批；只有 (a)–(c) 係同意咗嘅範圍）：**
@@ -183,6 +195,45 @@ flowchart LR
 - **P2**：付費 ADV／PRO 資料。Yu 決定，而且要對住 P0／P1 量度到嘅結果先傾。
 - **P3**：racing data 同其他 context（§2.6），要先解決公佈時間同授權。
 - **P4**：prospective：凍結之後喺事件之前記錄決定，archive 出咗先評估（§3）。
+
+### 4.1 Archive tools (task (b))
+
+全部只收明確畀佢嘅本地檔案同一個明確嘅 data root；冇 network、冇 account、冇 profile、唔落單。2026-10-14 交付之後，內部 review（security、data、point-in-time、tests 四個 lens）搵到嘅問題同日修正咗，下面寫嘅係修正後嘅行為；Astra 未 review。
+
+```sh
+python3 -m betangel_research.betfair.backtest archive-ingest --tar <下載咗嘅>.tar --data-root ~/betangel-data/historic
+python3 -m betangel_research.betfair.backtest archive-index --data-root ~/betangel-data/historic [--archive <sha256>]
+python3 -m betangel_research.betfair.backtest archive-audit --data-root ~/betangel-data/historic
+```
+
+- **輸出同 exit code**：每個命令印一行 JSON（key 排好序）；`status` 係 `refused` 就 exit 2，列晒所有 `problems`（`<位置>:<原因>`）；其他 exit 0；argparse 用法錯誤都係 2。檔案系統出錯（冇權限、應該係檔嘅位置係目錄、唯讀嘅 data root、`manifests/` 讀唔到）一律變成有位置嘅 refusal（例如 `raw:<路徑>:unreadable`、`manifest:<sha>:unreadable`、`index:<sha>:write_failed`、`manifests:unreadable`、`data_root:unreadable`），唔會 traceback，亦唔會當成 `empty`。`validate-contract` 照舊。
+- **Data root**：一定要已經存在、列得出內容，唔可以喺呢個 repo 入面（按檔案身份比較，所以經 `/System/Volumes/Data` firmlink 或者大細楷唔同嘅寫法都認得出），亦唔可以喺任何 Git worktree 入面（佢自己或者任何上層目錄有 `.git` 檔、目錄，或者懸空嘅 `.git` symlink，就拒絕；所以 lab 機嘅 home 如果本身係一個 Git repo，`~/betangel-data` 都會被拒）。Data root 底下任何一層（`raw/`、`manifests/`、`index/` 或者更深）有 `.git` 都拒絕（`unsafe_target`）：licensed bytes 唔會寫入任何 Git worktree。Layout：`raw/<archive sha256>/<member 路徑>`（同 TAR 入面一模一樣嘅 bz2 bytes，永遠唔解壓落 disk）、`manifests/<archive sha256>.json`、`index/<archive sha256>/head-v1.json` 同 `markets-v1.jsonl`。
+- **信任假設**：data root 同佢所有上層目錄只可以由 operator 寫，而且同一時間只跑一個工具。路徑係先查（`safe_path`）後按名開；冇 `os`（`dir_fd`、`O_NOFOLLOW` 都唔喺 allowlist），另一個 process 可以喺中間將查過嘅目錄換成 symlink（review 試過，咁樣寫得出 data root 以外）。每次 rename 之後會再查一次：換咗就拒絕，但已經寫出去嘅檔收唔返。
+- **Ingest 點樣安全**：TAR 讀兩次（`tarfile` 嘅 `"r|"` stream，唔 seek，從來唔 call extract）：第一次 hash 成個檔、查晒每個 header、對要留嘅 member 做有界嘅 bz2 解壓檢查（用 `BZ2Decompressor` 嘅 `max_length`，最多 hold 1 MiB，唔寫解壓資料）；第二次先寫，邊寫邊再 hash，有任何唔同（包括 TAR 中途唔見咗）就拒絕。以下任何一樣都會拒絕成個 archive，乜都唔寫：
+  - 名同類型：絕對路徑（包括 `C:` 呢類 drive letter）、`..`、唔係 ASCII 字母、數字同 `._-` 嘅名（亦唔准 `.` 開頭，所以 macOS `tar` 加嘅 AppleDouble `._*` member 會被拒）、多過 8 層、symlink、hardlink、device、FIFO、其他非 regular member（contiguous、sparse，包括 pax 編碼嘅 GNU sparse）、重複名、淨係大細楷唔同嘅名、檔名撞另一個 member 嘅目錄。
+  - 大細：member 太多、單個或者總大細超過上限、header 宣稱嘅大細超出檔案結尾（喺 tarfile 跳去下一個 header 之前查：review 量過，一個 2 KiB、宣稱 2^60 bytes 嘅檔以前會令 ingest 行幾年）。
+  - Extended header（喺 tarfile 讀佢之前，經 `TarInfo._proc_member` 呢個 tarfile 自己註明可以 override 嘅 hook 查）：pax 或者 GNU long name header 超過 64 KiB（tarfile 會成個讀入記憶體先；review 量過 256 MiB 嘅 header 用到 1.4 GiB RSS，而家 25 MiB）、一個 member 前面連住多過 4 個 extended header（tarfile 每個遞迴一次，5,000 個會 `RecursionError`）、任何 pax global header（佢會靜靜改後面所有 member 嘅讀法）、舊式 GNU sparse header（截斷咗嘅話 tarfile 自己會 `IndexError`）。
+  - **TAR 冇乾淨咁結尾**：最後一個 member 之後只可以有 zero bytes，而且最少兩個 512-byte zero block（POSIX 嘅寫法；Python `tarfile`、bsdtar、GNU tar、Go 都係咁寫）。冇呢條，喺 member 邊界截斷、第二個 header checksum 壞咗、member 之後有垃圾、中間插咗 zero block、兩個 TAR 駁埋、或者 pax `size=-1`（tarfile 會吞咗自己個錯），都會當完整 archive 收，少咗 member 都冇人知（review 逐個重現過）。
+  - Member 內容：空、唔係 bz2、截斷、最後一個 bz2 stream 後面有多餘 bytes、解壓後超過上限或者超過壓縮大細嘅 `max_ratio` 倍（bz2 bomb）。名或者月份被拒嘅 member 從來唔解壓。
+- **上限**（`archive.LIMIT_CEILINGS`，每個都寫咗理由，測試釘死咗數值；`Limits.stricter` 只可以收緊，等於上限嘅值照收）：TAR 64 GiB；400,000 個 member（連目錄）；單個 member 壓縮 1 GiB、解壓 8 GiB；成個 archive 解壓 1 TiB；壓縮比 200（sample 最高 20.2；20 MiB 嘅零壓縮後得 49 bytes）；路徑 200 字元、最多 8 層；一行 16 MiB（sample 最長一行 59,418 bytes）；extended header 64 KiB、最多連住 4 個。
+- **月份把關**（用 `contract.py` 嘅常數；月份一律係 UTC 曆月，§3）：月份只由路徑嚟。2026-01..08（`month_sealed_holdout`）、2026-09（`month_exposed_exploratory_only`）、2026-10（`month_not_prospective`）、之後任何月份（`month_prospective_out_of_scope`），同埋路徑解唔到月份（`no_parseable_month`、`invalid_date_in_path`）或者檔名唔係 market／event id（`unrecognised_file_name`）嘅 member：只 hash，唔解壓、唔寫，記喺 manifest 嘅 `refused`（連原因同準確嘅 sha256、大細），archive 其餘部分照樣 ingest。
+  - **第二重：內容。** 留低嘅 member 解壓檢查時會掃 `marketTime` 值（UTC 月份；parse 唔到就用佢開頭嘅 `YYYY-MM`）：任何一個屬於上面嘅拒絕類別，成個 member 都拒絕（`content_month_<原因>`，manifest 記低 `content_months`），唔理路徑寫乜，亦唔理嗰個值係唔係決定時間之後先改。即係 review 嘅 E5：12 月 31 日嘅賽事開跑之後改期到 1 月 1 日，佢嘅 market 檔同成個 event 檔（連同一個 meeting 冇受影響嘅賽事）都被拒。呢個方向保護 holdout，但係用決定時間之後嘅資訊剔走 population：task (c) 要報告呢啲被拒 member（只會喺 2025-12／2026-01 交界出現）。
+  - **Content scan 係 best effort**：佢只掃冇 escape 嘅 bytes，JSON escape（例如 `"2026-03…"` 或者 `"marketTime"`）過到，raw bytes 會照寫；正式嘅把關係 index 嗰度 parse 咗嘅 `marketTime`，嗰個 market 會入 `refused_markets`，唔會有 record。Betfair 嘅檔冇見過 escape 數字，要人手砌先會咁。
+  - 2017-04（`INSPECTED_MONTHS`）照收，路徑或者內容係呢個月都標 `inspected_month`。
+  - **報告。** `sealed_holdout_members` 唔係 0，即係有人下載咗 holdout 嘅檔：冇儲存，但要按 §3 記低。有 member 喺知道月份之前已經被拒（上面三種解唔到嘅），`month_unknown_members` 就唔係 0，而 `sealed_holdout_members` 係 null：唔知，唔係 0。一個 member 都冇留低嘅 archive 會被拒（`archive:nothing_kept`，exit 2，照樣報 archive sha256 同所有計數），唔寫 manifest，例如成個 TAR 都係 API 嗰種冇日期嘅 layout。
+- **Manifest**：`schema_version` 1，canonical JSON（同 contract 一樣嘅 bytes 規則）：archive 名、大細、sha256、plan（多過一個 tier 就係 `mixed`）、layout、month gate、limits、每個 member（路徑、大細、sha256、解壓大細、plan、路徑嘅月份同日期、event id、market id、檔案類型、`content_months`、`inspected_month`）、被拒 member（路徑、大細、sha256、原因、路徑月份或者 null、內容被拒嘅就連 `content_months`）、目錄；所有 list 排好序。同一個 archive 再 ingest：manifest bytes 一樣、raw 檔逐個再 hash（唔見咗嘅補返）→ `already_ingested`；改咗檔名或者 limits 會令 manifest 唔同 → `would_change` 拒絕；gate 改咗 → `gate_changed` 拒絕；raw 檔 hash 唔同（就算大細一樣）→ `existing_hash_mismatch` 拒絕，永遠唔覆蓋。寫檔用 `.partial`（exclusive create）再 rename；`.partial` 留低（中斷或者同時跑）就拒絕，任何嘢寫之前就拒絕，要人手清。冇 fsync（`os` 唔喺 allowlist），crash 之後可能有唔完整嘅檔：下次 ingest 或者 index 會因為 hash 唔夾而拒絕，唔會信佢。
+- **Index**：每個 (plan, market id) 一行 canonical JSON，按 plan 同 market id 排；唔同 tier 永遠唔 merge。每行有分開嘅 top-level object：`provenance`、`checks`、`coverage`、`decision_time`、`evaluator_only_outcome`。**只有 `decision_time` 可以畀策略睇**，其他全部係 provenance、audit 或者 evaluator 用：
+  - **`decision_time`**：只有 cutoff 之前公佈嘅事實，每個連 `pt`：第一次公佈嘅 `marketTime`、definition 欄位嘅 timeline（`marketTime` 同佢開跑前嘅修改、status、`inPlay`、宣佈嘅 `numberOfWinners`、`marketBaseRate`、`bspMarket`、`version` 等等）、runner（`sortPriority`／`name`／status／`adjustmentFactor`／`removalDate`／listed）、removal（REMOVED 或 REMOVED_VACANT，連當時嘅 `removalDate` 同 `adjustmentFactor`），同 `view_ends`（`{pt, reason}`，即係 cutoff 本身）。Cutoff 係以下最早嗰個：第一次公佈嘅 `marketTime`、第一個帶結果嘅 market definition（CLOSED、`settledTime`、`bspReconciled` true、任何 WINNER／LOSER／PLACED、任何 runner `bsp`）、同埋（member 讀唔完嘅話）`complete_before_pt`。所以入面一定冇結果，亦冇開跑時間或之後公佈嘅嘢。**之前「v1 決定時間仲早，所以照住 `pt` 篩就得」呢句唔啱**（review 嘅 E6：開跑前 20 分鐘 CLOSED、全部 runner REMOVED 嘅 market，篩完仲係 OPEN、ACTIVE）：`view_ends` 同其他 entry 一樣有 `pt`，consumer 只留 `pt` ≤ 決定時間嘅 entry；**決定時間 ≥ `view_ends.pt`，即係呢個 view 唔完整**（market 已經有帶結果嘅 definition、到咗開跑時間、或者 member 讀唔落去），task (c) 要畀明確嘅 abstain 或者 unsupported 原因，唔可以用呢個截咗嘅 view 模擬，亦唔可以剔走（用邊個原因，§13）。
+  - **讀唔完嘅 member**：每個 message 成個檢查過先套用；讀唔落去嘅 member（JSON 錯、`pt` 倒退或者唔係整數、segmented、行太長、太大、NaN、`1e999` 呢類溢出做 infinity 嘅數、形狀唔啱、runner id 重複）記做 unreadable，連 `complete_before_pt`（最後一個套用咗嘅 message 嘅 `pt`；壞嗰行可能屬於同一個 `pt` 嗰批，所以只信佢之前嘅）。之前見過嘅 market 照樣入 index，只用 `complete_before_pt` 之前嘅資料，`read_complete` false：所以開跑之後一行壞資料唔會再令成個 meeting 嘅 market 消失（review 嘅 E4），亦唔會改到佢哋嘅 `decision_time`；壞喺 cutoff 之前，`decision_time` 就喺嗰度完（`view_ends.reason` `member_unreadable_from_pt`）。Task (c) 要將 `read_complete` false 嘅 market 結算當 unresolved（之後可能有改）。
+  - **`evaluator_only_outcome`**：cutoff 同原因、`read_complete`、cutoff 之後嘅 removal 同修訂、`bspReconciled`／`settledTime` 同 runner `bsp` 嘅 timeline（原值）、最終 runner status、最終 BSP（只有 ≥ 1.01 嘅有限數字先算，否則 null；PRO sample 嘅 rc 有 `"NaN"`／`"Infinity"` 字串，§2.8）、`unusable_final_bsp_runner_ids`（有值但唔用得）、缺最終 BSP 嘅 runner（最終 status 唔係 REMOVED、REMOVED_VACANT 或者 HIDDEN）、有冇 CLOSED、settled time、贏家數目（冇任何帶結果嘅 definition 就係 null，唔係 0）、宣佈嘅 `numberOfWinners`、`dead_heat`、`results_revised_after_close`（CLOSED 之後 runner status、`bsp` 或者 `numberOfWinners` 再改；未 CLOSED 就 null）。**Dead heat 按 market type**：EACH_WAY 嘅 `numberOfWinners` 係名次數，結算係 1 個 WINNER 加其餘 PLACED，所以 WINNER 多過 1 個或者 WINNER + PLACED 多過宣佈數就係 dead heat；WIN、PLACE、OTHER_PLACE 係 WINNER 多過宣佈數；宣佈數 < 1（flumine 3.2.7 當 0 係「贏家數目唔定」）、冇宣佈、其他 type 或者未 CLOSED：null（判斷唔到）。
+  - **`checks`**：路徑月份、第一次公佈嘅 `marketTime` 嘅 UTC 月份、`month_mismatch`、`date_mismatch`（路徑日期 vs 第一次公佈嘅 `marketTime` 嘅 UTC 日期）、`event_id_mismatch`（路徑 event id vs 第一個 definition 嘅 `eventId`）、market 檔有冇裝住另一個 market、`untracked_definition_fields`（definition 入面唔喺 allowlist 嘅 key：只有名入 coverage，值唔入 `decision_time`；allowlist 仍然係防漏）、`unrecognised_runner_statuses`（spec 冇列嘅 status，唔會靜靜歸類）。第一個真 TAR 就靠 `date_mismatch` 同 `event_id_mismatch` 驗證路徑 layout 嘅意思。
+  - **`coverage`（只畀 audit 用，同結果有關）**：`whole_file` 係成個 member 出現過嘅欄位名（所以 `md.runners.bsp`、`md.settledTime` 有冇，等於話你知有冇結果）；`before_cutoff` 係 cutoff 之前已經出現嘅；`valued_whole_file`／`valued_before_cutoff` 只計有用得嘅值（`rc.ltp` > 0、有限數字嘅 `rc.spn`／`rc.spf`、≥ 1.01 嘅 `bsp`）。§2.3 嘅 decision capability 要睇 before-cutoff 嗰兩個。
+  - **`other_sources`（只畀 audit 用）**：同一個 market 喺 M 檔同 E 檔都有，primary 按次序揀：讀得完嘅 → 以呢個 market 命名嘅 M 檔 → E 檔 → 以其他 market 命名嘅 M 檔 → 路徑；其他來源記低 `read_complete`、`agrees`（成個 record 比，包括結果，所以係結果衍生嘅）同 `agrees_decision_time`（淨係比 `decision_time`）。
+  - **完整性**：member hash 唔夾或者唔見咗 → 成個 index 拒絕。`head-v1.json` 有 manifest sha256、markets 檔 sha256 同每個檔嘅狀態、`complete_before_pt` 同 market id；`index_sha256` 就係 head 嘅 sha256。已有 index 而 bytes 唔同就拒絕（`index_would_change`；manifest 係舊 gate 寫嘅就報 `gate_changed`）：改意思要開新 schema version 同新檔名。
+  - **記憶體**：record 一邊讀一邊寫去 `index/<sha>/markets-v1.jsonl.spill`，之後由 spill merge 出 markets 檔，記憶體只留每個 record 一個 key（spill 留低就拒絕，要人手清）。Review 嘅 synthetic 測試（每個 market 12 隻 runner、20 次 `adjustmentFactor` 修改）：4,000 個 market 嘅 index peak RSS 由 426 MB 跌到 43 MB，1,000 個由 127 MB 跌到 31 MB；而家主要係 manifest 同 head（每個 member 大約 4 KB），推算 400,000 個 member 嘅上限大約 1.5 GB（推算，冇量）。Audit 一行行讀，31–42 MB。
+- **Audit**：按 tier × 月份（第一次公佈嘅 `marketTime` 嘅 UTC 月份；冇就係 `unknown`）× country × marketType（都係第一次公佈嘅值），只報整數計數：market 數；成個檔出現過嘅欄位（`fields_present`）、cutoff 之前出現過嘅（`fields_present_before_cutoff`）同 cutoff 之前有用得嘅值嘅（`fields_valued_before_cutoff`），同從來冇出現嘅已知欄位（`fields_absent`、`fields_absent_before_cutoff`：冇就寫冇，唔當 0）；`bspMarket` true／false／冇；缺最終 BSP（全部同 BSP market）、BSP 唔用得；removal（cutoff 前後）；dead heat、CLOSED 但判斷唔到 dead heat、CLOSED 之後改結果；從未 CLOSED；月份、日期、event id 唔夾；`marketTime` 修改；讀唔完嘅 member 嘅 market；未知 runner status；多個來源、來源唔夾（成個 record 同淨係 `decision_time`）；仲有讀唔到嘅檔（連 `complete_before_pt` 同仲交到幾多個 market）、被拒 member 同 market、未 index 嘅 archive、每個 archive 嘅 manifest gate 係咪而家嘅（`month_gate_current`）、喺幾個 archive 重複嘅 market。冇 win rate、冇價錢、冇 BSP 值、冇回報。佢核對 head 同 manifest、markets 檔同 head（hash 同行數），再將而家嘅 month gate 套落每個 record：路徑月份或者 `marketTime` 月份而家被拒嘅，成個 audit 拒絕（`stale_gate`），舊 gate 建嘅 index 唔會被計。唔寫任何嘢。冇最少 group 大細：一個 group 得一個 market，嗰啲計數就等於講晒嗰個 market 嘅結算 coverage（§10）。
+- **Boundary**：`BACKTEST_STDLIB` 加咗 `tarfile`，係成個 backtest package 都用得嘅 allowlist；`tests/test_betfair_backtest_archive.py` 用 AST 釘死：成個 `betangel_research` 只有 `archive.py` import `tarfile`，佢唯一嘅 `tarfile.open` 係 `mode="r|"`，冇 extract、建立 archive 或者 filter 呢類 attribute（tarfile 自己 import `pwd`／`grp` 係為咗 extract 同建立 archive，呢度兩樣都冇用）。`__main__` 喺 function 入面先 import 三個新 module，所以 `validate-contract` 照樣只載入 `contract.py`（contract test 冇改）；boundary test 記低嘅 `__main__` import 集合因此加咗呢三個 backtest module。`archive` 同 `market_index` reuse root 嘅 `temporal.timestamp_ms`（乾淨，見上面 reuse 表）；冇用 root `stream.messages`，因為佢按路徑開檔、冇行長同大細上限、冇 hash 檢查，所以另外寫咗一個同規則（blank 行、`op` mcm、`pt` 唔倒退、冇 `segmentType`）嘅有界 reader。
+- **證明唔到嘅嘢**：測試全部用測試入面即場砌嘅 synthetic TAR 同 stream；佢哋證明唔到真 TAR 用 §2.8 嘅 layout、以兩個 zero block 結尾、冇 pax global header，亦證明唔到 cutoff 之前嘅 `pt` 就係我哋當時真係收到嘅時間（§5）。Content scan 係 best effort（見上面）；信任假設之外嘅同時寫入防唔到；head 嘅記憶體冇上限，只係推算。Mutation 測試（逐個改一處 code，睇測試有冇 fail；2026-10-14 喺 scratch 副本跑）：review 嘅 163 個 mutant 入面仲適用嘅 135 個殺咗 129 個，剩低 6 個改嘅係重複嘅防線（例如 `stricter` 收 bool 會先俾 `__post_init__` 擋；`decision_safe` 本身係 belt and braces），輸出唔變；修正新加嘅 97 個 mutant 全部殺咗。殺到唔等於冇 bug，只係話呢啲改動測試睇得出。
 
 ## 5. Point-in-time rules
 
@@ -309,7 +360,7 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 
 **凍結前後嘅其他規則：**
 
-- **Integrity inventory** 可以喺凍結之前跑（檔數、market 數、欄位同 BSP coverage），但唔可以做全 corpus 嘅結果分析。
+- **Integrity inventory** 可以喺凍結之前跑（檔數、market 數、欄位同 BSP coverage），但唔可以做全 corpus 嘅結果分析。`archive-audit`（§4.1）就係呢個 inventory，只報整數計數；不過佢冇最少 group 大細，一個 tier × 月份 × country × type 嘅 group 得一個 market 嗰陣，dead heat、從未 CLOSED、缺 BSP 呢啲計數等於講晒嗰個 market 嘅結算 coverage（講唔到贏家、價錢或者 BSP 值）。凍結之前睇 audit 要知道呢點。
 - **Trial ledger** 記低每個 trial：started、failed、aborted、completed，用咗邊個 variant、input hash、seed 同 training cutoff。失敗同中途放棄嘅都計（[edge framework](edge-framework.md)：揀嚟揀去本身就係 overfitting 嘅來源）。
 - **Holdout gate**：schema v1 嘅 validator 一律拒絕評估 holdout（`evaluate_split` 寫 `holdout` 報 `sealed`，frozen 都一樣）；而家冇任何讀資料嘅 tooling。幾時、點樣解封要新 schema，同 Yu、Astra 決定（§13）。呢個係 workflow control，唔係防到直接打開 raw 檔嘅保安封條；2026-01..08 而家靠唔下載嚟封，2026-09 已暴露、唔係 holdout（§3）。
 - **Walk-forward** 要真係每一步只用過去資料 fit、要 purge，唔係將一個用晒成段時間揀出嚟嘅 model 按日期切開再計分。Schema v1 嘅 `fitting.kind` 只准 `none`，寫 `walk_forward` 報 `deferred`；聲明 `none` 但其實喺結果上 fit，validator 查唔到，要靠 review。
@@ -322,7 +373,7 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 
 ## 12. Storage
 
-- **Lab 機（Yu 2026-10-14 決定）。** 一部專用、清空咗嘅 MacBook Pro（大約 256 GB），同 MacBook Air 喺同一個屋企網絡，做 raw archive 同重型計算：資料放 `~/betangel-data/historic/`（Git 同任何 clone 以外），MacBook Air 上面嘅 Claude 經 LAN SSH（`<name>.local`，冇 Tailscale）用。Lab 機**冇任何 Betfair credentials**，唔跑任何會 login 嘅命令；落單、Keychain 同 live client 留喺 MacBook Air。設定步驟喺 session archive 嘅 `lab-setup-brief.md`（Git 以外）。篩咗 GB/IE WIN 嘅 PRO 大約每個月 1 GB（Yu 喺 portal 見到嘅數）。
+- **Lab 機（Yu 2026-10-14 決定）。** 一部專用、清空咗嘅 MacBook Pro（大約 256 GB），同 MacBook Air 喺同一個屋企網絡，做 raw archive 同重型計算：資料放 `~/betangel-data/historic/`（Git 同任何 clone 以外），MacBook Air 上面嘅 Claude 經 LAN SSH（`<name>.local`，冇 Tailscale）用。Lab 機**冇任何 Betfair credentials**，唔跑任何會 login 嘅命令；落單、Keychain 同 live client 留喺 MacBook Air。設定步驟喺 session archive 嘅 `lab-setup-brief.md`（Git 以外）。篩咗 GB/IE WIN 嘅 PRO 大約每個月 1 GB（Yu 喺 portal 見到嘅數）。呢個目錄就係 §4.1 嘅 data root：佢同所有上層目錄都唔可以有 `.git`。
 - **之後先上一個獨立嘅 private Tigris bucket。** 唔係 collector 嘅 backup bucket 或者 prefix，亦唔原封不動 reuse collector 嘅 backup uploader 同 retention（現有文件只係提議 backup retention）。Upload／materialization 用有範圍限制嘅 credentials；離線 runner 只收本地檔案，冇 storage client。
 - **£0 資料唔等於 £0 雲端。** Tigris 嘅免費額（Astra 2026-10-14 讀）係每個 account 每個月：頭 5 GB Standard storage、10k Class A、100k Class B request，唔係每個 bucket。現有 account 用咗幾多，`unverified`。所以上傳大批之前，先量 archive 大細同剩餘額度。
 - **Credentials 只放 macOS Keychain**，用隱藏輸入（`security add-generic-password … -w`，`-w` 放最後，見 [接入指南 §5](betfair-integration.md#5-keychain-setup)），唔入檔案、argv 或者 log。
@@ -347,18 +398,22 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 - **Runner 點拒絕 state root 底下嘅輸入（架構未定）**：boundary test 查嘅係成個 backtest closure，唔止 backtest package；backtest import 嘅任何 module，放喺邊度都喺 closure 入面，一樣唔准寫 state root 字串或者查 home 目錄（Astra 試過：root module 入面一個 `Path.home()` helper 照樣令嗰個測試 fail）。所以將 guard 搬出 backtest **唔係**解決方法，亦唔會令佢豁免。要麼一個 review 過嘅 boundary 改動，要麼一個真正分開、backtest 唔 import 嘅 preflight 階段；task (c) 開始之前要同 Astra 定。
 - **長啲嘅 bootstrap block**：一份 contract 只揀一個 block（P0 係 `race_day`），點樣同時報週或月 block 未定（§8）。
 - **P1–P4 嘅內容同次序**：暫定（§4）。
+- **真 TAR 嘅路徑 layout 未核實**（§2.8）：`archive.py` 假設 `<PLAN>/<YYYY>/<Mon>/<D>/<eventId>/<檔>.bz2`、外層冇壓縮、以兩個 zero block 結尾、冇 pax global header。第一個真 TAR 唔係咁，就會成個被拒：所有 member 都係 `no_parseable_month`（`archive:nothing_kept`）、`not_a_readable_tar`、`archive:not_ended_by_zero_blocks` 或者 `archive:pax_global_header`；之後要睇過、開新 manifest schema，唔可以放寬去估。路徑日期同 `marketTime` 嘅關係（`date_mismatch`、`event_id_mismatch`）亦要用真資料睇。
+- **`view_ends` 同讀唔完嘅 member 喺 cohort 點處理**（task (c) 凍結之前定）：決定時間 ≥ `decision_time.view_ends.pt` 嘅 market 用邊個原因（例如 §6 嘅 `market_not_open_pre_off`，定一個新嘅 unsupported 原因）；`read_complete` false 嘅 market 結算一律 unresolved；被 content gate 拒絕嘅 member（只會喺 2025-12／2026-01 交界）點樣報做 population exclusion。
+- **`bspMarket` false 嘅 WIN market**（§2.8 smoke：8 個入面 1 個）：P0 只做 BACK at BSP；`bspMarket` 係決定時間已知，所以 task (c) 要喺凍結之前定：佢係 cohort 嘅決定時間 unsupported 原因，定係留喺 cohort、結算 unresolved。
+- **Task (b) 改咗 boundary test 兩處，等 Astra review**：`BACKTEST_STDLIB` 加 `tarfile`（註解寫明係 package-wide，由 `tests/test_betfair_backtest_archive.py` 釘死只有 `archive.py` import、只開 `"r|"`）；`__main__` 嘅 import 集合加咗 `archive`、`coverage_audit`、`market_index`（佢哋喺 function 入面 import；冇放寬任何規則）。
 
 ## 14. Sources with access dates
 
 全部 **2026-10-14** 讀取，除非另外註明。
 
-- **Betfair Historical Data portal** [historicdata.betfair.com](https://historicdata.betfair.com/)：portal 係 JS app，文字由佢自己嘅 translation bundle 讀（頁面冇日期）；條款（"Personal Use Only"、"No onward distribution"）、FAQ（5 日、"from April 2015"）同 historic data API 說明。[`GetStandardRateCard`](https://historicdata.betfair.com/api/GetStandardRateCard)（公開、唔使登入）同 `GetPricePlan`：價錢同折扣月。`AvailableData.csv`：每月檔數同大細。
+- **Betfair Historical Data portal** [historicdata.betfair.com](https://historicdata.betfair.com/)：portal 係 JS app，文字由佢自己嘅 translation bundle 讀（頁面冇日期）；條款（"Personal Use Only"、"No onward distribution"）、FAQ（5 日、"from April 2015"、".tar files"、按 marketId 同 eventId 出檔）同 historic data API 說明（`DownloadListOfFiles` 嘅冇日期路徑例子，§2.8）。[`GetStandardRateCard`](https://historicdata.betfair.com/api/GetStandardRateCard)（公開、唔使登入）同 `GetPricePlan`：價錢同折扣月。`AvailableData.csv`：每月檔數同大細。
 - **[Betfair Historical Data Feed Specification](https://historicdata.betfair.com/files/Betfair-Historical-Data-Feed-Specification.pdf)**（Last-Modified 2026-05-20）：三個 tier 嘅內容同解像度。
 - **官方 samples** `https://historicdata.betfair.com/files/horse-racing-{basic,adv,pro}-sample.bz2`：2017-04-29 Punchestown；欄位係本地 parse 出嚟，已經睇過，見 [data audit](data-audit.md)。
 - **Betfair Developer Support**：[Are bulk purchase discounts available?](https://support.developer.betfair.com/hc/en-us/articles/360019984158)（2026-09-24 更新）；[How frequently is the historical data updated?](https://support.developer.betfair.com/hc/en-us/articles/360002427051-How-frequently-is-the-historical-data-updated)（Astra 引用）。
 - **Betfair support** [a_id/10620](https://support.betfair.com/app/answers/detail/a_id/10620/)：Astra 引用；本文件冇重讀，冇任何事實單靠佢。
 - **BSP CSV** [promo.betfair.com/betfairsp/prices](https://promo.betfair.com/betfairsp/prices) 同 [SP_history](https://promo.betfair.com/betfairsp/SP_history.html)：coverage、欄位同頁尾 licence 句。
-- **Betfair Data Scientists hub**：[data listing](https://betfair-datascientists.github.io/data/dataListing/)、flumine simulation 同 backtesting ratings 教學。
+- **Betfair Data Scientists hub**：[data listing](https://betfair-datascientists.github.io/data/dataListing/)、flumine simulation 同 backtesting ratings 教學（兩個教學點樣開 TAR，§2.8 用咗）。
 - **flumine 3.2.7**（PyPI 2026-10-13，MIT）：docs（known issues 等）同 sdist source `flumine/clients/baseclient.py`、`flumine/markets/market.py`，本地讀。
 - **Tigris** [pricing](https://www.tigrisdata.com/pricing/)：Astra 讀；本文件冇重讀。
 - **Racing data**（全部公開頁面，未買、未試）：The Racing API（public plans JSON、ToS、FAQ）、timeform.com 嘅 commercial page、Betwise Smartform、Proform、Sporting Life T&Cs；Racing Post 條款 403、At The Races 有 challenge、BHA 結果頁冇 API，三個嘅條款 `unverified`。

@@ -6,5 +6,8 @@ gateway, account/session/credential clients, network transports or the trading C
 profiles or live order state (AGENTS.md; checked statically by tests/test_betfair_backtest_boundaries.py,
 which is an architectural rule, not a sandbox). Every run starts from an experiment contract (contract.py)
 meant to fix its choices before outcomes are inspected; validation cannot show when a contract was written,
-and the P0 contract is still a draft. Nothing here is evidence of profitability.
+and the P0 contract is still a draft. Betfair Historical Data TARs enter only through archive.py (bounded,
+month-gated ingest into an explicit data root outside Git), market_index.py (per-market records whose
+decision-time part is kept apart from evaluator-only outcomes) and coverage_audit.py (counts only). Nothing
+here is evidence of profitability.
 """

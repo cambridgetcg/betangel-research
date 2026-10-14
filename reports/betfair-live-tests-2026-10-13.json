@@ -190,12 +190,15 @@
   },
   "findings_for_next_register_round": {
     "F44": "delayed REST books carried runner totalMatched for every active runner (presence only) and the delayed stream carried runner tv (positive in 677 of 1739 runner changes), against the value's 'no runner totalMatched'; F44 is in no checklist row, so it is not relabelled",
-    "paper": "delayed REST tradedVolume was empty for every active runner in the 4 T8a books while the delayed stream carried trd; paper passive fills fed by empty delayed REST ladders like these would never fill; whether delayed REST ladders are always empty is unknown"
+    "paper": "delayed REST tradedVolume was empty for every active runner in the 4 T8a books while the T6 delayed stream (a separate same-day run) carried trd; a resting paper order stepped only on empty delayed REST ladders like these never fills passively; whether delayed REST ladders are always empty is unknown"
   },
   "economic_result": null,
   "limitations": [
     "Delayed key only: no live key, no order and no open position.",
     "Each observation is one run on one account on one day; it shows behaviour seen, not a documented guarantee.",
     "Raw responses, ledgers and stream files stay private; only SHA256SUMS digests, commands without ids, codes, field names, booleans, counts and durations are here."
+  ],
+  "amendments": [
+    "2026-10-14: findings_for_next_register_round.paper narrowed to the 4 T8a books; no new observation"
   ]
 }

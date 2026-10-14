@@ -149,6 +149,7 @@ class ValidatePlaceTests(unittest.TestCase):
                 validate.profit_ratio_ok(*bad)
         failures = self.place([orders.instruction(size_p=149, price_h=101)])
         self.assertIn("V14", rules(failures))
+        self.assertIn("V14", rules(self.place([orders.instruction(size_p=160, price_h=101)])))     # +25% exactly
 
     def test_market_gates_each(self):
         cases = {

@@ -244,7 +244,7 @@ class PaperGatewayTests(unittest.TestCase):
         env, clock = self.env, self.env.clock
         exchange = gw.SimExchange(clock)
         exchange.delayed = True
-        matched = [4957.8]
+        matched = [4957.8]                                            # made up
 
         def fetch(_self, market_id, fetched_by):
             row = exchange.book_row(market_id)
@@ -323,6 +323,26 @@ class PaperGatewayTests(unittest.TestCase):
                          [("paper_market_closed", "EXECUTION_COMPLETE")])
         order = env.journal.fold(now_ns=clock.time_ns())["orders"][ref]
         self.assertEqual((order["size_matched_p"], order["size_lapsed_p"]), (100, 100))
+
+    def test_paper_step_that_moves_and_closes_journals_each_flag_once(self):
+        """A step that both moves an order and closes the market: the move report carries the step's flags and
+        the closing lapses report does not carry them again (flags are pending only when nothing moved)."""
+        env, clock = self.env, self.env.clock
+        base = gw.paper_book(clock)
+        gone = env.gateway.place("1.1", [gw.instruction(selection_id=gw.OTHER_SELECTION, price_h=202)], book=base,
+                                 source="cli_manual")["orders"][0]["customer_order_ref"]
+        env.gateway.place("1.1", [gw.instruction(price_h=355)], book=base, source="cli_manual")
+        clock.advance(2)
+        seen = len(list(env.journal.events()))
+        # CLOSED without the other runner: its order lapses in the step (a move); the other lapses at the close.
+        closed = gw.paper_book(clock, status="CLOSED",
+                               runners={str(gw.SELECTION): dict(orders.runner(), status="WINNER")})
+        flags = env.gateway.advance("1.1", book=closed)["flags"]
+        self.assertEqual(flags, {gone: ["lapsed_runner_removed"]})
+        journaled = [e["payload"] for e in list(env.journal.events())[seen:]]
+        self.assertEqual([p["flags"] for p in journaled if "flags" in p], [flags])
+        self.assertEqual([sorted({t["reason"] for t in p.get("transitions", [])}) for p in journaled
+                          if p.get("transitions")], [["paper_advance"], ["paper_market_closed"]])
 
     def test_paper_step_refuses_a_book_of_another_market(self):
         """Regression R3#6: paper-step --market 1.1 with a book of market 1.2 filled 1.1's resting order from

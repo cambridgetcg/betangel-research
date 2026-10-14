@@ -1231,9 +1231,10 @@ class ReadAndRecordCliTests(unittest.TestCase):
         self.assertEqual((code, err.strip()), (2, COEXISTENCE_REFUSAL))
 
     def test_paper_step_fetch_book_on_the_delayed_key_flags_warns_and_exits_0(self):
-        """T8a through the CLI: paper --fetch-book uses the delayed key, whose REST tradedVolume [] gave
-        paper-step flags {} and nothing on stderr. Now the order is flagged, one warning steers to record +
-        paper-replay, the exit code stays 0 and nothing is sent."""
+        """T8a-shaped books through the CLI (T8a itself ran book, not paper-step): paper --fetch-book uses the
+        delayed key, and before the fix a REST tradedVolume [] gave paper-step flags {} and nothing on stderr.
+        Now the order is flagged, one warning steers to record + paper-replay, the exit code stays 0 and nothing
+        is sent."""
         self.exchange.delayed = True
         code, out, err = run_main(["place", "--market", "1.1", "--selection", str(gw.SELECTION), "--side", "BACK",
                                    "--price", "3.55", "--size", "2.00", "--fetch-book", "--bet-angel-paused"],

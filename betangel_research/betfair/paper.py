@@ -131,8 +131,9 @@ def _traded(runner):
 
 def _delayed_rest(book):
     """A REST listMarketBook book on the delayed key or with isMarketDataDelayed not False (V10's test). Live
-    2026-10-13 (T8a) such books carried tradedVolume [] (traded {}) while ltp and totalMatched showed trading,
-    so an empty ladder there is unknown, not "nothing traded", and never a zero baseline."""
+    2026-10-13 (T8a, 4 books) such books carried tradedVolume [] (traded {}) for every active runner while
+    lastPriceTraded and runner totalMatched were present (the receipt records presence only), so an empty ladder
+    there is unknown, not "nothing traded", and never a zero baseline."""
     return book["source"] == "rest_listMarketBook" and (book["key_type"] == "delayed"
                                                          or book["is_market_data_delayed"] is not False)
 

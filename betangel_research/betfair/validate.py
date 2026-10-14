@@ -65,10 +65,11 @@ def _round_half_even(cp):
 
 
 def profit_ratio_ok(size_p, price_h):
-    """F39 INVALID_PROFIT_RATIO guard: the penny-rounded backer profit must lie within 80%-125%.
+    """F39 INVALID_PROFIT_RATIO guard: the penny-rounded backer profit must lie strictly between 80% and 125%.
 
     Exact profit is size * (price - 1) in hundredths of a penny. Betfair's rounding mode is not
-    documented, so both half-up and half-even rounding must pass.
+    documented, so both half-up and half-even rounding must pass. Whether exactly 80% or 125% passes is not
+    documented either; read literally ("20% less or 25% more" fails), both boundaries fail, so they are refused.
     """
     if type(size_p) is not int or size_p <= 0 or type(price_h) is not int or price_h <= 100:
         raise ValueError("profit ratio needs positive integer pence and hundredths above 1.00")
@@ -76,7 +77,7 @@ def profit_ratio_ok(size_p, price_h):
     low, high = PROFIT_RATIO_BOUNDS_PERCENT
     for rounded in (_round_half_up(exact), _round_half_even(exact)):
         scaled = rounded * 100 * 100            # rounded pence in hundredths of a penny, times 100%
-        if scaled < low * exact or scaled > high * exact:
+        if scaled <= low * exact or scaled >= high * exact:
             return False
     return True
 

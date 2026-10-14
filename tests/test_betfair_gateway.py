@@ -248,7 +248,7 @@ class PaperGatewayTests(unittest.TestCase):
 
         def fetch(_self, market_id, fetched_by):
             row = exchange.book_row(market_id)
-            matched[0] += 500.0                                       # trading goes on; the ladder stays []
+            matched[0] += 500.0                                       # made up: totals grow, the ladder stays []
             for runner in row["runners"]:
                 runner["totalMatched"] = matched[0]
             return normalise_market_book(row, catalogue_item=exchange.catalogue_row(market_id), key_type="delayed",
@@ -265,10 +265,64 @@ class PaperGatewayTests(unittest.TestCase):
         self.assertEqual(env.gateway.advance("1.1")["flags"], {ref: ["passive_fill_skipped_pre_activation_interval"]})
         for _ in range(3):
             clock.advance(180)
+            seen = len(list(env.journal.events()))
             stepped = env.gateway.advance("1.1")
             self.assertEqual(stepped["flags"], {ref: ["passive_fill_unavailable_delayed_rest_trd_empty"]})
             self.assertEqual(stepped["orders"][0]["size_matched"], 0.0)
+            # Nothing moves, so the flag rides in the step's paper_advance_state note, not only in stdout.
+            self.assertEqual([(e["kind"], e["payload"].get("reason"), e["payload"].get("flags"))
+                              for e in list(env.journal.events())[seen:]],
+                             [("note", "paper_advance_state", stepped["flags"])])
         self.assertEqual(env.gateway.paper.queue_state()[ref], 4000)
+
+    def test_paper_step_flags_ride_in_the_events_it_journals_anyway(self):
+        """Bounded flag retention: a step whose orders did not move journaled its flags nowhere (its
+        paper_advance_state note had none), so they were only in that step's stdout. Its non-empty flags now
+        ride in the note, or in the closing lapses report; a move report keeps every order's flags, and no
+        event is ever added for flags, so a step that journals nothing keeps them only in its result."""
+        env, clock = self.env, self.env.clock
+
+        def book(traded, **changes):
+            return gw.paper_book(clock, runners={str(gw.SELECTION): orders.runner(traded={"3.55": traded})},
+                                 **changes)
+
+        def step(value):
+            seen = len(list(env.journal.events()))
+            result = env.gateway.advance("1.1", book=value)
+            return result["flags"], [(e["kind"], e["payload"].get("flags")) for e in list(env.journal.events())[seen:]]
+
+        # BACK 2.00 @ 3.55 rests behind the 80.00 shown there.
+        ref = env.gateway.place("1.1", [gw.instruction(price_h=355)], book=book(100.0),
+                                source="cli_manual")["orders"][0]["customer_order_ref"]
+        clock.advance(2)
+        early = {ref: ["passive_fill_skipped_pre_activation_interval"]}
+        self.assertEqual(step(book(100.0)), (early, [("note", early)]))
+        clock.advance(2)
+        self.assertEqual(step(book(100.0)), ({}, [("note", None)]))           # no flag: the note has no key
+        clock.advance(2)
+        invalid = book(100.0, invalid_reason="catalogue_missing")
+        blind = {ref: ["book_invalid_no_fills"]}
+        self.assertEqual(step(invalid), (blind, [("note", blind)]))
+        self.assertEqual(step(invalid), (blind, []))                          # same state: nothing journaled
+        clock.advance(2)
+        self.assertEqual(step(book(100.0)), ({}, [("note", None)]))
+        clock.advance(2)
+        # 162.00 traded at 3.55 counts 81.00: 80.00 ahead, then 1.00 of the 2.00 fills. The report keeps the flags.
+        filled = step(book(262.0))
+        self.assertEqual(filled, ({ref: ["passive_fill"]}, [("report", {ref: ["passive_fill"]})]))
+        clock.advance(2)
+        # CLOSED with no catalogue row (F70): the step moves nothing, so its flag rides in the closing lapses.
+        closed = gw.paper_book(clock, status="CLOSED", invalid_reason="catalogue_missing",
+                               runners={str(gw.SELECTION): dict(orders.runner(traded={"3.55": 262.0}),
+                                                                status="WINNER")})
+        flags, journaled = step(closed)
+        self.assertEqual(flags, blind)
+        self.assertEqual([flags for _, flags in journaled if flags is not None], [blind])
+        lapses = [e for e in env.journal.events() if e["payload"].get("flags") == blind][-1]
+        self.assertEqual([(t["reason"], t["state"]) for t in lapses["payload"]["transitions"]],
+                         [("paper_market_closed", "EXECUTION_COMPLETE")])
+        order = env.journal.fold(now_ns=clock.time_ns())["orders"][ref]
+        self.assertEqual((order["size_matched_p"], order["size_lapsed_p"]), (100, 100))
 
     def test_paper_step_refuses_a_book_of_another_market(self):
         """Regression R3#6: paper-step --market 1.1 with a book of market 1.2 filled 1.1's resting order from

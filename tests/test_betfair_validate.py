@@ -139,6 +139,11 @@ class ValidatePlaceTests(unittest.TestCase):
         self.assertTrue(validate.profit_ratio_ok(200, 106))
         self.assertTrue(validate.profit_ratio_ok(213, 106))
         self.assertTrue(validate.profit_ratio_ok(200, 350))
+        # F39's exact boundaries are undocumented; read literally both fail, so V14 refuses them.
+        self.assertFalse(validate.profit_ratio_ok(125, 102))      # 2.5p "ought"; half-even pays 2p: exactly -20%
+        self.assertFalse(validate.profit_ratio_ok(160, 101))      # 1.6p "ought", 2p paid: exactly +25%
+        self.assertTrue(validate.profit_ratio_ok(124, 102))       # 2.48p "ought", 2p paid: -19.4%
+        self.assertTrue(validate.profit_ratio_ok(161, 101))       # 1.61p "ought", 2p paid: +24.2%
         for bad in ((0, 106), (13, 100), (13.0, 106), (13, 1.06)):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 validate.profit_ratio_ok(*bad)
@@ -308,6 +313,10 @@ class ValidateReplaceCancelTests(unittest.TestCase):
         short = dict(self.parent, price_h=106)
         self.assertIn("remainder_profit_ratio_out_of_bounds", reasons(validate.validate_cancel(
             support.MARKET_ID, [{"bet_id": "312345678901", "size_reduction_p": 187}], open_orders=[short])))
+        # Cancelling 0.75 of 2.00 @ 1.02 leaves 1.25 @ 1.02, exactly on the 80% boundary under half-even.
+        low = dict(self.parent, price_h=102)
+        self.assertIn("remainder_profit_ratio_out_of_bounds", reasons(validate.validate_cancel(
+            support.MARKET_ID, [{"bet_id": "312345678901", "size_reduction_p": 75}], open_orders=[low])))
         # Another market's bet is not "ours in this market".
         elsewhere = dict(self.parent, market_id="1.2")
         self.assertIn("bet_not_ours_in_market", reasons(validate.validate_cancel(

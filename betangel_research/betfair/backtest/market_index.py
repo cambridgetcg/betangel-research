@@ -13,11 +13,16 @@ manifest, or that is missing or cannot be opened, refuses the whole index (exit 
 
 A member that is intact but cannot be read whole under these rules is listed as unreadable with its reason and
 complete_before_pt. Each message is checked whole before any of it is applied, so everything before the failing
-line is applied exactly; complete_before_pt is the pt of the last message applied, and only what was published
-strictly before it is complete (the failing line may belong to that same pt batch, and a strategy never sees half a
-batch). Every market seen before the failure is still indexed from what was published strictly before that pt
-(read_complete false), so a bad line after the off neither drops a market from the population nor reaches back
-into its decision-time view; when the failure comes before the decision cutoff, decision_time ends at that pt.
+line is applied exactly. complete_before_pt is the failing message's pt when it was read before the failure (a bad
+shape, market id, img flag or runner list, or a segmentType: pts never decrease, so every message published
+before it was applied), else the pt of the last message applied (a line whose pt cannot be read: not JSON, NaN,
+too long, cut mid-line); only what was published strictly before it is complete (the failing line may belong to
+that same pt batch, and a strategy never sees half a batch). Every market seen before the failure is still indexed
+from what was published strictly before that pt (read_complete false), so a bad line published after the decision
+cutoff neither drops a market from the population nor reaches back into its decision-time view (nor, by the
+primary rule below, swaps it for another source's). A line whose pt cannot be read ends the view at the last pt
+applied, even when it physically follows the decision cutoff (a cut inside the first line after it, say): its time
+is unknown. When complete_before_pt comes before the decision cutoff, decision_time ends there.
 
 One record per (plan, market id) per archive (canonical JSON, one line each, sorted by plan and numeric market
 id; two tiers of one market are two data products, never merged), each with separate top-level objects; ONLY
@@ -25,9 +30,16 @@ decision_time may ever reach a strategy, every other object is for provenance, t
 - provenance: archive and member sha256, member path, file type (market or event file), plan, month and date from
   the path, inspected_month, and other_sources (every other member of the same plan holding the same market,
   whether it was read whole, and whether its derived record agrees: agrees compares the decision, outcome and
-  coverage parts, so it is outcome-derived; agrees_decision_time compares decision_time only). A record read whole
-  is primary over a partial one; then a market file named after the market, then an event file, then a market file
-  named after another market; then by path.
+  coverage parts, so it is outcome-derived; agrees_decision_time compares decision_time only; both null for a
+  market file named after the market that failed before any message for it was applied, so holds no record of
+  it). The primary is the first source holding a record, ranked: a market file named after the market, then an
+  event file, then a market file named after another market, then by path: by name only, never by whether a
+  source was read whole or by what it says, since either would let a failure or a difference published after a
+  decision time choose that decision's view. Two cases leave the event file's record primary although a market
+  file is named after the market, and both change a decision only if the two files disagree (Betfair's should
+  not): the market file failed before any message for its market was applied (it is listed as above), or the
+  month gate refused the market file by content at ingest or the market in it by marketTime here while the event
+  file's months pass. other_sources is for the audit only and is never a decision input.
 - checks: path_month, the month of the first-published marketTime, month_mismatch, date_mismatch (the path date
   against the UTC date of the first-published marketTime) and event_id_mismatch (the path event id against the
   first definition's eventId), each null when unknown, first_pt, whether a market file holds a market it is not
@@ -43,24 +55,35 @@ decision_time may ever reach a strategy, every other object is for provenance, t
   inPlay, numberOfWinners as declared, marketBaseRate, bspMarket and version; runners (id, first_pt and timelines
   of RUNNER_FIELDS: sortPriority, name, hc, status, adjustmentFactor, removalDate, listed); removals (runner, pt,
   status REMOVED or REMOVED_VACANT, and removalDate and adjustmentFactor as of that pt, when present); and
-  view_ends ({pt, reason}: the cutoff itself). The cutoff is the earliest of the first-published scheduled off, the
-  first outcome-bearing definition (CLOSED, settledTime, bspReconciled true, a runner WINNER, LOSER or PLACED, or
-  any runner bsp) and, for a member not read whole, complete_before_pt; so no outcome value and nothing published at
-  or after the first-published off is in it. Like every entry, view_ends is pt-stamped: a consumer keeps only
-  entries with pt <= its decision time, and a decision at or after view_ends.pt has no complete view here (the
-  market had a result-bearing definition, reached its off, or the member could not be read further), so task (c)
-  must give it an explicit abstain or unsupported reason, never simulate it from this truncated view and never
-  drop it. A market with no parseable first-published marketTime has an empty decision_time and view_ends null.
+  view_ends ({pt, reason}: the cutoff itself). An image (img true; any other non-null img makes the member
+  unreadable, malformed_image_flag) replaces the market's state at its pt rather than merging into it (plan section
+  5, img_replaces_market_state): whatever it does not carry, every field and runner when it has no definition and
+  every runner its definition omits, gets a null entry at that pt (listed false), and nothing published earlier is
+  erased. The cutoff is the earliest of the first-published scheduled off, the first outcome-bearing definition
+  (CLOSED, settledTime, bspReconciled true, a runner WINNER, LOSER or PLACED, or any runner bsp) and, for a member
+  not read whole, complete_before_pt; so no outcome value and nothing published at or after the first-published
+  off is in it. Like every entry, view_ends is pt-stamped: a consumer keeps only entries with pt <= its decision
+  time, and a decision at or after view_ends.pt has no complete view here (the market had a result-bearing
+  definition, reached its off, or the member could not be read further), so task (c) must give it an explicit
+  abstain or unsupported reason, never simulate it from this truncated view and never drop it. A market with no
+  parseable first-published marketTime has an empty decision_time and view_ends null; when none was published
+  before complete_before_pt of a member not read whole (its first batch cut, say), decision_time is still empty
+  but view_ends is {complete_before_pt, member_unreadable_from_pt}.
 - evaluator_only_outcome: the cutoff and why, whether the member was read whole (read_complete, unreadable_reason,
-  complete_before_pt), every timeline from the cutoff on (revised metadata, later removals, in-play and status
-  changes), OUTCOME_DEFINITION_FIELDS and runner bsp timelines whatever their pt (raw values), final runner status
-  and bsp (null unless a finite number of at least MIN_BSP), final market status, whether and when CLOSED was
-  reached, settled time, winners observed (null when no result-bearing definition exists), the declared number of
-  winners at the end, dead_heat (see _dead_heat; null when not assessable), results_revised_after_close (a runner
-  status or bsp, or numberOfWinners, changed after CLOSED; null when not closed), runners missing a final bsp (any
-  final status but REMOVED, REMOVED_VACANT or HIDDEN), runners whose final bsp is present but unusable (for example
-  the strings "NaN" or "Infinity"), every marketTime month, last pt and counts. Nothing in decision_time is derived
-  from it.
+  complete_before_pt), every timeline from the cutoff on (all of them when there is no decision view: revised
+  metadata, later removals, in-play and status changes), OUTCOME_DEFINITION_FIELDS and runner bsp timelines
+  whatever their pt (raw values), final runner status and bsp (bsp null unless a finite number of at least
+  MIN_BSP; both null for a runner not listed at the end, that is not in the last definition or reset by a later
+  image: its old values are not a current result, as for runner1 when an image after CLOSED carries only
+  runner2), final market status, whether and when CLOSED was reached, settled time (null after an image without a
+  definition), winners observed (null unless the final state holds a result: final status CLOSED, or a runner
+  listed at the end WINNER, LOSER or PLACED; an image or definition after CLOSED can reopen the market or unlist
+  every runner), the declared number of winners at the end, dead_heat (see _dead_heat; null when not assessable,
+  including a market not CLOSED at the end), results_revised_after_close (a runner status, bsp or listing, or
+  numberOfWinners, changed after CLOSED; null when not closed), runners listed at the end missing a final bsp
+  (any final status but REMOVED, REMOVED_VACANT or HIDDEN) or whose final bsp is present but unusable (for
+  example the strings "NaN" or "Infinity"), every marketTime month, last pt and counts. Winners observed and
+  dead_heat count only those final statuses. Nothing in decision_time is derived from it.
 
 Months are UTC calendar months of marketTime (archive.market_month). A record whose marketTime months (every one
 seen, before any truncation) include one the gate refuses is not written (refused_markets in the head). The index
@@ -133,7 +156,12 @@ class IndexProblem(Exception):
 
 
 class _Unreadable(Exception):
-    """A member that is intact but cannot be read under the stream rules; str() is the reason."""
+    """A member that is intact but cannot be read under the stream rules; str() is the reason, pt the failing
+    message's pt when it was read and checked before the failure (None when the line failed before that)."""
+
+    def __init__(self, reason, pt=None):
+        super().__init__(reason)
+        self.pt = pt
 
 
 def _refuse_constant(name):
@@ -201,7 +229,8 @@ def load_manifest(root, archive_sha256):
 
 
 def _messages(stream, limits):
-    """(pt, message) for each mcm line of one decompressed member; _Unreadable(reason) on the first violation."""
+    """(pt, message) for each mcm line of one decompressed member; _Unreadable(reason) on the first violation, with
+    the line's pt when it was read and checked first (segmented)."""
     previous, total = -1, 0
     while True:
         line = stream.readline(limits.max_line_bytes + 1)
@@ -226,7 +255,7 @@ def _messages(stream, limits):
         if type(pt) is not int or pt < previous:
             raise _Unreadable("invalid_or_decreasing_pt")
         if message.get("segmentType") is not None:
-            raise _Unreadable("segmented")
+            raise _Unreadable("segmented", pt)
         previous = pt
         yield pt, message
 
@@ -254,6 +283,9 @@ def _checked_changes(message):
         if runner_changes is not None and (not isinstance(runner_changes, list)
                                            or not all(isinstance(item, dict) for item in runner_changes)):
             raise _Unreadable("malformed_runner_change")
+        image = change.get("img")
+        if image is not None and type(image) is not bool:
+            raise _Unreadable("malformed_image_flag")        # neither merged nor replaced by guesswork
         definition = change.get("marketDefinition")
         if definition is not None:
             if not isinstance(definition, dict) or not isinstance(definition.get("runners", []), list):
@@ -305,10 +337,11 @@ def _cut(store, before):
 
 
 def _dead_heat(closed, market_type, declared, statuses):
-    """True or False for a closed market whose dead heat the counts can judge, else None. EACH_WAY (numberOfWinners
-    is the number of places; one WINNER and the placed runners PLACED): more than one WINNER, or more WINNER plus
-    PLACED than declared. WIN, PLACE and OTHER_PLACE: more WINNER than declared. A declared number below 1 (flumine
-    reads 0 as a variable number of winners), a missing one, another market type, or a market never CLOSED: None."""
+    """True or False for a market CLOSED at the end (closed) whose dead heat the counts can judge, else None.
+    EACH_WAY (numberOfWinners is the number of places; one WINNER and the placed runners PLACED): more than one
+    WINNER, or more WINNER plus PLACED than declared. WIN, PLACE and OTHER_PLACE: more WINNER than declared. A
+    declared number below 1 (flumine reads 0 as a variable number of winners), a missing one, another market type,
+    or a market not CLOSED at the end (never closed, or reopened or reset by a later image or definition): None."""
     if not closed or type(declared) is not int or declared < 1:
         return None
     winners, placed = statuses.count("WINNER"), statuses.count("PLACED")
@@ -355,6 +388,25 @@ class _Market:
         definition = change.get("marketDefinition")
         if definition is not None:
             self.definition(pt, definition)
+        if change.get("img") is True:
+            self.image(pt, definition)
+
+    def image(self, pt, md):
+        """img true: this change replaces the market's published state at pt instead of merging into it (plan
+        section 5, img_replaces_market_state). A definition in it has already been applied whole; whatever the
+        image does not carry is no longer current: without a definition every definition and settlement field and
+        every runner, with one every runner it omits. Each gets a null entry at pt (listed false), so the timelines
+        keep everything published before the image and say from when it stopped being current."""
+        if md is None:
+            for store in (self.fields, self.outcome_fields):
+                for key in list(store):
+                    _track(store, key, pt, None)
+        carried = set() if md is None else {_runner_id(runner["id"]) for runner in md.get("runners", [])}
+        for rid, state in self.runners.items():
+            if rid not in carried:
+                for store in (state["fields"], state["outcome"]):
+                    for key in list(store):
+                        _track(store, key, pt, False if key == "listed" else None)
 
     def definition(self, pt, md):
         self.definitions += 1
@@ -425,6 +477,8 @@ class _Market:
         for rid, state in sorted(self.runners.items()):
             previous = None
             for pt, status in state["fields"].get("status", []):
+                if status is None:          # no status (an image reset it): not a new state to be removed from
+                    continue
                 if status in REMOVED_STATUSES and previous not in REMOVED_STATUSES:
                     found.append({"id": rid, "pt": pt, "status": status,
                                   "removal_date": _as_of(state["fields"].get("removalDate"), pt),
@@ -436,14 +490,17 @@ class _Market:
         """The index record. unreadable is (reason, complete_before_pt) for a member not read whole, after
         truncate(complete_before_pt); None for one read whole."""
         first, cutoff, reason = self.cutoff()
-        if unreadable is not None and cutoff is not None and unreadable[1] < cutoff:
+        if unreadable is not None and (first is None or cutoff is not None and unreadable[1] < cutoff):
+            # With no first-published marketTime before complete_before_pt there is still no decision view, but it
+            # ends where the member stopped being readable, not for want of a marketTime the unread rest may hold.
             cutoff, reason = unreadable[1], "member_unreadable_from_pt"
+        viewable = first is not None and cutoff is not None        # else decision_time is empty
 
         def before(timeline):
-            return [] if cutoff is None else [entry for entry in timeline if entry[0] < cutoff]
+            return [entry for entry in timeline if entry[0] < cutoff] if viewable else []
 
         def after(timeline):
-            return list(timeline) if cutoff is None else [entry for entry in timeline if entry[0] >= cutoff]
+            return [entry for entry in timeline if entry[0] >= cutoff] if viewable else list(timeline)
 
         def decision_safe(key, entries):     # belt and braces: the cutoff already excludes these
             if key == "status":
@@ -459,29 +516,39 @@ class _Market:
         decision_runners, later_runners, final_runners, unusable_bsp, statuses = [], [], [], [], set()
         for rid, state in sorted(self.runners.items()):
             early = {key: decision_safe(key, before(tl)) for key, tl in sorted(state["fields"].items()) if before(tl)}
-            if cutoff is not None and state["first_pt"] < cutoff:
+            if viewable and state["first_pt"] < cutoff:
                 decision_runners.append({"id": rid, "first_pt": state["first_pt"], **early})
             late = {key: after(tl) for key, tl in sorted(state["fields"].items()) if after(tl)}
             late.update({key: tl for key, tl in sorted(state["outcome"].items())})
             if late:
                 later_runners.append({"id": rid, **late})
             statuses.update(_status_text(value) for _, value in state["fields"].get("status", []) if value is not None)
-            raw_bsp = _last(state["outcome"].get("bsp"))
+            # Only a runner listed at the end (in the last definition, not reset by a later image) is a current
+            # result: one left out keeps its old status and bsp in its timelines, never in final status, bsp or the
+            # counts below.
+            listed = state["fields"]["listed"][-1][1]
+            raw_bsp = _last(state["outcome"].get("bsp")) if listed else None
             bsp = raw_bsp if usable_bsp(raw_bsp) else None
             if raw_bsp is not None and bsp is None:
                 unusable_bsp.append(rid)
-            final_runners.append({"id": rid, "status": _last(state["fields"].get("status")), "bsp": bsp,
-                                  "listed": state["fields"]["listed"][-1][1]})
+            final_runners.append({"id": rid, "status": _last(state["fields"].get("status")) if listed else None,
+                                  "bsp": bsp, "listed": listed})
         removals = self.removals()
         market_statuses = self.fields.get("status", [])
         closed = [pt for pt, value in market_statuses if value in OUTCOME_MARKET_STATUSES]
+        final_status = market_statuses[-1][1] if market_statuses else None
         declared = _last(self.fields.get("numberOfWinners"))
         final_statuses = [runner["status"] for runner in final_runners]
+        # The final state holds a result only when the market is CLOSED now or a runner listed at the end has a result
+        # status: an image or a later definition may reopen a CLOSED market or unlist every runner (unknown, not 0).
+        resulted = (final_status in OUTCOME_MARKET_STATUSES
+                    or any(status in OUTCOME_RUNNER_STATUSES for status in final_statuses))
         revised = None
         if closed:
             timelines = [self.fields.get("numberOfWinners", [])]
             for state in self.runners.values():
-                timelines += [state["fields"].get("status", []), state["outcome"].get("bsp", [])]
+                timelines += [state["fields"].get("status", []), state["fields"]["listed"],
+                              state["outcome"].get("bsp", [])]
             revised = any(entry[0] > closed[0] for timeline in timelines for entry in timeline)
         moment = utc_moment(first[1]) if first else None
         market_time_month = market_month(first[1]) if first else None
@@ -489,9 +556,9 @@ class _Market:
         read_complete = unreadable is None
         decision = {
             "first_published_market_time": ({"pt": first[0], "value": first[1]}
-                                            if first and cutoff is not None and first[0] < cutoff else None),
+                                            if viewable and first[0] < cutoff else None),
             "definition": decision_definition, "runners": decision_runners,
-            "removals": [item for item in removals if cutoff is not None and item["pt"] < cutoff],
+            "removals": [item for item in removals if viewable and item["pt"] < cutoff],
             "view_ends": None if cutoff is None else {"pt": cutoff, "reason": reason},
         }
         outcome = {
@@ -501,18 +568,17 @@ class _Market:
             "definition_after_cutoff": later_definition,
             "outcome_definition": {key: tl for key, tl in sorted(self.outcome_fields.items())},
             "runners_after_cutoff": later_runners,
-            "removals_after_cutoff": [item for item in removals if cutoff is None or item["pt"] >= cutoff],
-            "final_runners": final_runners,
-            "final_status": market_statuses[-1][1] if market_statuses else None,
+            "removals_after_cutoff": [item for item in removals if not viewable or item["pt"] >= cutoff],
+            "final_runners": final_runners, "final_status": final_status,
             "closed_reached": bool(closed), "closed_first_pt": closed[0] if closed else None,
             "settled_time": _last(self.outcome_fields.get("settledTime")),
-            "winners_observed": (final_statuses.count("WINNER") if closed or self.first_outcome_pt is not None
-                                 else None),
+            "winners_observed": final_statuses.count("WINNER") if resulted else None,
             "declared_number_of_winners": declared,
-            "dead_heat": _dead_heat(bool(closed), _last(self.fields.get("marketType")), declared, final_statuses),
+            "dead_heat": _dead_heat(final_status in OUTCOME_MARKET_STATUSES, _last(self.fields.get("marketType")),
+                                    declared, final_statuses),
             "results_revised_after_close": revised,
-            "missing_final_bsp_runner_ids": [r["id"] for r in final_runners if r["status"] not in NO_BSP_EXPECTED
-                                             and r["bsp"] is None],
+            "missing_final_bsp_runner_ids": [r["id"] for r in final_runners if r["listed"]
+                                             and r["status"] not in NO_BSP_EXPECTED and r["bsp"] is None],
             "unusable_final_bsp_runner_ids": unusable_bsp,
             "market_time_months": sorted(self.market_time_months()),
             "last_pt": self.last_pt, "definitions": self.definitions, "changes": self.changes,
@@ -530,7 +596,7 @@ class _Market:
         }
 
         def early(store):
-            return sorted(name for name, pt in store.items() if cutoff is not None and pt < cutoff)
+            return sorted(name for name, pt in store.items() if viewable and pt < cutoff)
 
         coverage = {"whole_file": sorted(self.seen), "before_cutoff": early(self.seen),
                     "valued_whole_file": sorted(self.valued), "valued_before_cutoff": early(self.valued)}
@@ -540,26 +606,34 @@ class _Market:
 
 def _read_member(path, limits):
     """({market id: _Market}, unreadable reason or None, (sha256, size) of the compressed bytes read,
-    complete_before_pt: the pt of the last message applied, or None when none was). OSError when the file cannot be
-    opened or read."""
-    markets, reason, applied = {}, None, None
+    complete_before_pt or None). complete_before_pt is the failing message's pt when it was read (pts never
+    decrease, so every message published before it was applied; its own batch may be incomplete), else the pt of
+    the last message applied (the line whose pt is unknown may belong to that batch), else None. OSError when the
+    file cannot be opened or read."""
+    markets, reason, complete = {}, None, None
     with open(path, "rb") as handle:
         reader = HashingReader(handle)
         try:
             with bz2.BZ2File(reader) as stream:
                 for pt, message in _messages(stream, limits):
-                    for market_id, change in _checked_changes(message):
+                    try:
+                        checked = _checked_changes(message)
+                    except _Unreadable as error:
+                        raise _Unreadable(str(error), pt) from None
+                    for market_id, change in checked:
                         market = markets.get(market_id)
                         if market is None:
                             market = markets[market_id] = _Market(market_id, pt)
                         market.change(pt, change)
-                    applied = pt
+                    complete = pt
         except _Unreadable as error:
             reason = str(error)
+            if error.pt is not None:        # checked not to decrease, so never before the last pt applied
+                complete = error.pt
         except (OSError, EOFError, ValueError):
             reason = "not_bz2"
         digest = reader.drain()
-    return markets, reason, digest, applied
+    return markets, reason, digest, complete
 
 
 def _provenance(manifest, member):
@@ -573,8 +647,9 @@ def _body(record):
     return canonical_json([record["decision_time"], record["evaluator_only_outcome"], record["coverage"]])
 
 
-# One spilled record: where it sits in the spill, how it ranks for primary, and what other_sources needs.
-_Entry = namedtuple("_Entry", "key rank offset length body decision member_sha256 file_type")
+# One spilled record: where it sits in the spill, how it ranks for primary (file type and path only), and what
+# other_sources needs; offset None for a market file that holds no record of its own market (see _spill).
+_Entry = namedtuple("_Entry", "key rank offset length body decision member_sha256 file_type read_complete")
 
 
 def _spill(root, manifest, spill, limits):
@@ -596,14 +671,19 @@ def _spill(root, manifest, spill, limits):
         try:
             if not raw.is_file():
                 raise IndexProblem(f"{where}:missing")
-            markets, reason, digest, applied = _read_member(raw, limits)
+            markets, reason, digest, complete = _read_member(raw, limits)
         except OSError:
             raise IndexProblem(f"{where}:unreadable") from None
         if digest != (member["sha256"], member["size_bytes"]):
             raise IndexProblem(f"{where}:member_hash_mismatch")
         ids = sorted(markets, key=market_sort_key)
         files.append({**entry, "status": "unreadable" if reason else "indexed", "reason": reason,
-                      "complete_before_pt": applied if reason else None, "markets": ids})
+                      "complete_before_pt": complete if reason else None, "markets": ids})
+        if reason and member["file_type"] == "market" and member["market_id"] not in markets:
+            # A market file that failed before any message for its own market was applied holds no record of it,
+            # so it cannot be primary; it is still listed among that market's other sources (no record to compare).
+            entries.append(_Entry((member["plan"], market_sort_key(member["market_id"])), (0, member["path"]), None,
+                                  0, None, None, member["sha256"], member["file_type"], False))
         for market_id in ids:
             market = markets[market_id]
             gates = sorted({g for g in map(month_gate, market.market_time_months()) if g})
@@ -612,15 +692,17 @@ def _spill(root, manifest, spill, limits):
                                         "reason": f"market_time_{gates[0]}"})
                 continue
             if reason:
-                market.truncate(applied)
-            record = market.record(_provenance(manifest, member), (reason, applied) if reason else None)
+                market.truncate(complete)
+            record = market.record(_provenance(manifest, member), (reason, complete) if reason else None)
             line = canonical_json(record)
+            # Never by readability or content: a line that fails after the off must not move the decision view to
+            # another source (each source's own view already ends where it stopped being readable).
             named = member["file_type"] == "market" and member["market_id"] == market_id
-            rank = (bool(reason), 0 if named else 1 if member["file_type"] == "event" else 2, member["path"])
+            rank = (0 if named else 1 if member["file_type"] == "event" else 2, member["path"])
             entries.append(_Entry((member["plan"], market_sort_key(market_id)), rank, offset, len(line),
                                   hashlib.sha256(_body(record)).digest(),
                                   hashlib.sha256(canonical_json(record["decision_time"])).digest(),
-                                  member["sha256"], member["file_type"]))
+                                  member["sha256"], member["file_type"], not reason))
             spill.write(line)
             offset += len(line)
     return files, entries, refused_markets
@@ -628,18 +710,25 @@ def _spill(root, manifest, spill, limits):
 
 def _merged_lines(spill_path, entries):
     """The primary record of each (plan, market) with other_sources filled in, as canonical lines in index order
-    (the primary ranks first: read whole, then a market file named after the market, then an event file, then a
-    market file named after another market, then by path)."""
+    (the primary is the first source holding a record, ranked: a market file named after the market, then an event
+    file, then a market file named after another market, then by path; never by whether a source was read whole or
+    what it says). A source holding no record (offset None) is listed with agrees and agrees_decision_time null."""
     entries.sort(key=lambda entry: (entry.key, entry.rank))
     with open(spill_path, "rb") as spill:
         for _, group in itertools.groupby(entries, key=lambda entry: entry.key):
-            primary, *others = group
+            group = list(group)
+            held = [entry for entry in group if entry.offset is not None]
+            if not held:
+                continue
+            primary = held[0]
             spill.seek(primary.offset)
             record = loads_strict(spill.read(primary.length))
             record["provenance"]["other_sources"] = [
-                {"member_path": other.rank[2], "member_sha256": other.member_sha256, "file_type": other.file_type,
-                 "read_complete": not other.rank[0], "agrees": other.body == primary.body,
-                 "agrees_decision_time": other.decision == primary.decision} for other in others]
+                {"member_path": other.rank[1], "member_sha256": other.member_sha256, "file_type": other.file_type,
+                 "read_complete": other.read_complete,
+                 "agrees": None if other.offset is None else other.body == primary.body,
+                 "agrees_decision_time": None if other.offset is None else other.decision == primary.decision}
+                for other in group if other is not primary]
             yield canonical_json(record) + b"\n"
 
 

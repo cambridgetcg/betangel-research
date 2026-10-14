@@ -19,41 +19,51 @@ every hash, so a file that changed between the passes is refused. Any of these r
 refused, every problem listed, nothing written): an absolute name, a ".." component, a name outside SAFE_COMPONENT
 (ASCII letters, digits, ".", "_" and "-", starting with a letter or digit, so no Unicode normalisation or
 case-folding surprise on macOS), a symlink, hardlink, device, FIFO or any non-regular member (contiguous and sparse
-files included), a duplicate name, two names equal ignoring case, a file whose name is a directory of another, too
-many members, a member or total size over the limit, a header whose declared size runs past the end of the file
-(checked before tarfile is allowed to skip to the next header, so a tiny file declaring 2**60 bytes cannot spin), an
-extended header (pax or GNU long name) over max_extended_header_bytes, more than MAX_EXTENDED_HEADERS of them
-chained before one member, or any pax global header (checked by _bounded_tarinfo before tarfile reads them into
-memory), an archive that does not end cleanly (the last member must be followed by nothing but zero bytes, at
-least two 512-byte zero blocks as POSIX writes them: a file cut or corrupted at or after a header, garbage after
-the members, or two TARs concatenated would otherwise read as a complete archive with members missing), and a
-member that is empty, not bz2, truncated, has trailing bytes after its last bz2 stream, decompresses beyond the
-size limit or beyond max_ratio times its compressed size (a bz2 bomb; checked while streaming through
-BZ2Decompressor with max_length, so at most CHUNK_BYTES of decompressed data is held and none is written). Limits
-are LIMIT_CEILINGS, each justified there; Limits.stricter may lower a value, never raise one.
+files included: every GNU.sparse pax keyword is refused before tarfile reads a sparse map, see _bounded_tarinfo), a
+duplicate name, two names equal ignoring case, a file whose name is a directory of another, too many members, a
+member or total size over the limit, a header whose declared size runs past the end of the file (checked before
+tarfile is allowed to skip to the next header, so a tiny file declaring 2**60 bytes cannot spin), an extended
+header (pax or GNU long name) over max_extended_header_bytes, more than MAX_EXTENDED_HEADERS of them chained before
+one member, or any pax global header (checked by _bounded_tarinfo before tarfile reads them into memory), an
+archive that does not end cleanly (the last member must be followed by nothing but zero bytes, at least two
+512-byte zero blocks as POSIX writes them: a file cut or corrupted at or after a header, garbage after the members,
+or two TARs concatenated would otherwise read as a complete archive with members missing), and a member that is
+empty, not bz2, truncated, has trailing bytes after its last bz2 stream, decompresses beyond the size limit or
+beyond max_ratio times its compressed size (a bz2 bomb; checked while streaming through BZ2Decompressor with
+max_length, so at most CHUNK_BYTES of decompressed data is held and none is written), or takes the archive past
+max_total_decompressed_bytes. That allowance is charged with the work spent on every member checked, those that
+fail included (a decompress call that fails inside libbz2, a block CRC mismatch say, drops up to CHUNK_BYTES it
+already produced, so it is charged a whole chunk), and once it is spent no further member is decompressed, so the
+decompression work of one ingest stays within the allowance plus one CHUNK_BYTES chunk however many members fail.
+Limits are LIMIT_CEILINGS, each justified there; Limits.stricter may lower a value, never raise one.
 
-Month gate (contract.py's constants; every month here is the UTC calendar month): a member's month comes from its
-path only. Members dated in SEALED_HOLDOUT, EXPOSED_MONTHS, the month of a NOT_PROSPECTIVE_DATES date, or any month
-from REFUSED_FROM_MONTH on (prospective use needs a frozen contract and is out of scope) are refused, as are members
-without a parseable month; they are hashed but never decompressed, written or read. As a second line, a kept
-member's decompressed bytes are scanned for "marketTime" values (content_months, nothing else is parsed; the UTC
-month of the value, or its literal YYYY-MM when it does not parse): a member whose content names a refused month
-is refused too (content_month_<reason>, its content_months recorded), whatever its path says. This scan is a best
-effort over unescaped bytes: a key or value written with JSON escapes passes it, so such a member's raw bytes may
-be stored, and market_index's parsed check is the authoritative gate (it refuses that market at index time).
-INSPECTED_MONTHS are kept and flagged. Month-gate refusals are listed in the manifest with their reasons; they do
-not refuse the archive, but an archive that keeps no member at all is refused (archive:nothing_kept, its counts
-still reported) so no manifest records an empty ingest.
+Month gate (contract.py's constants; every month here is the UTC calendar month): a member's month comes from its path
+only. Members dated in SEALED_HOLDOUT, EXPOSED_MONTHS, the month of a NOT_PROSPECTIVE_DATES date, or any month from
+REFUSED_FROM_MONTH on (prospective use needs a frozen contract and is out of scope) are refused, as are members
+without a parseable month; they are hashed but never decompressed, written or read. As a second line, a kept member's
+decompressed bytes are scanned for "marketTime" values (content_months, nothing else is parsed; the UTC month of the
+value, or its literal YYYY-MM when it does not parse or the member ends inside it; a value cut by a decompression
+chunk boundary is carried into the next chunk and read whole, unless its match starts too early to be carried in the
+tail, when its literal month counts): a member whose content names a refused month is refused too
+(content_month_<reason>, its content_months recorded), whatever its path says. This scan is a best effort over
+unescaped bytes: a key or value written with JSON escapes passes it, and so can a key whose value follows it after
+more whitespace than the carried tail holds when a chunk boundary falls before the value's month, so such a member's
+raw bytes may be stored; market_index's parsed check is the authoritative gate (it refuses that market at index time).
+INSPECTED_MONTHS are kept and flagged. Month-gate refusals are listed in the manifest with their reasons; they do not
+refuse the archive, but an archive that keeps no member at all is refused (archive:nothing_kept, its counts still
+reported) so no manifest records an empty ingest.
 
-Layout under the data root: raw/<archive sha256>/<member path> (bz2 bytes exactly as in the TAR, never
-decompressed on disk) and manifests/<archive sha256>.json (canonical JSON, see build_manifest). Each file is
-written to "<name>.partial" opened with exclusive create and renamed into place after its hash is checked; a
-leftover .partial (an interrupted or concurrent run) refuses the ingest until a person removes it. There is no
-fsync (os is off the backtest allowlist), so a crash can leave a renamed file incomplete: every later ingest and
-index re-hashes and refuses a mismatch rather than trusting it. Re-ingesting the same archive is idempotent: the
-same manifest bytes, existing raw files verified, missing ones restored; a manifest that would differ (another
-file name, other limits, a changed gate: gate_changed) or an existing raw file with another hash is refused, never
-overwritten. Every file-system failure becomes a refusal with its place, never a traceback.
+Layout under the data root: raw/<archive sha256>/<member path> (bz2 bytes exactly as in the TAR, never decompressed on
+disk) and manifests/<archive sha256>.json (canonical JSON, see build_manifest). Each file is written to
+"<name>.partial" opened with exclusive create and renamed into place after its hash is checked; a leftover .partial
+(an interrupted or concurrent run; a dangling symlink counts) refuses the ingest until a person removes it, even when
+the archive is already ingested: the manifest's and every raw member's are checked, and listed together, before any
+raw member is written (a manifest that would change is refused first, with the manifest's partial but before raw
+partials are looked at). There is no fsync (os is off the backtest allowlist), so a crash can leave a renamed file
+incomplete: every later ingest and index re-hashes and refuses a mismatch rather than trusting it. Re-ingesting the
+same archive is idempotent: the same manifest bytes, existing raw files verified, missing ones restored; a manifest
+that would differ (another file name, other limits, a changed gate: gate_changed) or an existing raw file with another
+hash is refused, never overwritten. Every file-system failure becomes a refusal with its place, never a traceback.
 
 Trust assumption: the data root and its parents are writable only by the operator, and no two tools write it at
 once. Paths are checked (safe_path) and then opened by name; without os (dir_fd, O_NOFOLLOW) another process could
@@ -316,7 +326,17 @@ def _bounded_tarinfo(limits):
     reads what follows it) refuses, as ArchiveProblem: a pax or GNU long-name header over max_extended_header_bytes
     (tarfile would read it whole into memory), more than MAX_EXTENDED_HEADERS chained before one member (tarfile
     recurses per header), any pax global header (it would silently change how every later member is read) and an
-    old-style GNU sparse header (tarfile reads its extension blocks first and raises IndexError on a cut one)."""
+    old-style GNU sparse header (tarfile reads its extension blocks first and raises IndexError on a cut one).
+
+    Every pax GNU sparse variant is refused (<name>:not_regular) before tarfile acts on it: _proc_pax hands a pax
+    header's GNU.sparse keys to a sparse hook (_proc_gnusparse_00 for GNU.sparse.size, _01 for GNU.sparse.map, _10
+    for major 1 minor 0, which reads the map from the data that follows with no bound but the file) after fetching
+    the next header and before the member reaches any check in _scan, so these overrides raise in place of the
+    hooks; any other GNU.sparse keyword (name, realsize, numblocks, offset, numbytes, another version) is refused in
+    _apply_pax_info before it can rename or resize the member, whatever the key's case. Ordinary pax keywords
+    (libarchive's atime, ctime, mtime and LIBARCHIVE.creationtime) pass unchanged. Unlike _proc_member, these four
+    are private, undocumented tarfile methods: their names and call sites were checked on Python 3.14.6 and 3.11.15;
+    the tests fail if one is renamed, but a hook a later Python adds under a new name would not be caught."""
     depth = 0
 
     class BoundedTarInfo(tarfile.TarInfo):
@@ -336,6 +356,17 @@ def _bounded_tarinfo(limits):
                 return super()._proc_member(tar)
             finally:
                 depth -= 1
+
+        def _proc_gnusparse_00(self, member, headers, *_):
+            name = headers.get("path", member.name) if isinstance(headers, dict) else member.name
+            raise ArchiveProblem(f"{_label(name)}:not_regular")
+
+        _proc_gnusparse_01 = _proc_gnusparse_10 = _proc_gnusparse_00
+
+        def _apply_pax_info(self, pax_headers, encoding, errors):
+            if any(key.casefold().startswith("gnu.sparse.") for key in pax_headers):
+                raise ArchiveProblem(f"{_label(pax_headers.get('path', self.name))}:not_regular")
+            return super()._apply_pax_info(pax_headers, encoding, errors)
 
     return BoundedTarInfo
 
@@ -382,7 +413,9 @@ def _decompressed(read):
     """Each decompressed chunk (at most CHUNK_BYTES) of a possibly multi-stream bz2 source read by read(n).
 
     ArchiveProblem: empty_member, not_bz2 (including bytes after the last stream that do not start another one) or
-    truncated_bz2 (input ends inside a stream)."""
+    truncated_bz2 (input ends inside a stream). A not_bz2 from a failed decompress call carries discarded =
+    CHUNK_BYTES: libbz2 checks a block's CRC only after producing the block, and the failed call drops what it
+    produced, up to its max_length, so that work is never yielded but must still be charged."""
     pending = read(CHUNK_BYTES)
     if not pending:
         raise ArchiveProblem("empty_member")
@@ -391,7 +424,9 @@ def _decompressed(read):
         try:
             out = decompressor.decompress(pending, CHUNK_BYTES)
         except (OSError, ValueError, EOFError):
-            raise ArchiveProblem("not_bz2") from None
+            problem = ArchiveProblem("not_bz2")
+            problem.discarded = CHUNK_BYTES
+            raise problem from None
         if out:
             yield out
         if decompressor.eof:
@@ -407,13 +442,21 @@ def _decompressed(read):
             pending = b""
 
 
-def content_months(window):
+def content_months(window, final=True):
     """The months the "marketTime" values in a byte window name: the UTC month of a complete value that parses,
-    else the literal YYYY-MM it starts with (a value cut at the window end, escaped or too long)."""
-    months = set()
+    else the literal YYYY-MM it starts with (a value escaped, too long, or cut where the data ends).
+
+    With final False more data follows the window, so a value that runs to its end may simply continue in the next
+    chunk: when it starts in the window's last _MARKET_TIME_TAIL bytes (the tail the caller carries into the next
+    window) it is left out and read whole next time, so "2026-01-01T00:00:00+01:00" cut after "2026-01" counts once,
+    as UTC 2025-12; one starting earlier cannot be carried and counts by its literal month, as at the end."""
+    months, end = set(), len(window)
     for match in _MARKET_TIME_RE.finditer(window):
         value, year, month, closed = match.groups()
-        months.add(market_month(value.decode("ascii", "replace")) if closed else f"{year.decode()}-{month.decode()}")
+        if closed:
+            months.add(market_month(value.decode("ascii", "replace")))
+        elif final or match.end() < end or match.start() < end - _MARKET_TIME_TAIL:
+            months.add(f"{year.decode()}-{month.decode()}")
     return months
 
 
@@ -421,21 +464,28 @@ def _decompress_check(read, compressed_size, limits, budget):
     """(decompressed bytes, content months) of one member, refusing a bomb as soon as it shows.
 
     ArchiveProblem: decompressed_too_large, compression_ratio_over_limit, total_decompressed_over_limit (budget,
-    the archive's remaining allowance, ran out) or a _decompressed reason."""
+    the archive's remaining allowance, ran out) or a _decompressed reason. Whatever the reason, the error's
+    decompressed attribute is the work already spent on the member (bytes decompressed, the chunk that tripped a
+    limit included, plus CHUNK_BYTES for a decompress call that failed and dropped its output), which _scan charges
+    to the archive's allowance exactly like a member that passed."""
     ratio_cap = limits.max_ratio * compressed_size
     total, months, tail = 0, set(), b""
-    for chunk in _decompressed(read):
-        total += len(chunk)
-        if total > ratio_cap:
-            raise ArchiveProblem("compression_ratio_over_limit")
-        if total > limits.max_member_decompressed_bytes:
-            raise ArchiveProblem("decompressed_too_large")
-        if total > budget:
-            raise ArchiveProblem("total_decompressed_over_limit")
-        window = tail + chunk
-        months |= content_months(window)
-        tail = window[-_MARKET_TIME_TAIL:]
-    return total, months
+    try:
+        for chunk in _decompressed(read):
+            total += len(chunk)
+            if total > ratio_cap:
+                raise ArchiveProblem("compression_ratio_over_limit")
+            if total > limits.max_member_decompressed_bytes:
+                raise ArchiveProblem("decompressed_too_large")
+            if total > budget:
+                raise ArchiveProblem("total_decompressed_over_limit")
+            window = tail + chunk
+            months |= content_months(window, final=False)
+            tail = window[-_MARKET_TIME_TAIL:]
+    except ArchiveProblem as error:
+        error.decompressed = total + getattr(error, "discarded", 0)
+        raise
+    return total, months | content_months(tail)
 
 
 def _hash_rest(read):
@@ -512,12 +562,19 @@ def _scan(tar_path, limits):
                         refused.append({"path": name, "size_bytes": size, "sha256": sha, "reason": reason,
                                         "month": parsed["month"] if parsed else None, "content_months": None})
                         continue
+                    if total_decompressed > limits.max_total_decompressed_bytes:
+                        # The allowance is spent (failed members' work counts too, a failed decompress call as a
+                        # whole chunk): nothing more is decompressed, so the work stays within the allowance plus
+                        # the one chunk that went over it.
+                        problems.add("archive:total_decompressed_over_limit")
+                        continue
                     member_reader = HashingReader(member)
                     budget = limits.max_total_decompressed_bytes - total_decompressed
                     try:
                         decompressed, months = _decompress_check(member_reader.read, info.size, limits, budget)
                         sha, size = member_reader.drain()
                     except ArchiveProblem as error:
+                        total_decompressed += getattr(error, "decompressed", 0)
                         code = str(error)
                         problems.add("archive:total_decompressed_over_limit" if code == "total_decompressed_over_limit"
                                      else f"{label}:{code}")
@@ -743,9 +800,12 @@ def _ingest(tar, root, limits):
     data = manifest_bytes(manifest)
     try:
         target = safe_path(root, "manifests", f"{archive_sha}.json")
+        partial = target.with_name(target.name + ".partial")
+        if partial.exists() or partial.is_symlink():                   # with the raw partials, before any write
+            problems.add(f"manifest:{archive_sha}:partial_file_present")
         existed = target.exists()
         if existed and target.read_bytes() != data:
-            return refused_result([_existing_manifest_problem(target, archive_sha)])
+            return refused_result(problems | {_existing_manifest_problem(target, archive_sha)})
     except ArchiveProblem as error:
         return refused_result([f"manifest:{archive_sha}:{error}"])
     except OSError:
@@ -755,7 +815,8 @@ def _ingest(tar, root, limits):
         where = f"raw:{_label(item['path'])}"
         try:
             raw = safe_target(root, archive_sha, item["path"])
-            if raw.with_name(raw.name + ".partial").exists():
+            leftover = raw.with_name(raw.name + ".partial")
+            if leftover.exists() or leftover.is_symlink():              # a dangling link too: write_new would fail
                 problems.add(f"{where}:partial_file_present")
             elif raw.exists():
                 if not raw.is_file() or file_sha256(raw) != (item["sha256"], item["size_bytes"]):

@@ -12,9 +12,11 @@ BSP for any runner not REMOVED, REMOVED_VACANT or HIDDEN at the end (overall and
 markets with a final bsp present but unusable (such as "NaN"); markets with removals and the removals before and
 after the decision cutoff; dead heats, closed markets whose dead heat cannot be judged (numberOfWinners missing or
 below 1, or a market type the rule does not cover), and results revised after CLOSED; markets never CLOSED;
-path/marketTime month, date and event id mismatches; markets whose marketTime was revised; markets read from a
+path/marketTime month, date and event id mismatches; markets whose marketTime was revised (changed to another
+value: the null an image reset records and the same value published again are not revisions); markets read from a
 member that could not be read whole; markets with an unrecognised runner status; markets held by more than one
-member and those whose sources disagree (whole record, and decision_time alone). Across the root: archives with
+member and those whose sources disagree (whole record, and decision_time alone; a market file named after the
+market that holds no record of it, agrees null, counts as a disagreeing source). Across the root: archives with
 their refused members by reason and whether their manifest's month gate is the current one, unreadable files with
 reasons and how many markets they still gave, refused markets, archives not yet indexed, and markets seen in more
 than one archive of the same tier (counted once, in the first archive by sha256).
@@ -94,9 +96,11 @@ def _count(group, record):
     group["date_mismatches"] += 1 if checks["date_mismatch"] is True else 0
     group["event_id_mismatches"] += 1 if checks["event_id_mismatch"] is True else 0
     group["markets_with_unrecognised_runner_status"] += 1 if checks["unrecognised_runner_statuses"] else 0
-    times = (len(record["decision_time"]["definition"].get("marketTime", []))
-             + len(outcome["definition_after_cutoff"].get("marketTime", [])))
-    group["market_time_revised"] += 1 if times > 1 else 0
+    # A revision is a new value; an image reset (null) and the same value published again are not.
+    times = [value for timeline in (record["decision_time"]["definition"].get("marketTime", []),
+                                    outcome["definition_after_cutoff"].get("marketTime", []))
+             for _, value in timeline if value is not None]
+    group["market_time_revised"] += 1 if any(a != b for a, b in zip(times, times[1:])) else 0
     sources = record["provenance"]["other_sources"]
     group["multiple_sources"] += 1 if sources else 0
     group["sources_disagree"] += 1 if any(item["agrees"] is not True for item in sources) else 0

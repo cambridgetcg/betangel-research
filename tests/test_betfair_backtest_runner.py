@@ -16,11 +16,12 @@ from pathlib import Path
 import contextlib
 import dataclasses
 import hashlib
+import shutil
 import tempfile
 import unittest
 from unittest import mock
 
-from betangel_research.betfair.backtest import engineering, replay, runner, trial_ledger
+from betangel_research.betfair.backtest import certificate, engineering, replay, runner, trial_ledger
 from betangel_research.betfair.backtest.__main__ import main
 from betangel_research.betfair.backtest.archive import DEFAULT_LIMITS, ingest_archive, safe_target
 from betangel_research.betfair.backtest.cohort import CohortRules, decide_records, ledger_lines
@@ -44,6 +45,20 @@ def clock():
 clock.calls = 0
 
 
+def canned_certificate(descriptor=None, interpreter=None, results=None, evidence="case"):
+    """A certified certificate for these sources and this interpreter (or those given), from canned case results:
+    the runner cannot tell it from a real one; the fresh-process control in tests/test_betfair_backtest_certificate.py
+    binds a real one."""
+    cases = [{"id": case_id, "kind": kind, "result": (results or {}).get(case_id, certificate.AS_EXPECTED),
+              "observed": {evidence: case_id}, "expected": {evidence: case_id}}
+             for case_id, kind, _ in certificate.CASES]
+    return certificate.build_certificate(cases, descriptor or certificate.source_descriptor()[0],
+                                         interpreter or certificate.interpreter_descriptor())
+
+
+CERTIFICATE = canned_certificate()
+
+
 def market(market_id, off=OFF):
     return fx.standard_market(market_id, off=off)
 
@@ -61,6 +76,11 @@ class RunnerCase(unittest.TestCase):
         self.contract = self.write_contract(self.contract_value)
         self.digest = contract_sha256(self.contract_value)
         self.tars = 0
+        self.install_certificate()
+
+    def install_certificate(self, value=CERTIFICATE):
+        """Store a certificate in the lab-state root as certify-engine would; its sha256 is kept."""
+        self.certificate_sha256 = certificate.store_certificate(self.lab, value)[2]
 
     def write_contract(self, value, name="contract.json"):
         target = self.tmp / name
@@ -93,14 +113,37 @@ class RunnerCase(unittest.TestCase):
         self.ingest([(path("1.100000001"), market("1.100000001")),
                      (path("1.100000002"), market("1.100000002", off=OFF + timedelta(hours=1)))])
 
+    def tied_inputs(self, markets=2):
+        """standard_inputs with the favourite tied in every market: ltp_favourite issues nothing, so engineering
+        acceptance is incomplete and the contract may run again (a pass would stop it)."""
+        tie = {1: 2.5, 2: 2.5, 3: 6.0}
+        self.ingest([(path(f"1.10000000{n}"), fx.standard_market(f"1.10000000{n}", off=OFF + timedelta(hours=n - 1),
+                                                                  ltps=tie)) for n in range(1, markets + 1)])
+
     def lab_entries(self):
-        return sorted(str(item.relative_to(self.lab)) for item in self.lab.rglob("*"))
+        """Every entry of the lab-state root but the stored certificates (the runner only reads those)."""
+        return sorted(str(item.relative_to(self.lab)) for item in self.lab.rglob("*")
+                      if item.relative_to(self.lab).parts[0] != certificate.CERTIFICATIONS_DIR)
 
     def fresh_roots(self, name):
         """A new data root and lab-state root, so one case never sees another's archives or starts."""
         self.data, self.lab = self.tmp / f"data-{name}", self.tmp / f"lab-{name}"
         self.data.mkdir()
         self.lab.mkdir()
+        self.install_certificate()
+
+    def other_sources(self):
+        """certificate.source_descriptor patched to describe other sources (one file's digest changed): a new key."""
+        descriptor, _ = certificate.source_descriptor()
+        changed = dict(descriptor, files=[dict(descriptor["files"][0], sha256="0" * 64), *descriptor["files"][1:]])
+        return mock.patch.object(certificate, "source_descriptor",
+                                 lambda root=None: (changed, certificate.descriptor_sha256(changed))), changed
+
+    def refused_unchanged(self, problem, run_id="r2", **kwargs):
+        """The run refuses with exactly problem and writes nothing."""
+        before = self.lab_files()
+        self.assertEqual(self.run_once(run_id, **kwargs), {"status": "refused", "problems": [problem]})
+        self.assertEqual(self.lab_files(), before)
 
     def rewrite_records(self, sha, edit):
         """Rewrite one archive's markets file through edit(list of records) and re-point its head at the bytes."""
@@ -133,7 +176,7 @@ class CompletedRunTests(RunnerCase):
         self.assertEqual(results["contract_sha256"], self.digest)
         self.assertEqual(results["population"]["records"], 2)
         self.assertEqual(results["population"]["by_class"], {"eligible": 2})
-        self.assertEqual(results["engineering_acceptance"]["status"], "incomplete")    # certification not bound
+        self.assertEqual(results["engineering_acceptance"]["status"], "passed")
         for variant in ("ltp_favourite", "seeded_random_runner"):
             self.assertEqual(results["issuance"]["by_variant"][variant]["issued"], 2)
             self.assertEqual(results["settlement"]["unresolved_reasons"][variant], {"void_unknown": 2})
@@ -158,7 +201,7 @@ class CompletedRunTests(RunnerCase):
         self.assertEqual((run_dir / "issuance-ledger.jsonl").read_bytes(), b"".join(ledger_lines(decisions)))
 
     def test_results_hold_no_wall_clock_and_repeat_but_for_run_id(self):
-        self.standard_inputs()
+        self.tied_inputs()                                  # incomplete: a pass would stop the contract
         self.contract = self.write_contract(fx.frozen_contract(max_trials=6), "six.json")
         self.digest = contract_sha256(fx.frozen_contract(max_trials=6))
         first, second = self.run_once("ra"), self.run_once("rb")
@@ -171,7 +214,7 @@ class CompletedRunTests(RunnerCase):
 
 class BudgetAndLedgerTests(RunnerCase):
     def test_the_budget_counts_every_start_and_a_run_id_is_never_reused(self):
-        self.standard_inputs()
+        self.tied_inputs()
         self.assertEqual(self.run_once("r1")["status"], "completed")
         self.assertRefused(self.run_once("r1"), "run_id:already_used")
         self.assertEqual(self.run_once("r2")["status"], "completed")
@@ -191,7 +234,7 @@ class BudgetAndLedgerTests(RunnerCase):
     def test_a_ledger_deleted_or_cut_behind_a_receipt_refuses(self):
         self.contract = self.write_contract(fx.frozen_contract(max_trials=6), "six.json")
         self.digest = contract_sha256(fx.frozen_contract(max_trials=6))
-        self.standard_inputs()
+        self.tied_inputs()
         self.assertEqual(self.run_once("r1")["status"], "completed")
         ledger = self.lab / "contracts" / self.digest / LEDGER_FILE
         kept = ledger.read_bytes()
@@ -206,7 +249,7 @@ class BudgetAndLedgerTests(RunnerCase):
         self.contract = self.write_contract(fx.frozen_contract(max_trials=6), "six.json")
         self.contract_value = fx.frozen_contract(max_trials=6)
         self.digest = contract_sha256(self.contract_value)
-        self.standard_inputs()
+        self.tied_inputs()
         contract_dir = self.lab / "contracts" / self.digest
         contract_dir.mkdir(parents=True)
         ledger = TrialLedger.open(contract_dir)
@@ -222,7 +265,7 @@ class BudgetAndLedgerTests(RunnerCase):
         self.assertEqual((aborted["kind"], aborted["code_identity"], aborted["input_sha256"]),
                          ("aborted", "git:old", "ab" * 32))
         self.assertEqual(aborted["summary"], {"reason": "reconciled_unfinished", "reconciled_by": "reconciler",
-                                              "pending": ["crashed.ltp_favourite"]})
+                                              "pending": ["crashed.ltp_favourite"], "certificate_sha256": None})
         receipt = json.loads((self.lab / "runs" / self.digest / "crashed" / "receipt.json").read_bytes())
         self.assertEqual((receipt["status"], receipt["reconciled_by"], receipt["results_sha256"]),
                          ("aborted", "reconciler", None))
@@ -253,7 +296,7 @@ class ReceiptTests(RunnerCase):
         self.contract_value = fx.frozen_contract(max_trials=8)
         self.contract = self.write_contract(self.contract_value, "eight.json")
         self.digest = contract_sha256(self.contract_value)
-        self.standard_inputs()
+        self.tied_inputs()
         self.assertEqual(self.run_once("r1")["status"], "completed")
         self.run_dir = self.lab / "runs" / self.digest / "r1"
 
@@ -418,6 +461,52 @@ class PreflightTests(RunnerCase):
         self.assertEqual(index_archives(self.data)["status"], "indexed")
         self.assertRefused(self.run_once(), "cohort:1.100000001:duplicate_market")
         self.assertFalse((self.lab / "contracts" / self.digest / LEDGER_FILE).exists())
+
+    def test_of_any_two_preflight_problems_the_earlier_in_the_agreed_order_refuses(self):
+        value = fx.frozen_contract()
+        value["population"]["countries"] = ["GB"]              # valid, frozen and runnable, but not P0's profile
+        outside = self.write_contract(value, "gb.json")
+        order = [("profile", "contract:not_supported:not_the_certified_profile"), ("roots", "roots:not_distinct"),
+                 ("run_id", "run_id:malformed"), ("certificate", "certification:missing"),
+                 ("known_answers", "engineering:known_accounting_answers_error"), ("inputs", "inputs:no_archive")]
+        changes = {"profile": dict(contract_path=outside), "roots": dict(data_root=self.tmp),   # holds every lab
+                   "run_id": dict(run_id="R1")}
+        for index, (first, problem) in enumerate(order):
+            for second, _ in order[index + 1:]:
+                with self.subTest(first=first, second=second):
+                    self.fresh_roots(f"{first}-{second}")
+                    both = {first, second}
+                    if "inputs" not in both:                    # else no archive
+                        self.standard_inputs()
+                    if "certificate" in both:
+                        (self.lab / certificate.CERTIFICATIONS_DIR / f"{CERTIFICATE['key']}.json").unlink()
+                    arguments = {key: item for name in both for key, item in changes.get(name, {}).items()}
+                    answers = (mock.patch.object(runner, "known_accounting_answers", side_effect=ArithmeticError)
+                               if "known_answers" in both else contextlib.nullcontext())
+                    with answers:
+                        self.assertEqual(self.run_once(**arguments), {"status": "refused", "problems": [problem]})
+                    self.assertEqual(self.lab_entries(), [])
+
+    def test_the_source_recheck_before_the_start_comes_after_the_run_id_and_the_budget(self):
+        self.tied_inputs()                                  # incomplete: a pass would stop the contract
+        real = certificate.current_key
+
+        def changed_at_the_recheck():                       # the certificate's key, then other sources
+            calls = []
+
+            def key(root=None):
+                calls.append(1)
+                value = real(root)
+                return ("0" * 64, *value[1:]) if len(calls) >= 2 else value
+            return mock.patch.object(runner, "current_key", key)
+        self.assertEqual(self.run_once("r1")["status"], "completed")
+        for run_id, problem in (("r2", "source:changed_before_start"), ("r1", "run_id:already_used")):
+            with self.subTest(run_id=run_id, starts=2), changed_at_the_recheck():
+                self.refused_unchanged(problem, run_id=run_id)
+        self.assertEqual(self.run_once("r2")["status"], "completed")             # four starts of four
+        for run_id, problem in (("r1", "run_id:already_used"), ("r3", "ledger:trial_budget_exhausted")):
+            with self.subTest(run_id=run_id, starts=4), changed_at_the_recheck():
+                self.refused_unchanged(problem, run_id=run_id)
 
 
 class EmptyInputTests(RunnerCase):
@@ -591,7 +680,7 @@ class ReviewRegressionTests(RunnerCase):
         self.contract_value = fx.frozen_contract(max_trials=12)
         self.contract = self.write_contract(self.contract_value, "twelve.json")
         self.digest = contract_sha256(self.contract_value)
-        self.standard_inputs()
+        self.tied_inputs()
         self.contract_dir = self.lab / "contracts" / self.digest
         self.runs = self.lab / "runs" / self.digest
 
@@ -831,7 +920,7 @@ class SecondReviewTests(RunnerCase):
 
     # R2
     def test_interrupted_recoveries_never_refund_the_budget(self):
-        self.ingest([(path("1.100000001"), market("1.100000001"))])
+        self.tied_inputs(markets=1)
         self.assertEqual(self.run_once("old_a")["status"], "completed")
         self.assertEqual(self.run_once("old_b")["status"], "completed")      # 4 starts: the budget is spent
         self.lose_ledger_and_receipts()
@@ -993,7 +1082,7 @@ class SecondReviewTests(RunnerCase):
         self.assertEqual(refusals["market_rows_by_reason"], {})
 
     def test_receipt_metadata_is_checked(self):
-        self.ingest([(path("1.100000001"), market("1.100000001"))])
+        self.tied_inputs(markets=1)
         self.assertEqual(self.run_once("r1")["status"], "completed")
         receipt_path = self.runs / "r1" / "receipt.json"
         kept = receipt_path.read_bytes()
@@ -1019,43 +1108,51 @@ class EngineeringWiringTests(RunnerCase):
     def test_a_completed_run_reports_and_binds_its_engineering_acceptance(self):
         self.standard_inputs()
         result = self.run_once()
-        self.assertEqual((result["status"], result["engineering_acceptance"]), ("completed", "incomplete"))
+        self.assertEqual((result["status"], result["engineering_acceptance"]), ("completed", "passed"))
         results = self.results()
         acceptance, issuance = results["engineering_acceptance"], self.run_file("issuance-ledger.jsonl").read_bytes()
+        stored = (self.lab / "certifications" / f"{CERTIFICATE['key']}.json").read_bytes()
+        sha = runner._sha256_bytes(stored)
+        self.assertEqual(sha, self.certificate_sha256)
         self.assertEqual((results["schema_version"], results["input"]["version"], results["certification"]),
-                         (2, 1, None))
+                         (2, 1, {"key": CERTIFICATE["key"], "sha256": sha, "certificate": CERTIFICATE}))
         self.assertEqual((acceptance["status"], acceptance["rule"], acceptance["criteria_version"]),
-                         ("incomplete", self.contract_value["engineering_acceptance"]["rule"], 1))
+                         ("passed", self.contract_value["engineering_acceptance"]["rule"], 1))
         criteria = acceptance["criteria"]
         self.assertEqual({name: item["status"] for name, item in criteria.items()},
                          {"issuance_exposure_reconciliation": "passed", "known_accounting_answers": "passed",
-                          "prefix_invariance": "incomplete"})
+                          "prefix_invariance": "passed"})
         self.assertEqual(criteria["known_accounting_answers"],
                          {"status": "passed", "cases": len(engineering.KAT_CASES), "failed_cases": [],
                           "case_ids": [case["id"] for case in engineering.KAT_CASES]})
         components = criteria["prefix_invariance"]["components"]
-        self.assertEqual(components["synthetic_certification"], {"status": "incomplete",
-                                                                 "reason": "certificate_not_bound"})
+        self.assertEqual(components["synthetic_certification"], {"status": "passed", "certificate_sha256": sha})
         tally = components["primary_source_prefix_consistency"]
         self.assertEqual((tally["status"], tally["counts"]["records"], tally["counts"]["compared"],
                           tally["counts"]["missing"], tally["prefix_limit_bytes"]),
                          ("passed", 2, 2, 0, engineering.PREFIX_LIMIT_BYTES))
-        sha = runner._sha256_bytes(issuance)
+        ledger_sha = runner._sha256_bytes(issuance)
         self.assertEqual((results["issuance"]["ledger_sha256"], results["issuance"]["ledger_bytes"],
-                          results["issuance"]["writer_sha256"]), (sha, len(issuance), sha))
-        binding = {"status": "incomplete", "rule": acceptance["rule"], "criteria_version": 1,
+                          results["issuance"]["writer_sha256"]), (ledger_sha, len(issuance), ledger_sha))
+        binding = {"status": "passed", "rule": acceptance["rule"], "criteria_version": 1,
                    "acceptance_sha256": hashlib.sha256(runner.ACCEPTANCE_TAG
                                                        + runner.canonical_json(acceptance)).hexdigest(),
-                   "certificate_sha256": None}
-        for close in [entry for entry in self.ledger() if entry["kind"] == "completed"]:
+                   "certificate_sha256": sha}
+        entries = self.ledger()
+        self.assertEqual([e["summary"] for e in entries if e["kind"] == "started"], [{"certificate_sha256": sha}] * 2)
+        for close in [entry for entry in entries if entry["kind"] == "completed"]:
             self.assertEqual(close["summary"], {"results_sha256": result["results_sha256"],
-                                                "issuance_ledger_sha256": sha, "issuance_ledger_bytes": len(issuance),
-                                                "engineering_acceptance": binding})
+                                                "issuance_ledger_sha256": ledger_sha,
+                                                "issuance_ledger_bytes": len(issuance),
+                                                "engineering_acceptance": binding, "certificate_sha256": sha})
         receipt = json.loads(self.run_file("receipt.json").read_bytes())
         self.assertEqual((receipt["schema_version"], receipt["engineering_acceptance"], receipt["certificate_sha256"],
                           receipt["issuance_ledger_sha256"], receipt["issuance_ledger_bytes"]),
-                         (2, binding, None, sha, len(issuance)))
-        self.assertEqual(self.run_once("r2")["status"], "completed")         # the history check accepts it
+                         (2, binding, sha, ledger_sha, len(issuance)))
+        before = self.lab_files()
+        self.assertEqual(self.run_once("r2"), {"status": "refused",               # the history check accepts it,
+                                               "problems": ["contract:engineering_passed:r1"]})   # and it stops
+        self.assertEqual(self.lab_files(), before)
 
     def test_known_answers_must_pass_over_the_known_case_set_before_any_start(self):
         self.standard_inputs()
@@ -1184,7 +1281,7 @@ class EngineeringWiringTests(RunnerCase):
                 self.assertIn(problem, result["problems"][0])
 
     def test_a_completed_runs_evidence_must_agree_with_its_binding(self):
-        self.standard_inputs()
+        self.tied_inputs()
         self.assertEqual(self.run_once()["status"], "completed")
         receipt_path = self.run_file("receipt.json")
         kept = receipt_path.read_bytes()
@@ -1202,7 +1299,7 @@ class EngineeringWiringTests(RunnerCase):
         self.assertEqual(self.run_once("r2")["status"], "completed")
 
     def test_reconcile_publishes_a_completed_runs_evidence_from_its_files_and_closes(self):
-        self.standard_inputs()
+        self.tied_inputs()
         self.assertEqual(self.run_once()["status"], "completed")
         kept = self.run_file("receipt.json").read_bytes()
         self.run_file("receipt.json").unlink()
@@ -1237,9 +1334,13 @@ class EngineeringWiringTests(RunnerCase):
         self.assertEqual(self.run_once("r2")["status"], "completed")         # its own evidence agrees
 
     def test_a_binding_that_is_not_its_results_refuses(self):
-        self.standard_inputs()
+        self.tied_inputs()                                  # incomplete results, so the claimed pass is false
         real = runner._binding
-        with mock.patch.object(runner, "_binding", lambda acceptance: dict(real(acceptance), status="passed")):
+
+        def forged(acceptance, certificate_sha256):
+            return dict(real(acceptance, certificate_sha256), status="passed")
+
+        with mock.patch.object(runner, "_binding", forged):
             self.assertEqual(self.run_once()["status"], "completed")         # closes and receipt claim a pass
         self.assertRefused(self.run_once("r2"), "receipt:r1:engineering_acceptance_mismatch")
         self.run_file("receipt.json").unlink()            # reconcile never publishes the closes' wrong claim either
@@ -1316,7 +1417,7 @@ class EngineeringWiringTests(RunnerCase):
                 summary = dict(summary, engineering_acceptance=dict(summary["engineering_acceptance"], status="passed"))
             return real(ledger, kind, *args[:-1], summary)
 
-        self.standard_inputs()
+        self.tied_inputs()
         with mock.patch.object(runner, "_append", passed_closes):
             self.assertEqual(self.run_once()["status"], "completed")
         self.assertRefused(self.run_once("r2"), "receipt:r1:engineering_acceptance_mismatch")
@@ -1373,9 +1474,15 @@ class EngineeringWiringTests(RunnerCase):
                                                                     ("1.100000002", OFF + timedelta(hours=1)))])
         self.assertEqual(ingest_archive(tar, self.data, stricter)["status"], "ingested")
         self.assertEqual(index_archives(self.data, limits=stricter)["status"], "indexed")
-        with mock.patch.object(runner, "check_prefix", wraps=runner.check_prefix) as prefix, \
-                mock.patch.object(runner, "replay_view", wraps=runner.replay_view) as view:
-            self.assertEqual(self.run_once(limits=stricter)["status"], "completed")
+        self.assertEqual(self.run_once(limits=stricter),             # the default certificate is not for them
+                         {"status": "refused", "problems": ["certification:limits_not_the_runs"]})
+        self.assertEqual(self.lab_entries(), [])
+        certified = dict(certificate.LIMITS, read=dataclasses.asdict(stricter))
+        with mock.patch.object(certificate, "LIMITS", certified):      # a certificate made under those limits
+            self.install_certificate(canned_certificate())
+            with mock.patch.object(runner, "check_prefix", wraps=runner.check_prefix) as prefix, \
+                    mock.patch.object(runner, "replay_view", wraps=runner.replay_view) as view:
+                self.assertEqual(self.run_once(limits=stricter)["status"], "completed")
         self.assertTrue(prefix.call_args_list and view.call_args_list)
         self.assertTrue(all(call.args[5] is stricter for call in prefix.call_args_list))
         self.assertTrue(all(call.args[4] is stricter for call in view.call_args_list))
@@ -1433,6 +1540,947 @@ class EngineeringWiringTests(RunnerCase):
         self.assertEqual(result["status"], "failed", result)
         self.assertIn("issuance_ledger:read_back_failed", result["problems"][0])
 
+    def test_the_read_back_asks_for_at_most_one_byte_more_than_was_written(self):
+        """Astra's c2b3b1 acceptance note: the resource contract, not only the outcome (an unbounded read passes the
+        small-file outcome tests)."""
+        sizes, real_open = [], Path.open
+
+        class Recording:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                self.handle.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self.handle.__exit__(*exc)
+
+            def read(self, size=-1):
+                sizes.append(size)
+                return self.handle.read(size)
+
+        def opening(target, mode="r", *args, **kwargs):
+            handle = real_open(target, mode, *args, **kwargs)
+            return Recording(handle) if target.name == runner.ISSUANCE_FILE and mode == "rb" else handle
+
+        oversized = self.tmp / runner.ISSUANCE_FILE
+        oversized.write_bytes(b"x" * 1024)
+        with mock.patch.object(Path, "open", opening):
+            with self.assertRaisesRegex(RuntimeError, "^issuance_ledger:read_back_longer_than_written$"):
+                runner._read_back(oversized, 64, "issuance_ledger")
+        self.assertEqual(sizes, [65])
+        sizes.clear()
+        self.standard_inputs()
+        with mock.patch.object(Path, "open", opening):
+            self.assertEqual(self.run_once()["status"], "completed")
+        self.assertEqual(sizes, [len(self.run_file(runner.ISSUANCE_FILE).read_bytes()) + 1])
+
+
+class CertificateBindingTests(RunnerCase):
+    """Task c2b3b3: the engine certificate bound into runs (Astra's decisions 3 to 5, 11 and 12, controls C and D)."""
+
+    def setUp(self):
+        super().setUp()
+        self.contract_value = fx.frozen_contract(max_trials=8)
+        self.contract = self.write_contract(self.contract_value, "eight.json")
+        self.digest = contract_sha256(self.contract_value)
+        self.contract_dir = self.lab / "contracts" / self.digest
+        self.runs = self.lab / "runs" / self.digest
+
+    def results(self, run_id="r1"):
+        return json.loads(self.run_file("results.json", run_id).read_bytes())
+
+    def test_a_run_needs_a_certified_certificate_for_these_sources_and_this_interpreter(self):
+        self.standard_inputs()
+        stored = self.lab / "certifications" / f"{CERTIFICATE['key']}.json"
+        kept = stored.read_bytes()
+        other = canned_certificate(results={"nc_ledger_byte": certificate.NOT_AS_EXPECTED})
+        foreign = canned_certificate(interpreter=dict(certificate.interpreter_descriptor(), version="other"))
+        cases = {"no certificate": (None, "certification:missing"),
+                 "not canonical": (kept + b" ", "certification:malformed:not_canonical"),
+                 "a case not as expected": (certificate.certificate_bytes(other), "certification:not_all_passed"),
+                 "another interpreter's": (certificate.certificate_bytes(foreign), "certification:not_this_key")}
+        stored.chmod(0o600)
+        for name, (data, problem) in cases.items():
+            with self.subTest(case=name):
+                stored.unlink(missing_ok=True)
+                if data is not None:
+                    stored.write_bytes(data)
+                self.assertEqual(self.run_once(), {"status": "refused", "problems": [problem]})
+                self.assertEqual(self.lab_entries(), [])
+        stored.unlink()
+        stored.write_bytes(kept)
+        unreadable = mock.patch.object(certificate, "source_descriptor",
+                                       side_effect=certificate.CertificateProblem("source:x.py:unreadable"))
+        with unreadable:
+            self.assertEqual(self.run_once(), {"status": "refused", "problems": ["source:x.py:unreadable"]})
+        self.assertEqual(self.lab_entries(), [])
+
+    def test_a_contract_outside_the_certified_profile_refuses(self):
+        self.standard_inputs()
+        value = fx.frozen_contract()
+        value["population"]["countries"] = ["GB"]              # valid, frozen and runnable, but not P0's profile
+        self.assertEqual(self.run_once(contract_path=self.write_contract(value, "gb.json")),
+                         {"status": "refused", "problems": ["contract:not_supported:not_the_certified_profile"]})
+        self.assertEqual(self.lab_entries(), [])
+
+    def test_the_profile_refusal_covers_unreadable_profiles(self):
+        self.standard_inputs()
+        for error in (KeyError("x"), TypeError("x"), AttributeError("x"), ValueError("x")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(runner, "profile_of", side_effect=error):
+                self.assertEqual(self.run_once(), {"status": "refused",
+                                                   "problems": ["contract:not_supported:not_the_certified_profile"]})
+        value = fx.frozen_contract()
+        value["costs"]["commission_rate"] = 0.02                 # a published parameter: still the profile
+        self.assertEqual(self.run_once(contract_path=self.write_contract(value, "rate.json"))["status"], "completed")
+
+    def test_sources_changed_before_the_starts_refuse_and_at_finalisation_fail_the_run(self):
+        self.standard_inputs()
+        real, calls = certificate.current_key, []
+
+        def changing_at(n):
+            def key(root=None):
+                calls.append(1)
+                value = real(root)
+                return ("0" * 64, *value[1:]) if len(calls) >= n else value
+            return key
+        with mock.patch.object(runner, "current_key", changing_at(2)):
+            self.assertEqual(self.run_once(), {"status": "refused",
+                                               "problems": ["source:changed_before_start"]})
+        self.assertEqual(self.lab_entries(), ["contracts", f"contracts/{self.digest}", "runs", f"runs/{self.digest}"])
+        calls.clear()
+        with mock.patch.object(runner, "current_key", changing_at(3)):
+            result = self.run_once()
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["problems"], ["RuntimeError:source:changed_during_run"])
+        entries = self.ledger()
+        self.assertEqual([e["kind"] for e in entries], ["started", "started", "failed", "failed"])
+        self.assertEqual([e["summary"]["certificate_sha256"] for e in entries], [self.certificate_sha256] * 4)
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual((receipt["status"], receipt["certificate_sha256"], receipt["engineering_acceptance"]),
+                         ("failed", self.certificate_sha256, None))
+        self.assertFalse(self.run_file("results.json").exists())
+        unreadable = certificate.CertificateProblem("source:x.py:unreadable")
+        calls.clear()
+
+        def unreadable_at_finalise(root=None):
+            calls.append(1)
+            if len(calls) >= 3:
+                raise unreadable
+            return real(root)
+        with mock.patch.object(runner, "current_key", unreadable_at_finalise):
+            result = self.run_once("r2")
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["problems"], ["RuntimeError:source:changed_during_run:source:x.py:unreadable"])
+        self.assertEqual(self.run_once("r3")["engineering_acceptance"], "passed")   # failed runs do not stop it
+
+    def test_history_is_checked_against_its_own_certificate_not_todays(self):
+        self.tied_inputs()
+        self.assertEqual(self.run_once("r1")["engineering_acceptance"], "incomplete")
+        patch, changed = self.other_sources()
+        with patch:
+            self.assertEqual(self.run_once("r2"), {"status": "refused", "problems": ["certification:missing"]})
+            self.install_certificate(canned_certificate(descriptor=changed))
+            self.assertEqual(self.run_once("r2")["status"], "completed")
+        first, second = self.results("r1")["certification"], self.results("r2")["certification"]
+        self.assertNotEqual(first["key"], second["key"])
+        self.assertEqual(self.run_once("r3")["status"], "completed")          # back to the first sources
+
+    def test_history_never_reads_a_certificate_again(self):
+        self.tied_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        stored = self.lab / "certifications" / f"{CERTIFICATE['key']}.json"
+        kept = stored.read_bytes()
+        stored.unlink()
+        self.refused_unchanged("certification:missing")
+        self.run_file("receipt.json").unlink()
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        self.assertEqual((result["status"], result["receipted"]), ("reconciled", ["r1"]))
+        self.assertEqual(json.loads(self.run_file("receipt.json").read_bytes())["certificate_sha256"],
+                         runner._sha256_bytes(kept))
+        stored.write_bytes(kept)
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_every_binding_names_the_same_certificate(self):
+        real_write, real_append = runner._write_new, runner._append
+
+        def results_as(change):
+            def write(target, chunks, where):
+                if where == "results":
+                    value = json.loads(b"".join(chunks))
+                    change(value["certification"])
+                    chunks = [runner.canonical_json(value) + b"\n"]
+                return real_write(target, chunks, where)
+            return write
+
+        def other_sha(certification):
+            certification["sha256"] = "0" * 64
+
+        def not_certified(certification):
+            certification["certificate"]["status"] = "not_certified"
+            certification["sha256"] = runner._sha256_bytes(runner.canonical_json(certification["certificate"]) + b"\n")
+
+        def second_start_other(ledger, kind, *args):
+            summary = args[-1]
+            if kind == "started" and args[0].endswith("seeded_random_runner"):
+                summary = {"certificate_sha256": "0" * 64}
+            return real_append(ledger, kind, *args[:-1], summary)
+
+        def closes_other(ledger, kind, *args):
+            summary = args[-1]
+            if kind == "completed":
+                summary = dict(summary, certificate_sha256="0" * 64)
+            return real_append(ledger, kind, *args[:-1], summary)
+
+        def starts_and_closes_other(ledger, kind, *args):       # they agree; the results and binding do not
+            summary = args[-1]
+            if kind in ("started", "completed"):
+                summary = dict(summary, certificate_sha256="0" * 64)
+            return real_append(ledger, kind, *args[:-1], summary)
+
+        cases = {"results naming other bytes": (mock.patch.object(runner, "_write_new", results_as(other_sha)),
+                                                "results:r1:certificate_not_its_sha256"),
+                 "results naming an uncertified certificate": (
+                     mock.patch.object(runner, "_write_new", results_as(not_certified)),
+                     "results:r1:certificate_not_certified"),
+                 "a start naming another certificate": (mock.patch.object(runner, "_append", second_start_other),
+                                                        "ledger:r1:certificates_disagree"),
+                 "closes naming another certificate": (mock.patch.object(runner, "_append", closes_other),
+                                                       "receipt:r1:certificate_sha256_mismatch"),
+                 "starts and closes naming another certificate than the results": (
+                     mock.patch.object(runner, "_append", starts_and_closes_other),
+                     "receipt:r1:certificate_sha256_mismatch")}
+        for n, (name, (patch, problem)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.fresh_roots(f"bound{n}")
+                self.tied_inputs()
+                with patch:
+                    self.assertEqual(self.run_once()["status"], "completed")
+                before = self.lab_files()
+                self.assertRefused(self.run_once("r2"), problem)
+                self.assertEqual(self.lab_files(), before)
+                self.run_file("receipt.json").unlink()
+                del before[str(self.run_file("receipt.json"))]
+                self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                                 {"status": "refused", "problems": [problem]})
+                self.assertEqual(self.lab_files(), before)                      # nothing written by either
+        self.fresh_roots("receipt")
+        self.tied_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        other = dict(receipt["engineering_acceptance"], certificate_sha256="0" * 64)
+        for value, problem in ((dict(receipt, certificate_sha256="0" * 64), "receipt:r1:malformed"),
+                               (dict(receipt, certificate_sha256="0" * 64, engineering_acceptance=other),
+                                "receipt:r1:engineering_acceptance_mismatch"),
+                               (dict(receipt, certificate_sha256=None), "receipt:r1:malformed")):
+            with self.subTest(receipt=problem):
+                self.run_file("receipt.json").write_bytes(runner.canonical_json(value) + b"\n")
+                self.assertRefused(self.run_once("r2"), problem)
+        self.fresh_roots("failed")
+        self.tied_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once()["status"], "failed")
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual(receipt["certificate_sha256"], self.certificate_sha256)
+        for value in ("0" * 64, None):
+            with self.subTest(failed_receipt=value):
+                self.run_file("receipt.json").write_bytes(runner.canonical_json(dict(receipt, certificate_sha256=value))
+                                                          + b"\n")
+                self.assertRefused(self.run_once("r2"), "receipt:r1:certificate_sha256_mismatch")
+
+    def test_component_ii_must_name_the_bound_certificate(self):
+        real_write = runner._write_new
+
+        def write(target, chunks, where):
+            if where == "results":
+                value = json.loads(b"".join(chunks))
+                value["engineering_acceptance"]["criteria"]["prefix_invariance"]["components"][
+                    "synthetic_certification"]["certificate_sha256"] = "0" * 64
+                chunks = [runner.canonical_json(value) + b"\n"]
+            return real_write(target, chunks, where)
+
+        self.tied_inputs()
+        with mock.patch.object(runner, "_write_new", write):
+            self.assertEqual(self.run_once()["status"], "completed")
+        self.refused_unchanged("results:r1:certification_not_the_acceptances")
+        self.run_file("receipt.json").unlink()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["results:r1:certification_not_the_acceptances"]})
+        for forged in ([], {"criteria": []}, {"criteria": {"prefix_invariance": "x"}}):
+            with self.subTest(forged=forged):
+                self.assertIsNone(runner._component_ii(forged))
+
+    def test_an_embedded_certificate_of_another_kind_refuses(self):
+        real_write = runner._write_new
+
+        def other_kind(target, chunks, where):
+            if where == "results":
+                value = json.loads(b"".join(chunks))
+                value["certification"]["certificate"]["kind"] = "something_else"
+                value["certification"]["sha256"] = runner._sha256_bytes(
+                    runner.canonical_json(value["certification"]["certificate"]) + b"\n")
+                chunks = [runner.canonical_json(value) + b"\n"]
+            return real_write(target, chunks, where)
+
+        self.tied_inputs()
+        with mock.patch.object(runner, "_write_new", other_kind):
+            self.assertEqual(self.run_once()["status"], "completed")
+        self.refused_unchanged("results:r1:certificate_not_certified")
+
+    def test_failed_closes_naming_another_certificate_than_their_starts_refuse(self):
+        real_append = runner._append
+
+        def failed_other(ledger, kind, *args):
+            summary = args[-1]
+            if kind == "failed":
+                summary = dict(summary, certificate_sha256="0" * 64)
+            return real_append(ledger, kind, *args[:-1], summary)
+
+        self.tied_inputs()
+        integrity = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "_append", failed_other), \
+                mock.patch.object(runner, "check_prefix", side_effect=integrity):
+            self.assertEqual(self.run_once()["status"], "failed")
+        self.refused_unchanged("ledger:r1:certificates_disagree")
+
+    def test_reconcile_keeps_a_started_certificate_and_never_invents_one(self):
+        self.tied_inputs()
+        real = TrialLedger.append
+
+        def crash_at_completed(ledger, kind, **kwargs):
+            if kind == "completed":
+                raise trial_ledger.LedgerError("ledger:head_moved")
+            return real(ledger, kind, **kwargs)
+        with mock.patch.object(TrialLedger, "append", crash_at_completed):
+            self.assertEqual(self.run_once("r1")["status"], "uncertain")
+        (self.lab / "contracts" / self.digest / runner.LOCK_NAME).unlink()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["status"], "reconciled")
+        aborted = [e for e in self.ledger() if e["kind"] == "aborted"]
+        self.assertEqual([e["summary"]["certificate_sha256"] for e in aborted], [self.certificate_sha256] * 2)
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual((receipt["status"], receipt["certificate_sha256"]), ("aborted", self.certificate_sha256))
+        (self.lab / "runs" / self.digest / "x1").mkdir()                 # an unaccounted run directory
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["recorded_runs"], ["x1"])
+        recorded = [e for e in self.ledger() if e["trial_id"].startswith("x1.")]
+        self.assertEqual({e["summary"]["certificate_sha256"] for e in recorded}, {None})
+        self.assertIsNone(json.loads(self.run_file("receipt.json", "x1").read_bytes())["certificate_sha256"])
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_reconcile_refuses_disagreeing_starts_before_writing(self):
+        self.tied_inputs()
+        contract_dir = self.lab / "contracts" / self.digest
+        contract_dir.mkdir(parents=True)
+        ledger = TrialLedger.open(contract_dir)
+        for variant, sha in (("ltp_favourite", "a" * 64), ("seeded_random_runner", "b" * 64)):
+            ledger.append("started", trial_id=f"x.{variant}", contract=self.contract_value, variant=variant,
+                          input_sha256="ab" * 32, code_identity="git:old", recorded_at="2026-10-15T00:00:00Z",
+                          summary={"certificate_sha256": sha})
+        before = self.lab_files()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["ledger:x:certificates_disagree"]})
+        self.assertEqual(self.lab_files(), before)
+
+    def test_a_malformed_started_certificate_refuses_reconcile_before_any_append(self):
+        self.tied_inputs()
+        self.contract_dir.mkdir(parents=True)
+        ledger = TrialLedger.open(self.contract_dir)
+        ledger.append("started", trial_id="crashed.ltp_favourite", contract=self.contract_value,
+                      variant="ltp_favourite", input_sha256="ab" * 32, code_identity="git:old",
+                      recorded_at="2026-10-15T00:00:00Z", summary={"certificate_sha256": "x"})
+        before = self.lab_files()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["ledger:crashed:certificate_malformed"]})
+        self.assertEqual(self.lab_files(), before)
+
+    def test_a_reconstructed_run_with_a_forged_certificate_refuses(self):
+        self.tied_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        (self.runs / "x1").mkdir()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["recorded_runs"], ["x1"])
+        receipt_path = self.run_file("receipt.json", "x1")
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt_path.write_bytes(runner.canonical_json(dict(receipt, certificate_sha256=self.certificate_sha256))
+                                 + b"\n")
+        self.refused_unchanged("receipt:x1:certificate_sha256_mismatch")
+
+    def test_sources_that_cannot_be_described_before_the_starts_refuse(self):
+        self.standard_inputs()
+        real, calls = certificate.current_key, []
+
+        def unreadable_before_start(root=None):
+            calls.append(1)
+            if len(calls) >= 2:                                   # the preflight call, then the before-start one
+                raise certificate.CertificateProblem("source:x.py:unreadable")
+            return real(root)
+        with mock.patch.object(runner, "current_key", unreadable_before_start):
+            self.refused_unchanged("source:changed_before_start:source:x.py:unreadable", run_id="r1")
+        self.assertEqual(self.lab_entries(), ["contracts", f"contracts/{self.digest}", "runs", f"runs/{self.digest}"])
+
+    def test_sources_changed_while_the_run_evaluates_fail_it_after_its_issuance_is_published(self):
+        self.standard_inputs()
+        real_settle, real_key, settled = runner.settle, certificate.current_key, []
+
+        def settle(*args):
+            settled.append(1)                                     # the sources change while the run settles
+            return real_settle(*args)
+
+        def key(root=None):
+            value = real_key(root)
+            return ("0" * 64, *value[1:]) if settled else value
+        with mock.patch.object(runner, "settle", settle), mock.patch.object(runner, "current_key", key), \
+                mock.patch.object(runner, "_read_back", wraps=runner._read_back) as read_back:
+            result = self.run_once()
+        self.assertEqual((result["status"], result["problems"]), ("failed", ["RuntimeError:source:changed_during_run"]))
+        self.assertEqual([e["kind"] for e in self.ledger()], ["started", "started", "failed", "failed"])
+        self.assertEqual([call.args[2] for call in read_back.call_args_list], ["issuance_ledger"])
+        self.assertTrue(self.run_file(runner.ISSUANCE_FILE).exists())       # published and read back: evidence
+        self.assertFalse(self.run_file(runner.RESULTS_FILE).exists())
+
+    def test_results_naming_another_key_than_their_certificate_refuse(self):
+        real_write = runner._write_new
+
+        def results_as(change):
+            def write(target, chunks, where):
+                if where == "results":
+                    value = json.loads(b"".join(chunks))
+                    change(value["certification"])
+                    chunks = [runner.canonical_json(value) + b"\n"]
+                return real_write(target, chunks, where)
+            return write
+
+        def results_key(certification):
+            certification["key"] = "0" * 64
+
+        def certificate_key(certification):
+            certification["certificate"]["key"] = "0" * 64
+            certification["sha256"] = runner._sha256_bytes(runner.canonical_json(certification["certificate"]) + b"\n")
+
+        problem = "results:r1:certificate_not_certified"
+        for n, change in enumerate((results_key, certificate_key)):
+            with self.subTest(forged=change.__name__):
+                self.fresh_roots(f"key{n}")
+                self.tied_inputs()
+                with mock.patch.object(runner, "_write_new", results_as(change)):
+                    self.assertEqual(self.run_once()["status"], "completed")
+                self.refused_unchanged(problem)
+                self.run_file("receipt.json").unlink()
+                before = self.lab_files()
+                self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                                 {"status": "refused", "problems": [problem]})
+                self.assertEqual(self.lab_files(), before)
+
+    def test_a_run_naming_no_certificate_beside_one_that_names_a_sha256_refuses(self):
+        real_append = runner._append
+
+        def starts_as(summary):
+            def append(ledger, kind, *args):
+                return real_append(ledger, kind, *args[:-1], summary if kind == "started" else args[-1])
+            return append
+
+        problem = "ledger:r1:certificates_disagree"
+        for n, summary in enumerate(({}, {"certificate_sha256": None})):     # a start as before c2b3b3, or null
+            with self.subTest(started=summary):
+                self.fresh_roots(f"none{n}")
+                self.tied_inputs()
+                with mock.patch.object(runner, "_append", starts_as(summary)):
+                    self.assertEqual(self.run_once()["status"], "completed")
+                self.refused_unchanged(problem)
+                self.run_file("receipt.json").unlink()
+                before = self.lab_files()
+                self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                                 {"status": "refused", "problems": [problem]})
+                self.assertEqual(self.lab_files(), before)
+
+    def test_a_results_certification_of_another_shape_is_malformed(self):
+        real_write = runner._write_new
+
+        def results_as(change):
+            def write(target, chunks, where):
+                if where == "results":
+                    value = json.loads(b"".join(chunks))
+                    value["certification"] = change(value["certification"])
+                    chunks = [runner.canonical_json(value) + b"\n"]
+                return real_write(target, chunks, where)
+            return write
+
+        cases = {"with another key": lambda certification: dict(certification, extra=1),
+                 "a key that is not a sha256": lambda certification: dict(certification, key="x"),
+                 "a sha256 that is not a sha256": lambda certification: dict(certification, sha256="x"),
+                 "a certificate that is not an object": lambda certification: dict(certification, certificate="x"),
+                 "null, as c2b3b1 wrote it": lambda certification: None}
+        for n, (name, change) in enumerate(cases.items()):
+            with self.subTest(certification=name):
+                self.fresh_roots(f"shape{n}")
+                self.tied_inputs()
+                with mock.patch.object(runner, "_write_new", results_as(change)):
+                    self.assertEqual(self.run_once()["status"], "completed")
+                self.refused_unchanged("results:r1:malformed")
+                self.run_file("receipt.json").unlink()
+                before = self.lab_files()
+                self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                                 {"status": "refused", "problems": ["results:r1:malformed"]})
+                self.assertEqual(self.lab_files(), before)
+
+    def test_a_receipt_certificate_that_is_not_a_sha256_is_malformed(self):
+        self.tied_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        era = dict(receipt, certificate_sha256=None,               # as c2b3b1 wrote it: no certificate anywhere
+                   engineering_acceptance=dict(receipt["engineering_acceptance"], certificate_sha256=None))
+        self.run_file("receipt.json").write_bytes(runner.canonical_json(era) + b"\n")
+        self.refused_unchanged("receipt:r1:malformed")
+        self.fresh_roots("failed")
+        self.tied_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once()["status"], "failed")
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        for value in ("x", 7, "A" * 64):
+            with self.subTest(failed_receipt=value):
+                self.run_file("receipt.json").write_bytes(runner.canonical_json(dict(receipt, certificate_sha256=value))
+                                                          + b"\n")
+                self.refused_unchanged("receipt:r1:malformed")
+
+    def test_reconcile_checks_every_unfinished_runs_certificate_before_any_append(self):
+        self.contract_dir.mkdir(parents=True)
+        ledger = TrialLedger.open(self.contract_dir)
+        for trial_id, sha in (("a.ltp_favourite", "a" * 64), ("b.ltp_favourite", "x")):     # a's first: it is fine
+            ledger.append("started", trial_id=trial_id, contract=self.contract_value, variant="ltp_favourite",
+                          input_sha256="ab" * 32, code_identity="git:old", recorded_at="2026-10-15T00:00:00Z",
+                          summary={"certificate_sha256": sha})
+        before = self.lab_files()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["ledger:b:certificate_malformed"]})
+        self.assertEqual(self.lab_files(), before)
+
+    def test_reconcile_aborts_each_unfinished_run_under_its_own_certificate(self):
+        self.contract_dir.mkdir(parents=True)
+        ledger = TrialLedger.open(self.contract_dir)
+        shas, variants = {"a": "a" * 64, "b": "b" * 64}, ("ltp_favourite", "seeded_random_runner")
+        for run_id, sha in shas.items():
+            (self.runs / run_id).mkdir(parents=True)                         # for the receipt reconcile publishes
+            for variant in variants:
+                ledger.append("started", trial_id=f"{run_id}.{variant}", contract=self.contract_value, variant=variant,
+                              input_sha256="ab" * 32, code_identity="git:old", recorded_at="2026-10-15T00:00:00Z",
+                              summary={"certificate_sha256": sha})
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        aborted = {e["trial_id"]: e["summary"]["certificate_sha256"] for e in self.ledger() if e["kind"] == "aborted"}
+        self.assertEqual(aborted, {f"{run_id}.{variant}": sha for run_id, sha in shas.items() for variant in variants})
+        self.assertEqual((result["status"], result.get("receipted")), ("reconciled", ["a", "b"]), result)
+        self.assertEqual({run_id: json.loads(self.run_file("receipt.json", run_id).read_bytes())["certificate_sha256"]
+                          for run_id in shas}, shas)
+
+    def test_history_never_needs_a_certificate_file(self):
+        self.tied_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        shutil.rmtree(self.lab / certificate.CERTIFICATIONS_DIR)
+        before = self.lab_files()
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)     # r1 checked whole
+        self.assertEqual(result["status"], "reconciled", result)
+        self.assertEqual((result["aborted"], result["recorded_runs"], result["receipted"]), ([], [], []))
+        self.assertEqual(self.lab_files(), before)
+        self.assertFalse((self.lab / certificate.CERTIFICATIONS_DIR).exists())
+
+
+class StopRuleTests(RunnerCase):
+    """A pass stops the contract (Astra's decision 7 and control D): verified passes and surviving unbound claims."""
+
+    def setUp(self):
+        super().setUp()
+        self.contract_value = fx.frozen_contract(max_trials=8)
+        self.contract = self.write_contract(self.contract_value, "eight.json")
+        self.digest = contract_sha256(self.contract_value)
+        self.contract_dir = self.lab / "contracts" / self.digest
+        self.runs = self.lab / "runs" / self.digest
+
+    def passed(self, run_id="r1"):
+        self.standard_inputs()
+        self.assertEqual(self.run_once(run_id)["engineering_acceptance"], "passed")
+
+    def test_a_verified_pass_stops_the_contract_whatever_changes(self):
+        self.passed()
+        self.refused_unchanged("contract:engineering_passed:r1")
+        self.refused_unchanged("contract:engineering_passed:r1", run_id="r1")          # before the run id check
+        self.refused_unchanged("contract:engineering_passed:r1", code_identity="git:other")
+        patch, changed = self.other_sources()
+        with patch:
+            self.install_certificate(canned_certificate(descriptor=changed))
+            self.refused_unchanged("contract:engineering_passed:r1")                    # new sources and certificate
+        stored = self.lab / "certifications" / f"{CERTIFICATE['key']}.json"
+        stored.unlink()                                       # another certificate for today's key
+        self.install_certificate(canned_certificate(evidence="other"))
+        self.assertNotEqual(self.certificate_sha256, json.loads(self.run_file("receipt.json").read_bytes())[
+            "certificate_sha256"])
+        self.refused_unchanged("contract:engineering_passed:r1")
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)    # available, changes nothing
+        self.assertEqual((result["status"], result["aborted"], result["receipted"]), ("reconciled", [], []))
+        self.refused_unchanged("contract:engineering_passed:r1")
+
+    def test_the_stop_comes_before_the_budget(self):
+        self.contract_value = fx.frozen_contract(max_trials=2)
+        self.contract = self.write_contract(self.contract_value, "two.json")
+        self.digest = contract_sha256(self.contract_value)
+        self.passed()
+        self.refused_unchanged("contract:engineering_passed:r1")
+
+    def test_the_stop_holds_within_one_root_and_one_contract(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["engineering_acceptance"], "passed")
+        self.refused_unchanged("contract:engineering_passed:r1")
+        six = self.write_contract(fx.frozen_contract(max_trials=6), "six.json")
+        self.assertEqual(self.run_once("r2", contract_path=six)["engineering_acceptance"], "passed")
+        self.lab = self.tmp / "lab-new"
+        self.lab.mkdir()
+        self.install_certificate()
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")
+
+    def test_a_failed_or_incomplete_run_does_not_stop_it(self):
+        self.tied_inputs()
+        self.assertEqual(self.run_once("r1")["engineering_acceptance"], "incomplete")
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "incomplete")
+
+    def test_missing_evidence_after_a_pass_never_frees_the_contract(self):
+        self.passed()
+        receipt = self.run_file("receipt.json").read_bytes()
+        self.run_file("receipt.json").unlink()
+        self.refused_unchanged("receipt:missing:r1")
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["receipted"], ["r1"])
+        published = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual((published["certificate_sha256"], published["engineering_acceptance"]),
+                         (json.loads(receipt)["certificate_sha256"], json.loads(receipt)["engineering_acceptance"]))
+        self.refused_unchanged("contract:engineering_passed:r1")
+        results = self.run_file("results.json")
+        kept = results.read_bytes()
+        results.unlink()
+        self.refused_unchanged("results:r1:missing_path")
+        before = self.lab_files()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["results:r1:missing_path"]})
+        self.assertEqual(self.lab_files(), before)
+        results.write_bytes(kept)
+        shutil.rmtree(self.runs / "r1")                       # the whole run directory
+        self.refused_unchanged("receipt:missing:r1")
+        before = self.lab_files()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["receipt:r1:no_run_directory"]})
+        self.assertEqual(self.lab_files(), before)
+
+    def test_a_pass_interrupted_before_its_closes_still_stops_it(self):
+        self.standard_inputs()
+        real = runner._append
+
+        def killed_at_the_closes(ledger, kind, *args):
+            if kind == "completed":
+                raise KeyboardInterrupt                      # results.json is written; no close is
+            return real(ledger, kind, *args)
+
+        with mock.patch.object(runner, "_append", killed_at_the_closes), self.assertRaises(KeyboardInterrupt):
+            self.run_once("r1")
+        self.assertEqual(json.loads(self.run_file("results.json").read_bytes())["engineering_acceptance"]["status"],
+                         "passed")
+        (self.contract_dir / runner.LOCK_NAME).unlink()       # a person, after checking no runner runs
+        self.refused_unchanged("ledger:unfinished_trials:r1.ltp_favourite,r1.seeded_random_runner")
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        self.assertEqual((result["status"], result["aborted"], result["receipted"]),
+                         ("reconciled", ["r1.ltp_favourite", "r1.seeded_random_runner"], ["r1"]))
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:r1")
+
+    def test_a_pass_between_its_closes_still_stops_it(self):
+        self.standard_inputs()
+        real = TrialLedger.append
+
+        def second_close_refused(ledger, kind, **kwargs):
+            if kind == "completed" and kwargs["variant"] == "seeded_random_runner":
+                raise trial_ledger.LedgerError("ledger:head_moved")
+            return real(ledger, kind, **kwargs)
+        with mock.patch.object(TrialLedger, "append", second_close_refused):
+            self.assertEqual(self.run_once("r1")["status"], "uncertain")
+        (self.contract_dir / runner.LOCK_NAME).unlink()
+        self.refused_unchanged("ledger:unfinished_trials:r1.seeded_random_runner")
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["receipted"], ["r1"])
+        self.assertEqual(json.loads(self.run_file("receipt.json").read_bytes())["status"], "aborted")
+        self.refused_unchanged("contract:engineering_passed:r1")
+        self.run_file("results.json").unlink()                # the completed close's claim survives alone
+        self.refused_unchanged("contract:engineering_passed:r1")
+
+    def test_a_pass_in_a_run_cut_out_of_the_ledger_still_stops_it(self):
+        self.passed()
+        (self.contract_dir / LEDGER_FILE).unlink()
+        self.run_file("receipt.json").unlink()
+        self.refused_unchanged("run:unaccounted:r1")
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        self.assertEqual((result["status"], result["recorded_runs"], result["receipted"]),
+                         ("reconciled", ["r1"], ["r1"]))
+        self.assertEqual({e["summary"]["certificate_sha256"] for e in self.ledger()}, {None})
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:r1")
+
+    def test_an_unbound_pass_survives_interrupted_recovery(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["engineering_acceptance"], "passed")
+        results = self.run_file("results.json").read_bytes()
+        (self.contract_dir / LEDGER_FILE).unlink()
+        self.run_file("receipt.json").unlink()
+        self.refused_unchanged("run:unaccounted:r1")
+        real = TrialLedger.append
+
+        def interrupted(ledger, kind, **kwargs):
+            if kind == "started" and kwargs["variant"] == "seeded_random_runner":
+                raise trial_ledger.LedgerError("ledger:head_moved")
+            return real(ledger, kind, **kwargs)
+
+        with mock.patch.object(TrialLedger, "append", interrupted):
+            self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["status"],
+                             "uncertain")
+        (self.contract_dir / runner.LOCK_NAME).unlink()
+        self.refused_unchanged("run:recovery_incomplete:r1")
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        self.assertEqual((result["status"], result["receipted"]), ("reconciled", ["r1"]))
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:r1")
+        self.assertEqual([(e["kind"], e["summary"]["certificate_sha256"]) for e in self.ledger()],
+                         [("started", None), ("aborted", None)] * 2)
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual((receipt["status"], receipt["certificate_sha256"], receipt["engineering_acceptance"]),
+                         ("aborted", None, None))
+        self.assertEqual(self.run_file("results.json").read_bytes(), results)
+
+    def test_partial_and_unreadable_results_of_a_failed_run(self):
+        self.standard_inputs()
+        real = runner._write_new
+
+        def results_then_fail(keep):
+            def write(target, chunks, where):
+                if where != "results":
+                    return real(target, chunks, where)
+                data = b"".join(chunks)
+                real(target, [data[:len(data) // 2] if keep == "half" else data], where)
+                raise runner.PublicationUncertain(f"{where}:synthetic")
+            return write
+        with mock.patch.object(runner, "_write_new", results_then_fail("half")):
+            self.assertEqual(self.run_once("r1")["status"], "failed")
+        real_open = Path.open
+
+        def unreadable(target, mode="r", *args, **kwargs):
+            if target.name == "results.json" and target.parent.name == "r1":
+                raise PermissionError(13, "synthetic")
+            return real_open(target, mode, *args, **kwargs)
+        before = self.lab_files()
+        with mock.patch.object(Path, "open", unreadable):
+            self.assertRefused(self.run_once("r2"), "results:r1:unreadable")
+        self.assertEqual(self.lab_files(), before)
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")      # a cut write claims nothing
+        self.fresh_roots("whole")
+        self.standard_inputs()
+        with mock.patch.object(runner, "_write_new", results_then_fail("all")):
+            self.assertEqual(self.run_once("r1")["status"], "failed")
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:r1")                 # a whole one blocks
+
+    def test_a_results_file_that_is_not_canonical_claims_nothing(self):
+        real_write = runner._write_new
+
+        def results_then_fail(target, chunks, where):
+            if where != "results":
+                return real_write(target, chunks, where)
+            value = json.loads(b"".join(chunks))
+            real_write(target, [json.dumps(value, indent=1).encode()], where)      # valid JSON, not canonical
+            raise runner.PublicationUncertain(f"{where}:synthetic")
+
+        self.standard_inputs()
+        with mock.patch.object(runner, "_write_new", results_then_fail):
+            self.assertEqual(self.run_once()["status"], "failed")
+        self.assertEqual(json.loads(self.run_file("results.json").read_bytes())["engineering_acceptance"]["status"],
+                         "passed")
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")       # it claimed nothing
+
+    def test_a_results_file_that_is_not_regular_refuses_and_never_blocks(self):
+        self.tied_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once()["status"], "failed")
+        target = self.run_file("results.json")
+        elsewhere = self.tmp / "elsewhere.json"
+        elsewhere.write_bytes(b"{}\n")
+        target.symlink_to(elsewhere)
+        self.refused_unchanged("results:r1:not_a_regular_file")
+        target.unlink()
+        os.mkfifo(target)
+        self.refused_unchanged("results:r1:not_a_regular_file")
+        target.unlink()
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_a_forged_pass_in_a_failed_close_is_an_unbound_claim(self):
+        real = runner._append
+
+        def failed_claiming(ledger, kind, *args):
+            summary = args[-1]
+            if kind == "failed":
+                summary = dict(summary, engineering_acceptance={"status": "passed"})
+            return real(ledger, kind, *args[:-1], summary)
+
+        self.tied_inputs()
+        with mock.patch.object(runner, "_append", failed_claiming), mock.patch.object(
+                runner, "check_prefix", side_effect=replay.ReplayProblem("prefix:x:member_hash_mismatch")):
+            self.assertEqual(self.run_once()["status"], "failed")
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:r1")
+
+    def test_only_this_contracts_claims_count(self):
+        other = fx.frozen_contract(max_trials=6)                 # another contract's passing results, copied here
+        self.standard_inputs()
+        self.assertEqual(self.run_once("r1", contract_path=self.write_contract(other, "six.json"))[
+            "engineering_acceptance"], "passed")
+        self.runs.mkdir(parents=True)
+        (self.runs / "x1").mkdir()
+        (self.runs / "x1" / "results.json").write_bytes(
+            (self.lab / "runs" / contract_sha256(other) / "r1" / "results.json").read_bytes())
+        self.refused_unchanged("run:unaccounted:x1")
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["recorded_runs"], ["x1"])
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")
+
+    def test_a_results_write_cut_just_before_its_final_newline_still_claims(self):
+        real = runner._write_new
+
+        def all_but_the_newline(target, chunks, where):
+            if where != "results":
+                return real(target, chunks, where)
+            real(target, [b"".join(chunks)[:-1]], where)
+            raise runner.PublicationUncertain(f"{where}:synthetic")
+
+        self.standard_inputs()
+        with mock.patch.object(runner, "_write_new", all_but_the_newline):
+            self.assertEqual(self.run_once("r1")["status"], "failed")
+        data = self.run_file("results.json").read_bytes()
+        self.assertEqual(runner.canonical_json(json.loads(data)), data)          # canonical, only its newline cut
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:r1")
+        self.run_file("results.json").write_bytes(data + b"\n\n")               # one newline too many: not canonical
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")       # it claims nothing
+
+    def test_a_verified_pass_stops_it_before_another_runs_files_are_read(self):
+        self.standard_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once("r1")["status"], "failed")
+        self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")
+        self.run_file("results.json").mkdir()                 # r1's would refuse the scan: not a regular file
+        self.refused_unchanged("contract:engineering_passed:r2", run_id="r3")
+
+    def test_a_dangling_or_uninspectable_results_file_refuses(self):
+        self.tied_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once()["status"], "failed")
+        target = self.run_file("results.json")
+        target.symlink_to(self.tmp / "nowhere.json")         # present to lstat, absent to exists()
+        self.refused_unchanged("results:r1:not_a_regular_file")
+        target.unlink()
+        target.write_bytes(b"{}\n")
+        for name in ("lstat", "is_symlink", "is_file"):
+            real = getattr(Path, name)
+
+            def failing(item, *args, real=real, **kwargs):
+                if item == target:
+                    raise PermissionError(13, "synthetic: permission denied")
+                return real(item, *args, **kwargs)
+            before = self.lab_files()
+            with self.subTest(method=name):
+                with mock.patch.object(Path, name, failing):
+                    result = self.run_once("r2")
+                self.assertEqual(result, {"status": "refused", "problems": ["results:r1:uninspectable"]})
+                self.assertEqual(self.lab_files(), before)
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_the_stop_scan_reads_results_through_the_guard(self):
+        real_guard = runner._guard
+
+        def deny(target, where, prospective=False):
+            if where == "results:r1":
+                raise runner.RunRefused(f"{where}:denied")
+            return real_guard(target, where, prospective)
+
+        self.tied_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once()["status"], "failed")
+        self.run_file("results.json").write_bytes(b"{}\n")
+        with mock.patch.object(runner, "_guard", deny), \
+                mock.patch.object(runner, "_read_capped", wraps=runner._read_capped) as read:
+            self.refused_unchanged("results:r1:denied")
+        self.assertNotIn("results:r1", [call.args[1] for call in read.call_args_list])     # denied before it is read
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_a_results_file_nested_too_deep_to_parse_claims_nothing(self):
+        self.tied_inputs()
+        problem = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=problem):
+            self.assertEqual(self.run_once()["status"], "failed")
+        depth = 10 ** 6
+        data = b"[" * depth + b"]" * depth + b"\n"
+        try:
+            runner.loads_strict(data)
+        except RecursionError:
+            pass
+        else:
+            self.skipTest("this interpreter parses it")
+        self.run_file("results.json").write_bytes(data)
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_a_results_file_that_is_not_a_passing_results_object_claims_nothing(self):
+        real = runner._write_new
+
+        def results_as(change):
+            def write(target, chunks, where):
+                if where != "results":
+                    return real(target, chunks, where)
+                real(target, [runner.canonical_json(change(json.loads(b"".join(chunks)))) + b"\n"], where)
+                raise runner.PublicationUncertain(f"{where}:synthetic")
+            return write
+
+        changes = {"another_kind": lambda value: dict(value, kind=runner.RECEIPT_KIND),
+                   "an_array": lambda value: [value],
+                   "a_string_acceptance": lambda value: dict(value, engineering_acceptance="passed")}
+        for name, change in changes.items():
+            with self.subTest(case=name):
+                self.fresh_roots(name)
+                self.standard_inputs()
+                with mock.patch.object(runner, "_write_new", results_as(change)):
+                    self.assertEqual(self.run_once("r1")["status"], "failed")
+                self.assertEqual(self.run_once("r2")["engineering_acceptance"], "passed")
+
+    def test_a_stop_names_every_passed_run_sorted(self):
+        self.contract_value = fx.frozen_contract(max_trials=12)
+        self.contract = self.write_contract(self.contract_value, "twelve.json")
+        self.digest = contract_sha256(self.contract_value)
+        self.passed("r2")
+        with mock.patch.object(runner, "_stop_evidence", return_value=([], [])):        # a runner without the rule
+            for run_id in ("r1.x", "r10", "a.b", "r1-y", "b"):
+                self.assertEqual(self.run_once(run_id)["engineering_acceptance"], "passed")
+        self.refused_unchanged("contract:engineering_passed:a.b,b,r1-y,r1.x,r10,r2", run_id="r3")
+
+    def test_an_unbound_stop_names_every_claiming_run_sorted(self):
+        self.contract_value = fx.frozen_contract(max_trials=12)
+        self.contract = self.write_contract(self.contract_value, "twelve.json")
+        self.digest = contract_sha256(self.contract_value)
+        real = runner._write_new
+
+        def results_then_fail(target, chunks, where):
+            if where != "results":
+                return real(target, chunks, where)
+            real(target, [b"".join(chunks)], where)
+            raise runner.PublicationUncertain(f"{where}:synthetic")
+
+        self.standard_inputs()
+        with mock.patch.object(runner, "_write_new", results_then_fail):
+            self.assertEqual(self.run_once("r2")["status"], "failed")
+        claim = json.loads(self.run_file("results.json", "r2").read_bytes())
+        copies = ["r1.x", "r10", "a.b", "r1-y", "b"]
+        for run_id in copies:                                 # its whole claim, as its own, recorded by reconcile
+            self.run_file("results.json", run_id).parent.mkdir()
+            self.run_file("results.json", run_id).write_bytes(runner.canonical_json(dict(claim, run_id=run_id)) + b"\n")
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["recorded_runs"],
+                         sorted(copies))
+        self.refused_unchanged("contract:engineering_pass_claim_unbound:a.b,b,r1-y,r1.x,r10,r2", run_id="r3")
+
+
 class ExactIntentTests(RunnerCase):
     """A recovery intent names exactly the contract's variants, sorted (Astra's control E)."""
 
@@ -1489,12 +2537,14 @@ class CliTests(RunnerCase):
         with redirect_stdout(out), mock.patch.object(runner, "utc_now_text", return_value="2026-10-15T00:00:00Z"):
             code = main(["run-backtest", "--contract", str(self.contract), "--data-root", str(self.data),
                          "--lab-state-root", str(self.lab), "--run-id", "cli", "--code-identity", CODE])
-        self.assertEqual((code, json.loads(out.getvalue())["status"]), (4, "completed"))     # not yet accepted
+        printed = json.loads(out.getvalue())
+        self.assertEqual((code, printed["status"], printed["engineering_acceptance"]), (0, "completed", "passed"))
         out = io.StringIO()
         with redirect_stdout(out):
             code = main(["run-backtest", "--contract", str(self.contract), "--data-root", str(self.data),
                          "--lab-state-root", str(self.lab), "--run-id", "cli", "--code-identity", CODE])
-        self.assertEqual((code, json.loads(out.getvalue())["status"]), (2, "refused"))
+        self.assertEqual((code, json.loads(out.getvalue())), (2, {"status": "refused",
+                                                                 "problems": ["contract:engineering_passed:cli"]}))
         out = io.StringIO()
         with redirect_stdout(out):
             code = main(["reconcile-trials", "--contract", str(self.contract), "--lab-state-root", str(self.lab),

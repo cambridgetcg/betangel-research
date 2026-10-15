@@ -1,31 +1,42 @@
-"""Run one frozen P0 contract over ingested and indexed archives: the runner core (tasks c2b2 and c2b3b1).
+"""Run one frozen P0 contract over ingested and indexed archives: the runner core (tasks c2b2, c2b3b1 and c2b3b3).
 
 run_backtest(contract, data_root, lab_state_root, run_id, code_identity) always returns one JSON-ready result; its
 status is refused (no trial started; the lock released), completed, failed (both trials started and closed as
 failed, a receipt written) or uncertain (the ledger may hold more than the result can show, or a lock could not be
 released: the runner lock is kept and the trial ids named, for a person to reconcile). It never places an order,
-logs in or reads an account; it reads only the explicit files named below, each after path_guard has cleared it.
+logs in or reads an account; it reads only the explicit files named below, each after path_guard has cleared it,
+and the package's own sources, which certificate.current_key lists and hashes at preflight, before the starts and at
+finalise (found from this module's path, symlinks refused, not path_guard'd: they are the code being run).
 
 Preflight, before any trial starts (Astra's design agreement D4, D12, D14 and her runner clarifications):
 1. guard_path the contract file, the data root and the lab-state root, before anything else touches them.
 2. The contract must be valid_frozen and the supported P0 model: CohortRules (exactly the two P0 variants),
-   AccountingRules (N1: the commission rate is checked before any trial is consumed), BootstrapPlan, delay_s 0.
-   engineering.known_accounting_answers must pass over its exact, non-empty case set (an error or any other result
-   refuses: engineering:known_accounting_answers_error or _not_passed); that checked result is the one the run's
-   acceptance reports.
+   AccountingRules (N1: the commission rate is checked before any trial is consumed), BootstrapPlan, delay_s 0; and
+   inside the certified structural profile: certificate.profile_of(contract) equals certificate.P0_PROFILE by
+   canonical bytes (decision 3), else contract:not_supported:not_the_certified_profile.
 3. check_data_root both roots (outside the repository and every Git worktree); they must be distinct and neither may
    hold the other. run_id is one component ([a-z0-9][a-z0-9_.-]{0,40}); code_identity is printable ASCII (1 to 200
    characters, as the trial ledger requires), for instance a commit; nothing here runs git.
-4. The input descriptor: every archive under the data root (manifests/), each with its manifest (load_manifest:
+4. The engine certificate (decisions 4 and 5): certificate.load_certificate reads <lab>/certifications/<key>.json
+   for the key of the sources on disk and this interpreter (certificate.current_key; there is no path override) and
+   validates it whole against this protocol. Sources that cannot be described (source:<..>) and a certificate that
+   is missing, unreadable, malformed, for another key or not certified (certification:<..>, certifications:<..>,
+   certificate:<..>) refuse. Nothing is written: certify-engine (certify.py) makes the certificate. Then
+   engineering.known_accounting_answers must pass over its exact, non-empty case set (a changed case set, an error or
+   any other result refuses: engineering:known_accounting_answers_not_the_known_set, _error or _not_passed); that
+   checked result is the one the run's acceptance reports.
+5. The input descriptor: every archive under the data root (manifests/), each with its manifest (load_manifest:
    canonical bytes, its own sha256), its index head (canonical bytes at most MAX_JSON_BYTES, the index kind and
    schema, naming this archive and this manifest, its refused_markets well formed) and its markets file (the head's
    sha256 and record count). input_sha256 is the sha256 of the descriptor's canonical JSON ({kind, version, archives
    sorted by archive_sha256, each with archive, manifest, index and markets sha256 and the record count}). Every
    derived path is guarded before it is opened: manifests, heads, markets files, and each raw member before its
    replay or prefix check. Every manifest's limits must be the run's read limits (input:<sha>:limits_not_the_runs):
-   the run replays and checks prefixes under the limits the members were ingested with. The index head does not
-   record the limits it was built under, so this proves ingest and run agree, not how the index was built.
-5. A first pass over every markets file (lines at most MAX_RECORD_BYTES) checks the shape of each record the run
+   the run replays and checks prefixes under the limits the members were ingested with, and the certificate's limits
+   must be the run's read limits and the 64 MiB prefix limit (certification:limits_not_the_runs; decision 13). The
+   index head does not record the limits it was built under, so this proves ingest and run agree, not how the index
+   was built.
+6. A first pass over every markets file (lines at most MAX_RECORD_BYTES) checks the shape of each record the run
    reads (market id, provenance naming this archive with a plan and a member path, decision and outcome objects, its
    path month and every marketTime month it saw) and refuses a record any of whose months the CURRENT month gate
    refuses (stale_gate: an index built under an older gate never lets the run read sealed, exposed or later data;
@@ -38,10 +49,10 @@ Preflight, before any trial starts (Astra's design agreement D4, D12, D14 and he
    goes to the run (excluded, unclassifiable and no-view records are decided and reported as before), and one
    eligible record is enough to start the trials, even if every decision then abstains or is unsupported, or every
    outcome stays unresolved; such a run is charged.
-6. The per-contract runner lock, <lab>/contracts/<contract sha256>/runner.lock, made by exclusive create: one runner
+7. The per-contract runner lock, <lab>/contracts/<contract sha256>/runner.lock, made by exclusive create: one runner
    attempt (or reconcile) per contract at a time; a lock left behind refuses until a person removes it, never taken
    by force.
-7. Under the lock, the trial ledger, <lab>/contracts/<contract sha256>/trial-ledger-v1.jsonl (one per contract,
+8. Under the lock, the trial ledger, <lab>/contracts/<contract sha256>/trial-ledger-v1.jsonl (one per contract,
    independent of run_id; Q1), is opened at the highest ledger head (by sequence) any receipt names, so a ledger
    deleted or cut behind a receipt refuses. Every run directory under <lab>/runs/<contract sha256>/ (an entry whose
    name is not a run id is ignored; a run directory must be a plain directory there, not a link elsewhere) is
@@ -51,23 +62,47 @@ Preflight, before any trial starts (Astra's design agreement D4, D12, D14 and he
    one), each start and close present in the ledger with the right trial id and kind; its status exactly the one the
    close kinds give (aborted if any aborted, else failed if any failed, else completed); its head at or after its
    closes; results_sha256 null unless completed, and for a completed run results.json and issuance-ledger.jsonl
-   still having the digests the receipt and the closing entries name. Trials started and never closed, runs whose
-   trials all closed without a receipt, and run directories with neither a receipt nor any ledger trial (a crash
-   between creating it and the first start, or a ledger cut behind it) refuse until reconcile. A run_id that already
-   named trials or a run directory refuses. Capacity: the contract's started entries plus one per variant must not
-   exceed stopping_rule.max_trials (D4: both starts are reserved together; every start ever made counts).
+   still having the digests the receipt and the closing entries name. History is checked against the certificate
+   each run recorded, never against today's key or certificate file (control D: an upgrade does not invalidate it):
+   every start and close of a run names one certificate sha256 (or none: a start written before task c2b3b3, or an
+   unaccounted run's reconstruction) and its receipt names the same; a completed run's results.certification holds
+   the whole certificate it ran under, whose canonical bytes still have the recorded sha256 and which is certified
+   for the recorded key, and component (ii), each close (its binding and its top-level field) and the receipt name
+   that sha256. Trials started and never closed, runs whose trials all closed without a receipt, and run directories
+   with neither a receipt nor any ledger trial (a crash between creating it and the first start, or a ledger cut
+   behind it) refuse until reconcile.
+   Then the stop rule (decision 7, control D): a completed close in the verified ledger whose binding says passed
+   stops the contract (contract:engineering_passed:<runs>). It reads the ledger, not the run's files, so deleting
+   them never frees the contract; but a run with a completed receipt is checked first, so its missing evidence
+   refuses earlier under its own code (results:<run>:missing_path, issuance:<run>:missing_path, or
+   receipt:missing:<run> for a deleted run directory), and only a run without a completed receipt (one trial
+   completed, the other aborted) reaches this code with its files gone. Without one, a surviving pass claim stops it
+   too, conservatively and without becoming a certified pass (contract:engineering_pass_claim_unbound:<runs>): a
+   close of another kind carrying a passed binding, or, in a run directory without a completed receipt, a
+   results.json of this contract (a regular file, read whole: canonical JSON with or without its final newline, its
+   kind, this contract sha256, engineering_acceptance status passed). Any other cut write, or a file that is not
+   canonical JSON, claims nothing; one that is not a regular file or cannot be inspected or read refuses. Neither
+   the run_id, the code identity, the sources, the certificate nor the budget is read, so none of them clears it. A
+   run_id that already named trials or a run directory refuses. Capacity: the contract's started entries plus one
+   per variant must not exceed stopping_rule.max_trials (D4: both starts are reserved together; every start ever
+   made counts). Last, the current key is computed again and must still be the certificate's (decision 12):
+   otherwise source:changed_before_start, or source:changed_before_start:<reason> when the sources can no longer be
+   described, and nothing starts.
 
-The run: the run directory <lab>/runs/<contract sha256>/<run_id>/ is created (exclusive), one started entry per
-variant is appended (trial id <run_id>.<variant>), then every record is decided (cohort.decide_market, replaying
-the primary member when the decision needs a view) and its primary-source prefix checked (engineering.check_prefix
-under the run's limits and the 64 MiB prefix limit, after the member's path is guarded, also for an excluded or
-stopped record that was never replayed), each result added to one engineering.PrefixTally over every input
-(plan, market id) key from the first pass; each market with an issued bet gets its outcome (outcome.market_outcome),
-the bets are settled (accounting.settle), and metrics and the block bootstrap are computed per variant (metrics).
-Records are streamed: only decisions, issued bets and outcomes are kept. The markets files are rehashed while read
-and must still match their heads. A member that fails its integrity checks (ReplayProblem), a denied path or a tally
-refusal fails the run (its starts are spent): no record is left out. Artifacts, each written by exclusive create
-while hashed:
+The run: the run directory <lab>/runs/<contract sha256>/<run_id>/ is created (exclusive), one started entry per variant
+is appended (trial id <run_id>.<variant>; its summary names the certificate sha256), then every record is decided
+(cohort.decide_market, replaying the primary member when the decision needs a view) and its primary-source prefix
+checked (engineering.check_prefix under the run's limits and the 64 MiB prefix limit, after the member's path is
+guarded, also for an excluded or stopped record that was never replayed), each result added to one
+engineering.PrefixTally over every input (plan, market id) key from the first pass; each market with an issued bet gets
+its outcome (outcome.market_outcome), the bets are settled (accounting.settle), and metrics and the block bootstrap are
+computed per variant (metrics). Records are streamed: only decisions, issued bets and outcomes are kept. The markets
+files are rehashed while read and must still match their heads. A member that fails its integrity checks
+(ReplayProblem), a denied path or a tally refusal fails the run (its starts are spent): no record is left out. Once the
+acceptance criteria are computed, the current key is computed once more (decision 12, control C's order): sources
+changed or no longer describable fail the run (RuntimeError:source:changed_during_run, with :<reason> when they cannot
+be described), its starts spent, with no results.json and so no pass. Artifacts, each written by exclusive create while
+hashed:
 - issuance-ledger.jsonl: cohort.ledger_lines, the full issuance ledger. It is then read back in full through the
   guard (at most its written size plus one byte): a complete read of other bytes is compared and fails the
   reconciliation criterion; a longer file, or one that cannot be read, fails the run. Results, closes and the
@@ -75,51 +110,66 @@ while hashed:
 - results.json (schema 2): canonical JSON of the contract sha256, run_id, code identity, input descriptor and
   sha256, population counts (cohort classes and reasons, plus the index heads' source refusals as raw rows and
   distinct markets per reason), issuance counts with the ledger's observed sha256 and size, per-variant metrics,
-  unresolved reasons and bootstrap results, certification (null until it is bound, task c2b3b3) and
-  engineering_acceptance: known_accounting_answers (the preflight result), issuance_exposure_reconciliation (the
-  run's decisions, issued bets, settlement and read-back ledger against stubs for every input key) and
-  prefix_invariance with two components, primary_source_prefix_consistency (the tally) and synthetic_certification
-  (incomplete: certificate_not_bound until task c2b3b3), failed when a component failed and passed only when both
-  passed; its status is engineering.engineering_status over the three, under the contract's rule and criteria
-  version 1. Until certification is bound no run can pass. No wall-clock time is in it: the same contract, input
-  and code give the same bytes but for run_id.
+  unresolved reasons and bootstrap results, certification ({key, sha256, certificate}: the key, the sha256 of the
+  stored certificate bytes and the whole certificate the run was bound to) and engineering_acceptance:
+  known_accounting_answers (the preflight result), issuance_exposure_reconciliation (the run's decisions, issued
+  bets, settlement and read-back ledger against stubs for every input key) and prefix_invariance with two
+  components, primary_source_prefix_consistency (the tally) and synthetic_certification ({status passed,
+  certificate_sha256}: a run starts only with a certified certificate), failed when a component failed and passed
+  only when both passed; its status is engineering.engineering_status over the three, under the contract's rule and
+  criteria version 1. No wall-clock time is in it: the same contract, input, code and certificate give the same
+  bytes but for run_id.
 - Then one closing entry per trial (completed, its summary naming the results sha256, the issuance ledger's sha256
-  and size and the compact acceptance binding: status, rule, criteria version, the tagged sha256 of the acceptance's
-  canonical JSON and the certificate sha256, null for now; or failed with a bounded failure code when anything went
-  wrong after the starts), and
-- receipt.json (schema 2): status, the same evidence for a completed run (null otherwise), each trial's start and
-  close anchors (seq, entry_sha256), the ledger head after closing, the contract's started entries at that moment
-  (cumulative_starts), and recorded_at. A later run (or reconcile) checks a completed run's receipt, closes, files
-  and recomputed binding against each other. Schema 1 receipts and results refuse (schema_not_supported): nothing
-  migrates them.
+  and size, the compact acceptance binding (status, rule, criteria version, the tagged sha256 of the acceptance's
+  canonical JSON and the certificate sha256) and the certificate sha256; or failed, naming a bounded failure code
+  and the certificate sha256, when anything went wrong after the starts), and
+- receipt.json (schema 2): status, the certificate sha256 (whatever the status), the same evidence for a completed
+  run (null otherwise), each trial's start and close anchors (seq, entry_sha256), the ledger head after closing, the
+  contract's started entries at that moment (cumulative_starts), and recorded_at. A later run (or reconcile) checks
+  a completed run's receipt, closes, files and recomputed binding against each other. Schema 1 receipts and results
+  refuse (schema_not_supported): nothing migrates them (decision 11); nor does anything migrate a schema 2 completed
+  result or receipt written before task c2b3b3, whose certificate fields are null: it refuses as malformed.
 The lock is released last. When the first start is refused before anything was written (a plain LedgerError), the
 empty run directory is removed and the run is refused. A refused second start, a refused or uncertain close, a
 WriteUncertainError or UnlockError, a receipt that cannot be written or a lock that cannot be released stop at once
 with status uncertain and keep the lock: the ledger may hold more than this result shows, so a person reconciles
 before anything retries (the trial ledger's Recovery rule).
 
-reconcile(contract, lab_state_root, code_identity) is that explicit operator action, under the same lock: it appends
-an aborted entry for every trial that started and never closed (the summary names the reason, who reconciled and the
-pending trial ids); for each unaccounted run directory it first writes recovery-intent.json (schema 1: the
-contract's variants, sorted, by exclusive create) and then records one started and one aborted entry per variant
-(every persisted partial reservation consumes budget; input_sha256 is UNKNOWN_INPUT_SHA256, 64 zeros, because the
-input it was for is unknown). A run with an intent whose variants are not all recorded is recovery_incomplete: runs
-refuse, no receipt is published for it, and the next reconcile finishes it (an interruption cannot shrink the
-record; a budget exhausted mid-recovery leaves it explicitly incomplete). A run that crashed between its own two
-starts has no intent and keeps its one trial. An intent whose variants are not exactly the contract's, sorted,
-refuses every run and reconcile before anything is written (recovery:<run>:variants_not_the_contracts; an unsorted
-or repeated list is malformed). Then every missing receipt is published from the ledger (reconciled_by set; a
-completed run's evidence and acceptance binding come from its files and closes, which must agree; a non-completed
-run's stay null). Statuses are honest: refused only when nothing was written (a file that could not be created
-counts as nothing); once an append is confirmed or a file created, any later failure is uncertain, with the lock
-kept and the appended trials and touched runs named. Nothing is deleted, no lock is taken by force and nothing is
-evaluated again. Presence is judged with lstat throughout (receipts, intents, the ledger, run directories): only
-FileNotFoundError means absent; any other inspection error refuses before anything is written.
+reconcile(contract, lab_state_root, code_identity) is that explicit operator action, under the same lock: it appends an
+aborted entry for every trial that started and never closed (the summary names the reason, who reconciled, the pending
+trial ids and the certificate sha256 that run's entries named, checked before anything is appended); for each
+unaccounted run directory it first writes recovery-intent.json (schema 1: the contract's variants, sorted, by exclusive
+create) and then records one started and one aborted entry per variant (every persisted partial reservation consumes
+budget; input_sha256 is UNKNOWN_INPUT_SHA256, 64 zeros, because the input it was for is unknown, and certificate_sha256
+is null: unknown, never invented). A run with an intent whose variants are not all recorded is recovery_incomplete: runs
+refuse, no receipt is published for it, and the next reconcile finishes it (an interruption cannot shrink the record; a
+budget exhausted mid-recovery leaves it explicitly incomplete). A run that crashed between its own two starts has no
+intent and keeps its one trial. An intent whose variants are not exactly the contract's, sorted, refuses every run and
+reconcile before anything is written (recovery:<run>:variants_not_the_contracts; an unsorted or repeated list is
+malformed). Then every missing receipt is published from the ledger (reconciled_by set; a completed run's evidence and
+acceptance binding come from its files and closes, which must agree; a non-completed run's stay null; the certificate
+sha256 is the one its starts and closes name). reconcile needs no certificate, runs no stop rule and is never stopped
+(control D: checking history does not recertify old code). It never writes results.json or a completed close, so it can
+neither erase a pass claim nor promote one: an unaccounted directory holding a claim becomes aborted reservations and
+still stops the contract as an unbound claim. Statuses are honest: refused only when nothing was written (a file that
+could not be created counts as nothing); once an append is confirmed or a file created, any later failure is uncertain,
+with the lock kept and the appended trials and touched runs named. Nothing is deleted, no lock is taken by force and
+nothing is evaluated again. Presence is judged with lstat throughout (receipts, intents, the ledger, run directories):
+only FileNotFoundError means absent; any other inspection error refuses before anything is written.
 
-Limits: the budget holds within one lab-state root and one contract sha256 (Q1): a new root, or a contract changed in
-any way (max_trials included), starts its own ledger; keep one root per contract campaign. The guards and checks are
-point-in-time: a concurrent writer that ignores the lock, or a filesystem changed between check and use, is outside
-them (the lock and exclusive creates narrow, not close, that window).
+Limits: the budget and the stop rule hold within one lab-state root and one contract sha256 (Q1): a new root, or a
+contract changed in any way (max_trials included), starts its own ledger; keep one root per contract campaign.
+Losing a run's ledger entries together with its receipt and results frees the contract and refunds those starts: the
+whole ledger and every receipt lost, or the root restored to an earlier state (a ledger cut behind every surviving
+receipt's head is a valid shorter chain, and a cut that no receipt names cannot be seen). A forged chain rehashed
+whole is outside them too. While its ledger entries survive, a pass whose run directory was deleted still blocks, as
+receipt:missing:<run>. The guards and checks are point-in-time: a concurrent
+writer that ignores the lock, or a filesystem changed between check and use, is outside them (the lock and exclusive
+creates narrow, not close, that window). The certificate attests the sources on disk at preflight, before the starts
+and at finalise, and this interpreter; that the code loaded is those sources is assumed (decision 5: a fresh CLI and
+a stable checkout; bytecode, native libraries and the standard library are not attested). A stray file appearing in
+the package during a run (an editor's swap file, .DS_Store) fails it at finalise, its starts spent: run from an
+untouched checkout.
 """
 
 from dataclasses import asdict
@@ -129,6 +179,8 @@ import re
 
 from .accounting import AccountingRules, settle
 from .archive import DEFAULT_LIMITS, ArchiveProblem, check_data_root, gate_snapshot, month_gate, safe_path, safe_target
+from .certificate import (CERTIFICATE_KIND, CERTIFIED, P0_PROFILE, CertificateProblem, current_key, load_certificate,
+                          profile_of)
 from .cohort import (ANCHOR_NOT_KNOWN, ELIGIBLE, NO_VIEW, CohortRules, classify, decide_market, issuance_counts,
                      ledger_lines, population_counts)
 from .contract import ContractFileError, canonical_json, load_contract, result_status, validate_contract
@@ -142,14 +194,14 @@ from .path_guard import PathDenied, guard_path
 from .replay import ReplayProblem, _member, replay_view
 from .trial_ledger import LEDGER_FILE, LedgerError, TrialLedger, UnlockError, WriteUncertainError
 
-# Results and receipts are schema 2 (engineering acceptance and its binding, task c2b3b1); the input descriptor and the
-# recovery intent keep schema 1, so their bytes and digests are unchanged. Schema 1 results and receipts refuse.
+# Results and receipts are schema 2 (engineering acceptance and its binding, task c2b3b1; the certificate fields bound
+# in task c2b3b3); the input descriptor and the recovery intent keep schema 1, so their bytes and digests are
+# unchanged. Schema 1 results and receipts refuse.
 RESULTS_SCHEMA_VERSION = RECEIPT_SCHEMA_VERSION = 2
 INPUT_SCHEMA_VERSION = RECOVERY_SCHEMA_VERSION = 1
 ENGINEERING_CRITERIA_VERSION = 1
 ACCEPTANCE_TAG = b"betangel-research/backtest/engineering-acceptance/v1\x00"
 PREFIX_COMPONENTS = ("primary_source_prefix_consistency", "synthetic_certification")
-CERTIFICATE_NOT_BOUND = {"status": INCOMPLETE, "reason": "certificate_not_bound"}
 # The known accounting answers this protocol requires, by case id and in order (Astra's decision 8): a changed case
 # set is refused before any start, whatever engineering.KAT_CASES then holds.
 KAT_CASE_IDS = ("s9_win_and_loss_in_two_markets", "s9_plus_and_minus_ten_in_one_market",
@@ -541,7 +593,8 @@ def _binding_shape(binding):
             and binding["status"] in (PASSED, FAILED, INCOMPLETE) and isinstance(binding["rule"], str)
             and binding["criteria_version"] == ENGINEERING_CRITERIA_VERSION
             and isinstance(binding["acceptance_sha256"], str) and SHA256_RE.fullmatch(binding["acceptance_sha256"])
-            and binding["certificate_sha256"] is None)
+            and isinstance(binding["certificate_sha256"], str)
+            and SHA256_RE.fullmatch(binding["certificate_sha256"]) is not None)
 
 
 RECEIPT_KEYS = ("certificate_sha256", "contract_sha256", "cumulative_starts", "engineering_acceptance", "failure",
@@ -551,7 +604,8 @@ RECEIPT_KEYS = ("certificate_sha256", "contract_sha256", "cumulative_starts", "e
 
 def _receipt_shape(receipt, digest, run_id):
     """A schema 2 receipt's exact keys and types; a completed run's carries its evidence and no failure, any other
-    run's carries a failure and null evidence."""
+    run's carries a failure and null evidence. certificate_sha256 is a sha256 or null, and a completed receipt's is
+    its binding's."""
     trials = receipt.get("trials")
     completed = receipt.get("status") == "completed"
     size = receipt.get("issuance_ledger_bytes")
@@ -561,9 +615,11 @@ def _receipt_shape(receipt, digest, run_id):
     return (sorted(receipt) == list(RECEIPT_KEYS) and identity == (RECEIPT_KIND, RECEIPT_SCHEMA_VERSION, digest, run_id)
             and receipt.get("status") in ("aborted", "completed", "failed")
             and ((_binding_shape(receipt["engineering_acceptance"]) and type(size) is int and size >= 0
-                  and receipt["failure"] is None) if completed
-                 else (all(receipt[key] is None for key in evidence) and receipt["failure"] is not None))
-            and receipt.get("certificate_sha256") is None
+                  and receipt["failure"] is None
+                  and receipt.get("certificate_sha256") == receipt["engineering_acceptance"]["certificate_sha256"])
+                 if completed else (all(receipt[key] is None for key in evidence) and receipt["failure"] is not None))
+            and (receipt.get("certificate_sha256") is None or (isinstance(receipt["certificate_sha256"], str)
+                                                               and SHA256_RE.fullmatch(receipt["certificate_sha256"])))
             and _anchor_shape(receipt.get("ledger_head"))
             and type(receipt.get("cumulative_starts")) is int and receipt["cumulative_starts"] >= 0
             and isinstance(receipt.get("recorded_at"), str) and RECORDED_AT_RE.fullmatch(receipt["recorded_at"])
@@ -640,6 +696,23 @@ class _History:
         self.unaccounted = sorted(run for run in self.runs if run not in self.receipts and run not in self.intents
                                   and run not in self.trials_by_run)
 
+    def certificate_of(self, run_id):
+        """The one certificate sha256 every start and close of run_id names, or None (unknown: an unaccounted
+        reconstruction, or a start written before task c2b3b3; an absent field is None). RunRefused
+        ledger:<run>:certificate_malformed when one is neither, ledger:<run>:certificates_disagree when they differ."""
+        named = set()
+        for start in self.trials_by_run.get(run_id, []):
+            for entry in (start, self.closed.get(start["trial_id"])):
+                if entry is None:
+                    continue
+                value = entry["summary"].get("certificate_sha256")
+                if not (value is None or (isinstance(value, str) and SHA256_RE.fullmatch(value))):
+                    raise RunRefused(f"ledger:{run_id}:certificate_malformed")
+                named.add(value)
+        if len(named) > 1:
+            raise RunRefused(f"ledger:{run_id}:certificates_disagree")
+        return next(iter(named), None)
+
     def starts_until(self, seq):
         return sum(1 for entry in self.started if entry["seq"] <= seq)
 
@@ -675,11 +748,14 @@ class _History:
         if status != "completed":
             if receipt.get("results_sha256") is not None:
                 raise RunRefused(f"receipt:{run_id}:results_without_completion")
-            return
-        evidence = _completed_evidence(run, run_id, closes, self.digest)
-        for key in ("results_sha256", "issuance_ledger_sha256", "issuance_ledger_bytes", "engineering_acceptance"):
-            if receipt.get(key) != evidence[key]:
-                raise RunRefused(f"receipt:{run_id}:{key}_mismatch")
+        else:
+            evidence = _completed_evidence(run, run_id, closes, self.digest)
+            for key in ("results_sha256", "issuance_ledger_sha256", "issuance_ledger_bytes",
+                        "engineering_acceptance"):
+                if receipt.get(key) != evidence[key]:
+                    raise RunRefused(f"receipt:{run_id}:{key}_mismatch")
+        if receipt["certificate_sha256"] != self.certificate_of(run_id):    # both starts and every close
+            raise RunRefused(f"receipt:{run_id}:certificate_sha256_mismatch")
 
 
 def _file_bytes_sha(path, where):
@@ -700,16 +776,24 @@ def _file_bytes_sha(path, where):
 def _results_shape(results, digest, run_id):
     acceptance = results.get("engineering_acceptance")
     issuance = results.get("issuance")
+    certification = results.get("certification")
     return ((results.get("kind"), results.get("schema_version"), results.get("contract_sha256"), results.get("run_id"))
             == (RESULTS_KIND, RESULTS_SCHEMA_VERSION, digest, run_id)
             and isinstance(acceptance, dict) and isinstance(issuance, dict)
-            and results.get("certification") is None)
+            and isinstance(certification, dict) and sorted(certification) == ["certificate", "key", "sha256"]
+            and all(isinstance(certification[key], str) and SHA256_RE.fullmatch(certification[key])
+                    for key in ("key", "sha256"))
+            and isinstance(certification["certificate"], dict))
 
 
 def _completed_evidence(run, run_id, closes, digest):
-    """The evidence a completed run's receipt must name, from its files and its closing entries, which must agree:
-    the results and issuance sha256, the issuance size and the engineering-acceptance binding recomputed from
-    results.json (RunRefused <what>_mismatch otherwise)."""
+    """The evidence a completed run's receipt must name, from its files, its closing entries and
+    results.certification, which must agree: the results and issuance sha256, the issuance size, the
+    engineering-acceptance binding recomputed from results.json and the certificate sha256. results.certification
+    must be self-bound: its certificate's canonical bytes have its sha256, the certificate is certified for its key,
+    and component (ii) names that sha256. Otherwise RunRefused results:<run>:malformed, schema_not_supported,
+    issuance_not_the_ledgers, certificate_not_its_sha256, certificate_not_certified or
+    certification_not_the_acceptances, or receipt:<run>:<what>_mismatch."""
     results_sha, _ = _file_bytes_sha(run / RESULTS_FILE, f"results:{run_id}")
     issuance_sha, issuance_size = _file_bytes_sha(run / ISSUANCE_FILE, f"issuance:{run_id}")
     files = {"results_sha256": results_sha, "issuance_ledger_sha256": issuance_sha,
@@ -728,20 +812,110 @@ def _completed_evidence(run, run_id, closes, digest):
     if (results["issuance"].get("ledger_sha256"), results["issuance"].get("ledger_bytes")) != (issuance_sha,
                                                                                                issuance_size):
         raise RunRefused(f"results:{run_id}:issuance_not_the_ledgers")
-    binding = _binding(results["engineering_acceptance"])
+    certification = results["certification"]                 # self-bound: its own key and bytes, not today's key
+    if _sha256_bytes(_canonical(certification["certificate"]) or b"") != certification["sha256"]:
+        raise RunRefused(f"results:{run_id}:certificate_not_its_sha256")
+    if (certification["certificate"].get("kind") != CERTIFICATE_KIND
+            or certification["certificate"].get("key") != certification["key"]
+            or certification["certificate"].get("status") != CERTIFIED):
+        raise RunRefused(f"results:{run_id}:certificate_not_certified")
+    if _component_ii(results["engineering_acceptance"]) != _certification_component(certification["sha256"]):
+        raise RunRefused(f"results:{run_id}:certification_not_the_acceptances")
+    binding = _binding(results["engineering_acceptance"], certification["sha256"])
     if any(close["summary"].get("engineering_acceptance") != binding for close in closes):
         raise RunRefused(f"receipt:{run_id}:engineering_acceptance_mismatch")
-    return dict(files, engineering_acceptance=binding)
+    if any(close["summary"].get("certificate_sha256") != certification["sha256"] for close in closes):
+        raise RunRefused(f"receipt:{run_id}:certificate_sha256_mismatch")
+    return dict(files, engineering_acceptance=binding, certificate_sha256=certification["sha256"])
 
 
-def _binding(acceptance):
+def _says_passed(value):
+    """Whether value (an acceptance or its binding) is an object whose status is exactly passed."""
+    return isinstance(value, dict) and value.get("status") == PASSED
+
+
+def _certification_component(certificate_sha256):
+    """prefix_invariance component (ii) of a run bound to a certified certificate (a run starts only with one)."""
+    return {"status": PASSED, "certificate_sha256": certificate_sha256}
+
+
+def _component_ii(acceptance):
+    """The synthetic_certification component an acceptance holds, or None at any level that is not an object."""
+    value = acceptance
+    for key in ("criteria", "prefix_invariance", "components", PREFIX_COMPONENTS[1]):
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
+def _stop_evidence(history):
+    """(passed, unbound) run ids of this contract (decision 7, control D). passed: a completed close of the verified
+    ledger whose binding says passed. unbound, only when nothing passed: a close of another kind carrying a passed
+    binding, or a canonical results.json of this contract saying passed in a run directory whose receipt is not a
+    completed one (those were checked whole). Canonical means canonical JSON with or without its final newline: the
+    one cut write that still parses keeps the whole claim, so it claims; any other cut, or a file that is not canonical
+    JSON, claims nothing. One that is not a regular file or cannot be inspected or read refuses."""
+    passed, unbound = set(), set()
+    for close in history.closed.values():
+        if _says_passed(close["summary"].get("engineering_acceptance")):
+            (passed if close["kind"] == "completed" else unbound).add(close["trial_id"].rsplit(".", 1)[0])
+    if passed:
+        return sorted(passed), []
+    for run_id, run in history.runs.items():
+        receipt = history.receipts.get(run_id)
+        if receipt is not None and receipt["status"] == "completed":
+            continue
+        target, where = run / RESULTS_FILE, f"results:{run_id}"
+        if not _present(target, where):
+            continue
+        try:
+            regular = not target.is_symlink() and target.is_file()
+        except OSError:
+            raise RunRefused(f"{where}:uninspectable") from None
+        if not regular:                                          # never followed, and a FIFO never blocks the scan
+            raise RunRefused(f"{where}:not_a_regular_file")
+        data = _read_capped(_guard(target, where), where)
+        try:
+            value = loads_strict(data)
+        except (ValueError, RecursionError):
+            continue
+        canonical = _canonical(value) if isinstance(value, dict) else None
+        if (canonical is not None and data in (canonical, canonical[:-1]) and value.get("kind") == RESULTS_KIND
+                and value.get("contract_sha256") == history.digest
+                and _says_passed(value.get("engineering_acceptance"))):
+            unbound.add(run_id)
+    return [], sorted(unbound)
+
+
+def _binding(acceptance, certificate_sha256):
     """The compact binding of a run's engineering acceptance that closes and receipts carry (the trial ledger's
     summary bounds keep the full result in results.json): its status, rule and criteria version, the tagged sha256 of
-    its canonical JSON, and the certificate sha256 (null until certification is bound, task c2b3b3)."""
+    its canonical JSON, and the sha256 of the certificate the run was bound to."""
     return {"status": acceptance.get("status"), "rule": acceptance.get("rule"),
             "criteria_version": acceptance.get("criteria_version"),
             "acceptance_sha256": hashlib.sha256(ACCEPTANCE_TAG + canonical_json(acceptance)).hexdigest(),
-            "certificate_sha256": None}
+            "certificate_sha256": certificate_sha256}
+
+
+def _certification(lab):
+    """{key, sha256, certificate}: the certified certificate stored in the lab-state root for the current key (these
+    sources and this interpreter); RunRefused source:<..>, certification:<..>, certifications:<..> or certificate:<..>
+    otherwise (guard denials included)."""
+    try:
+        key = current_key()[0]
+        certificate, sha256 = load_certificate(lab, key)
+    except CertificateProblem as error:
+        raise RunRefused(str(error)) from None
+    return {"key": key, "sha256": sha256, "certificate": certificate}
+
+
+def _source_problem(key, when):
+    """None while the current key (these sources, this interpreter) is still the bound one; else source:<when>, or
+    source:<when>:<the descriptor's refusal> when the sources can no longer be described (decision 12)."""
+    try:
+        now = current_key()[0]
+    except CertificateProblem as error:
+        return f"source:{when}:{error}"
+    return None if now == key else f"source:{when}"
 
 
 def _known_answers():
@@ -773,10 +947,11 @@ def _read_back(path, written, where):
     return data
 
 
-def _acceptance(rule, kat, reconciliation, tally):
-    """results.engineering_acceptance: the three criteria, prefix_invariance with its two components (the
-    synthetic certification incomplete until it is bound, task c2b3b3), and engineering_status over them."""
-    components = {PREFIX_COMPONENTS[0]: tally, PREFIX_COMPONENTS[1]: dict(CERTIFICATE_NOT_BOUND)}
+def _acceptance(rule, kat, reconciliation, tally, certificate_sha256):
+    """results.engineering_acceptance: the three criteria, prefix_invariance with its two components (the synthetic
+    certification passed, naming the bound certificate's sha256), and engineering_status over them."""
+    components = {PREFIX_COMPONENTS[0]: tally,
+                  PREFIX_COMPONENTS[1]: _certification_component(certificate_sha256)}
     statuses = [component["status"] for component in components.values()]
     prefix_status = FAILED if FAILED in statuses else PASSED if statuses == [PASSED, PASSED] else INCOMPLETE
     criteria = {"issuance_exposure_reconciliation": reconciliation, "known_accounting_answers": kat,
@@ -865,7 +1040,8 @@ def _append(ledger, kind, trial_id, variant, contract, input_sha256, code_identi
                          code_identity=code_identity, recorded_at=recorded_at, summary=summary)
 
 
-def _receipt(digest, run_id, status, failure, evidence, trials, head, starts, recorded_at, reconciled_by):
+def _receipt(digest, run_id, status, failure, evidence, trials, head, starts, recorded_at, reconciled_by,
+             certificate_sha256=None):
     """evidence: _completed_evidence's keys for a completed run, else None (its fields stay null)."""
     evidence = evidence or {}
     return {"kind": RECEIPT_KIND, "schema_version": RECEIPT_SCHEMA_VERSION, "contract_sha256": digest,
@@ -873,7 +1049,7 @@ def _receipt(digest, run_id, status, failure, evidence, trials, head, starts, re
             "results_sha256": evidence.get("results_sha256"),
             "issuance_ledger_sha256": evidence.get("issuance_ledger_sha256"),
             "issuance_ledger_bytes": evidence.get("issuance_ledger_bytes"),
-            "engineering_acceptance": evidence.get("engineering_acceptance"), "certificate_sha256": None,
+            "engineering_acceptance": evidence.get("engineering_acceptance"), "certificate_sha256": certificate_sha256,
             "trials": [{"variant": variant, "trial_id": trial_id, "started": list(start), "closed": list(close),
                         "issued": issued} for variant, trial_id, start, close, issued in trials],
             "ledger_head": list(head), "cumulative_starts": starts, "recorded_at": recorded_at,
@@ -893,13 +1069,23 @@ def run_backtest(contract_path, data_root, lab_state_root, run_id, code_identity
                             ("lab_state_root", lab_state_root)):
             _guard(path, where)
         contract, digest, (rules, accounting_rules, bootstrap_plan) = _load_contract(_guard(contract_path, "contract"))
-        kat = _known_answers()
+        try:
+            in_profile = canonical_json(profile_of(contract)) == canonical_json(P0_PROFILE)
+        except (KeyError, TypeError, AttributeError, ValueError):
+            in_profile = False
+        if not in_profile:                                       # decision 3: the certified structural profile
+            raise RunRefused("contract:not_supported:not_the_certified_profile")
         root, lab = _roots(data_root, lab_state_root)
         _identifiers(run_id, code_identity)
+        certification = _certification(lab)
+        kat = _known_answers()
         archives, descriptor, input_sha256 = _inputs(root)
         for archive in archives:                    # ingested under the read limits this run replays with
             if archive["manifest"].get("limits") != asdict(limits):
                 raise RunRefused(f"input:{archive['archive_sha256']}:limits_not_the_runs")
+        if canonical_json(certification["certificate"]["limits"]) != canonical_json(      # and certified under
+                {"read": asdict(limits), "prefix_limit_bytes": PREFIX_LIMIT_BYTES}):
+            raise RunRefused("certification:limits_not_the_runs")
         records, eligible, keys = _first_pass(archives, rules)
         if not records:
             raise RunRefused("inputs:no_records")
@@ -923,10 +1109,18 @@ def run_backtest(contract_path, data_root, lab_state_root, run_id, code_identity
             raise RunRefused("receipt:missing:" + ",".join(history.missing))
         if history.unaccounted:
             raise RunRefused("run:unaccounted:" + ",".join(history.unaccounted))
+        passed, unbound = _stop_evidence(history)                # the stop rule (decision 7, control D)
+        if passed:
+            raise RunRefused("contract:engineering_passed:" + ",".join(passed))
+        if unbound:
+            raise RunRefused("contract:engineering_pass_claim_unbound:" + ",".join(unbound))
         if any(trial_id in history.every for _, trial_id in trials) or _present(runs_dir / run_id, "run_dir"):
             raise RunRefused("run_id:already_used")
         if len(history.started) + len(trials) > contract["stopping_rule"]["max_trials"]:
             raise RunRefused("ledger:trial_budget_exhausted")
+        problem = _source_problem(certification["key"], "changed_before_start")    # decision 12
+        if problem:
+            raise RunRefused(problem)
         run_dir = _guard(runs_dir / run_id, "run_dir", prospective=True)
         run_dir.mkdir()
     except Exception as error:
@@ -935,17 +1129,17 @@ def run_backtest(contract_path, data_root, lab_state_root, run_id, code_identity
             return _uncertain(problem, lock, (), lock_release="failed")
         return {"status": "refused", "problems": [problem]}
     return _run(contract, digest, rules, accounting_rules, bootstrap_plan, archives, descriptor, input_sha256, records,
-                keys, kat, root, history, trials, run_id, run_dir, code_identity, clock, limits, lock)
+                keys, kat, certification, root, history, trials, run_id, run_dir, code_identity, clock, limits, lock)
 
 
 def _run(contract, digest, rules, accounting_rules, bootstrap_plan, archives, descriptor, input_sha256, records,
-         keys, kat, root, history, trials, run_id, run_dir, code_identity, clock, limits, lock):
+         keys, kat, certification, root, history, trials, run_id, run_dir, code_identity, clock, limits, lock):
     ledger, ids = history.ledger, [trial_id for _, trial_id in trials]
     started = {}
     for index, (variant, trial_id) in enumerate(trials):
         try:
             started[variant] = _append(ledger, "started", trial_id, variant, contract, input_sha256, code_identity,
-                                       clock(), {})
+                                       clock(), {"certificate_sha256": certification["sha256"]})
         except LedgerError as error:
             if index == 0 and not isinstance(error, (WriteUncertainError, UnlockError)):
                 try:
@@ -967,7 +1161,11 @@ def _run(contract, digest, rules, accounting_rules, bootstrap_plan, archives, de
         issued = {variant: counts[variant]["issued"] for variant, _ in trials}
         stubs = [{"market_id": market_id, "provenance": {"plan": plan}} for plan, market_id in sorted(keys)]
         reconciliation = issuance_exposure_reconciliation(rules, stubs, decisions, observed, bets, settlement)
-        acceptance = _acceptance(contract["engineering_acceptance"]["rule"], kat, reconciliation, tally)
+        acceptance = _acceptance(contract["engineering_acceptance"]["rule"], kat, reconciliation, tally,
+                                 certification["sha256"])
+        problem = _source_problem(certification["key"], "changed_during_run")   # decision 12: failed, charged
+        if problem:
+            raise RuntimeError(problem)
         issuance_sha = _sha256_bytes(observed)
         results = {"kind": RESULTS_KIND, "schema_version": RESULTS_SCHEMA_VERSION, "contract_sha256": digest,
                    "run_id": run_id, "code_identity": code_identity, "input": descriptor, "input_sha256": input_sha256,
@@ -975,14 +1173,16 @@ def _run(contract, digest, rules, accounting_rules, bootstrap_plan, archives, de
                                   "source_refusals": _source_refusals(archives)},
                    "issuance": {"ledger_sha256": issuance_sha, "ledger_bytes": len(observed),
                                 "writer_sha256": writer_sha, "rows": len(lines), "by_variant": counts},
-                   "settlement": settlement_part, "certification": None, "engineering_acceptance": acceptance}
+                   "settlement": settlement_part, "certification": certification, "engineering_acceptance": acceptance}
         results_sha = _write_new(run_dir / RESULTS_FILE, [canonical_json(results) + b"\n"], "results")
         evidence = {"results_sha256": results_sha, "issuance_ledger_sha256": issuance_sha,
-                    "issuance_ledger_bytes": len(observed), "engineering_acceptance": _binding(acceptance)}
+                    "issuance_ledger_bytes": len(observed),
+                    "engineering_acceptance": _binding(acceptance, certification["sha256"]),
+                    "certificate_sha256": certification["sha256"]}
     except Exception as error:                                  # anything after the starts closes them as failed
         failure, evidence = _failure(error), None
     closed = {}
-    summary = dict(evidence) if failure is None else {"failure": failure}
+    summary = dict(evidence) if failure is None else {"failure": failure, "certificate_sha256": certification["sha256"]}
     for variant, trial_id in trials:
         try:
             closed[variant] = _append(ledger, "completed" if failure is None else "failed", trial_id, variant,
@@ -993,7 +1193,7 @@ def _run(contract, digest, rules, accounting_rules, bootstrap_plan, archives, de
     receipt = _receipt(digest, run_id, status, failure, evidence,
                        [(variant, trial_id, started[variant], closed[variant], issued[variant])
                         for variant, trial_id in trials],
-                       ledger.head, len(history.started) + len(trials), clock(), None)
+                       ledger.head, len(history.started) + len(trials), clock(), None, certification["sha256"])
     try:
         receipt_sha = _write_new(run_dir / RECEIPT_FILE, [canonical_json(receipt) + b"\n"], "receipt")
     except Exception as error:
@@ -1039,11 +1239,14 @@ def reconcile(contract_path, lab_state_root, code_identity, clock=utc_now_text):
     try:
         history = _History(contract_dir, runs_dir, digest, rules.variants)
         aborted, recorded = list(history.unfinished), list(history.unaccounted)
+        certificates = {run_id: history.certificate_of(run_id)       # each aborted run's, before any append
+                        for run_id in sorted({trial_id.rsplit(".", 1)[0] for trial_id in aborted})}
         for entry in history.started:
             if entry["trial_id"] in aborted:
                 _append(history.ledger, "aborted", entry["trial_id"], entry["variant"], contract,
                         entry["input_sha256"], entry["code_identity"], clock(),
-                        {"reason": "reconciled_unfinished", "reconciled_by": code_identity, "pending": aborted})
+                        {"reason": "reconciled_unfinished", "reconciled_by": code_identity, "pending": aborted,
+                         "certificate_sha256": certificates[entry["trial_id"].rsplit(".", 1)[0]]})
                 appended.append(entry["trial_id"])
         for run_id in recorded:                      # the intent first, so an interruption cannot shrink the record
             intent = {"kind": RECOVERY_KIND, "schema_version": RECOVERY_SCHEMA_VERSION, "contract_sha256": digest,
@@ -1057,8 +1260,9 @@ def reconcile(contract_path, lab_state_root, code_identity, clock=utc_now_text):
                 if variant in have:
                     continue
                 trial_id = f"{run_id}.{variant}"
-                for kind, summary in (("started", {}), ("aborted", {"reason": "reconciled_unaccounted_run",
-                                                                    "reconciled_by": code_identity})):
+                for kind, summary in (("started", {"certificate_sha256": None}),       # unknown, never invented
+                                      ("aborted", {"reason": "reconciled_unaccounted_run",
+                                                   "reconciled_by": code_identity, "certificate_sha256": None})):
                     _append(history.ledger, kind, trial_id, variant, contract, UNKNOWN_INPUT_SHA256, code_identity,
                             clock(), summary)
                     appended.append(f"{trial_id}:{kind}")
@@ -1074,11 +1278,12 @@ def reconcile(contract_path, lab_state_root, code_identity, clock=utc_now_text):
             closes = [history.closed[entry["trial_id"]] for entry in trials]
             status = _status_of({close["kind"] for close in closes})
             evidence = (_completed_evidence(run_dir, run_id, closes, digest) if status == "completed" else None)
+            certificate_sha256 = history.certificate_of(run_id)
             head = history.ledger.head
             anchors = [(entry["variant"], entry["trial_id"], (entry["seq"], entry["entry_sha256"]),
                         (close["seq"], close["entry_sha256"]), None) for entry, close in zip(trials, closes)]
             receipt = _receipt(digest, run_id, status, None if status == "completed" else "reconciled", evidence,
-                               anchors, head, history.starts_until(head[0]), clock(), code_identity)
+                               anchors, head, history.starts_until(head[0]), clock(), code_identity, certificate_sha256)
             _publish(run_dir / RECEIPT_FILE, receipt, f"receipt:{run_id}", run_id, touched)
             receipted.append(run_id)
     except Exception as error:

@@ -19,9 +19,14 @@ run-backtest --contract PATH --data-root DIR --lab-state-root DIR --run-id ID --
 contract over every indexed archive under the data root (runner.py) and prints one JSON line: status completed with
 engineering acceptance passed (exit 0); completed with engineering acceptance failed or incomplete, the evidence in
 the run's results (exit 4: the run's starts are spent, and it is no permission to retry); or refused, failed or
-uncertain (exit 2). reconcile-trials --contract PATH --lab-state-root DIR --code-identity TEXT closes, as aborted,
-the contract's trials that started and never closed (exit 0 when reconciled, else 2). runner is imported inside
-_runner_command, as the archive modules are.
+uncertain (exit 2). It needs the certificate certify-engine stored under <lab-state-root>/certifications for these
+sources and this interpreter, and a contract inside the certified profile; otherwise it refuses (exit 2). Once a run
+of the contract has passed under that lab-state root, or a surviving result there claims a pass, every later run of
+it under that root refuses (exit 2); a new root or a changed contract starts its own ledger and is not stopped
+(runner.py, Limits), so keep one root per contract campaign. reconcile-trials
+--contract PATH --lab-state-root DIR --code-identity TEXT closes, as aborted, the contract's trials that started and
+never closed (exit 0 when reconciled, else 2); it needs no certificate. runner is imported inside _runner_command, as
+the archive modules are.
 
 certify-engine --lab-state-root DIR --attempt-id ID certifies this engine on the synthetic certification cases
 (certify.certify_engine) under <root>/certifications and prints one JSON line: certified or already_certified (exit

@@ -270,6 +270,9 @@ class ViewTests(Workspace):
         with self.assertRaises(Exception):
             view.runners[0].ltp = 1.5
         self.assertEqual(replay.frozen({"b": [1, {"c": [2]}], "a": None}), (("a", None), ("b", (1, (("c", (2,)),)))))
+        odd = standard_market()[:3] + [prices("1.100000001", OFF - timedelta(minutes=6), {1: [2.0, {"x": 1}]})]
+        runner_1 = self.view([(path("1.100000001"), odd + standard_market()[3:])]).runners[0]
+        self.assertEqual(runner_1.ltp, (2.0, (("x", 1),)))     # a raw value that is not a price is frozen too
 
     def test_usable_ltp(self):
         for value, usable in ((1.01, True), (2, True), (0, False), (-1.5, False), (None, False), ("2.0", False),

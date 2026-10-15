@@ -640,33 +640,49 @@ class _Market:
                 "checks": checks, "coverage": coverage, "decision_time": decision, "evaluator_only_outcome": outcome}
 
 
+def fold_member_stream(stream, limits, observe=None):
+    """({market id: _Market}, unreadable reason or None, complete_before_pt or None) of one decompressed member
+    stream (anything with readline), folded from fresh state with the rules in the module docstring: each message
+    checked whole before any of it is applied, in file order. complete_before_pt is the failing message's pt when it
+    was read (pts never decrease, so every message published before it was applied; its own batch may be
+    incomplete), else the pt of the last message applied (the line whose pt is unknown may belong to that batch),
+    else None. observe(pt, market id, change), when given, is called after each change is applied (replay's prices
+    fold alongside). A decompression or read failure of the stream is the reason not_bz2, as for a file."""
+    markets, reason, complete = {}, None, None
+    try:
+        for pt, message in _messages(stream, limits):
+            try:
+                checked = _checked_changes(message)
+            except _Unreadable as error:
+                raise _Unreadable(str(error), pt) from None
+            for market_id, change in checked:
+                market = markets.get(market_id)
+                if market is None:
+                    market = markets[market_id] = _Market(market_id, pt)
+                market.change(pt, change)
+                if observe is not None:
+                    observe(pt, market_id, change)
+            complete = pt
+    except _Unreadable as error:
+        reason = str(error)
+        if error.pt is not None:            # checked not to decrease, so never before the last pt applied
+            complete = error.pt
+    except (OSError, EOFError, ValueError):
+        reason = "not_bz2"
+    return markets, reason, complete
+
+
 def _read_member(path, limits):
     """({market id: _Market}, unreadable reason or None, (sha256, size) of the compressed bytes read,
-    complete_before_pt or None). complete_before_pt is the failing message's pt when it was read (pts never
-    decrease, so every message published before it was applied; its own batch may be incomplete), else the pt of
-    the last message applied (the line whose pt is unknown may belong to that batch), else None. OSError when the
-    file cannot be opened or read."""
+    complete_before_pt or None): fold_member_stream over the member's bz2 stream, every compressed byte hashed (the
+    rest drained after a failure). OSError when the file cannot be opened or read."""
     markets, reason, complete = {}, None, None
     with open(path, "rb") as handle:
         reader = HashingReader(handle)
         try:
             with bz2.BZ2File(reader) as stream:
-                for pt, message in _messages(stream, limits):
-                    try:
-                        checked = _checked_changes(message)
-                    except _Unreadable as error:
-                        raise _Unreadable(str(error), pt) from None
-                    for market_id, change in checked:
-                        market = markets.get(market_id)
-                        if market is None:
-                            market = markets[market_id] = _Market(market_id, pt)
-                        market.change(pt, change)
-                    complete = pt
-        except _Unreadable as error:
-            reason = str(error)
-            if error.pt is not None:        # checked not to decrease, so never before the last pt applied
-                complete = error.pt
-        except (OSError, EOFError, ValueError):
+                markets, reason, complete = fold_member_stream(stream, limits)
+        except (OSError, EOFError, ValueError):     # opening or closing the stream failed: as before, not_bz2
             reason = "not_bz2"
         digest = reader.drain()
     return markets, reason, digest, complete

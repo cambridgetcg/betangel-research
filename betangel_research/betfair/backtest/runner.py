@@ -25,7 +25,14 @@ Preflight, before any trial starts (Astra's design agreement D4, D12, D14 and he
    path month and every marketTime month it saw) and refuses a record any of whose months the CURRENT month gate
    refuses (stale_gate: an index built under an older gate never lets the run read sealed, exposed or later data;
    the manifest's gate snapshot is only reported, as manifest_gate_current) and two records of one (plan, market id)
-   across archives, before anything is decided.
+   across archives, before anything is decided. The same pass classifies every record under the contract's own
+   population rules (cohort.classify: tier, evaluated split, anchor and as-of eligibility; no replay, no runner
+   draw, no outcome; a record those rules cannot read refuses as malformed_record) and, only once the whole pass has
+   verified every record and file, refuses a corpus with no record (inputs:no_records) or with no eligible record
+   (inputs:no_eligible_records), before the lock or any write. The count only gates the start: every record still
+   goes to the run (excluded, unclassifiable and no-view records are decided and reported as before), and one
+   eligible record is enough to start the trials, even if every decision then abstains or is unsupported, or every
+   outcome stays unresolved; such a run is charged.
 6. The per-contract runner lock, <lab>/contracts/<contract sha256>/runner.lock, made by exclusive create: one runner
    attempt (or reconcile) per contract at a time; a lock left behind refuses until a person removes it, never taken
    by force.
@@ -95,7 +102,7 @@ import re
 
 from .accounting import AccountingRules, settle
 from .archive import DEFAULT_LIMITS, ArchiveProblem, check_data_root, gate_snapshot, month_gate, safe_path, safe_target
-from .cohort import CohortRules, decide_market, issuance_counts, ledger_lines, population_counts
+from .cohort import ELIGIBLE, CohortRules, classify, decide_market, issuance_counts, ledger_lines, population_counts
 from .contract import ContractFileError, canonical_json, load_contract, result_status, validate_contract
 from .market_index import HEAD_FILE, HEAD_KIND, INDEX_SCHEMA_VERSION, MARKETS_FILE, IndexProblem, archive_shas
 from .market_index import load_manifest, loads_strict
@@ -351,9 +358,10 @@ def _record_months(record, sha):
     return months
 
 
-def _first_pass(archives):
-    """The record count, after checking every record's shape and refusing a duplicate (plan, market id)."""
-    seen, count = set(), 0
+def _first_pass(archives, rules):
+    """(record count, eligible record count), after checking every record's shape and month and refusing a
+    duplicate (plan, market id); the markets files are verified as they are read (_records)."""
+    seen, count, eligible = set(), 0, 0
     for archive in archives:
         for record in _records(archive):
             months = _record_months(record, archive["archive_sha256"])
@@ -366,7 +374,12 @@ def _first_pass(archives):
                 raise RunRefused(f"cohort:{record['market_id']}:duplicate_market")
             seen.add(key)
             count += 1
-    return count
+            try:
+                population = classify(rules, record)[0]
+            except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+                raise RunRefused(f"input:{archive['archive_sha256']}:malformed_record") from None
+            eligible += 1 if population == ELIGIBLE else 0
+    return count, eligible
 
 
 def _source_refusals(archives):
@@ -691,7 +704,11 @@ def run_backtest(contract_path, data_root, lab_state_root, run_id, code_identity
         root, lab = _roots(data_root, lab_state_root)
         _identifiers(run_id, code_identity)
         archives, descriptor, input_sha256 = _inputs(root)
-        records = _first_pass(archives)
+        records, eligible = _first_pass(archives, rules)
+        if not records:
+            raise RunRefused("inputs:no_records")
+        if not eligible:
+            raise RunRefused("inputs:no_eligible_records")
         contract_dir, runs_dir = _paths(lab, digest)
         lock = _Lock(contract_dir / LOCK_NAME, f"run {run_id} {code_identity}\n")
         lock.acquire()

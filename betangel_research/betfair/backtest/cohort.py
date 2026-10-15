@@ -1,10 +1,12 @@
 """P0 population, cohort, the two P0 variants and the issuance ledger, from decision-time facts only (task c2a).
 
 Inputs: a contract (valid; CohortRules.from_contract), one task (b) index record per market, and, for a market whose
-decision needs a view, the DecisionView replay.replay_view builds from the record's primary member. Nothing here
-reads a file, a clock or an outcome: the evaluator_only_outcome, coverage, checks and other_sources parts of a record
-are never read, and neither is a whole-file hash. decide_market takes the replay as a callable, so a market that
-needs no view is never replayed.
+decision needs a view, the DecisionView replay.replay_view builds from the record's primary member (a view whose
+market, plan, anchor or decision time is not the record's refuses: view_for_another_decision; a view carries no
+archive or member identity, so a same-plan view from another archive is the caller's to rule out, as the runner's
+provenance and duplicate checks do). Nothing here reads a file, a clock or an outcome: the evaluator_only_outcome,
+coverage, checks and other_sources parts of a record are never read, and neither is a whole-file hash. decide_market
+takes the replay as a callable, so a market that needs no view is never replayed.
 
 Decision time (plan section 5, contract decision_timing): t = the first-published scheduled off (the anchor, the
 index's first_published_market_time) + offset_s. The decision axis names it, for instance
@@ -333,7 +335,8 @@ def decide_market(rules, record, replay):
             stopped = _outcome(ABSTAINED, "market_not_open_pre_off", ends["reason"])
         return decided([_row(rules, market_id, plan, timing, None, None, every_variant(stopped))])
     view = replay(record)
-    if (view.market_id, view.decision_ms, view.anchor_ms, view.anchor_pt) != (market_id, t, anchor_ms, anchor_pt):
+    if ((view.market_id, view.plan, view.decision_ms, view.anchor_ms, view.anchor_pt)
+            != (market_id, plan, t, anchor_ms, anchor_pt)):
         raise CohortProblem(f"cohort:{market_id}:view_for_another_decision")
     runners = _active(view)
     condition = _market_condition(view)

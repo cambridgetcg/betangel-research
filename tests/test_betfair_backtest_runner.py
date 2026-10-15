@@ -390,6 +390,162 @@ class PreflightTests(RunnerCase):
         self.assertFalse((self.lab / "contracts" / self.digest / LEDGER_FILE).exists())
 
 
+class EmptyInputTests(RunnerCase):
+    """Astra's design B (2026-10-15): a corpus with no record, or with no record eligible under the contract's own
+    population rules, refuses before the lock or any write, and only after the whole first pass; one eligible record
+    starts the trials, which are charged whatever their decisions."""
+
+    def lab_entries(self):
+        return sorted(str(item.relative_to(self.lab)) for item in self.lab.rglob("*"))
+
+    def fresh_roots(self, name):
+        """A new data root and lab-state root, so one case never sees another's archives or starts."""
+        self.data, self.lab = self.tmp / f"data-{name}", self.tmp / f"lab-{name}"
+        self.data.mkdir()
+        self.lab.mkdir()
+
+    def rewrite_records(self, sha, edit):
+        """Rewrite one archive's markets file through edit(list of records) and re-point its head at the bytes."""
+        markets, head_path = self.data / "index" / sha / "markets-v1.jsonl", self.data / "index" / sha / "head-v1.json"
+        records = [json.loads(line) for line in markets.read_bytes().splitlines()]
+        edit(records)
+        data = b"".join(runner.canonical_json(record) + b"\n" for record in records)
+        head = json.loads(head_path.read_bytes())
+        for item, value in ((markets, data), (head_path, runner.canonical_json(
+                dict(head, markets=len(records), markets_sha256=runner._sha256_bytes(data))) + b"\n")):
+            item.chmod(0o600)
+            item.write_bytes(value)
+
+    def test_no_record_or_no_eligible_record_refuses_before_anything_is_written(self):
+        later = datetime(2023, 6, 1, 14, 0, tzinfo=timezone.utc)
+        heartbeats = [{"op": "mcm", "clk": "h", "pt": fx.ms(OFF), "ct": "HEARTBEAT"}]
+        no_view = [fx.md("1.100000005", OFF - timedelta(hours=1), fx.definition(OFF, [fx.runner(1)], marketTime=None))]
+        cases = {
+            "an index with no record": ([(path("1.100000001"), heartbeats)], "inputs:no_records"),
+            "records only outside the evaluated split": (
+                [(path("1.100000002", when=later), market("1.100000002", off=later))], "inputs:no_eligible_records"),
+            "records only in another tier": ([(path("1.100000003", plan="PRO"), market("1.100000003"))],
+                                             "inputs:no_eligible_records"),
+            "records only excluded or unclassifiable": (
+                [(path("1.100000004"), [fx.md("1.100000004", OFF - timedelta(hours=1),
+                                              fx.definition(OFF, [fx.runner(1)], countryCode="FR"))]),
+                 (path("1.100000006"), [fx.md("1.100000006", OFF - timedelta(hours=1),
+                                              fx.definition(OFF, [fx.runner(1)], marketType=fx.DROP))])],
+                "inputs:no_eligible_records"),
+            "a record with no view": ([(path("1.100000005"), no_view)], "inputs:no_eligible_records"),
+            "records only with an anchor published after t": (
+                [(path("1.100000007"), [fx.md("1.100000007", OFF - timedelta(minutes=4),
+                                              fx.definition(OFF, [fx.runner(1), fx.runner(2)]))])],
+                "inputs:no_eligible_records"),
+        }
+        for n, (name, (members, problem)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.fresh_roots(f"case{n}")
+                self.ingest(members)
+                self.assertEqual(self.run_once(), {"status": "refused", "problems": [problem]})
+                self.assertEqual(self.lab_entries(), [])                 # no lock, ledger or run directory
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    code = main(["run-backtest", "--contract", str(self.contract), "--data-root", str(self.data),
+                                 "--lab-state-root", str(self.lab), "--run-id", "cli", "--code-identity", CODE])
+                self.assertEqual((code, json.loads(out.getvalue())["problems"]), (2, [problem]))
+                self.assertEqual(self.lab_entries(), [])
+
+    def test_one_eligible_record_starts_the_trials_whatever_its_decisions_and_outcomes(self):
+        later = datetime(2023, 6, 1, 14, 0, tzinfo=timezone.utc)
+        opening = fx.standard_market("1.100000001")[:1]                           # no price before t
+        heartbeat = {"op": "mcm", "clk": "h", "pt": fx.ms(OFF + timedelta(minutes=10)), "ct": "HEARTBEAT"}
+        eligible = {"settled": (opening + fx.standard_market("1.100000001")[4:], (True, True)),
+                    "unread after its definition": (opening + [heartbeat, b"bad line\n"], (False, False))}
+        for n, (name, (messages, (closed, complete))) in enumerate(eligible.items()):
+            with self.subTest(eligible=name):
+                self.fresh_roots(f"eligible{n}")
+                sha = self.ingest([(path("1.100000002", when=later), market("1.100000002", off=later)),
+                                   (path("1.100000001"), messages)])
+                outcome = json.loads((self.data / "index" / sha / "markets-v1.jsonl").read_bytes().splitlines()[0])
+                self.assertEqual((outcome["market_id"], outcome["evaluator_only_outcome"]["closed_reached"],
+                                  outcome["evaluator_only_outcome"]["read_complete"]),
+                                 ("1.100000001", closed, complete))
+                result = self.run_once()
+                self.assertEqual(result["status"], "completed", result)
+                results = json.loads((self.lab / "runs" / self.digest / "r1" / "results.json").read_bytes())
+                self.assertEqual((results["population"]["records"], results["population"]["by_class"]),
+                                 (2, {"eligible": 1, "excluded": 1}))
+                self.assertEqual({variant: counts["issued"]
+                                  for variant, counts in results["issuance"]["by_variant"].items()},
+                                 {"ltp_favourite": 0, "seeded_random_runner": 0})
+                self.assertEqual([entry["kind"] for entry in self.ledger()],
+                                 ["started", "started", "completed", "completed"])
+
+    def test_a_failure_after_an_eligible_record_names_itself(self):
+        from betangel_research.betfair.backtest import archive, market_index
+        late = datetime(2025, 12, 31, 23, 0, tzinfo=timezone.utc)
+        stale = [fx.md("1.100000009", late - timedelta(hours=2), fx.definition(late, [fx.runner(1), fx.runner(2)])),
+                 fx.md("1.100000009", late - timedelta(hours=1),                  # revised into 2026-01 (sealed)
+                       fx.definition(late + timedelta(hours=2), [fx.runner(1), fx.runner(2)]))]
+        real_gate = archive.month_gate
+
+        def older(month):                                   # an older gate let 2026-01 through
+            return None if month == "2026-01" else real_gate(month)
+
+        self.fresh_roots("stale")
+        with mock.patch.object(archive, "month_gate", older), mock.patch.object(market_index, "month_gate", older):
+            sha = self.ingest([(path("1.100000001"), market("1.100000001")), (path("1.100000009", when=late), stale)])
+        order = [json.loads(line)["market_id"]
+                 for line in (self.data / "index" / sha / "markets-v1.jsonl").read_bytes().splitlines()]
+        self.assertEqual(order, ["1.100000001", "1.100000009"])                 # the eligible record comes first
+        self.assertEqual(self.run_once(), {"status": "refused", "problems": [f"input:{sha}:stale_gate:1.100000009"]})
+        self.assertEqual(self.lab_entries(), [])
+        self.fresh_roots("malformed")
+        sha = self.ingest([(path("1.100000001"), market("1.100000001")),
+                           (path("1.100000002"), market("1.100000002", off=OFF + timedelta(hours=1)))])
+        self.rewrite_records(sha, lambda records: records[1]["checks"].update(path_month="2015-13"))
+        self.assertEqual(self.run_once(), {"status": "refused", "problems": [f"input:{sha}:malformed_record"]})
+        self.assertEqual(self.lab_entries(), [])
+
+    def test_a_record_the_population_rules_cannot_read_refuses_as_malformed(self):
+        def unreadable_anchor(records):                     # its shape passes the first check; classify fails
+            records[0]["decision_time"]["first_published_market_time"]["pt"] = "x"
+
+        for name, members in (("alone", [(path("1.100000001"), market("1.100000001"))]),
+                              ("beside an eligible record", [(path("1.100000001"), market("1.100000001")),
+                                                             (path("1.100000002"), market("1.100000002"))])):
+            with self.subTest(case=name):
+                self.fresh_roots(name.replace(" ", "-"))
+                sha = self.ingest(members)
+                self.rewrite_records(sha, unreadable_anchor)
+                self.assertEqual(self.run_once(), {"status": "refused", "problems": [f"input:{sha}:malformed_record"]})
+                self.assertEqual(self.lab_entries(), [])
+
+    def test_a_failure_anywhere_in_the_pass_names_itself_not_an_empty_population(self):
+        later = datetime(2023, 6, 1, 14, 0, tzinfo=timezone.utc)
+        self.ingest([(path("1.100000002", when=later), market("1.100000002", off=later))])
+        self.ingest([(path("1.100000002", when=later, event="27000002"), market("1.100000002", off=later))])
+        self.assertRefused(self.run_once(), "cohort:1.100000002:duplicate_market")    # in the second archive
+        self.data = self.tmp / "data-changed"
+        self.data.mkdir()
+        sha = self.ingest([(path("1.100000002", when=later), market("1.100000002", off=later))])
+        real = runner._records
+
+        def then_change(archive):                           # the markets file changes while the pass reads it
+            yield from real(dict(archive, markets_sha256="0" * 64))
+
+        with mock.patch.object(runner, "_records", then_change):
+            self.assertRefused(self.run_once(), f"input:{sha}:markets_changed")
+        self.assertEqual(self.lab_entries(), [])
+
+    def test_a_refusal_leaves_the_history_as_it_was(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        before = {str(item): item.read_bytes() for item in self.lab.rglob("*") if item.is_file()}
+        later = datetime(2023, 6, 1, 14, 0, tzinfo=timezone.utc)
+        self.data = self.tmp / "data-other"
+        self.data.mkdir()
+        self.ingest([(path("1.100000002", when=later), market("1.100000002", off=later))])
+        self.assertRefused(self.run_once(run_id="r2"), "inputs:no_eligible_records")
+        self.assertEqual({str(item): item.read_bytes() for item in self.lab.rglob("*") if item.is_file()}, before)
+
+
 class ReviewRegressionTests(RunnerCase):
     """The pre-submission review's reproductions (B1 escapes, S1 refunds, S2 forged receipts, S3 reconcile status, S4
     malformed heads), each now a refusal, a failure or an uncertain result, never an escaping exception."""
@@ -521,8 +677,8 @@ class ReviewRegressionTests(RunnerCase):
     def test_a_markets_file_changed_after_preflight_fails_the_run(self):
         real = runner._first_pass
 
-        def then_change(archives):
-            count = real(archives)
+        def then_change(archives, rules):
+            count = real(archives, rules)
             for archive in archives:                                # still valid JSON, other bytes
                 archive["markets_path"].chmod(0o600)
                 data = archive["markets_path"].read_bytes()

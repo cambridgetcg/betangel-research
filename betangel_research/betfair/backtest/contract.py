@@ -34,15 +34,18 @@ costs, cohort, variants, seeds, trial budget and stopping rule) are mandatory at
 nothing here lets a draft pass as frozen.
 
 The holdout split must be exactly SEALED_HOLDOUT, no other split may overlap it, it may not contain an
-already-inspected month (INSPECTED_MONTHS), and it cannot be evaluated under schema_version 1 at all; changing
-any of that is a schema change. Outcome-bearing data downloaded before any freeze is recorded with its file
-hash, the known minimum that was viewed and an unknown full inspection extent (deleting a file does not restore
-untouched status): EXPOSED_MONTHS by month, and NOT_PROSPECTIVE_DATES by race date, never prospective evidence
-(v1 has no prospective split, so it is the record later schemas and the trial ledger start from). No split may
-hold an exposed month or the month of a not-prospective date (exposed_not_holdout for the holdout,
-exposed_exploratory_only for the others): that data is exploratory only. Neither record shows that nobody saw
-the sealed months: they are sealed because this project's record says they were never downloaded, not because
-an audit proved it.
+already-inspected month (INSPECTED_MONTHS), and it cannot be evaluated under schema_version 1 at all; changing any
+of that is a schema change. Inspected months are exploratory or engineering material only, so the research split may
+not contain one either (inspected_exploratory_only), whatever the registration kind; the engineering split may. This
+does not show that the rest of a research split is untouched: months a run has already evaluated are recorded by the
+trial ledger and the workflow, not by this validator. Outcome-bearing data downloaded before any freeze is recorded
+with its file hash, the known minimum that was viewed and an unknown full inspection extent (deleting a file does
+not restore untouched status): EXPOSED_MONTHS by month, and NOT_PROSPECTIVE_DATES by race date, never prospective
+evidence (v1 has no prospective split, so it is the record later schemas and the trial ledger start from). No split
+may hold an exposed month or the month of a not-prospective date (exposed_not_holdout for the holdout,
+exposed_exploratory_only for the others): that data is exploratory only. Neither record shows that nobody saw the
+sealed months: they are sealed because this project's record says they were never downloaded, not because an audit
+proved it.
 
 Decision time is first_published_scheduled_off plus a negative offset_s, over the observed prefix only; the
 intent takes effect delay_s later, still before that scheduled off. A timer at time T sees the equal-pt batch
@@ -634,10 +637,13 @@ class _Checker:
             if any(start <= month <= end for month in exposed):
                 self.add(f"population.splits.{name}",
                          "exposed_not_holdout" if name == "holdout" else "exposed_exploratory_only")
+            inspected = any(start <= _month(month) <= end for month in INSPECTED_MONTHS)
+            if name == "research" and inspected:
+                self.add("population.splits.research", "inspected_exploratory_only")
             if name == "holdout":
                 if (start, end) != sealed:
                     self.add("population.splits.holdout", "not_the_sealed_holdout")
-                if any(start <= _month(month) <= end for month in INSPECTED_MONTHS):
+                if inspected:
                     self.add("population.splits.holdout", "inspected_not_holdout")
             elif start <= sealed[1] and sealed[0] <= end:
                 self.add(f"population.splits.{name}", "overlaps_sealed_holdout")

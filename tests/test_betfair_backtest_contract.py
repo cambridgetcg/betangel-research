@@ -760,6 +760,26 @@ class ContractTests(unittest.TestCase):
                          sorted(["population.splits.holdout:not_after_other_splits",
                                  "population.splits.research:overlaps_sealed_holdout",
                                  "population.splits:research_overlaps_holdout"]))
+        # Inspected months (INSPECTED_MONTHS, 2017-04) are exploratory or engineering material: never research,
+        # whatever the registration kind; the engineering split may hold them; the months beside them are allowed.
+        self.assertEqual(contract_module.INSPECTED_MONTHS, ("2017-04",))
+        for kind, base in (("registered_hypothesis", registered), ("engineering_check", frozen)):
+            def kind_splits(engineering, research, base=base):
+                value = base()
+                value["population"]["splits"].update(
+                    engineering={"start_month": engineering[0], "end_month": engineering[1]},
+                    research={"start_month": research[0], "end_month": research[1]})
+                return problems(value)
+
+            for research in (("2017-04", "2017-04"), ("2016-05", "2025-12"), ("2017-03", "2017-05")):
+                with self.subTest(kind=kind, research=research):
+                    self.assertEqual(kind_splits(("2015-05", "2016-04"), research),
+                                     ["population.splits.research:inspected_exploratory_only"])
+            for research in (("2016-05", "2017-03"), ("2017-05", "2025-12")):
+                with self.subTest(kind=kind, research=research):
+                    self.assertEqual(kind_splits(("2015-05", "2016-04"), research), [])
+            with self.subTest(kind=kind, engineering="2015-05..2017-04"):
+                self.assertEqual(kind_splits(("2015-05", "2017-04"), ("2023-01", "2025-12")), [])
         # Exposed data fits no split and the refusal names it, not only the ordering rule: 2026-09 (EXPOSED_MONTHS)
         # and 2026-10, the month of the not-prospective 2026-10-12 (NOT_PROSPECTIVE_DATES), in any split.
         for month in ("2026-09", "2026-10"):

@@ -5,25 +5,25 @@
   "frozen_on": null,
   "registration": {
     "kind": "engineering_check",
-    "note": "Engineering run of the P0 BSP pipeline on the free 2015-05..2016-04 BASIC corpus, not a registered hypothesis: it is judged only by engineering_acceptance, and its financial_rule is not_applicable. decision_timing.delay_s and stopping_rule.max_trials stay null until task (c) fixes them, before the freeze and before any run."
+    "note": "Engineering run of the P0 BSP pipeline on the free 2015-05..2016-04 BASIC corpus, not a registered hypothesis: it is judged only by engineering_acceptance, and its financial_rule is not_applicable. Engineering acceptance combines exactly its three criteria, and the outcome metrics the runner computes are reported, never judged: it is failed when any criterion failed; otherwise it is incomplete when a criterion is missing or extra, has an unknown status or is incomplete; otherwise it is passed. decision_timing.delay_s 0 is an instantaneous simulated-acceptance assumption, not a measured latency. stopping_rule.max_trials 4 is a budget of four recorded starts: at most two runs that reserve both variants' starts, though attempts that record only one start can make the invocations more than two, and every recorded start stays charged. The declared secondary metric ltp_to_bsp_movement_non_executable is not implemented: no code computes it and no run of this code reports it. Its disposition (explicit deferral, removal or implementation) is decided and recorded before the freeze; removal or implementation changes the certified profile or the source, needs its own reviewed change and a new certification, and would change this text. This contract never runs as a draft: it is frozen only by its own separately reviewed change, with Yu informed first, and runs and trials are named by the frozen contract's contract_sha256 (the sha256 of its canonical JSON, as validate-contract prints it, not of the file's bytes)."
   },
   "financial_rule": {
     "kind": "not_applicable",
-    "reason": "Engineering check: no financial hypothesis, ROI threshold or decision rule applies. No result of this run can support or refute an edge: the 2015-2016 year says nothing about a current edge, and the engineering months count as inspected from the first run on."
+    "reason": "Engineering check: no financial hypothesis, ROI threshold or decision rule applies. No result of this run can support or refute an edge: the 2015-2016 year says nothing about a current edge, and the engineering months count as inspected from the first run on. On BASIC files market_void stays unknown, so every P0 bet settles unresolved: the resolved ROI is undefined, not zero; net_pnl and the drawdown are 0 by construction, not break-even evidence; and no return is measured."
   },
   "engineering_acceptance": {
     "criteria": [
       {
         "name": "issuance_exposure_reconciliation",
-        "definition": "Per variant: the issuance ledger has exactly one row per cohort (market, runner, decision point), none dropped after outcomes; every row has exactly one outcome: issued; not_selected (the variant did not abstain for the market and backed another runner, or none: the plan's watch); abstained, with its decision-time reason; or unsupported, with the missing capabilities.decision input. The counts by outcome and reason sum to the row count; issued bets equal resolved plus unresolved bets, and issued stakes equal S_R plus S_U."
+        "definition": "Per variant, over the run's whole input: every input record (plan, market id) is decided exactly once and only an eligible market holds rows, each row its own decision's (market, plan, axis, anchor, decision time and recomputed decision id); this criterion does not check that the rows are the ones cohort.runner_rule gives, nor that no row was dropped from a decision (cohort.py makes the rows, and the runner writes the ledger from the decisions after settlement), though an issued row dropped while its bet is still among the bets given to accounting or settled fails the bet checks below; every row has exactly one outcome for each contract variant: issued, with the contract's intent; not_selected (the variant did not abstain for the market and backed another runner, or none: the plan's watch); abstained, with its decision-time reason; or unsupported, with the missing capabilities.decision input or the unreadable view, never zero. The issuance ledger read back from disk must be the decisions' canonical ledger byte for byte; the issued rows, keyed by variant and decision id, must equal the bets given to accounting and the settled bets in market, runner and stake; issued bets equal resolved plus unresolved bets, and issued stakes equal S_R plus S_U. Any mismatch fails it; a variant that issued nothing leaves it incomplete, since 0 = 0 is no evidence."
       },
       {
         "name": "known_accounting_answers",
-        "definition": "Every synthetic fixture in docs/backtest-plan.md section 9 reproduces its hand-computed answer to the penny at the fixture's own declared commission rate (at 2%: separate £1 BACK @ 2.0 win and loss net -£0.02; +£10 and -£10 in one market net 0 with no commission; the same in separate markets net -£0.20), and void, dead-heat, removal and missing-BSP fixtures come out unresolved with their stake kept as exposure."
+        "definition": "Before any trial starts, the engine's 13 hand-worked accounting cases (plan section 9's fixtures, penny-rounding cases under both roundings, two variants in one market that are never netted, and every unresolved case: void, dead heat, own and other runner removed after the decision, result revised after close, missing BSP) are settled under the fixtures' own synthetic rules (commission 2%, per-market commission rounded up to the penny unless a case names half-up rounding), whatever this contract's commission rate, and compared with constants written by hand: per bet its status, reasons, settlement case and gross pence; per variant and market its commission, net and unresolved stake; and the total net (at 2%: separate £1 BACK @ 2.0 win and loss net -£0.02; +£10 and -£10 in one market net 0 with no commission; the same in separate markets net -£0.20; unresolved cases keep their stake as exposure). A changed case set, an error or any result other than passed refuses the run before any start; the checked result is the one the run reports."
       },
       {
         "name": "prefix_invariance",
-        "definition": "For every decision time t, a run on the stream truncated at t, and a run with every final BSP, result, removal and market definition published after t removed or revised, give decision records at or before t identical to the full run (decision IDs, abstain and unsupported reasons, intents); only settlement may change, including from resolved to unresolved."
+        "definition": "Two components, both required. First, primary_source_prefix_consistency on the run's real input. Every input record is first checked against its own classification: a decision whose market, plan, class, reason, anchor or decision time t is not the record's fails at this record stage (failed_against_record). A record without a view, or whose anchor was published after t, stops at that stage: its decision is compared only with deciding the record again, then counted apart by reason (not_candidate), or failed_against_record if the two differ. Every other record is a candidate, research-split and other excluded records included; its primary member is streamed again under the run's read limits, every compressed byte hashed against the manifest, and its raw lines are kept, whole and in file order, up to the end of the batch at t, within a retained-prefix limit of 64 MiB (67,108,864 bytes: a bound on the kept prefix, not on the process's memory); the market is decided again from that prefix alone, and every field of the decision (class, reason, anchor, decision time, and every row's ids, inputs, outcomes, reasons, draws and intents) must equal the run's. A difference, a market missing from its prefix, a refused re-decision or counts that do not reconcile fail it. A candidate is unexercised when a line read before the boundary is established, the boundary line itself included, gives no trustworthy pt (unknown_pt_before_boundary; such a line's time is unknown, so it may have been published after t) or keeping the next line would pass the limit (prefix_buffer_limit), so a market made unsupported (decision_view_unreadable) by a line without a readable pt is always unexercised when the index was built under the run's read limits (the index does not record the limits it was built under); an unexercised candidate, a missing record, nothing compared, or a variant that issued nothing among the compared markets leaves it incomplete, never passed. It holds the index's primary and verified path universe fixed: it establishes conditional primary-source prefix consistency on the real input, not alternative real futures, source selection, ingest refusals or markets absent from the index. Second, synthetic_certification: the run's engine certificate, as status passed with its certificate_sha256 (a run starts only with a certified one), whose cases run truncated, deleted and revised synthetic futures through the real ingest, index and evaluation and require the same anchor-by-t membership, decisions and issuance ledger bytes as the full stream, only outcomes and settlement changing. The criterion is failed when a component failed, passed only when both passed, and incomplete otherwise."
       }
     ],
     "rule": "all_criteria_must_hold_outcome_metrics_not_judged"
@@ -42,19 +42,23 @@
     "evaluate_split": "engineering"
   },
   "cohort": {
-    "market_rule": "Every GB or IE horse-racing WIN market in the evaluated months whose first market definition was published at or before the decision time. Nothing published after the decision time admits or drops a market.",
-    "runner_rule": "Every runner ACTIVE in the latest market definition published at or before the decision time. A runner removed later keeps its decision in the issuance ledger.",
+    "market_rule": "Every input record is classified and reported, research-split records included, and only eligible markets have issuance rows. The decision time t is the first-published scheduled off, the anchor, plus decision_timing.offset_s. A record is in the decision population only when its anchor was published at or before t; a record with no view (no_view) or whose anchor was published after t (anchor_not_known_by_decision) is a diagnostic outside the population: it has no rows and no abstention made up from later metadata, and it is counted by class, never dropped. A record in the population is excluded at the first known mismatch, in this order, judged from its plan and the index's decision-time values as of t: its member's plan not the contract's tier (plan_not_contract_tier); the anchor's UTC month outside the evaluated split (month_not_evaluated); eventTypeId other than \"7\" (event_type_not_horse_racing); countryCode outside population.countries (country_not_in_population); marketType outside population.market_types (market_type_not_in_population). Otherwise, when one of those three fields is absent or not text at t, the record is unclassifiable, named by the first such field: never guessed in or out of the population and never filled from later metadata. The rest are eligible: GB or IE horse-racing WIN markets of the evaluated months. Membership and every decision depend only on what was published at or before t, with three bounded exceptions inherited from the index: whether a no_view or anchor_not_known_by_decision record exists at all; a line whose pt cannot be read right after the batch at t, which ends the view there and makes the decision unsupported (decision_view_unreadable); and a member or market the month gate refused from its content (at ingest by the content scan, or at index from any marketTime the member holds for the market, one published after t included), a source-level refusal reported apart.",
+    "runner_rule": "An eligible market whose runner set at t is known and not empty has one row per runner whose status at t is exactly ACTIVE and whose listed is exactly true, in selection-id order; a runner removed after t keeps its row and its decision in the issuance ledger. A market whose view stopped at or before t, whose runner set is unknown at t (a listed runner's status is not one the Historical Data specification lists) or whose runner set is known to be empty has one row with selection_id null. Every row has exactly one outcome per variant.",
     "exclusions": [
-      "No market definition published at or before the decision time: abstain (market_not_published_by_decision).",
-      "Market not OPEN, or already in play, in the latest definition at or before the decision time: abstain (market_not_open_pre_off).",
-      "A required decision-time capability (capabilities.decision) missing for the market or runner in the observed prefix at the decision time: abstain with that capability's unsupported reason; missing is never zero. A missing final BSP or result is no exclusion: the decision stands and its settlement is unresolved."
+      "Market conditions, first applicable wins; each applies to every row of the market for every variant. 1. The view stopped at or before t (the index's view_ends pt is at or before t): unsupported (decision_view_unreadable), with no detail, when the view_ends reason is (member_unreadable_from_pt); otherwise abstained (market_not_open_pre_off), with the view_ends reason as detail. Either way the market has one row with selection_id null.",
+      "2. The market status at t is not text: unsupported (market_definition, status_unknown); text other than OPEN: abstained (market_not_open_pre_off).",
+      "3. inPlay at t is not a boolean: unsupported (market_definition, in_play_unknown); true: abstained (market_not_open_pre_off).",
+      "4. bspMarket at t is not a boolean: unsupported (market_definition, bsp_market_unknown); false: abstained (bsp_market_false), since P0 backs at BSP.",
+      "5. A listed runner whose status is not one the Historical Data specification lists: unsupported (market_definition, runner_status_unknown), one row with selection_id null; an ACTIVE and listed runner whose id is not a positive integer: unsupported (market_definition, runner_id_not_positive).",
+      "6. No runner is ACTIVE and listed: abstained (no_active_runner), one row with selection_id null.",
+      "Then the price input, a required decision-time capability (capabilities.decision) that gates every variant: a runner change at or before t whose runner id does not parse makes every row unsupported (ltp, malformed_price_change); otherwise each runner whose last traded price at t is not a finite number above 0 (absent, null or reset by an image) is unsupported (ltp, missing): missing is never zero. Every reason comes from what was published at or before t, except decision_view_unreadable, whose unreadable line may have been published after t, as the market rule says. A missing final BSP or result is no exclusion: the decision stands and its settlement is unresolved."
     ]
   },
   "decision_timing": {
     "anchor": "first_published_scheduled_off",
     "offset_s": -300,
     "view": "observed_prefix_only",
-    "delay_s": null,
+    "delay_s": 0,
     "equal_pt_order": "timer_after_equal_pt_batch",
     "image_handling": "img_replaces_market_state"
   },
@@ -68,14 +72,14 @@
       "capability": "market_definition",
       "as_of": "decision_time",
       "lookback_s": 0,
-      "definition": "Number of ACTIVE runners in the latest market definition published at or before the decision time."
+      "definition": "Number of runners whose status at the decision time is exactly ACTIVE and whose listed is exactly true, from what was published at or before the decision time. Declared, but no P0 variant uses it."
     },
     {
       "name": "ltp_at_decision",
       "capability": "ltp",
       "as_of": "decision_time",
       "lookback_s": 0,
-      "definition": "Each runner's last traded price published at or before the decision time (BASIC samples LTP at one minute); a runner with none has a missing value, not zero."
+      "definition": "Each runner's last traded price published at or before the decision time (BASIC samples LTP at one minute); a runner with none, a null price, a price an image reset, or a value that is not a finite number above 0 is missing, not zero."
     }
   ],
   "fitting": {"kind": "none"},
@@ -95,11 +99,11 @@
     "missing_bsp_or_result": "unresolved"
   },
   "costs": {
-    "commission_rate": 0.05,
+    "commission_rate": 0.02,
     "rate_source": "declared_assumption",
     "basis": "positive_net_market_winnings",
     "rounding": "per_market_ceil_penny",
-    "note": "Declared assumption, not any account's effective charge: 5% is the conservative example-config rate from a secondary source (fact F62; Betfair's own example is Basic 2%). marketBaseRate in the files does not establish the charge."
+    "note": "Declared assumption, not a measured effective charge: 2% is the commission rate of the Basic package that Yu chose, first relayed by the lab session and confirmed by Yu directly on 2026-10-15; Basic 2% is also Betfair's own example under My Betfair Rewards (fact F62, partially unverified). It is the package's rate, not an account statement: no statement or settlement has verified it, and other charges (such as fact F61's transaction charges) are not modelled. marketBaseRate in the files does not establish the charge. The rate is a published parameter of the engine certificate, outside its certified profile."
   },
   "primary_metric": {
     "name": "roi",
@@ -128,18 +132,18 @@
       "id": "ltp_favourite",
       "role": "candidate",
       "uses_features": ["ltp_at_decision"],
-      "description": "Back at BSP the runner with the lowest ltp_at_decision; a tie or any missing ltp_at_decision abstains for the market."
+      "description": "Back at BSP the runner with the lowest usable ltp_at_decision. When any row is unsupported (ltp), no bet: the supported rows are abstained (ltp_missing_in_market). When the lowest usable price is shared, no bet: every row is abstained (ltp_tie). Otherwise the unique lowest is issued and every other row is not_selected."
     },
     {
       "id": "seeded_random_runner",
       "role": "baseline",
       "uses_features": [],
-      "description": "Back at BSP one ACTIVE runner chosen from seeds.selection and the market id. An empirical baseline reported with its uncertainty, not an engine oracle."
+      "description": "Back at BSP one runner drawn once from all the market's ACTIVE and listed runners, whatever their price inputs, by a hash stream seeded with seeds.selection under a label naming the market id, over their selection ids sorted numerically: for the market's set of ACTIVE and listed runners, the draw depends only on the seed and the market id, never on traversal order or any other market. The drawn runner is issued when its row is supported; when it is unsupported (ltp), no bet and no redraw. Every other supported row is not_selected. Every row records the draw: drawn is true on the drawn row whatever its outcome, false on the others, and null when a market condition left no draw to make. An empirical baseline reported with its uncertainty, not an engine oracle."
     }
   ],
   "stopping_rule": {
-    "max_trials": null,
-    "rule": "Each declared variant runs over the whole engineering split; no variant, feature, cohort rule or cost is added, dropped or changed after outcomes are seen without a new contract and hash. Every started, failed, aborted or completed trial goes to the trial ledger with this contract's sha256."
+    "max_trials": 4,
+    "rule": "Each declared variant runs over the whole engineering split; no variant, feature, cohort rule or cost is added, dropped or changed after outcomes are seen without a new contract and hash. Every started, failed, aborted or completed trial goes to the trial ledger with this contract's sha256. A run records one start per variant, one after the other, and evaluates only after both are recorded; an attempt can stop after recording only one. Every recorded start counts, failed, aborted and reconciled ones included, so max_trials 4, four recorded starts, allows at most two runs that reserve both variants' starts and does not guarantee two complete ones; it does not cap invocations at two, since attempts that recorded one start each can let a later invocation reserve both and run. The remaining starts permit a documented retry of a failed or aborted attempt, never outcome-driven exploration or an automatic retry, and this budget grants no further retry authority. Stop after a pass: once a verified completed close of this contract binds a passed engineering acceptance, every later run refuses (contract:engineering_passed); a surviving unbound claim of a pass (a passed binding on a close that is not completed, or a canonical passing results file of this contract in a run without a completed receipt) also blocks every later run (contract:engineering_pass_claim_unbound), conservatively and without becoming a certified pass. No run id, code identity, source, certificate or budget clears either. The budget and the stop hold per contract sha256 and lab-state root: a changed contract, max_trials included, or another root starts its own ledger, which this rule does not see, and neither is a way around a stopped campaign."
   },
   "seeds": {"selection": 1, "bootstrap": 2}
 }

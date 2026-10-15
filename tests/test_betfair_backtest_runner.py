@@ -1632,7 +1632,7 @@ class CertificateBindingTests(RunnerCase):
                 self.assertEqual(self.run_once(), {"status": "refused",
                                                    "problems": ["contract:not_supported:not_the_certified_profile"]})
         value = fx.frozen_contract()
-        value["costs"]["commission_rate"] = 0.02                 # a published parameter: still the profile
+        value["costs"]["commission_rate"] = 0.05                 # not the draft's rate; a published parameter
         self.assertEqual(self.run_once(contract_path=self.write_contract(value, "rate.json"))["status"], "completed")
 
     def test_sources_changed_before_the_starts_refuse_and_at_finalisation_fail_the_run(self):

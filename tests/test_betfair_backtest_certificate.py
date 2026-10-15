@@ -12,6 +12,7 @@ exit codes, with canned case results; the CLI; and, in a fresh process, the real
 loader accepts. Nothing here reads real data or an account.
 """
 
+import bz2
 import contextlib
 import copy
 from decimal import Decimal
@@ -29,8 +30,12 @@ from unittest import mock
 
 from betangel_research.betfair.backtest import __main__ as cli
 from betangel_research.betfair.backtest import certificate, certification_fixtures as cf, certify
+from betangel_research.betfair.backtest.archive import ingest_archive
 from betangel_research.betfair.backtest.certificate import CertificateProblem
 from betangel_research.betfair.backtest.contract import canonical_json
+from betangel_research.betfair.backtest.market_index import index_archives
+
+import test_betfair_backtest_replay as fx
 
 REPO = Path(__file__).resolve().parent.parent
 P0_CONTRACT = REPO / "research" / "experiments" / "backtest-p0-bsp-v1.json"
@@ -230,18 +235,25 @@ class DescriptorTests(Workspace):
 
     def test_unreadable_sources_refuse_and_the_bounds_are_inclusive(self):
         root, backtest = self.fake_sources()
-        (backtest / "a.py").chmod(0)
-        try:
-            with self.assertRaisesRegex(CertificateProblem, "backtest/a.py:unreadable"):
-                certificate.source_descriptor(root)
-        finally:
-            (backtest / "a.py").chmod(0o644)
-        backtest.chmod(0)
-        try:
-            with self.assertRaisesRegex(CertificateProblem, "source:betangel_research:unreadable"):
-                certificate.source_descriptor(root)
-        finally:
-            backtest.chmod(0o755)
+        # A refused read is simulated: file modes do not stop a root process (the PR #16 review).
+        real_open, real_iterdir = Path.open, Path.iterdir
+
+        def opening(path, *args, **kwargs):
+            if path == backtest / "a.py":
+                raise PermissionError(13, "synthetic: permission denied")
+            return real_open(path, *args, **kwargs)
+
+        def listing(path):
+            if path == backtest:
+                raise PermissionError(13, "synthetic: permission denied")
+            return real_iterdir(path)
+
+        with mock.patch.object(Path, "open", opening), \
+                self.assertRaisesRegex(CertificateProblem, "backtest/a.py:unreadable"):
+            certificate.source_descriptor(root)
+        with mock.patch.object(Path, "iterdir", listing), \
+                self.assertRaisesRegex(CertificateProblem, "source:betangel_research:unreadable"):
+            certificate.source_descriptor(root)
         (backtest / "a.py").write_bytes(b"#" * certificate.MAX_SOURCE_BYTES)
         for index in range(certificate.MAX_SOURCE_FILES - 5):
             (backtest / f"m{index}.py").write_text("")
@@ -614,12 +626,16 @@ class StorageTests(Workspace):
                 self.assertRaisesRegex(CertificateProblem, "certifications:unwritable"):
             certificate.store_certificate(lab, good)
         _, path, _ = certificate.store_certificate(lab, good)
-        path.chmod(0)
-        try:
-            with self.assertRaisesRegex(CertificateProblem, "certificate:unreadable"):
-                certificate.store_certificate(lab, good)
-        finally:
-            path.chmod(0o600)
+        real_open = Path.open
+
+        def opening(target, *args, **kwargs):          # a refused read, as a root process would not see one
+            if target.name == path.name:
+                raise PermissionError(13, "synthetic: permission denied")
+            return real_open(target, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", opening), \
+                self.assertRaisesRegex(CertificateProblem, "certificate:unreadable"):
+            certificate.store_certificate(lab, good)
         with recorded_reads() as sizes:
             certificate.load_certificate(lab, good["key"])
         self.assertEqual(sizes, [certificate.MAX_CERTIFICATE_BYTES + 1])
@@ -893,6 +909,28 @@ class CliTests(Workspace):
         value, digest = certificate.load_certificate(certificate.lab_root(lab), key)
         self.assertEqual((result["key"], result["certificate_sha256"]), (key, digest))
         self.assertEqual(value["status"], certificate.CERTIFIED)
+        # Then a run in another fresh process binds it (task c2b3b3): synthetic inputs, a frozen test contract.
+        data, contract = self.tmp / "data", self.tmp / "contract.json"
+        data.mkdir()
+        tar = fx.make_tar(self.tmp / "a.tar", [(fx.path("1.100000001"),
+                                                bz2.compress(fx.lines(fx.standard_market("1.100000001"))))])
+        self.assertEqual(ingest_archive(tar, data)["status"], "ingested")
+        self.assertEqual(index_archives(data)["status"], "indexed")
+        contract.write_text(json.dumps(fx.frozen_contract()))
+        done = subprocess.run([sys.executable, "-B", "-m", "betangel_research.betfair.backtest", "run-backtest",
+                               "--contract", str(contract), "--data-root", str(data), "--lab-state-root", str(lab),
+                               "--run-id", "fresh", "--code-identity", "git:test"], cwd=REPO,
+                              capture_output=True, text=True, env=dict(ENV, PATH="/usr/bin:/bin"), timeout=600)
+        run = json.loads(done.stdout)
+        self.assertEqual((done.returncode, run["status"], run["engineering_acceptance"]), (0, "completed", "passed"))
+        results = json.loads((Path(run["run_dir"]) / "results.json").read_bytes())
+        self.assertEqual(results["certification"], {"key": key, "sha256": digest, "certificate": value})
+        again = subprocess.run([sys.executable, "-B", "-m", "betangel_research.betfair.backtest", "run-backtest",
+                                "--contract", str(contract), "--data-root", str(data), "--lab-state-root", str(lab),
+                                "--run-id", "again", "--code-identity", "git:test"], cwd=REPO,
+                               capture_output=True, text=True, env=dict(ENV, PATH="/usr/bin:/bin"), timeout=600)
+        self.assertEqual((again.returncode, json.loads(again.stdout)),
+                         (2, {"status": "refused", "problems": ["contract:engineering_passed:fresh"]}))
 
 
 if __name__ == "__main__":

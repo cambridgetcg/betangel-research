@@ -13,13 +13,16 @@ import os
 import io
 import json
 from pathlib import Path
+import contextlib
+import dataclasses
+import hashlib
 import tempfile
 import unittest
 from unittest import mock
 
-from betangel_research.betfair.backtest import runner, trial_ledger
+from betangel_research.betfair.backtest import engineering, replay, runner, trial_ledger
 from betangel_research.betfair.backtest.__main__ import main
-from betangel_research.betfair.backtest.archive import ingest_archive, safe_target
+from betangel_research.betfair.backtest.archive import DEFAULT_LIMITS, ingest_archive, safe_target
 from betangel_research.betfair.backtest.cohort import CohortRules, decide_records, ledger_lines
 from betangel_research.betfair.backtest.contract import contract_sha256
 from betangel_research.betfair.backtest.market_index import index_archives, load_manifest
@@ -90,6 +93,33 @@ class RunnerCase(unittest.TestCase):
         self.ingest([(path("1.100000001"), market("1.100000001")),
                      (path("1.100000002"), market("1.100000002", off=OFF + timedelta(hours=1)))])
 
+    def lab_entries(self):
+        return sorted(str(item.relative_to(self.lab)) for item in self.lab.rglob("*"))
+
+    def fresh_roots(self, name):
+        """A new data root and lab-state root, so one case never sees another's archives or starts."""
+        self.data, self.lab = self.tmp / f"data-{name}", self.tmp / f"lab-{name}"
+        self.data.mkdir()
+        self.lab.mkdir()
+
+    def rewrite_records(self, sha, edit):
+        """Rewrite one archive's markets file through edit(list of records) and re-point its head at the bytes."""
+        markets, head_path = self.data / "index" / sha / "markets-v1.jsonl", self.data / "index" / sha / "head-v1.json"
+        records = [json.loads(line) for line in markets.read_bytes().splitlines()]
+        edit(records)
+        data = b"".join(runner.canonical_json(record) + b"\n" for record in records)
+        head = json.loads(head_path.read_bytes())
+        for item, value in ((markets, data), (head_path, runner.canonical_json(
+                dict(head, markets=len(records), markets_sha256=runner._sha256_bytes(data))) + b"\n")):
+            item.chmod(0o600)
+            item.write_bytes(value)
+
+    def run_file(self, name, run_id="r1"):
+        return self.lab / "runs" / self.digest / run_id / name
+
+    def lab_files(self):
+        return {str(item): item.read_bytes() for item in self.lab.rglob("*") if item.is_file()}
+
 
 class CompletedRunTests(RunnerCase):
     def test_a_completed_run_writes_its_artifacts_ledger_and_receipt(self):
@@ -103,7 +133,7 @@ class CompletedRunTests(RunnerCase):
         self.assertEqual(results["contract_sha256"], self.digest)
         self.assertEqual(results["population"]["records"], 2)
         self.assertEqual(results["population"]["by_class"], {"eligible": 2})
-        self.assertEqual(results["engineering_acceptance"]["status"], "not_evaluated")
+        self.assertEqual(results["engineering_acceptance"]["status"], "incomplete")    # certification not bound
         for variant in ("ltp_favourite", "seeded_random_runner"):
             self.assertEqual(results["issuance"]["by_variant"][variant]["issued"], 2)
             self.assertEqual(results["settlement"]["unresolved_reasons"][variant], {"void_unknown": 2})
@@ -395,26 +425,6 @@ class EmptyInputTests(RunnerCase):
     population rules, refuses before the lock or any write, and only after the whole first pass; one eligible record
     starts the trials, which are charged whatever their decisions."""
 
-    def lab_entries(self):
-        return sorted(str(item.relative_to(self.lab)) for item in self.lab.rglob("*"))
-
-    def fresh_roots(self, name):
-        """A new data root and lab-state root, so one case never sees another's archives or starts."""
-        self.data, self.lab = self.tmp / f"data-{name}", self.tmp / f"lab-{name}"
-        self.data.mkdir()
-        self.lab.mkdir()
-
-    def rewrite_records(self, sha, edit):
-        """Rewrite one archive's markets file through edit(list of records) and re-point its head at the bytes."""
-        markets, head_path = self.data / "index" / sha / "markets-v1.jsonl", self.data / "index" / sha / "head-v1.json"
-        records = [json.loads(line) for line in markets.read_bytes().splitlines()]
-        edit(records)
-        data = b"".join(runner.canonical_json(record) + b"\n" for record in records)
-        head = json.loads(head_path.read_bytes())
-        for item, value in ((markets, data), (head_path, runner.canonical_json(
-                dict(head, markets=len(records), markets_sha256=runner._sha256_bytes(data))) + b"\n")):
-            item.chmod(0o600)
-            item.write_bytes(value)
 
     def test_no_record_or_no_eligible_record_refuses_before_anything_is_written(self):
         later = datetime(2023, 6, 1, 14, 0, tzinfo=timezone.utc)
@@ -502,6 +512,32 @@ class EmptyInputTests(RunnerCase):
         self.rewrite_records(sha, lambda records: records[1]["checks"].update(path_month="2015-13"))
         self.assertEqual(self.run_once(), {"status": "refused", "problems": [f"input:{sha}:malformed_record"]})
         self.assertEqual(self.lab_entries(), [])
+
+    def test_a_record_whose_member_the_run_cannot_trust_refuses_before_any_start(self):
+        def bad_sha(records):
+            records[0]["provenance"]["member_sha256"] = "x"
+
+        def other_date(records):
+            records[0]["provenance"]["path_date"] = "2015-06-02"
+
+        def other_date_without_view(records):           # never read: no prefix, no replay, no refusal
+            other_date(records)
+            records[0]["decision_time"]["first_published_market_time"] = None
+
+        for name, edit, problem in (("a malformed member sha256", bad_sha, "malformed_record"),
+                                    ("provenance that is not the manifest's", other_date,
+                                     "member_not_the_manifests:1.100000001")):
+            with self.subTest(case=name):
+                self.fresh_roots(name.replace(" ", "-").replace("'", ""))
+                sha = self.ingest([(path("1.100000001"), market("1.100000001")),
+                                   (path("1.100000002"), market("1.100000002"))])
+                self.rewrite_records(sha, edit)
+                self.assertEqual(self.run_once(), {"status": "refused", "problems": [f"input:{sha}:{problem}"]})
+                self.assertEqual(self.lab_entries(), [])
+        self.fresh_roots("no-view")
+        sha = self.ingest([(path("1.100000001"), market("1.100000001")), (path("1.100000002"), market("1.100000002"))])
+        self.rewrite_records(sha, other_date_without_view)
+        self.assertEqual(self.run_once()["status"], "completed")
 
     def test_a_record_the_population_rules_cannot_read_refuses_as_malformed(self):
         def unreadable_anchor(records):                     # its shape passes the first check; classify fails
@@ -652,7 +688,9 @@ class ReviewRegressionTests(RunnerCase):
         receipt = json.loads(kept)
         twice = [receipt["trials"][0], dict(receipt["trials"][0])]
         early = dict(receipt, ledger_head=receipt["trials"][0]["started"])
-        cases = {"receipt:r1:status_not_the_ledgers": dict(receipt, status="aborted", results_sha256=None),
+        cases = {"receipt:r1:status_not_the_ledgers": dict(receipt, status="aborted", results_sha256=None,
+                                                           issuance_ledger_sha256=None, issuance_ledger_bytes=None,
+                                                           engineering_acceptance=None, failure="reconciled"),
                  "receipt:r1:trials_not_the_ledgers": dict(receipt, trials=twice),
                  "receipt:r1:head_before_its_closes": early}
         for problem, value in cases.items():
@@ -860,7 +898,7 @@ class SecondReviewTests(RunnerCase):
         history = runner._History(self.contract_dir, self.runs, self.digest, ("ltp_favourite", "seeded_random_runner"))
         self.assertEqual((history.incomplete_recovery, history.missing), (["r1"], []))
         start, close = [e for e in self.ledger() if e["trial_id"] == "r1.ltp_favourite"]
-        forged = runner._receipt(self.digest, "r1", "aborted", "reconciled", None, None,
+        forged = runner._receipt(self.digest, "r1", "aborted", "reconciled", None,
                                  [("ltp_favourite", "r1.ltp_favourite", (start["seq"], start["entry_sha256"]),
                                    (close["seq"], close["entry_sha256"]), None)],
                                  (close["seq"], close["entry_sha256"]), 1, "2026-10-15T00:00:00Z", "forger")
@@ -972,6 +1010,478 @@ class SecondReviewTests(RunnerCase):
         self.assertEqual(self.run_once("r2")["status"], "completed")
 
 
+class EngineeringWiringTests(RunnerCase):
+    """Task c2b3b1: the three criteria inside the run, under Astra's design decision (journal rows 599 and 600)."""
+
+    def results(self, run_id="r1"):
+        return json.loads(self.run_file("results.json", run_id).read_bytes())
+
+    def test_a_completed_run_reports_and_binds_its_engineering_acceptance(self):
+        self.standard_inputs()
+        result = self.run_once()
+        self.assertEqual((result["status"], result["engineering_acceptance"]), ("completed", "incomplete"))
+        results = self.results()
+        acceptance, issuance = results["engineering_acceptance"], self.run_file("issuance-ledger.jsonl").read_bytes()
+        self.assertEqual((results["schema_version"], results["input"]["version"], results["certification"]),
+                         (2, 1, None))
+        self.assertEqual((acceptance["status"], acceptance["rule"], acceptance["criteria_version"]),
+                         ("incomplete", self.contract_value["engineering_acceptance"]["rule"], 1))
+        criteria = acceptance["criteria"]
+        self.assertEqual({name: item["status"] for name, item in criteria.items()},
+                         {"issuance_exposure_reconciliation": "passed", "known_accounting_answers": "passed",
+                          "prefix_invariance": "incomplete"})
+        self.assertEqual(criteria["known_accounting_answers"],
+                         {"status": "passed", "cases": len(engineering.KAT_CASES), "failed_cases": [],
+                          "case_ids": [case["id"] for case in engineering.KAT_CASES]})
+        components = criteria["prefix_invariance"]["components"]
+        self.assertEqual(components["synthetic_certification"], {"status": "incomplete",
+                                                                 "reason": "certificate_not_bound"})
+        tally = components["primary_source_prefix_consistency"]
+        self.assertEqual((tally["status"], tally["counts"]["records"], tally["counts"]["compared"],
+                          tally["counts"]["missing"], tally["prefix_limit_bytes"]),
+                         ("passed", 2, 2, 0, engineering.PREFIX_LIMIT_BYTES))
+        sha = runner._sha256_bytes(issuance)
+        self.assertEqual((results["issuance"]["ledger_sha256"], results["issuance"]["ledger_bytes"],
+                          results["issuance"]["writer_sha256"]), (sha, len(issuance), sha))
+        binding = {"status": "incomplete", "rule": acceptance["rule"], "criteria_version": 1,
+                   "acceptance_sha256": hashlib.sha256(runner.ACCEPTANCE_TAG
+                                                       + runner.canonical_json(acceptance)).hexdigest(),
+                   "certificate_sha256": None}
+        for close in [entry for entry in self.ledger() if entry["kind"] == "completed"]:
+            self.assertEqual(close["summary"], {"results_sha256": result["results_sha256"],
+                                                "issuance_ledger_sha256": sha, "issuance_ledger_bytes": len(issuance),
+                                                "engineering_acceptance": binding})
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual((receipt["schema_version"], receipt["engineering_acceptance"], receipt["certificate_sha256"],
+                          receipt["issuance_ledger_sha256"], receipt["issuance_ledger_bytes"]),
+                         (2, binding, None, sha, len(issuance)))
+        self.assertEqual(self.run_once("r2")["status"], "completed")         # the history check accepts it
+
+    def test_known_answers_must_pass_over_the_known_case_set_before_any_start(self):
+        self.standard_inputs()
+        failed = {"status": "failed", "cases": len(engineering.KAT_CASES), "failed_cases": ["x"]}
+        short = {"status": "passed", "cases": len(engineering.KAT_CASES) - 1, "failed_cases": []}
+        def answers(**kwargs):
+            return lambda: mock.patch.object(runner, "known_accounting_answers", **kwargs)
+
+        def case_set(changed):                  # changed in engineering as a source edit would change it
+            @contextlib.contextmanager
+            def patched():
+                with mock.patch.object(engineering, "KAT_CASES", changed), \
+                        mock.patch.object(runner, "KAT_CASES", changed):
+                    yield
+            return patched
+
+        cases = {"a failed case": (answers(return_value=failed), "engineering:known_accounting_answers_not_passed"),
+                 "another case count": (answers(return_value=short),
+                                        "engineering:known_accounting_answers_not_passed"),
+                 "an error": (answers(side_effect=ArithmeticError), "engineering:known_accounting_answers_error")}
+        for name, changed in (("no case", ()), ("a repeated case", engineering.KAT_CASES + engineering.KAT_CASES[:1]),
+                              ("a case left out", engineering.KAT_CASES[1:]),
+                              ("reordered", engineering.KAT_CASES[::-1])):
+            with mock.patch.object(engineering, "KAT_CASES", changed):        # only the registry refuses these
+                self.assertEqual(engineering.known_accounting_answers()["status"], "passed")
+            cases[name] = (case_set(changed), "engineering:known_accounting_answers_not_the_known_set")
+        for name, (patch, problem) in cases.items():
+            with self.subTest(case=name), patch():
+                self.assertEqual(self.run_once(), {"status": "refused", "problems": [problem]})
+                self.assertEqual(self.lab_entries(), [])
+
+    def test_the_checked_known_answers_are_the_ones_reported(self):
+        self.standard_inputs()
+        real = engineering.known_accounting_answers()
+        later = dict(real, status="failed", failed_cases=["x"])
+        with mock.patch.object(runner, "known_accounting_answers", side_effect=[real, later]) as spy:
+            self.assertEqual(self.run_once()["status"], "completed")
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(self.results()["engineering_acceptance"]["criteria"]["known_accounting_answers"],
+                         dict(real, case_ids=list(runner.KAT_CASE_IDS)))
+
+    def test_the_manifest_limits_must_be_the_runs(self):
+        sha = self.ingest([(path("1.100000001"), market("1.100000001"))])
+        stricter = DEFAULT_LIMITS.stricter(max_line_bytes=1 << 20)
+        self.assertEqual(self.run_once(limits=stricter),
+                         {"status": "refused", "problems": [f"input:{sha}:limits_not_the_runs"]})
+        self.assertEqual(self.lab_entries(), [])
+
+    def test_a_future_leak_fails_the_prefix_criterion_and_the_run_completes(self):
+        self.standard_inputs()
+        real_fold = replay._fold
+        with mock.patch.object(replay, "_fold", lambda raw, mid, t, limits: real_fold(raw, mid, t + 180000, limits)), \
+                mock.patch.object(replay, "_upto", lambda timeline, t, real=replay._upto: real(timeline, t + 180000)):
+            result = self.run_once()
+        self.assertEqual((result["status"], result["engineering_acceptance"]), ("completed", "failed"))
+        criteria = self.results()["engineering_acceptance"]["criteria"]
+        tally = criteria["prefix_invariance"]["components"]["primary_source_prefix_consistency"]
+        self.assertEqual((criteria["prefix_invariance"]["status"], tally["status"], tally["counts"]["failed"]),
+                         ("failed", "failed", 2))
+        self.assertEqual([entry["kind"] for entry in self.ledger()], ["started", "started", "completed", "completed"])
+
+    def test_a_record_left_out_fails_the_run(self):
+        excluded = [fx.md("1.100000003", OFF - timedelta(hours=1),
+                          fx.definition(OFF, [fx.runner(1)], countryCode="FR"))]
+        cases = {
+            "an excluded record's member changed": (None, "member_hash_mismatch"),
+            "an excluded record's member path denied": (
+                lambda real: mock.patch.object(runner, "_guard", lambda target, where, prospective=False: (
+                    (_ for _ in ()).throw(runner.RunRefused(f"{where}:denied")) if where == "raw:1.100000003"
+                    else real(target, where, prospective))), "raw:1.100000003:denied"),
+            "a member that fails its integrity checks": (
+                lambda real: mock.patch.object(runner, "check_prefix",
+                                               side_effect=replay.ReplayProblem("prefix:x:member_hash_mismatch")),
+                "member_hash_mismatch"),
+            "a tally refusal": (lambda real: mock.patch.object(engineering.PrefixTally, "add",
+                                                                side_effect=ValueError("prefix_tally:x:duplicate")),
+                                "prefix_tally:x:duplicate")}
+        for n, (name, (patch, problem)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.fresh_roots(f"left{n}")
+                sha = self.ingest([(path("1.100000001"), market("1.100000001")), (path("1.100000003"), excluded)])
+                if patch is None:
+                    raw = safe_target(self.data, sha, path("1.100000003"))
+                    raw.chmod(0o600)
+                    raw.write_bytes(raw.read_bytes() + b"x")
+                    result = self.run_once()
+                else:
+                    with patch(runner._guard):
+                        result = self.run_once()
+                self.assertEqual(result["status"], "failed", result)
+                self.assertIn(problem, result["problems"][0])
+                self.assertEqual([entry["kind"] for entry in self.ledger()], ["started", "started", "failed", "failed"])
+
+    def test_the_issuance_ledger_is_read_back_in_full(self):
+        real_lines, real_write = runner.ledger_lines, runner._write_new
+
+        def longer(target, chunks, where):
+            return real_write(target, list(chunks) + ([b"extra\n"] if where == "issuance_ledger" else []), where)
+
+        def unreadable(target, chunks, where):
+            digest = real_write(target, chunks, where)
+            if where == "issuance_ledger":
+                target.chmod(0)
+            return digest
+
+        self.fresh_roots("other-bytes")
+        self.standard_inputs()
+        with mock.patch.object(runner, "ledger_lines", lambda decisions: real_lines(decisions)[:-1]):
+            result = self.run_once()                     # a complete read of other bytes fails the criterion
+        self.assertEqual((result["status"], result["engineering_acceptance"]), ("completed", "failed"))
+        results = self.results()
+        reconciliation = results["engineering_acceptance"]["criteria"]["issuance_exposure_reconciliation"]
+        self.assertIn("ledger:not_the_decisions", reconciliation["problems"])
+        self.assertEqual(results["issuance"]["ledger_sha256"],
+                         runner._sha256_bytes(self.run_file("issuance-ledger.jsonl").read_bytes()))
+        operational = [("longer than written", longer, "issuance_ledger:read_back_longer_than_written")]
+        if not IS_ROOT:
+            operational.append(("unreadable", unreadable, "issuance_ledger:read_back_failed"))
+        for name, writer, problem in operational:
+            with self.subTest(case=name):
+                self.fresh_roots(name.replace(" ", "-"))
+                self.standard_inputs()
+                with mock.patch.object(runner, "_write_new", writer):
+                    result = self.run_once()
+                self.assertEqual(result["status"], "failed", result)
+                self.assertIn(problem, result["problems"][0])
+
+    def test_a_completed_runs_evidence_must_agree_with_its_binding(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        receipt_path = self.run_file("receipt.json")
+        kept = receipt_path.read_bytes()
+        receipt = json.loads(kept)
+        other = dict(receipt["engineering_acceptance"], acceptance_sha256="0" * 64)
+        cases = {"receipt:r1:engineering_acceptance_mismatch": dict(receipt, engineering_acceptance=other),
+                 "receipt:r1:issuance_ledger_bytes_mismatch": dict(receipt, issuance_ledger_bytes=1),
+                 "receipt:r1:schema_not_supported": dict(receipt, schema_version=1),
+                 "receipt:r1:malformed": dict(receipt, certificate_sha256="0" * 64)}
+        for problem, value in cases.items():
+            with self.subTest(problem=problem):
+                receipt_path.write_bytes(runner.canonical_json(value) + b"\n")
+                self.assertRefused(self.run_once("r2"), problem)
+        receipt_path.write_bytes(kept)
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_reconcile_publishes_a_completed_runs_evidence_from_its_files_and_closes(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        kept = self.run_file("receipt.json").read_bytes()
+        self.run_file("receipt.json").unlink()
+        self.assertRefused(self.run_once("r2"), "receipt:missing:r1")
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["receipted"], ["r1"])
+        published, original = json.loads(self.run_file("receipt.json").read_bytes()), json.loads(kept)
+        for key in ("results_sha256", "issuance_ledger_sha256", "issuance_ledger_bytes", "engineering_acceptance",
+                    "certificate_sha256", "schema_version"):
+            self.assertEqual(published[key], original[key], key)
+        self.assertEqual(self.run_once("r2")["status"], "completed")
+
+    def test_the_observed_ledger_not_the_writers_is_compared_and_named(self):
+        real_write = runner._write_new
+
+        def changed_after_writing(target, chunks, where):
+            digest = real_write(target, chunks, where)
+            if where == "issuance_ledger":                  # another complete file by the time it is read back
+                target.chmod(0o600)
+                target.write_bytes(b"".join(target.read_bytes().splitlines(keepends=True)[:-1]))
+            return digest
+
+        self.standard_inputs()
+        with mock.patch.object(runner, "_write_new", changed_after_writing):
+            result = self.run_once()
+        self.assertEqual((result["status"], result["engineering_acceptance"]), ("completed", "failed"))
+        results, observed = self.results(), self.run_file("issuance-ledger.jsonl").read_bytes()
+        self.assertEqual((results["issuance"]["ledger_sha256"], results["issuance"]["ledger_bytes"]),
+                         (runner._sha256_bytes(observed), len(observed)))
+        self.assertNotEqual(results["issuance"]["writer_sha256"], results["issuance"]["ledger_sha256"])
+        self.assertIn("ledger:not_the_decisions",
+                      results["engineering_acceptance"]["criteria"]["issuance_exposure_reconciliation"]["problems"])
+        self.assertEqual(self.run_once("r2")["status"], "completed")         # its own evidence agrees
+
+    def test_a_binding_that_is_not_its_results_refuses(self):
+        self.standard_inputs()
+        real = runner._binding
+        with mock.patch.object(runner, "_binding", lambda acceptance: dict(real(acceptance), status="passed")):
+            self.assertEqual(self.run_once()["status"], "completed")         # closes and receipt claim a pass
+        self.assertRefused(self.run_once("r2"), "receipt:r1:engineering_acceptance_mismatch")
+        self.run_file("receipt.json").unlink()            # reconcile never publishes the closes' wrong claim either
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["receipt:r1:engineering_acceptance_mismatch"]})
+        self.assertFalse(self.run_file("receipt.json").exists())
+
+    def test_a_receipt_that_is_not_completed_carries_no_acceptance(self):
+        self.standard_inputs()
+        integrity = replay.ReplayProblem("prefix:x:member_hash_mismatch")
+        with mock.patch.object(runner, "check_prefix", side_effect=integrity):
+            self.assertEqual(self.run_once()["status"], "failed")
+        receipt = json.loads(self.run_file("receipt.json").read_bytes())
+        self.assertEqual((receipt["engineering_acceptance"], receipt["issuance_ledger_bytes"],
+                          receipt["results_sha256"]), (None, None, None))
+        binding = {"status": "failed", "rule": "x", "criteria_version": 1, "acceptance_sha256": "0" * 64,
+                   "certificate_sha256": None}
+        for key, value in (("engineering_acceptance", binding), ("issuance_ledger_bytes", 0),
+                           ("issuance_ledger_sha256", "0" * 64), ("failure", None)):
+            with self.subTest(key=key):
+                self.run_file("receipt.json").write_bytes(runner.canonical_json(dict(receipt, **{key: value})) + b"\n")
+                self.assertRefused(self.run_once("r2"), "receipt:r1:malformed")
+
+    def test_results_written_otherwise_refuse_by_name(self):
+        real_write, real_append = runner._write_new, runner._append
+
+        def results_as(change):
+            def write(target, chunks, where):
+                if where == "results":
+                    value = json.loads(b"".join(chunks))
+                    change(value)
+                    chunks = [runner.canonical_json(value) + b"\n"]
+                return real_write(target, chunks, where)
+            return write
+
+        def schema_one(value):
+            value["schema_version"] = 1
+
+        def other_bytes(value):
+            value["issuance"]["ledger_bytes"] += 1
+
+        def closes_as_schema_one(ledger, kind, *args):               # a schema 1 close names two digests only
+            summary = args[-1]
+            if kind == "completed":
+                summary = {key: summary[key] for key in ("results_sha256", "issuance_ledger_sha256")}
+            return real_append(ledger, kind, *args[:-1], summary)
+
+        cases = {"schema 1 results": ([mock.patch.object(runner, "_write_new", results_as(schema_one))],
+                                      "results:r1:schema_not_supported"),
+                 "schema 1 results and closes": ([mock.patch.object(runner, "_write_new", results_as(schema_one)),
+                                                  mock.patch.object(runner, "_append", closes_as_schema_one)],
+                                                 "results:r1:schema_not_supported"),
+                 "results naming another ledger": ([mock.patch.object(runner, "_write_new", results_as(other_bytes))],
+                                                   "results:r1:issuance_not_the_ledgers")}
+        for n, (name, (patches, problem)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.fresh_roots(f"written{n}")
+                self.standard_inputs()
+                with contextlib.ExitStack() as stack:
+                    for patch in patches:
+                        stack.enter_context(patch)
+                    self.run_once()
+                self.assertRefused(self.run_once("r2"), problem)
+                self.run_file("receipt.json").unlink()
+                self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                                 {"status": "refused", "problems": [problem]})
+
+    def test_closes_that_claim_another_acceptance_refuse(self):
+        real = runner._append
+
+        def passed_closes(ledger, kind, *args):
+            summary = args[-1]
+            if kind == "completed":
+                summary = dict(summary, engineering_acceptance=dict(summary["engineering_acceptance"], status="passed"))
+            return real(ledger, kind, *args[:-1], summary)
+
+        self.standard_inputs()
+        with mock.patch.object(runner, "_append", passed_closes):
+            self.assertEqual(self.run_once()["status"], "completed")
+        self.assertRefused(self.run_once("r2"), "receipt:r1:engineering_acceptance_mismatch")
+        self.run_file("receipt.json").unlink()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["receipt:r1:engineering_acceptance_mismatch"]})
+        self.assertFalse(self.run_file("receipt.json").exists())
+
+    def test_reconcile_never_publishes_evidence_its_files_do_not_hold(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        self.run_file("receipt.json").unlink()
+        results = self.run_file("results.json")
+        results.chmod(0o600)
+        results.write_bytes(results.read_bytes() + b" ")
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["receipt:r1:results_sha256_mismatch"]})
+        self.assertFalse(self.run_file("receipt.json").exists())
+
+    def test_receipt_fields_follow_its_status(self):
+        self.standard_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+        completed = json.loads(self.run_file("receipt.json").read_bytes())
+        for name, value in (("a failure on a completed run", dict(completed, failure="x")),
+                            ("an extra key", dict(completed, certified_acceptance="passed")),
+                            ("a missing key", {k: v for k, v in completed.items() if k != "certificate_sha256"})):
+            with self.subTest(case=name):
+                self.run_file("receipt.json").write_bytes(runner.canonical_json(value) + b"\n")
+                self.assertRefused(self.run_once("r2"), "receipt:r1:malformed")
+        self.run_file("receipt.json").write_bytes(runner.canonical_json(completed) + b"\n")
+
+    def test_the_whole_input_population_is_tallied(self):
+        later = datetime(2023, 6, 1, 14, 0, tzinfo=timezone.utc)
+        no_view = [fx.md("1.100000005", OFF - timedelta(hours=1), fx.definition(OFF, [fx.runner(1)], marketTime=None))]
+        late = [fx.md("1.100000007", OFF - timedelta(minutes=4), fx.definition(OFF, [fx.runner(1), fx.runner(2)]))]
+        foreign = [fx.md("1.100000003", OFF - timedelta(hours=1), fx.definition(OFF, [fx.runner(1)], countryCode="FR"))]
+        self.ingest([(path("1.100000001"), market("1.100000001")),
+                     (path("1.100000002", when=later), market("1.100000002", off=later)),
+                     (path("1.100000003"), foreign), (path("1.100000005"), no_view), (path("1.100000007"), late)])
+        self.assertEqual(self.run_once()["status"], "completed")
+        criteria = self.results()["engineering_acceptance"]["criteria"]
+        tally = criteria["prefix_invariance"]["components"]["primary_source_prefix_consistency"]
+        self.assertEqual((tally["status"], tally["counts"]["records"], tally["counts"]["candidates"],
+                          tally["counts"]["compared"], tally["counts"]["not_candidate"], tally["counts"]["missing"]),
+                         ("passed", 5, 3, 3, 2, 0))
+        self.assertEqual(tally["not_candidate_by_reason"], {"anchor_not_known_by_decision": 1, "no_view": 1})
+        self.assertEqual((criteria["issuance_exposure_reconciliation"]["status"],
+                          criteria["issuance_exposure_reconciliation"]["problems"]), ("passed", []))
+
+    def test_one_limits_object_reaches_replay_the_prefix_and_the_tally(self):
+        stricter = DEFAULT_LIMITS.stricter(max_line_bytes=1 << 20)
+        tar = fx.make_tar(self.tmp / "strict.tar", [(path(mid), fx.bz2.compress(fx.lines(market(mid, off=off))))
+                                                   for mid, off in (("1.100000001", OFF),
+                                                                    ("1.100000002", OFF + timedelta(hours=1)))])
+        self.assertEqual(ingest_archive(tar, self.data, stricter)["status"], "ingested")
+        self.assertEqual(index_archives(self.data, limits=stricter)["status"], "indexed")
+        with mock.patch.object(runner, "check_prefix", wraps=runner.check_prefix) as prefix, \
+                mock.patch.object(runner, "replay_view", wraps=runner.replay_view) as view:
+            self.assertEqual(self.run_once(limits=stricter)["status"], "completed")
+        self.assertTrue(prefix.call_args_list and view.call_args_list)
+        self.assertTrue(all(call.args[5] is stricter for call in prefix.call_args_list))
+        self.assertTrue(all(call.args[4] is stricter for call in view.call_args_list))
+        tally = self.results()["engineering_acceptance"]["criteria"]["prefix_invariance"]["components"][
+            "primary_source_prefix_consistency"]
+        self.assertEqual(tally["read_limits"], dataclasses.asdict(stricter))
+
+    def test_a_manifest_without_limits_refuses(self):
+        sha = self.ingest([(path("1.100000001"), market("1.100000001"))])
+        manifest_path, head_path = self.data / "manifests" / f"{sha}.json", self.data / "index" / sha / "head-v1.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        del manifest["limits"]
+        data = runner.canonical_json(manifest) + b"\n"
+        head = json.loads(head_path.read_bytes())
+        for item, value in ((manifest_path, data), (head_path, runner.canonical_json(
+                dict(head, manifest_sha256=runner._sha256_bytes(data))) + b"\n")):
+            item.chmod(0o600)
+            item.write_bytes(value)
+        self.assertEqual(self.run_once(), {"status": "refused", "problems": [f"input:{sha}:limits_not_the_runs"]})
+
+    def test_a_primary_is_guarded_before_its_prefix_is_read(self):
+        records = {"excluded": [fx.md("1.100000003", OFF - timedelta(hours=1),
+                                      fx.definition(OFF, [fx.runner(1)], countryCode="FR"))],
+                   "unclassifiable": [fx.md("1.100000003", OFF - timedelta(hours=1),
+                                            fx.definition(OFF, [fx.runner(1)], marketType=fx.DROP))]}
+        real_guard = runner._guard
+
+        def deny(target, where, prospective=False):
+            if where == "raw:1.100000003":
+                raise runner.RunRefused(f"{where}:denied")
+            return real_guard(target, where, prospective)
+
+        for n, (name, messages) in enumerate(records.items()):
+            with self.subTest(record=name):
+                self.fresh_roots(f"guard{n}")
+                self.ingest([(path("1.100000001"), market("1.100000001")), (path("1.100000003"), messages)])
+                with mock.patch.object(runner, "_guard", deny), \
+                        mock.patch.object(runner, "check_prefix", wraps=runner.check_prefix) as prefix:
+                    result = self.run_once()
+                self.assertEqual(result["status"], "failed", result)
+                self.assertIn("raw:1.100000003:denied", result["problems"][0])
+                self.assertNotIn("1.100000003", [call.args[1]["market_id"] for call in prefix.call_args_list])
+
+    def test_the_read_back_goes_through_the_guard(self):
+        real_guard = runner._guard
+
+        def deny(target, where, prospective=False):
+            if where == "issuance_ledger" and not prospective:
+                raise runner.RunRefused(f"{where}:denied")
+            return real_guard(target, where, prospective)
+
+        self.standard_inputs()
+        with mock.patch.object(runner, "_guard", deny):
+            result = self.run_once()
+        self.assertEqual(result["status"], "failed", result)
+        self.assertIn("issuance_ledger:read_back_failed", result["problems"][0])
+
+class ExactIntentTests(RunnerCase):
+    """A recovery intent names exactly the contract's variants, sorted (Astra's control E)."""
+
+    def write_intent(self, run_id, variants):
+        run = self.lab / "runs" / self.digest / run_id
+        run.mkdir(parents=True)
+        intent = {"kind": runner.RECOVERY_KIND, "schema_version": 1, "contract_sha256": self.digest,
+                  "run_id": run_id, "variants": variants, "reason": "unaccounted_run", "recorded_by": "someone"}
+        (run / runner.RECOVERY_FILE).write_bytes(runner.canonical_json(intent) + b"\n")
+        return run
+
+    def test_an_intent_must_name_exactly_the_contract_variants(self):
+        cases = {"a subset": (["ltp_favourite"], "variants_not_the_contracts"),
+                 "an unknown variant": (["ltp_favourite", "zzz"], "variants_not_the_contracts"),
+                 "an extra variant": (["ltp_favourite", "seeded_random_runner", "zzz"], "variants_not_the_contracts"),
+                 "unsorted": (["seeded_random_runner", "ltp_favourite"], "malformed"),
+                 "repeated": (["ltp_favourite", "ltp_favourite", "seeded_random_runner"], "malformed")}
+        for n, (name, (variants, reason)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.fresh_roots(f"intent{n}")
+                self.standard_inputs()
+                self.write_intent("x1", variants)
+                before = self.lab_files()
+                self.assertRefused(self.run_once(), f"recovery:x1:{reason}")
+                self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                                 {"status": "refused", "problems": [f"recovery:x1:{reason}"]})
+                self.assertEqual(self.lab_files(), before)                     # nothing written by either
+
+    def test_a_forged_receipt_cannot_ride_on_a_one_variant_intent(self):
+        self.standard_inputs()
+        run = self.write_intent("x1", ["ltp_favourite"])
+        (run / "receipt.json").write_bytes(runner.canonical_json(runner._receipt(
+            self.digest, "x1", "aborted", "reconciled", None,
+            [("ltp_favourite", "x1.ltp_favourite", (0, "0" * 64), (1, "0" * 64), None)], (1, "0" * 64), 1,
+            "2026-10-15T00:00:00Z", "forger")) + b"\n")                  # well formed: only the intent is wrong
+        self.assertRefused(self.run_once(), "recovery:x1:variants_not_the_contracts")
+
+    def test_an_exact_intent_is_finished_by_reconcile(self):
+        self.standard_inputs()
+        self.write_intent("x1", ["ltp_favourite", "seeded_random_runner"])
+        self.assertRefused(self.run_once(), "run:recovery_incomplete:x1")
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        self.assertEqual((result["status"], result["receipted"]), ("reconciled", ["x1"]))
+        receipt = json.loads((self.lab / "runs" / self.digest / "x1" / "receipt.json").read_bytes())
+        self.assertEqual((receipt["status"], receipt["engineering_acceptance"], receipt["issuance_ledger_bytes"]),
+                         ("aborted", None, None))
+        self.assertEqual(self.run_once()["status"], "completed")
+
+
 class CliTests(RunnerCase):
     def test_run_backtest_and_reconcile_trials(self):
         self.standard_inputs()
@@ -979,7 +1489,7 @@ class CliTests(RunnerCase):
         with redirect_stdout(out), mock.patch.object(runner, "utc_now_text", return_value="2026-10-15T00:00:00Z"):
             code = main(["run-backtest", "--contract", str(self.contract), "--data-root", str(self.data),
                          "--lab-state-root", str(self.lab), "--run-id", "cli", "--code-identity", CODE])
-        self.assertEqual((code, json.loads(out.getvalue())["status"]), (0, "completed"))
+        self.assertEqual((code, json.loads(out.getvalue())["status"]), (4, "completed"))     # not yet accepted
         out = io.StringIO()
         with redirect_stdout(out):
             code = main(["run-backtest", "--contract", str(self.contract), "--data-root", str(self.data),
@@ -993,6 +1503,27 @@ class CliTests(RunnerCase):
                          (0, {"status": "reconciled", "aborted": [], "recorded_runs": [], "receipted": [],
                               "ledger_head": [3, self.ledger()[3]["entry_sha256"]]}))
 
+
+    def test_run_backtest_exit_codes(self):
+        argv = ["run-backtest", "--contract", str(self.contract), "--data-root", str(self.data),
+                "--lab-state-root", str(self.lab), "--run-id", "cli", "--code-identity", CODE]
+        for result, code in (({"status": "completed", "engineering_acceptance": "passed"}, 0),
+                             ({"status": "completed", "engineering_acceptance": "failed"}, 4),
+                             ({"status": "completed", "engineering_acceptance": "incomplete"}, 4),
+                             ({"status": "failed", "engineering_acceptance": None}, 2),
+                             ({"status": "uncertain"}, 2), ({"status": "refused"}, 2)):
+            with self.subTest(result=result), redirect_stdout(io.StringIO()), \
+                    mock.patch.object(runner, "run_backtest", return_value=result):
+                self.assertEqual(main(argv), code)
+        self.standard_inputs()                                  # a real failed acceptance: completed, exit 4
+        real_fold = replay._fold
+        out = io.StringIO()
+        with redirect_stdout(out), \
+                mock.patch.object(replay, "_fold", lambda raw, mid, t, lim: real_fold(raw, mid, t + 180000, lim)), \
+                mock.patch.object(replay, "_upto", lambda timeline, t, real=replay._upto: real(timeline, t + 180000)):
+            code = main(argv)
+        printed = json.loads(out.getvalue())
+        self.assertEqual((code, printed["status"], printed["engineering_acceptance"]), (4, "completed", "failed"))
 
 if __name__ == "__main__":
     unittest.main()

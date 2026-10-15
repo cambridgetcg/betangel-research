@@ -105,16 +105,16 @@ class KnownAnswers(unittest.TestCase):
         self.assertEqual([m.unresolved_stake_pence for m in result.markets], [100, 100])
         self.assertTrue(all(m.net_pence is None and m.commission_pence is None for m in result.markets))
 
-    def test_contract_rules_give_the_same_answers_at_two_percent_and_five_at_the_draft_rate(self):
-        contract = draft()
-        contract["costs"]["commission_rate"] = 0.02
-        rules = AccountingRules.from_contract(contract)
+    def test_contract_rules_give_the_same_answers_at_the_draft_rate_and_at_five_percent(self):
+        rules = AccountingRules.from_contract(draft())          # the draft's own rate: 2% (c2b3b4)
         self.assertEqual((rules.commission_rate, rules.rounding, rules.stake_pence, rules.variants),
                          (Decimal("0.02"), "per_market_ceil_penny", 100, ("ltp_favourite", "seeded_random_runner")))
         bets = [bet("w", "1.1", variant="ltp_favourite"), bet("l", "1.2", variant="ltp_favourite")]
         outcomes = [outcome("1.1"), outcome("1.2", runners={1: runner("LOSER", "2.0"), 2: runner("WINNER", "3")})]
         self.assertEqual(total_net(settle(bets, outcomes, rules)), -2)
-        five = AccountingRules.from_contract(draft())
+        contract = draft()
+        contract["costs"]["commission_rate"] = 0.05
+        five = AccountingRules.from_contract(contract)
         self.assertEqual(five.commission_rate, Decimal("0.05"))
         self.assertEqual(total_net(settle(bets, outcomes, five)), -5)
 

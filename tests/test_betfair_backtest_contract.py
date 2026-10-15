@@ -4,7 +4,9 @@ These show that the validator refuses what schema_version 1 refuses and that the
 JSON value. They do not show that a contract was written before outcomes were seen, or that its corpus exists.
 """
 
+import ast
 from contextlib import redirect_stdout
+from decimal import Decimal
 import hashlib
 import io
 import json
@@ -18,10 +20,15 @@ import unittest
 from unittest import mock
 
 from betangel_research.betfair import receipts
+from betangel_research.betfair.backtest import certificate, engineering
+from betangel_research.betfair.backtest import cohort as cohort_module
 from betangel_research.betfair.backtest import contract as contract_module
 from betangel_research.betfair.backtest.__main__ import main
+from betangel_research.betfair.backtest.accounting import AccountingRules
+from betangel_research.betfair.backtest.cohort import CohortRules
 from betangel_research.betfair.backtest.contract import (DRAFT_NULLABLE, ENGINEERING_CRITERIA, check_contract_file,
                                                          validate_contract)
+from betangel_research.betfair.backtest.metrics import BootstrapPlan
 
 import test_betfair_support as support
 
@@ -56,7 +63,8 @@ def draft():
 
 
 def frozen():
-    """The engineering draft frozen: its operational nulls filled (synthetic values), nothing financial invented."""
+    """The engineering draft frozen, with a synthetic delay_s of 1 (the draft's own is 0, the only delay the runner and
+    the certified profile accept) and max_trials 4, nothing financial invented: a fixture for the validator only."""
     value = draft()
     value.update(status="frozen", frozen_on="2026-10-14")
     value["decision_timing"]["delay_s"] = 1
@@ -146,9 +154,13 @@ class ContractTests(unittest.TestCase):
         self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
         self.assertEqual((value["status"], value["registration"]["kind"]), ("draft", "engineering_check"))
         self.assertIn("not a registered hypothesis", value["registration"]["note"])
-        # Only the operational choices are still open; the engineering check states its purpose in full.
+        # Every choice is made (c2b3b4): only frozen_on waits for the separately reviewed freeze; the engineering
+        # check states its purpose in full.
         nulls = sorted(path for path in leaf_paths(value) if get_path(value, path) is None)
-        self.assertEqual(nulls, ["decision_timing.delay_s", "frozen_on", "stopping_rule.max_trials"])
+        self.assertEqual(nulls, ["frozen_on"])
+        self.assertEqual((value["decision_timing"]["delay_s"], value["stopping_rule"]["max_trials"]), (0, 4))
+        self.assertEqual((value["costs"]["commission_rate"], value["costs"]["rate_source"]),
+                         (0.02, "declared_assumption"))
         self.assertEqual(sorted(value["financial_rule"]), ["kind", "reason"])
         self.assertEqual(value["financial_rule"]["kind"], "not_applicable")
         self.assertEqual([c["name"] for c in value["engineering_acceptance"]["criteria"]], list(ENGINEERING_CRITERIA))
@@ -169,6 +181,89 @@ class ContractTests(unittest.TestCase):
                          [("active_runner_count", "decision_time", 0), ("ltp_at_decision", "decision_time", 0)])
         self.assertEqual([v["uses_features"] for v in value["variants"]], [["ltp_at_decision"], []])
 
+    def test_a_flip_only_freeze_is_valid_frozen_and_inside_the_certified_profile(self):
+        """Astra's control E and decision 3: the draft frozen by setting status and frozen_on alone, every text and
+        value kept, is valid_frozen, has the certified P0 profile by canonical bytes (the runner's own comparison) and
+        builds the runner's models with delay_s 0. The freeze itself is a separately reviewed step: the frozen value
+        is built in memory here, and the repo file stays the same draft, byte for byte."""
+        before = DRAFT.read_bytes()
+        value = draft()
+        flipped = dict(value, status="frozen", frozen_on="2026-10-15")
+        self.assertEqual(sorted(key for key in flipped if flipped[key] != value[key]), ["frozen_on", "status"])
+        found, digest = validate_contract(flipped)
+        self.assertEqual((found, contract_module.result_status(flipped, found)), ([], "valid_frozen"))
+        self.assertNotEqual(digest, validate_contract(value)[1])
+        self.assertEqual(contract_module.canonical_json(certificate.profile_of(flipped)),
+                         contract_module.canonical_json(certificate.P0_PROFILE))
+        rules = CohortRules.from_contract(flipped)
+        accounting = AccountingRules.from_contract(flipped)
+        BootstrapPlan.from_contract(flipped)
+        self.assertEqual((rules.delay_s, rules.variants), (0, ("ltp_favourite", "seeded_random_runner")))
+        self.assertEqual((accounting.commission_rate, accounting.rounding), (Decimal("0.02"), "per_market_ceil_penny"))
+        # The commission rate and the trial budget are published parameters inside their domains, not selectors.
+        low, high = certificate.PARAMETERS["stopping_rule.max_trials"]["domain"]
+        self.assertTrue(low <= flipped["stopping_rule"]["max_trials"] <= high)
+        self.assertEqual(certificate.P0_PROFILE["costs"], {"basis": "positive_net_market_winnings"})
+        self.assertEqual((DRAFT.read_bytes(), draft()["status"]), (before, "draft"))
+
+    def test_cohort_text_tokens_are_cohort_literals(self):
+        """The draft's cohort rules, exclusions, feature definitions and variant descriptions name reason tokens as
+        parenthesised lists of lower-case identifiers, such as "(market_definition, status_unknown)". Every such
+        token, and every snake_case word of these texts however it is written, is a string literal in cohort.py's
+        code (docstrings are not counted, though only a docstring that is a single token could match). The named
+        set is pinned by hand, not derived from cohort.py, so a token added to the text must be added here: it holds
+        the two outside-population classes, the five exclusion reasons, every abstained and unsupported reason, the
+        details the text names, and the view_ends reason member_unreadable_from_pt. The other classes, the
+        unclassifiable field names and the index's other view_ends reasons (given as detail) are named in prose only,
+        never as tokens. market_not_published_by_decision, which the cohort never gives, is nowhere."""
+        tree = ast.parse(Path(cohort_module.__file__).read_text(encoding="utf-8"))
+        # Guards only against a docstring that happens to be a single token.
+        docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                      if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                      and node.body and isinstance(node.body[0], ast.Expr)
+                      and isinstance(node.body[0].value, ast.Constant)}
+        literals = {node.value for node in ast.walk(tree)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings}
+        value = draft()
+        texts = [value["cohort"]["market_rule"], value["cohort"]["runner_rule"], *value["cohort"]["exclusions"],
+                 *(feature["definition"] for feature in value["features"]),
+                 *(variant["description"] for variant in value["variants"])]
+        named = set()
+        for text in texts:
+            for group in re.findall(r"\(([^()]*)\)", text):
+                if re.fullmatch(r"[a-z][a-z0-9_]*(?:, [a-z][a-z0-9_]*)*", group):
+                    named.update(group.split(", "))
+        self.assertEqual(sorted(named - literals), [])
+        # Fail closed: a token written outside the strict "(a, b)" form is still checked.
+        words = {word for text in texts for word in re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", text)}
+        self.assertEqual(sorted(words - literals), [])
+        self.assertEqual(named, {
+            "no_view", "anchor_not_known_by_decision", "plan_not_contract_tier", "month_not_evaluated",
+            "event_type_not_horse_racing", "country_not_in_population", "market_type_not_in_population",
+            "decision_view_unreadable", "member_unreadable_from_pt", "market_not_open_pre_off", "market_definition",
+            "status_unknown", "in_play_unknown", "bsp_market_unknown", "bsp_market_false", "runner_status_unknown",
+            "runner_id_not_positive", "no_active_runner", "ltp", "malformed_price_change", "missing",
+            "ltp_missing_in_market", "ltp_tie"})
+        self.assertEqual(cohort_module.UNREADABLE_VIEW_END, "member_unreadable_from_pt")
+        self.assertNotIn("market_not_published_by_decision", literals)
+        self.assertNotIn("market_not_published_by_decision", DRAFT.read_text(encoding="utf-8"))
+
+    def test_acceptance_and_stopping_text_name_what_the_runner_checks(self):
+        """The criteria and stopping rule texts carry the markers of what the runner computes (Astra's control E):
+        prefix_invariance's two components, its unexercised reasons and the 64 MiB prefix limit; the known answers'
+        case count; and the stop rule's two refusals."""
+        criteria = {item["name"]: item["definition"] for item in draft()["engineering_acceptance"]["criteria"]}
+        for marker in (engineering.PREFIX_METHOD, "synthetic_certification", engineering.UNKNOWN_PT,
+                       engineering.BUFFER_LIMIT, f"{engineering.PREFIX_LIMIT_BYTES:,} bytes"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, criteria["prefix_invariance"])
+        self.assertIn(f"{len(engineering.KAT_CASES)} hand-worked", criteria["known_accounting_answers"])
+        rule = draft()["stopping_rule"]["rule"]
+        for marker in ("(contract:engineering_passed)", "(contract:engineering_pass_claim_unbound)",
+                       "per contract sha256 and lab-state root"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, rule)
+
     def test_only_draft_nullable_fields_may_be_null_in_a_draft(self):
         paths = leaf_paths(draft())
         self.assertGreater(len(paths), 70)
@@ -179,6 +274,12 @@ class ContractTests(unittest.TestCase):
             set_path(value, path, None)
             with self.subTest(path=path):
                 self.assertIn(f"{path}:null", problems(value))
+        # The operational choices, delay and budget, may still wait in a draft (the P0 draft has made both).
+        value = draft()
+        value["decision_timing"]["delay_s"] = None
+        value["stopping_rule"]["max_trials"] = None
+        found, _ = validate_contract(value)
+        self.assertEqual((found, contract_module.result_status(value, found)), ([], "valid_draft"))
         # A registered hypothesis's financial fields may wait in a draft; nothing operational beyond delay and budget.
         value = draft()
         value["registration"]["kind"] = "registered_hypothesis"
@@ -218,11 +319,14 @@ class ContractTests(unittest.TestCase):
         value = draft()
         value["frozen_on"] = "2026-10-14"
         self.assertEqual(problems(value), ["frozen_on:not_null_in_draft"])
-        # An unknown status is judged as frozen (strictest), and is itself a problem.
+        # An unknown status is judged as frozen (strictest), and is itself a problem: the draft's null frozen_on, and a
+        # draft-nullable field left null, are then null_in_frozen.
         value = draft()
         value["status"] = "registered"
-        self.assertIn("status:not_allowed", problems(value))
-        self.assertIn("decision_timing.delay_s:null_in_frozen", problems(value))
+        self.assertEqual(problems(value), ["frozen_on:null_in_frozen", "status:not_allowed"])
+        value["decision_timing"]["delay_s"] = None
+        self.assertEqual(problems(value), ["decision_timing.delay_s:null_in_frozen", "frozen_on:null_in_frozen",
+                                           "status:not_allowed"])
 
     def test_frozen_text_must_not_be_a_placeholder(self):
         value = registered()
@@ -925,8 +1029,9 @@ class ContractCliTests(unittest.TestCase):
                                                   "problems": ["contract:unreadable"]}))
             huge = Path(tmp) / "huge.json"
             text = DRAFT.read_text(encoding="utf-8")
-            huge.write_text(text.replace('"commission_rate": 0.05', '"commission_rate": 1' + "0" * 400),
-                            encoding="utf-8")
+            literal = f'"commission_rate": {draft()["costs"]["commission_rate"]!r}'
+            self.assertEqual(text.count(literal), 1)             # the replacement below happens, once
+            huge.write_text(text.replace(literal, '"commission_rate": 1' + "0" * 400), encoding="utf-8")
             code, output = self.run_main(["validate-contract", "--contract", str(huge)])
             self.assertEqual((code, output), (2, {"status": "invalid", "contract_sha256": None,
                                                   "problems": ["contract:number_too_large"]}))

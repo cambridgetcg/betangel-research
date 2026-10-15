@@ -372,9 +372,9 @@ class ProfileTests(unittest.TestCase):
 
     def test_a_variable_parameter_or_a_text_does_not(self):
         for dotted, value in (("decision_timing.offset_s", -600), ("staking.stake_pence", 250),
-                              ("costs.commission_rate", 0.02), ("costs.rounding", "per_market_half_up_penny"),
+                              ("costs.commission_rate", 0.05), ("costs.rounding", "per_market_half_up_penny"),
                               ("seeds.selection", 7), ("seeds.bootstrap", 3), ("uncertainty.resamples", 100),
-                              ("uncertainty.confidence_level", 0.9), ("stopping_rule.max_trials", 4),
+                              ("uncertainty.confidence_level", 0.9), ("stopping_rule.max_trials", 6),
                               ("status", "frozen"), ("frozen_on", "2026-10-20"), ("experiment_id", "other"),
                               ("cohort.market_rule", "another text"),
                               ("costs.rate_source", "account_statement_verified")):

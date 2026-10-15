@@ -23,6 +23,11 @@ uncertain (exit 2). reconcile-trials --contract PATH --lab-state-root DIR --code
 the contract's trials that started and never closed (exit 0 when reconciled, else 2). runner is imported inside
 _runner_command, as the archive modules are.
 
+certify-engine --lab-state-root DIR --attempt-id ID certifies this engine on the synthetic certification cases
+(certify.certify_engine) under <root>/certifications and prints one JSON line: certified or already_certified (exit
+0); not_certified, with the cases that were not as expected (exit 4); refused, failed or uncertain (exit 2). certify
+is imported inside _certify_command.
+
 Everything here imports only the standard library and this package: no Betfair client CLI, gateway, account,
 credential, profile or network module (tests/test_betfair_backtest_boundaries.py). Nothing here places an order,
 logs in or reads an account.
@@ -65,6 +70,9 @@ def build_parser():
     reconcile.add_argument("--contract", required=True, help="path to a local frozen experiment contract JSON file")
     reconcile.add_argument("--lab-state-root", required=True, help="existing directory for ledgers, runs and receipts")
     reconcile.add_argument("--code-identity", required=True, help="printable text naming who reconciles")
+    certify = commands.add_parser("certify-engine", help="certify this engine on the synthetic certification cases")
+    certify.add_argument("--lab-state-root", required=True, help="existing directory for ledgers, runs and receipts")
+    certify.add_argument("--attempt-id", required=True, help="one new path component naming this attempt")
     return parser
 
 
@@ -91,8 +99,18 @@ def _runner_command(args):
     return result, 0 if result["status"] == "reconciled" else EXIT_INVALID
 
 
+def _certify_command(args):
+    """(result, exit code) of certify-engine; certify is imported here so the other commands never load it."""
+    from . import certify
+    return certify.certify_engine(args.lab_state_root, args.attempt_id)
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == "certify-engine":
+        result, code = _certify_command(args)
+        sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")
+        return code
     if args.command in ("run-backtest", "reconcile-trials"):
         result, code = _runner_command(args)
         sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")

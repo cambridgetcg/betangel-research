@@ -9,8 +9,9 @@ settlement), the issuance and exposure reconciliation, and accounting at each pa
 and the trial ledger are left to the runner's own tests. The bootstrap plan is carried into each run but its seed is
 not witnessed here: every synthetic scenario bet is unresolved, so no resample has data.
 
-The registry (CASES) is the protocol's: each case's id, kind and the exact counts its observed projection must
-report (COUNTERS reads each count from the projection, never from the case). Kinds:
+The registry (CASES, held in certificate.py so the runner can validate a certificate without importing the cases)
+is the protocol's: each case's id, kind and the exact counts its observed projection must report (COUNTERS reads
+each count from the projection, never from the case). Kinds:
 - check: the engine must give the expected answer;
 - negative_control: an input built to be wrong must be caught exactly as stated (a refusal, or a failed status or
   prefix result with its reason); the control passes only when that exact outcome is observed, and its projection
@@ -67,19 +68,37 @@ What the cases cover (Astra's design decisions 2 to 6 and control A on report_8c
   retryable.
 
 Standard library only; it writes only under the work root it is given (fresh case directories by exclusive
-create), reads nothing else and consumes no trial. It does not validate that root: run_case and run_cases write
-case directories and TARs before ingest checks anything, so the caller must pass a root it has already validated
-(archive.check_data_root and the runner's path guards: outside every Git worktree, not a symlink, owned and private)
-and must refuse before calling them otherwise. The certify-engine wrapper (task c2b3b2b) enforces this.
+create), reads nothing else and consumes no trial. Before any case directory or TAR is written, run_cases checks its
+work root and run_case its case directory's parent as the runner checks its roots (Astra's N1 on report_004c9dfa):
+guard_path (no denied live-state tree, resolvable) and check_data_root (an existing, listable directory outside this
+repository and every Git worktree); run_case then guards the case directory itself as a new path, so a final
+component that completes a denied live-state tree is refused too (report_f77a8fde). A path that fails refuses
+(CaseProblem) with nothing written.
+
+certify_engine(lab_state_root, attempt_id) is the certify-engine command (task c2b3b2b): it checks the lab-state
+root as the runner does, describes the sources (refusing when they are not the sources this module was imported
+from, source:changed_since_import, or when a module this process loaded is not one of them), makes
+<root>/certifications/work/<attempt_id> (each existing parent checked as the root is; a new directory: an attempt id
+is never reused, and its contents are kept as evidence, about 0.14 GB with the 64 MiB cases), runs every case under
+its cases directory, describes the sources again (a change is not_certified: source:changed_during_certification,
+and the attempt's certificate says not_certified too), writes the certificate it built to the attempt directory, and
+stores a certified one under its key (certificate.store_certificate). Its result is
+(JSON-ready dict, exit code): certified or already_certified (0); not_certified (4), with the cases that were not as
+expected; refused, failed or uncertain (2), existing_differs included.
 """
 
 from dataclasses import replace
 import json
 from pathlib import Path
 
-from . import runner
+from . import (accounting, archive, certificate, certification_fixtures, cohort, contract, engineering,
+               market_index, metrics, outcome, replay, runner, trial_ledger)
+from .. import backtest
+from ... import temporal
 from .accounting import AccountingRules, IssuedBet, settle
-from .archive import DEFAULT_LIMITS, ingest_archive, safe_target
+from .archive import DEFAULT_LIMITS, check_data_root, ingest_archive, safe_target
+from .certificate import (AS_EXPECTED, CASE_IDS, CASES, CERTIFIED, CHECK, CERTIFICATIONS_DIR, ERROR, INCOMPLETE,
+                          NEGATIVE, NOT_AS_EXPECTED, NOT_CERTIFIED, WORK_DIR, CertificateProblem)
 from .certification_fixtures import (EXPECTED, LIMIT_MARKET, WITNESS_MARKET, abstaining_world, conditions_world,
                                      duplicate_world, event_alone_world, limit_world, membership_world, p0_rules,
                                      scenario_world, second_point_rules, source_rules_worlds, sources_world,
@@ -90,52 +109,9 @@ from .engineering import (KAT_CASES, PREFIX_LIMIT_BYTES, PrefixTally, check_pref
                           issuance_exposure_reconciliation, known_accounting_answers)
 from .market_index import index_archives
 from .outcome import market_outcome
+from .path_guard import PathDenied, guard_path
 from .replay import ReplayProblem, replay_view
 
-CHECK, NEGATIVE, INCOMPLETE = "check", "negative_control", "incomplete_control"
-AS_EXPECTED, NOT_AS_EXPECTED, ERROR = "as_expected", "not_as_expected", "error"
-# The protocol's case registry: (id, kind, the exact counts the observed projection must report).
-CASES = (
-    ("kat", CHECK, {"kat_cases": 13}),
-    ("scenario_full", CHECK, {"tally_records": 22, "tally_compared": 19, "markets": 22}),
-    ("scenario_cut", CHECK, {"compared_markets": 20, "changed_outcomes": 19}),
-    ("scenario_deleted", CHECK, {"compared_markets": 20, "changed_outcomes": 17}),
-    ("scenario_revised", CHECK, {"compared_markets": 20, "changed_outcomes": 16}),
-    ("second_point", CHECK, {"markets": 22}),
-    ("settlement_witness", CHECK, {"points": 2}),
-    ("market_conditions", CHECK, {"markets": 28}),
-    ("sources_named_file_decides", CHECK, {}),
-    ("sources_primary_rules", CHECK, {"worlds": 6}),
-    ("membership_gates", CHECK, {"refused_members": 2}),
-    ("duplicate_across_archives", NEGATIVE, {}),
-    ("limit_small_exact", CHECK, {}),
-    ("limit_small_over", CHECK, {}),
-    ("limit_batch_exact", CHECK, {}),
-    ("limit_batch_inside", CHECK, {}),
-    ("limit_64mib_exact", CHECK, {}),
-    ("limit_64mib_over", CHECK, {}),
-    ("read_limits_exact", CHECK, {}),
-    ("read_limits_unexercised", CHECK, {}),
-    ("abstaining_incomplete", INCOMPLETE, {}),
-    ("unexercised_incomplete", INCOMPLETE, {}),
-    ("nc_future_leak", NEGATIVE, {}),
-    ("nc_pre_t_change", NEGATIVE, {}),
-    ("nc_borrowed_rows", NEGATIVE, {}),
-    ("nc_ledger_byte", NEGATIVE, {}),
-    ("nc_swapped_bets", NEGATIVE, {}),
-    ("nc_dropped_decision", NEGATIVE, {}),
-    ("nc_short_settlement", NEGATIVE, {}),
-    ("nc_decision_without_record", NEGATIVE, {}),
-    ("nc_duplicate_record", NEGATIVE, {}),
-    ("nc_other_variant_row", NEGATIVE, {}),
-    ("nc_settlement_other_variants", NEGATIVE, {}),
-    ("nc_wrong_decision_time", NEGATIVE, {}),
-    ("nc_member_tampered", NEGATIVE, {}),
-    ("nc_markets_changed", NEGATIVE, {}),
-    ("nc_same_key_substitution", NEGATIVE, {}),
-    ("nc_rejected_tally_addition", NEGATIVE, {}),
-)
-CASE_IDS = tuple(case_id for case_id, _, _ in CASES)
 # Each registry count, read from a case's observed projection.
 COUNTERS = {
     "kat_cases": lambda observed: observed["cases"],
@@ -714,11 +690,33 @@ def _counts_are(counts, observed):
         return False
 
 
+def validated_root(path, where):
+    """The resolved root after the runner's root checks (module docstring); CaseProblem "<where>:<reason>" with
+    nothing written otherwise."""
+    try:
+        guard_path(path, where)
+    except PathDenied as error:
+        raise CaseProblem(str(error)) from None
+    root, problems = check_data_root(path)
+    if problems:
+        raise CaseProblem(problems[0].replace("data_root:", f"{where}:", 1))
+    return root
+
+
 def run_case(case_id, directory):
-    """One case's result: {id, kind, result, observed, expected} (module docstring); directory must not exist and
-    must lie under a work root the caller has validated (module docstring)."""
+    """One case's result: {id, kind, result, observed, expected} (module docstring). The directory's parent must pass
+    validated_root and the directory itself guard_path as a new path (no denied live-state tree, its final component
+    included); CaseProblem before anything is written otherwise (case_root:<reason>, case:<reason>). Something already
+    at the directory is refused, as before, by the exclusive mkdir (FileExistsError): a case directory is never
+    reused."""
     kind, counts = next((k, c) for i, k, c in CASES if i == case_id)
     directory = Path(directory)
+    validated_root(directory.parent, "case_root")
+    try:
+        guard_path(directory, "case", prospective=True)
+    except PathDenied as error:
+        if not str(error).endswith(":already_exists"):
+            raise CaseProblem(str(error)) from None
     directory.mkdir()
     expected = EXPECTED.get(case_id)
     try:
@@ -734,10 +732,96 @@ def run_case(case_id, directory):
 
 
 def run_cases(work_root):
-    """Every registered case, in registry order, each in its own new directory under work_root, which the caller
-    must have validated (module docstring)."""
+    """Every registered case, in registry order, each in its own new directory under work_root, which must pass
+    validated_root (CaseProblem before anything is written otherwise)."""
     if (set(RUNNERS) != set(CASE_IDS) or set(EXPECTED) != set(CASE_IDS)
             or len(set(CASE_IDS)) != len(CASE_IDS)):
         raise CaseProblem("certify:registry_mismatch")
-    work_root = Path(work_root)
+    work_root = validated_root(work_root, "work_root")
     return [run_case(case_id, work_root / case_id) for case_id in CASE_IDS]
+
+
+# --- certify-engine ---------------------------------------------------------------------------------------------------
+
+# Every module this certification loads from the sources it describes (the package and temporal included; path_guard
+# by its function's file, since only its names may be imported); certify_engine refuses when one came from anywhere
+# else. The parent package initialisers are hashed but not checked here (no backtest module may bind them).
+LOADED = (accounting, archive, backtest, certificate, certification_fixtures, cohort, contract, engineering,
+          market_index, metrics, outcome, replay, runner, temporal, trial_ledger)
+
+
+def _loaded_problem(descriptor):
+    """None when this module and every LOADED module came from a file the descriptor lists under source_root()."""
+    root, paths = certificate.source_root(), {item["path"] for item in descriptor["files"]}
+    for module_file in (__file__, guard_path.__code__.co_filename, *(module.__file__ for module in LOADED)):
+        try:
+            relative = Path(module_file).resolve().relative_to(root).as_posix()
+        except (TypeError, ValueError, OSError):
+            return "source:not_this_checkout"
+        if relative not in paths:
+            return f"source:{relative}:not_described"
+    return None
+
+
+def _attempt_directory(lab, attempt_id):
+    certifications = validated_root(certificate.directory(lab / CERTIFICATIONS_DIR, "certifications"),
+                                    "certifications")
+    work = validated_root(certificate.directory(certifications / WORK_DIR, "certification_work"),
+                          "certification_work")
+    attempt = work / attempt_id
+    try:
+        guard_path(attempt, "attempt", prospective=True)
+        attempt.mkdir()
+    except PathDenied as error:
+        raise CertificateProblem(str(error).replace(":already_exists", ":exists")) from None
+    except OSError:
+        raise CertificateProblem("attempt:not_created") from None
+    return attempt
+
+
+def certify_engine(lab_state_root, attempt_id):
+    """(result, exit code) of one certification attempt (module docstring)."""
+    attempt = None
+    try:
+        lab = certificate.lab_root(lab_state_root)
+        if not (isinstance(attempt_id, str) and runner.RUN_ID_RE.fullmatch(attempt_id)):
+            raise CertificateProblem("attempt_id:malformed")
+        before, before_sha256 = certificate.source_descriptor()
+        if isinstance(_IMPORTED, CertificateProblem):
+            raise _IMPORTED
+        if before_sha256 != _IMPORTED[1]:
+            raise CertificateProblem("source:changed_since_import")
+        loaded = _loaded_problem(before)
+        if loaded is not None:
+            raise CertificateProblem(loaded)
+        attempt = _attempt_directory(lab, attempt_id)
+        results = run_cases(certificate.directory(attempt / "cases", "cases"))
+        after, after_sha256 = certificate.source_descriptor()
+        built = certificate.build_certificate(results, before, certificate.interpreter_descriptor())
+        if after_sha256 != before_sha256:
+            built = dict(built, status=NOT_CERTIFIED)
+        certificate.write_new(attempt / "certificate.json", certificate.certificate_bytes(built), "attempt_certificate")
+        summary = dict(certificate.certificate_summary(built), attempt=str(attempt), problems=[])
+        if after_sha256 != before_sha256:
+            return dict(summary, status="not_certified", problems=["source:changed_during_certification"]), 4
+        if built["status"] != CERTIFIED:
+            return dict(summary, status="not_certified"), 4
+        outcome, path, digest = certificate.store_certificate(lab, built)
+        return dict(summary, status=outcome, certificate_path=str(path), certificate_sha256=digest), 0
+    except (CertificateProblem, CaseProblem) as error:
+        status = "uncertain" if str(error).endswith(":uncertain") else "refused"
+        return {"status": status, "problems": [str(error)], "attempt": None if attempt is None else str(attempt)}, 2
+    except Exception as error:                                  # a failure, never a certificate
+        return {"status": "failed", "problems": [f"{type(error).__name__}:{error}"[:300]],
+                "attempt": None if attempt is None else str(attempt)}, 2
+
+
+def _snapshot():
+    """The sources as this module was imported (certify_engine refuses when they have changed since)."""
+    try:
+        return certificate.source_descriptor()
+    except CertificateProblem as error:
+        return error
+
+
+_IMPORTED = _snapshot()

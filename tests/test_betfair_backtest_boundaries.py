@@ -1075,11 +1075,22 @@ class BacktestBoundaryTests(unittest.TestCase):
         top_level_calls = [ast.unparse(n) for n in main.body[:-1] if isinstance(n, ast.Expr)
                            and not isinstance(n.value, ast.Constant)]
         self.assertEqual(top_level_calls, [])
-        # The archive subcommands import their three backtest modules inside a function (task (b)), and the
-        # runner subcommands import runner inside another (task c2b2).
+        # The archive subcommands import their three backtest modules inside a function (task (b)), the runner
+        # subcommands import runner inside another (task c2b2) and certify-engine imports certify (task c2b3b2b).
         self.assertEqual(REAL.internal[f"{BACKTEST}.__main__"],
                          {TOP, BETFAIR, BACKTEST, f"{BACKTEST}.contract", f"{BACKTEST}.archive",
-                          f"{BACKTEST}.coverage_audit", f"{BACKTEST}.market_index", f"{BACKTEST}.runner"})
+                          f"{BACKTEST}.coverage_audit", f"{BACKTEST}.market_index", f"{BACKTEST}.runner",
+                          f"{BACKTEST}.certify"})
+
+    def test_the_certificate_descriptor_is_the_import_closure(self):
+        """certificate.source_descriptor hashes exactly the files the backtest package can load: its own modules, the
+        parent package initialisers and what they reach (temporal.py), so a new internal import cannot go unhashed
+        (task c2b3b2b; Astra's control B)."""
+        from betangel_research.betfair.backtest import certificate
+        descriptor, _ = certificate.source_descriptor(REPO)
+        closure = REAL.closure([m for m in REAL.files if under(m, BACKTEST)])
+        self.assertEqual({item["path"] for item in descriptor["files"]},
+                         {REAL.files[m][0].relative_to(REPO).as_posix() for m in closure})
 
     def test_backtest_syntax_floor_is_python_3_10(self):
         for module in sorted(m for m in REAL.files if under(m, BACKTEST)):

@@ -14,12 +14,21 @@ after the decision cutoff; dead heats, closed markets whose dead heat cannot be 
 below 1, or a market type the rule does not cover), and results revised after CLOSED; markets never CLOSED;
 path/marketTime month, date and event id mismatches; markets whose marketTime was revised (changed to another
 value: the null an image reset records and the same value published again are not revisions); markets read from a
-member that could not be read whole; markets with an unrecognised runner status; markets held by more than one
+member that could not be read whole, and two overlap annotations of the headline counts:
+markets_never_closed_read_incomplete (never CLOSED and read incomplete) and markets_missing_final_bsp_read_incomplete
+(missing a final BSP and read incomplete). Those are subsets to read beside their parents, never to add to them: a
+market keeps its headline counts, read completeness is member-wide (one late failure in an event file marks every
+market in it), and being in a subset neither says the failure caused the gap nor that earlier settlement evidence
+is unusable. markets_never_closed means CLOSED was not observed in the retained primary record, and
+markets_missing_final_bsp the last observed runner state, not that the market never closed or that no BSP was
+ever published; markets with an unrecognised runner status; markets held by more than one
 member and those whose sources disagree (whole record, and decision_time alone; a market file named after the
 market that holds no record of it, agrees null, counts as a disagreeing source). Across the root: archives with
 their refused members by reason and whether their manifest's month gate is the current one, unreadable files with
 reasons and how many markets they still gave, refused markets, archives not yet indexed, and markets seen in more
-than one archive of the same tier (counted once, in the first archive by sha256).
+than one archive of the same tier (counted once, in the first archive by sha256; markets_in_more_than_one_archive
+counts such markets, each once however many archives repeat it, and the extra copies are the archives' markets
+minus totals.markets).
 
 No outcome statistic beyond those counts is computed: no win rates, prices, BSP values or returns, so the report
 cannot be used to look at outcomes; every number in it is an integer count. The audit reads the evaluator-only part
@@ -47,7 +56,8 @@ KNOWN_FIELDS = ("mc.con", "mc.img", "mc.marketDefinition", "mc.tv", "md.bspMarke
                 "rc.batb", "rc.batl", "rc.ltp", "rc.spb", "rc.spf", "rc.spl", "rc.spn", "rc.trd", "rc.tv")
 COUNTS = ("bsp_market_false", "bsp_market_missing", "bsp_market_true", "closed_dead_heat_not_assessable",
           "date_mismatches", "dead_heats", "event_id_mismatches", "market_time_revised", "markets",
-          "markets_missing_final_bsp", "markets_missing_final_bsp_in_bsp_markets", "markets_never_closed",
+          "markets_missing_final_bsp", "markets_missing_final_bsp_in_bsp_markets",
+          "markets_missing_final_bsp_read_incomplete", "markets_never_closed", "markets_never_closed_read_incomplete",
           "markets_read_incomplete", "markets_with_removals", "markets_with_unrecognised_runner_status",
           "markets_with_unusable_final_bsp", "month_mismatches", "multiple_sources", "removals_after_cutoff",
           "removals_before_cutoff", "results_revised_after_close", "sources_disagree", "sources_disagree_decision_time")
@@ -91,7 +101,12 @@ def _count(group, record):
     group["closed_dead_heat_not_assessable"] += 1 if outcome["closed_reached"] and outcome["dead_heat"] is None else 0
     group["results_revised_after_close"] += 1 if outcome["results_revised_after_close"] is True else 0
     group["markets_never_closed"] += 0 if outcome["closed_reached"] else 1
-    group["markets_read_incomplete"] += 0 if outcome["read_complete"] is True else 1
+    incomplete = outcome["read_complete"] is not True
+    group["markets_read_incomplete"] += 1 if incomplete else 0
+    # Overlap annotations, never alternatives: a market keeps its headline counts and is also counted here.
+    group["markets_never_closed_read_incomplete"] += 1 if incomplete and not outcome["closed_reached"] else 0
+    group["markets_missing_final_bsp_read_incomplete"] += (1 if incomplete and outcome["missing_final_bsp_runner_ids"]
+                                                           else 0)
     group["month_mismatches"] += 1 if checks["month_mismatch"] is True else 0
     group["date_mismatches"] += 1 if checks["date_mismatch"] is True else 0
     group["event_id_mismatches"] += 1 if checks["event_id_mismatch"] is True else 0
@@ -141,12 +156,13 @@ def _read_head(root, sha, manifest_sha):
 
 
 def _count_archive(root, sha, head, seen):
-    """(groups, keys counted, duplicates) for one archive's markets file, streamed line by line; IndexProblem when
+    """(groups, keys counted, identities already counted) for one archive's markets file, streamed line by line
+    (an identity already counted is one in seen, from an earlier archive, or met before in this file); IndexProblem when
     the file is not the one the head names (hash or line count), a record is malformed, or a record's month is one
     the current gate refuses (stale_gate). Nothing is merged into the caller's totals until the whole file has
     been verified."""
     where = f"index:{sha}"
-    groups, counted, duplicates, lines, digest = {}, set(), 0, 0, hashlib.sha256()
+    groups, counted, repeated, lines, digest = {}, set(), set(), 0, hashlib.sha256()
     try:
         path = safe_path(root, "index", sha, head["markets_file"])
         with open(path, "rb") as handle:
@@ -159,7 +175,7 @@ def _count_archive(root, sha, head, seen):
                     raise IndexProblem(f"{where}:stale_gate")
                 identity = (record["provenance"]["plan"], record["market_id"])
                 if identity in seen or identity in counted:
-                    duplicates += 1
+                    repeated.add(identity)
                     continue
                 counted.add(identity)
                 key = (identity[0], record["checks"]["market_time_month"] or "unknown",
@@ -175,7 +191,7 @@ def _count_archive(root, sha, head, seen):
         raise IndexProblem(f"{where}:markets_malformed") from None
     if digest.hexdigest() != head["markets_sha256"] or lines != head["markets"]:
         raise IndexProblem(f"{where}:markets_do_not_match_head")
-    return groups, counted, duplicates
+    return groups, counted, repeated
 
 
 def audit(data_root):
@@ -193,7 +209,7 @@ def audit(data_root):
 
 def _audit(root):
     archives, not_indexed, unreadable, refused_markets, groups, seen = [], [], [], [], {}, set()
-    duplicates, problems = 0, []
+    repeated, problems = set(), []
     for sha in archive_shas(root):
         try:
             manifest, manifest_sha = load_manifest(root, sha)
@@ -201,12 +217,12 @@ def _audit(root):
             if head is None:
                 not_indexed.append(sha)
                 continue
-            counted_groups, counted, archive_duplicates = _count_archive(root, sha, head, seen)
+            counted_groups, counted, archive_repeated = _count_archive(root, sha, head, seen)
         except IndexProblem as error:
             problems.append(str(error))
             continue
         seen |= counted
-        duplicates += archive_duplicates
+        repeated |= archive_repeated
         for key, counts in counted_groups.items():
             group = groups.setdefault(key, _new_group())
             for _, name in FIELD_PARTS:
@@ -247,5 +263,5 @@ def _audit(root):
             "kind": AUDIT_KIND, "note": "Integer counts for coverage only: no win rates, prices, BSP values or "
                                         "returns are computed.",
             "known_fields": list(KNOWN_FIELDS), "archives": archives, "archives_not_indexed": not_indexed,
-            "groups": report_groups, "totals": totals, "markets_in_more_than_one_archive": duplicates,
+            "groups": report_groups, "totals": totals, "markets_in_more_than_one_archive": len(repeated),
             "unreadable_files": unreadable, "refused_markets": refused_markets}

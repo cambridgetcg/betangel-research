@@ -279,6 +279,23 @@ class MarketConditionTests(CohortCase):
         with self.assertRaises(CohortProblem):
             decide_market(self.rules, records[M], lambda record: replay_view(root, manifest, record, -600))
 
+    def test_a_view_of_the_same_market_from_another_tier_refuses(self):
+        """The same market and timing in another tier, with other prices, is another decision's view."""
+        basic = self.build([(path(M), fx.standard_market(M, ltps={1: 3.0, 2: 2.5, 3: 6.0}))])
+        advanced = self.build([(path(M, plan="ADVANCED"), fx.standard_market(M, ltps={1: 2.0, 2: 2.5, 3: 6.0}))])
+
+        def view_from(material):
+            root, manifest, records = material
+            return lambda record: replay_view(root, manifest, records[M], self.rules.offset_s)
+
+        record = basic[2][M]
+        self.assertEqual(advanced[2][M]["provenance"]["plan"], "ADVANCED")
+        with self.assertRaisesRegex(CohortProblem, "view_for_another_decision"):
+            decide_market(self.rules, record, view_from(advanced))
+        own = decide_market(self.rules, record, view_from(basic))               # the same tier: decided
+        self.assertEqual([row["variants"]["ltp_favourite"]["outcome"] for row in own.rows],
+                         [NOT_SELECTED, ISSUED, NOT_SELECTED])
+
 
 class VariantTests(CohortCase):
     def ltp_market(self, ltps, market=M):

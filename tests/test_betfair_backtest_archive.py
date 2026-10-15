@@ -2521,6 +2521,8 @@ class AuditTests(Workspace):
             (path("1.200000011"), bz2.compress(lines(full_market("1.200000011")) + b"bad line\n")),
             (path("1.200000012"), stream(moved)),
             (path("1.200000013"), bz2.compress(hidden.replace('"marketTime"', '"market\\u0054ime"').encode() + b"\n")),
+            (path("1.200000014"), bz2.compress(lines(closed_market("1.200000014", ["WINNER", "LOSER"], [2.0, None])
+                                                     + [heartbeat(ms(OFF + timedelta(minutes=10)))]) + b"bad\n")),
         ]
         sha, _ = self.build(members)
         report = audit(self.root)
@@ -2530,7 +2532,8 @@ class AuditTests(Workspace):
         self.assertNotIn(("BASIC", "2015-06", "IE", "WIN"), groups)            # grouped by the first countryCode
         win = groups[("BASIC", "2015-06", "GB", "WIN")]
         expected = {"bsp_market_false": 1, "bsp_market_missing": 1, "closed_dead_heat_not_assessable": 1,
-                    "dead_heats": 1, "markets_never_closed": 3, "markets_read_incomplete": 1,
+                    "dead_heats": 1, "markets_never_closed": 3, "markets_read_incomplete": 2,
+                    "markets_never_closed_read_incomplete": 1, "markets_missing_final_bsp_read_incomplete": 1,
                     "markets_with_unusable_final_bsp": 1, "markets_with_unrecognised_runner_status": 1,
                     "results_revised_after_close": 1, "multiple_sources": 1, "sources_disagree": 1,
                     "sources_disagree_decision_time": 1}
@@ -2538,8 +2541,134 @@ class AuditTests(Workspace):
         self.assertEqual([item["market_id"] for item in report["refused_markets"]], ["1.200000013"])
         self.assertEqual(report["unreadable_files"], [{"archive_sha256": sha, "path": path("1.200000011"),
                                                        "reason": "not_json", "markets": 1,
-                                                       "complete_before_pt": ms(OFF + timedelta(minutes=20))}])
+                                                       "complete_before_pt": ms(OFF + timedelta(minutes=20))},
+                                                      {"archive_sha256": sha, "path": path("1.200000014"),
+                                                       "reason": "not_json", "markets": 1,
+                                                       "complete_before_pt": ms(OFF + timedelta(minutes=10))}])
         self.assertEqual(sha, report["archives"][0]["archive_sha256"])
+
+    def test_read_incomplete_overlap_counts(self):
+        """Astra's design A (2026-10-15): two overlap annotations beside the headline counts, never instead of
+        them. markets_never_closed_read_incomplete = never CLOSED and read incomplete;
+        markets_missing_final_bsp_read_incomplete = missing a final BSP and read incomplete, with no further
+        condition (a market seen CLOSED with a BSP gap keeps it, and is annotated when its member fails later).
+        The index drops the batch at the last pt applied before a failure whose pt is unknown, so each failure
+        here follows a later message (a heartbeat or prices) that keeps what came before it."""
+        t, bad, later = iso(OFF), b"bad line\n", OFF + timedelta(minutes=30)
+
+        def failing(messages, after):          # a later heartbeat, then a line the index cannot read
+            return bz2.compress(lines(messages + [heartbeat(ms(after))]) + bad)
+
+        names = ("markets_never_closed", "markets_never_closed_read_incomplete", "markets_missing_final_bsp",
+                 "markets_missing_final_bsp_read_incomplete", "markets_read_incomplete")
+
+        def opening(mid, runners=2, off=OFF):
+            return [md_change(mid, off - timedelta(hours=1), definition(iso(off), [runner(i + 1)
+                                                                                 for i in range(runners)]))]
+
+        event = [*opening("1.300000006"), *opening("1.300000007", off=later),
+                 closed_market("1.300000006", ["WINNER", "LOSER"], [2.0, 3.0])[1]]
+        settles = OFF + timedelta(minutes=10)
+        controls = {
+            "complete, never CLOSED": ([(path("1.300000001"), stream(opening("1.300000001")))], (1, 0, 1, 0, 0)),
+            "read incomplete before CLOSED": (
+                [(path("1.300000002"), failing(opening("1.300000002"), OFF - timedelta(minutes=30)))],
+                (1, 1, 1, 1, 1)),
+            "CLOSED with a BSP gap, then a later failure": (
+                [(path("1.300000003"), failing(closed_market("1.300000003", ["WINNER", "LOSER"], [2.0, None]),
+                                               settles))], (0, 0, 1, 1, 1)),
+            "CLOSED with every BSP, then a later failure": (
+                [(path("1.300000004"), failing(closed_market("1.300000004", ["WINNER", "LOSER"], [2.0, 3.0]),
+                                               settles))], (0, 0, 0, 0, 1)),
+            "a primary with no runner, read incomplete": (
+                [(path("1.300000005"), failing([md_change("1.300000005", OFF - timedelta(hours=1),
+                                                          definition(t, []))], OFF - timedelta(minutes=30)))],
+                (1, 1, 0, 0, 1)),
+            "an event file: an earlier closed market, a later unsettled one": (
+                [(path(EVENT), failing(event, settles))], (1, 1, 1, 1, 2)),
+            # An empty primary: a market file holding none of its market (the event file has it, settled), so the
+            # record has no view and no runner; no missing BSP is made up for it.
+            "an empty primary read whole": (
+                [(path("1.300000008"), stream([heartbeat(ms(OFF - timedelta(hours=2)))])),
+                 (path(EVENT), stream(closed_market("1.300000008", ["WINNER", "LOSER"], [2.0, 3.0])))],
+                (1, 0, 0, 0, 0)),
+            "an empty primary read incomplete": (
+                [(path("1.300000009"), bz2.compress(lines([heartbeat(ms(OFF - timedelta(hours=2)))]) + bad)),
+                 (path(EVENT), stream(closed_market("1.300000009", ["WINNER", "LOSER"], [2.0, 3.0])))],
+                (1, 1, 0, 0, 1)),
+            # The BSP subset follows its parent, whatever bspMarket says.
+            "a BSP gap in a market that is not a BSP market, then a later failure": (
+                [(path("1.300000010"), failing(closed_market("1.300000010", ["WINNER", "LOSER"], [2.0, None],
+                                                             bspMarket=False), settles))], (0, 0, 1, 1, 1)),
+            "a BSP gap in a market without bspMarket, then a later failure": (
+                [(path("1.300000011"), failing([md_change("1.300000011", OFF - timedelta(hours=1),
+                                                          drop(definition(t, [runner(1), runner(2)]), "bspMarket")),
+                                                md_change("1.300000011", OFF + timedelta(minutes=5),
+                                                          drop(definition(t, [runner(1, "WINNER", bsp=2.0),
+                                                                              runner(2, "LOSER")], status="CLOSED"),
+                                                               "bspMarket"))], settles))], (0, 0, 1, 1, 1)),
+        }
+        for name, (members, expected) in controls.items():
+            with self.subTest(control=name):
+                root = self.new_root()
+                self.build(members, root=root)
+                report = audit(root)
+                self.assertEqual(report["status"], "audited", report)
+                self.assertEqual(tuple(report["totals"][count] for count in names), expected)
+                if "not a BSP market" in name or "without bspMarket" in name:
+                    self.assertEqual(report["totals"]["markets_missing_final_bsp_in_bsp_markets"], 0)
+                for group in report["groups"] + [report["totals"]]:
+                    for subset, parent in (("markets_never_closed_read_incomplete", "markets_never_closed"),
+                                           ("markets_missing_final_bsp_read_incomplete",
+                                            "markets_missing_final_bsp")):
+                        self.assertLessEqual(group[subset], group[parent])
+                        self.assertLessEqual(group[subset], group["markets_read_incomplete"])
+
+    def test_a_market_repeated_in_many_archives_counts_once(self):
+        def closed(mid, plan="BASIC"):
+            return path(mid, plan=plan), stream(closed_market(mid, ["WINNER", "LOSER"], [2.0, 3.0]))
+
+        cases = {"one market in three archives": ([["A"], ["A"], ["A"]], 1),
+                 "two markets, each in three archives": ([["A", "B"], ["A", "B"], ["A", "B"]], 2),
+                 "one in three and one in two": ([["A", "B"], ["A", "B"], ["A"]], 2),
+                 "one in two": ([["A"], ["A"], []], 1),
+                 "the same id in another tier is another market": ([["A"], ["A", "PRO:A"], []], 1),
+                 "the same id repeated in two tiers is two markets": ([["A", "PRO:A"], ["A", "PRO:A"], []], 2)}
+        ids = {"A": "1.310000001", "B": "1.310000002"}
+        for name, (archives, expected) in cases.items():
+            with self.subTest(case=name):
+                root = self.new_root()
+                for n, held in enumerate(archives):
+                    members = [closed(f"1.31000010{n}")]          # each TAR also holds a market of its own
+                    for item in held:
+                        plan, _, key = item.rpartition(":")
+                        members.append(closed(ids[key], plan or "BASIC"))
+                    self.assertEqual(self.ingest(members, name=f"repeat{self.roots}-{n}.tar", root=root)["status"],
+                                     "ingested")
+                self.assertEqual(index_archives(root)["status"], "indexed")
+                report = audit(root)
+                self.assertEqual(report["markets_in_more_than_one_archive"], expected, report)
+                copies = sum(item["markets"] for item in report["archives"]) - report["totals"]["markets"]
+                self.assertEqual(copies, sum(len(held) for held in archives)
+                                 - len({item for held in archives for item in held}))
+
+    def test_a_repeated_market_is_counted_from_the_first_archive_by_sha256(self):
+        """Repeats are counted once, from the copy in the archive whose sha256 sorts first, whichever is ingested
+        first: here one copy saw CLOSED and the other did not."""
+        mid = "1.320000001"
+        copies = {"closed": closed_market(mid, ["WINNER", "LOSER"], [2.0, 3.0]),
+                  "never closed": closed_market(mid, ["WINNER", "LOSER"], [2.0, 3.0])[:1]}
+        root, shas = self.new_root(), {}
+        for n, (name, messages) in enumerate(copies.items()):
+            members = [(path(mid), stream(messages)),
+                       (path(f"1.32000001{n}"),
+                        stream(closed_market(f"1.32000001{n}", ["WINNER", "LOSER"], [2.0, 3.0])))]
+            shas[name] = self.ingest(members, name=f"first-{n}.tar", root=root)["archive_sha256"]
+        self.assertEqual(index_archives(root)["status"], "indexed")
+        report = audit(root)
+        first = min(shas, key=shas.get)
+        self.assertEqual((report["markets_in_more_than_one_archive"], report["totals"]["markets"],
+                          report["totals"]["markets_never_closed"]), (1, 3, 1 if first == "never closed" else 0))
 
     def test_empty_root(self):
         self.assertEqual(audit(self.root)["status"], "empty")

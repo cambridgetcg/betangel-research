@@ -129,8 +129,9 @@ def anchor_and_decision(record, offset_s):
     return first["pt"], anchor_ms, anchor_ms + offset_s * 1000
 
 
-class _Prices:
-    """rc.ltp timelines per runner, with the image rule in the module docstring."""
+class PriceFold:
+    """rc.ltp timelines per runner, with the image rule in the module docstring; change(pt, change) folds one market
+    change, in file order."""
 
     def __init__(self):
         self.ltp = {}
@@ -174,11 +175,11 @@ def _member(manifest, record):
 
 
 def _fold(raw, market_id, t, limits):
-    """(_Market or None, _Prices, unreadable_from or None, (sha256, size) of every byte of the file): the market's
+    """(_Market or None, PriceFold, unreadable_from or None, (sha256, size) of every byte of the file): the market's
     messages published at or before t, folded in file order; unreadable_from is the pt from which the member could
     not be read when that happened before reading passed t (the failing message's pt when known, else the last pt
     applied, as market_index._read_member)."""
-    market, prices, unreadable_from, applied = None, _Prices(), None, None
+    market, prices, unreadable_from, applied = None, PriceFold(), None, None
     with open(raw, "rb") as handle:
         reader = HashingReader(handle)
         try:
@@ -254,36 +255,32 @@ def _replay_projection(market, t):
     return {"definition": definition, "runners": runners, "removals": removals}
 
 
-def replay_view(root, manifest, record, offset_s, limits=DEFAULT_LIMITS):
-    """The DecisionView of one index record at its decision time (module docstring); ReplayProblem when the input
-    is not what the manifest and the index say, ValueError when the caller's precondition does not hold (no view,
-    anchor published after t, or t at or after view_ends)."""
-    market_id = record["market_id"]
+def _timing(record, offset_s):
+    """(anchor pt, anchor ms, t) after the caller's precondition (a view, an anchor published by t, t before
+    view_ends); ValueError otherwise."""
     timing = anchor_and_decision(record, offset_s)
     if timing is None:
         raise ValueError("replay:no_view")
-    anchor_pt, anchor_ms, t = timing
+    anchor_pt, _, t = timing
     ends = record["decision_time"]["view_ends"]["pt"]
     if anchor_pt > t:
         raise ValueError("replay:anchor_after_decision")
     if ends is None or t >= ends:
         raise ValueError("replay:decision_at_or_after_view_ends")
-    member = _member(manifest, record)
+    return timing
+
+
+def view_from_fold(record, market, prices, offset_s):
+    """The DecisionView of one index record at its decision time from a fold of its member up to t (a _Market and a
+    PriceFold holding nothing published after t), after the checks every route to a view must pass: the caller's
+    precondition, the market present, the first-published marketTime equal to the record's anchor, no
+    outcome-bearing definition folded, and the decision-safe state at t equal to the record's decision_time
+    entries at or before t; ReplayProblem otherwise. Every value in the view is frozen. replay_view reaches it only
+    after its integrity checks of the member; task (c2b3a)'s prefix check reaches it with a fold of a verified
+    member's prefix."""
+    market_id = record["market_id"]
+    anchor_pt, anchor_ms, t = _timing(record, offset_s)
     where = f"replay:{market_id}"
-    try:
-        raw = safe_target(root, manifest["archive"]["sha256"], member["path"])
-    except ArchiveProblem as error:
-        raise ReplayProblem(f"{where}:{error}") from None
-    try:
-        if not raw.is_file():
-            raise ReplayProblem(f"{where}:member_missing")
-        market, prices, unreadable_from, digest = _fold(raw, market_id, t, limits)
-    except OSError:
-        raise ReplayProblem(f"{where}:member_unreadable_file") from None
-    if digest != (member["sha256"], member["size_bytes"]):
-        raise ReplayProblem(f"{where}:member_hash_mismatch")
-    if unreadable_from is not None:
-        raise ReplayProblem(f"{where}:unreadable_before_view_ends")
     if market is None:
         raise ReplayProblem(f"{where}:market_not_replayed")
     first = record["decision_time"]["first_published_market_time"]
@@ -306,7 +303,31 @@ def replay_view(root, manifest, record, offset_s, limits=DEFAULT_LIMITS):
             ltp_pt=timeline[-1][0] if timeline else None))
     removals = tuple((item["id"], item["pt"], item["status"]) for item in market.removals() if item["pt"] <= t)
     return DecisionView(market_id=market_id, plan=record["provenance"]["plan"], anchor_pt=anchor_pt,
-                        anchor_value=record["decision_time"]["first_published_market_time"]["value"],
-                        anchor_ms=anchor_ms, decision_ms=t, definition=definition, runners=tuple(runners),
-                        removals=removals,
+                        anchor_value=first["value"], anchor_ms=anchor_ms, decision_ms=t, definition=definition,
+                        runners=tuple(runners), removals=removals,
                         malformed_price_changes=sum(1 for pt in prices.malformed if pt <= t))
+
+
+def replay_view(root, manifest, record, offset_s, limits=DEFAULT_LIMITS):
+    """The DecisionView of one index record at its decision time (module docstring); ReplayProblem when the input
+    is not what the manifest and the index say, ValueError when the caller's precondition does not hold (no view,
+    anchor published after t, or t at or after view_ends)."""
+    market_id = record["market_id"]
+    _, _, t = _timing(record, offset_s)
+    member = _member(manifest, record)
+    where = f"replay:{market_id}"
+    try:
+        raw = safe_target(root, manifest["archive"]["sha256"], member["path"])
+    except ArchiveProblem as error:
+        raise ReplayProblem(f"{where}:{error}") from None
+    try:
+        if not raw.is_file():
+            raise ReplayProblem(f"{where}:member_missing")
+        market, prices, unreadable_from, digest = _fold(raw, market_id, t, limits)
+    except OSError:
+        raise ReplayProblem(f"{where}:member_unreadable_file") from None
+    if digest != (member["sha256"], member["size_bytes"]):
+        raise ReplayProblem(f"{where}:member_hash_mismatch")
+    if unreadable_from is not None:
+        raise ReplayProblem(f"{where}:unreadable_before_view_ends")
+    return view_from_fold(record, market, prices, offset_s)

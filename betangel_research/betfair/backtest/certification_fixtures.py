@@ -595,7 +595,7 @@ def _cohort_rules(offset_s, stake_pence, selection_seed, label):
 
 
 def p0_rules():
-    """(CohortRules, AccountingRules, BootstrapPlan) at P0's operational values."""
+    """The first synthetic parameter point: 5% commission and 200 resamples, not P0's draft operational settings."""
     return (_cohort_rules(-300, 100, 1, "p0"),
             AccountingRules(commission_rate=Decimal("0.05"), rounding="per_market_ceil_penny", stake_pence=100,
                             variants=VARIANTS),

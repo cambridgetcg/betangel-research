@@ -2624,6 +2624,17 @@ class AuditTests(Workspace):
                         self.assertLessEqual(group[subset], group[parent])
                         self.assertLessEqual(group[subset], group["markets_read_incomplete"])
 
+    def test_index_collapses_repeated_messages_before_archive_overlap_audit(self):
+        """The index emits one market record for repeated messages in a member."""
+        mid = "1.310000001"
+        messages = closed_market(mid, ["WINNER", "LOSER"], [2.0, 3.0])
+        repeated = [message for message in messages for _ in range(3)]
+        sha, _ = self.build([(path(mid), stream(repeated))])
+        report = audit(self.root)
+        self.assertEqual(report["status"], "audited", report)
+        self.assertEqual(self.head(sha)["markets"], 1)
+        self.assertEqual((report["totals"]["markets"], report["markets_in_more_than_one_archive"]), (1, 0))
+
     def test_a_market_repeated_in_many_archives_counts_once(self):
         def closed(mid, plan="BASIC"):
             return path(mid, plan=plan), stream(closed_market(mid, ["WINNER", "LOSER"], [2.0, 3.0]))
@@ -2632,6 +2643,7 @@ class AuditTests(Workspace):
                  "two markets, each in three archives": ([["A", "B"], ["A", "B"], ["A", "B"]], 2),
                  "one in three and one in two": ([["A", "B"], ["A", "B"], ["A"]], 2),
                  "one in two": ([["A"], ["A"], []], 1),
+                 "the same id only across tiers is not a repeat": ([["A"], ["PRO:A"], []], 0),
                  "the same id in another tier is another market": ([["A"], ["A", "PRO:A"], []], 1),
                  "the same id repeated in two tiers is two markets": ([["A", "PRO:A"], ["A", "PRO:A"], []], 2)}
         ids = {"A": "1.310000001", "B": "1.310000002"}

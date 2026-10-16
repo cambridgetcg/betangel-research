@@ -457,7 +457,15 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
    ```
 
    `--code-identity` 係 operator 寫嘅文字（printable ASCII，1–200 字），冇嘢核實佢。開 start 之前嘅次序（Q3、Q8）：path guard；contract `valid_frozen`、支援嘅 P0 model（`delay_s` 0）同 certified profile；兩個 root 同 id；而家 key 嘅 certificate（`certification:missing`、`malformed`、`not_this_key`、`not_all_passed` 等等）；known accounting answers；input descriptor 同每個 manifest 嘅 limits（`input:<sha>:limits_not_the_runs`）；certificate 嘅 limits（`certification:limits_not_the_runs`）；第一輪（`stale_gate`、`duplicate_market`、`malformed_record`、`member_not_the_manifests`，之後 `inputs:no_records`、`inputs:no_eligible_records`）；per-contract lock（`runner_lock:held`）。Lock 入面：history（`ledger:unfinished_trials`、`run:recovery_incomplete`、`receipt:missing`、`run:unaccounted`）、stop rule、`run_id:already_used`、`ledger:trial_budget_exhausted`、`source:changed_before_start`，之後先開兩個 start。拒絕咗嘅 run 可能留低空嘅 `contracts/<sha>/` 同 `runs/<sha>/` 目錄。Synthetic 推算（冇喺真資料量度過）：大約 52.5k 個 candidate、9–18 分鐘、0.4–0.6 GB；第一次要睇住記憶體。`--data-root` 底下淨係放第 7 步話畀 Yu 知嗰個 input descriptor 嘅 archive；run 做完之後，對返 `results.json` 同 trial ledger 入面嘅 `input_sha256` 係咪就係嗰個。
-9. **Uncertain 同 recovery。** 結果係 uncertain 就保留 lock：一個人先確認冇 writer 仲喺度跑，先移走 lock，再跑 `reconcile-trials --contract … --lab-state-root … --code-identity …`（reconciled 係 exit 0，其他 2）。Reconcile 唔使 certificate、唔跑 stop rule、永遠唔會被停，亦唔會抹走或者升級一個 pass 聲稱。佢唔係 atomic：另一個 run 嘅 recovery 做咗之後先發現 certificate 唔夾，結果可以係 uncertain，部分 recovery 已經寫咗（Q10：佢會列出受影響嘅改動、保留 lock 同已計嘅 start、唔發 invalid 嘅 receipt）。
+9. **Uncertain 同 recovery。** 結果係 uncertain 就保留 lock：一個人先確認冇 writer 仲喺度跑，先移走 lock，再跑
+   `reconcile-trials --contract … --lab-state-root … --code-identity …`（reconciled 係 exit 0，其他 2）。
+   Reconcile 唔使 certificate file、唔跑 stop rule、永遠唔會被停，亦唔會抹走或者升級一個 pass 聲稱。
+   Q10：第一次 recovery append 或 publication 之前，先核對每個已知 ledger run 嘅 start／close certificate 一致性，
+   已經 close 但缺 receipt 嘅 run，亦先要求 run 目錄存在、核對 completed evidence 自身嘅 certificate binding 同 closes。
+   Incomplete intent 如果仲要補 start，就唔可以綁 known certificate，因為新 start 只會寫 null；已預留齊 variants 嘅
+   intent 仍可用原有 certificate close。以上衝突唔會等另一個 run 改咗先發現。佢仍然唔係 atomic：未完成嘅 run 喺 abort
+   之後先發現冇 run 目錄（`no_run_directory`）、後來重讀 evidence、寫入或者放 lock 失敗，仍可能係 uncertain；保留 lock
+   同已計嘅 start，列出已寫嘅 trials 同 touched runs，唔發 invalid 嘅 receipt。
 
 ## 11. P1: flumine cross-check conditions
 
@@ -507,7 +515,12 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 - **`ltp_to_bsp_movement_non_executable` 聲明咗但冇實作**（Astra 對 c2b3b4 嘅 R1）：P0 draft 嘅 `secondary_metrics` 有佢，`P0_PROFILE` 都有，但冇代碼計、`results.json` 冇報（§8）。凍結之前要明確決定延後、刪走定實作；刪走或者實作係另外 review 嘅 profile／source 改動（key 會變，要重新 certify）。
 - **Index 建立冇綁 limit**（c2b3b 決定 13）：index head 冇記用咗乜 limit；manifest 同 certificate 嘅 limit 檢查唔證明 index 點建。要綁住就另外提議一個窄嘅 index binding。
 - **載入嘅代碼冇證明**（c2b3b 決定 5、Q4）：certificate 只係核對 disk 上嘅 source 同 interpreter；靠專用 checkout、fresh CLI（`-B`）同 §10.1 第 1 步嘅環境紀律（certify 同 run 用同一個 shell 環境；`PYTHONPYCACHEPREFIX`、`PYTHONPATH`、`PYTHONOPTIMIZE` 唔設；冇 user site、`.pth` 或者 `sitecustomize` 加落嚟）。`run-backtest` 冇 import 時嘅 snapshot（Q4），`certify-engine` 有（`source:changed_since_import`、載入 module 嘅檢查），但兩樣都唔證明實際載入嘅 bytecode。
-- **非 blocking 嘅 hardening（Astra 對 c2b3b3 嘅 Q5、Q10，c2b3b4 範圍以外）**：淨係新嘅 unbound-result scan 拒絕唔係 regular file 嘅 `results.json`；舊嘅 completed-results 同 receipt reader 仍然會跟 bytes 一樣嘅 symlink：呢個寬鬆唔係刻意嘅行為，唔好當規則。Reconcile 喺改任何嘢之前，對每個已知 run 先查 certificate（Q10），可以避免 §10.1 第 9 步講嘅部分 recovery。兩樣都未做。
+- **Pre-certification hardening（Q5、Q10）**：receipt、recovery intent、completed results、issuance evidence 同
+  unbound-result scan 喺開檔前用 `lstat` 檢查 regular file；symlink（包括同 bytes 同 dangling link）、directory、FIFO
+  都係 `not_a_regular_file`，inspection error 係 `uninspectable`。只有 `FileNotFoundError` 代表 absent；缺必要 evidence
+  仍係 `missing_path`，regular file 讀唔到仍係 `unreadable`。Q10 嘅所有已知 run certificate 預檢見 §10.1 第 9 步；
+  缺 certificate field 同 null 仍可代表 unknown，唔會捏造 certificate。呢啲係當刻檢查，唔防忽略 lock 嘅 writer 喺檢查後換檔；
+  亦唔令 reconcile 變 atomic。呢次 source 改動會移動 descriptor 同 certificate key，要喺最終 source 上重新 certify。
 - **c2b3b3 嘅 mutation 證據唔係全殺**：c2b3b3（`runner.py` 嘅 certificate binding 同 stop rule）嘅 mutation 測試有六個聲稱等價嘅 survivor，加刻意冇釘死嘅 S6；排序名嘅 mutant check 受 hash 次序影響（Astra 對 c2b3b3 嘅 review：nonblocking 嘅測試強度限制）。呢個係嗰個 diff 嘅測試強度，唔係 certificate 證明唔到嘅嘢（§9）。
 
 ## 14. Sources with access dates

@@ -1,4 +1,4 @@
-"""Recursive, package-aware import boundaries for the offline backtester and the root modules, by AST only.
+"""Recursive, package-aware import boundaries for the offline tools and the root modules, by AST only.
 
 AGENTS.md: the backtester (betangel_research.betfair.backtest) must not import, directly or transitively, the
 gateway, account/session/credential clients, network transports or trading CLI, or access account profiles or
@@ -60,9 +60,14 @@ may name them only in its exact top-level deny literal (PATH_GUARD_DENIED; live_
 companion in tests/test_betfair_backtest_contract.py lists the modules the validator actually loads on this
 interpreter.
 
-Classification of every module directly in betangel_research/betfair (read in full or by its imports and
-docstring at 8b0da84, 2026-10-14) is in FORBIDDEN_BETFAIR and ALLOWED_BETFAIR with one reason each. Allowed
-means "not itself an account, network, order-path or live-state module"; it does not mean the module is
+Readiness uses the same transitive import rule from its separate betfair.readiness entry point, including
+shadowing, dynamic imports and package-object bindings. Its closure gets the same live-state/home text checks;
+it does not enlarge the certificate's backtest-only source descriptor or become a trading CLI subcommand.
+
+Classification of every module directly in betangel_research/betfair is in FORBIDDEN_BETFAIR and ALLOWED_BETFAIR
+with one reason each. The original modules were read in full or by their imports and docstrings at 8b0da84,
+2026-10-14; readiness was added and reviewed in R1 at 4df3399, 2026-10-16. Allowed means "not itself an account,
+network, order-path or live-state module"; it does not mean the module is
 usable from the backtester, because its own closure may still reach a forbidden module. That is what
 REUSE_FINDINGS records.
 
@@ -100,6 +105,7 @@ REPO = Path(__file__).resolve().parent.parent
 TOP = "betangel_research"
 BETFAIR = f"{TOP}.betfair"
 BACKTEST = f"{BETFAIR}.backtest"
+READINESS = f"{BETFAIR}.readiness"
 
 # Forbidden to the backtester: account, credential, session, network, order-path or live-state modules.
 FORBIDDEN_BETFAIR = {
@@ -132,6 +138,7 @@ ALLOWED_BETFAIR = {
     "lifecycle": "order state machine and report classification",
     "paper": "paper fill model and offline replay over paths its caller names; holds no transport",
     "pnl": "own P&L and commission arithmetic in pence",
+    "readiness": "read-only draft and index inventory over explicit paths; its closure obeys the offline rule",
     "receipts": "clocks, timestamp parsing, canonical hashing, durable local writes; git_state runs git",
     "schemas": "exact-key record validators",
     "secret": "in-memory secret wrapper and write-time leak checks; reads no credential",
@@ -549,6 +556,17 @@ def backtest_violations(graph, *, betfair, forbidden):
     return found + stdlib_shadow_violations(graph, starts)
 
 
+def readiness_violations(graph, *, betfair, forbidden):
+    """Apply the unchanged backtest import rules to readiness and every module it transitively reaches."""
+    starts = [f"{betfair}.readiness"]
+    backtest = f"{betfair}.backtest"
+    found = graph.violations(starts, *backtest_rules(betfair, forbidden, shadowing_names(graph, starts)))
+    for module in sorted(graph.closure(starts)):
+        found += [(module, site, "binds an internal package object outside the backtest package")
+                  for site in graph.packages[module] if not under(site.partition(": ")[2], backtest)]
+    return found + stdlib_shadow_violations(graph, starts)
+
+
 def root_violations(graph, *, betfair):
     """The root rule: nothing outside <betfair> reaches <betfair>, directly or transitively, or imports a module
     the scan cannot follow (a repository file or directory that answers the name, beside the package or beside a
@@ -653,6 +671,38 @@ class ResolverSelfTests(unittest.TestCase):
 
     def assert_endpoint(self, found, endpoint):
         self.assertIn(endpoint, [e for _, e, _ in found], describe(found))
+
+    def test_clean_synthetic_readiness_passes_the_offline_rule(self):
+        graph = self.graph({"pkg/betfair/readiness.py": "from .backtest import run\nfrom pathlib import Path\n"})
+        self.assertEqual(readiness_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN), [])
+
+    def test_readiness_mutations_fail_directly_and_transitively(self):
+        cases = {
+            "os in readiness": ({"pkg/betfair/readiness.py": "import os\n"}, "os"),
+            "api in readiness": ({"pkg/betfair/readiness.py": "from . import api\n"}, "pkg.betfair.api"),
+            "forbidden hop": ({"pkg/betfair/readiness.py": "from . import helper\n",
+                                "pkg/betfair/helper.py": "from . import api\n"}, "pkg.betfair.api"),
+            "os in a hop": ({"pkg/betfair/readiness.py": "from . import helper\n",
+                              "pkg/betfair/helper.py": "import os\n"}, "os"),
+            "dynamic in a hop": ({"pkg/betfair/readiness.py": "from . import helper\n",
+                                   "pkg/betfair/helper.py": "import importlib\n"}, "imports importlib"),
+            "unresolved in a hop": ({"pkg/betfair/readiness.py": "from . import helper\n",
+                                      "pkg/betfair/helper.py": "from .missing import x\n"},
+                                     "line 1: pkg.betfair.missing is not a module"),
+            "parent package binding": ({"pkg/betfair/readiness.py": "from .. import betfair\n"},
+                                       "line 1: pkg.betfair"),
+            "shadowed stdlib": ({"pkg/betfair/readiness.py": "import fractions\n", "fractions.py": ""},
+                                 "fractions"),
+        }
+        for label, (files, endpoint) in cases.items():
+            with self.subTest(case=label):
+                graph = self.graph(files)
+                found = readiness_violations(graph, betfair="pkg.betfair", forbidden=SYNTHETIC_FORBIDDEN)
+                self.assert_endpoint(found, endpoint)
+                self.assertTrue(any(chain.startswith("pkg.betfair.readiness") for chain, _, _ in found))
+                if label in {"os in readiness", "api in readiness"}:
+                    self.assertEqual(backtest_violations(graph, betfair="pkg.betfair",
+                                                        forbidden=SYNTHETIC_FORBIDDEN), [])
 
     def test_clean_synthetic_backtest_passes(self):
         clean = {
@@ -918,7 +968,8 @@ class ResolverSelfTests(unittest.TestCase):
 
 class BacktestBoundaryTests(unittest.TestCase):
     def closure_modules(self):
-        return sorted(REAL.closure([m for m in REAL.files if under(m, BACKTEST)]))
+        """Both offline closures; certificate coverage remains the separate backtest closure below."""
+        return sorted(REAL.closure([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]))
 
     def test_every_betfair_module_is_classified(self):
         direct = {path.stem for path in (REPO / TOP / "betfair").glob("*.py")}
@@ -946,9 +997,17 @@ class BacktestBoundaryTests(unittest.TestCase):
         found = backtest_violations(REAL, betfair=BETFAIR, forbidden=FORBIDDEN_BETFAIR)
         self.assertEqual(found, [], describe(found))
 
+    def test_readiness_closure_avoids_forbidden_modules(self):
+        self.assertIn(READINESS, REAL.files)
+        found = readiness_violations(REAL, betfair=BETFAIR, forbidden=FORBIDDEN_BETFAIR)
+        self.assertEqual(found, [], describe(found))
+        for entry in (f"{BETFAIR}.cli", f"{BETFAIR}.__main__", f"{BACKTEST}.__main__"):
+            with self.subTest(entry=entry):
+                self.assertNotIn(READINESS, REAL.closure([entry]))
+
     def test_backtest_imports_are_stdlib_or_relative(self):
         """Every absolute import names a standard-library module that no repository file or directory shadows."""
-        starts = [m for m in REAL.files if under(m, BACKTEST)]
+        starts = [m for m in REAL.files if under(m, BACKTEST)] + [READINESS]
         shadows = {name.casefold() for name in shadowing_names(REAL, starts)}
         stdlib = {name for name in sys.stdlib_module_names if name.casefold() not in shadows}
         for module in sorted(starts):
@@ -964,6 +1023,7 @@ class BacktestBoundaryTests(unittest.TestCase):
         nothing in tests/ (sys.path[0] under unittest discover, and outside both rules) carries the name of a
         standard-library module, ignoring case (BACKTEST_STDLIB included)."""
         for label, starts in (("backtest", [m for m in REAL.files if under(m, BACKTEST)]),
+                              ("readiness", [READINESS]),
                               ("root", [m for m in REAL.files if not under(m, BETFAIR)])):
             with self.subTest(closure=label):
                 self.assertEqual({n for n in shadowing_names(REAL, starts) if n.casefold() in STDLIB_FOLDED}, set())
@@ -973,9 +1033,9 @@ class BacktestBoundaryTests(unittest.TestCase):
         self.assertIn("tests", REAL.top_level_names())
         self.assertNotIn(TOP, REAL.top_level_names())
 
-    def test_backtest_closure_names_no_live_state_or_home_and_starts_no_process(self):
-        """Over the whole backtest closure: no state-root, certificate-directory or Keychain text, no home-directory
-        lookup, and no os/posix/nt process call under any alias (os is off the allowlist as well)."""
+    def test_offline_closures_name_no_live_state_or_home_and_start_no_process(self):
+        """Over the backtest and readiness closures: no state-root, certificate-directory or Keychain text, no
+        home-directory lookup, and no os/posix/nt process call under any alias (os is off the allowlist as well)."""
         for module in self.closure_modules():
             path = REAL.files[module][0]
             text = path.read_text(encoding="utf-8")
@@ -1091,9 +1151,11 @@ class BacktestBoundaryTests(unittest.TestCase):
         closure = REAL.closure([m for m in REAL.files if under(m, BACKTEST)])
         self.assertEqual({item["path"] for item in descriptor["files"]},
                          {REAL.files[m][0].relative_to(REPO).as_posix() for m in closure})
+        self.assertNotIn(READINESS, closure)
+        self.assertEqual(len(descriptor["files"]), 21)
 
-    def test_backtest_syntax_floor_is_python_3_10(self):
-        for module in sorted(m for m in REAL.files if under(m, BACKTEST)):
+    def test_offline_syntax_floor_is_python_3_10(self):
+        for module in sorted([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]):
             text = REAL.files[module][0].read_text(encoding="utf-8")
             with self.subTest(module=module):
                 ast.parse(text, feature_version=(3, 10))

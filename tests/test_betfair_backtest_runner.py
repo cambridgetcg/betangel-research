@@ -949,9 +949,31 @@ class ReviewRegressionTests(RunnerCase):
         ledger.append("started", trial_id="gone.ltp_favourite", contract=self.contract_value, variant="ltp_favourite",
                       input_sha256="ab" * 32, code_identity="git:old", recorded_at="2026-10-15T00:00:00Z", summary={})
         result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)  # no run dir to receipt in
-        self.assertEqual((result["status"], result["trial_ids"]), ("uncertain", ["gone.ltp_favourite"]), result)
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertEqual(result.get("trial_ids"), ["gone.ltp_favourite"], result)
         self.assertTrue((self.contract_dir / runner.LOCK_NAME).exists())
         self.assertEqual(self.ledger()[-1]["kind"], "aborted")
+
+    def test_reconcile_partly_closed_run_without_a_directory_stays_uncertain(self):
+        for closed_kind in trial_ledger.CLOSING_KINDS:
+            with self.subTest(closed_kind=closed_kind):
+                self.fresh_roots(f"partly-closed-{closed_kind}")
+                contract_dir = self.lab / "contracts" / self.digest
+                contract_dir.mkdir(parents=True)
+                ledger = TrialLedger.open(contract_dir)
+                for kind, variant in (("started", "ltp_favourite"), ("started", "seeded_random_runner"),
+                                      (closed_kind, "ltp_favourite")):
+                    ledger.append(kind, trial_id=f"gone.{variant}", contract=self.contract_value, variant=variant,
+                                  input_sha256="ab" * 32, code_identity="git:old",
+                                  recorded_at="2026-10-15T00:00:00Z", summary={})
+                self.assertFalse((self.lab / "runs" / self.digest / "gone").exists())
+                result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+                self.assertEqual(result["status"], "uncertain", result)
+                self.assertEqual(result.get("trial_ids"), ["gone.seeded_random_runner"], result)
+                self.assertEqual(result["problems"], ["receipt:gone:no_run_directory"], result)
+                self.assertTrue((contract_dir / runner.LOCK_NAME).exists())
+                last = self.ledger()[-1]
+                self.assertEqual((last["kind"], last["trial_id"]), ("aborted", "gone.seeded_random_runner"))
 
     def test_a_markets_file_changed_after_preflight_fails_the_run(self):
         real = runner._first_pass

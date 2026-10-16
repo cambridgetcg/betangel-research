@@ -337,6 +337,63 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(ast.unparse(guard.test), "__name__ == '__main__'")
         self.assertEqual(ast.unparse(guard.body[0]), "raise SystemExit(main())")
 
+    def test_readiness_is_a_separate_guarded_entry_point(self):
+        """Readiness runs only through its own module; the trading CLI has no readiness import or subcommand."""
+        readiness = tree(BETFAIR / "readiness.py")
+        guard = readiness.body[-1]
+        self.assertIsInstance(guard, ast.If)
+        self.assertEqual(ast.unparse(guard.test), "__name__ == '__main__'")
+        self.assertEqual([ast.unparse(node) for node in guard.body], ["raise SystemExit(main())"])
+        self.assertEqual(guard.orelse, [])
+        self.assertIn("main", [node.name for node in readiness.body if isinstance(node, ast.FunctionDef)])
+        for name in ("cli.py", "__main__.py"):
+            path = BETFAIR / name
+            with self.subTest(file=name):
+                self.assertFalse(imports_betfair_module(path, "readiness"))
+                self.assertFalse(any("readiness" in value for value in strings(path)))
+
+    def test_readiness_imports_and_model_uses_are_only_the_reviewed_preflight_surface(self):
+        """Pin the read-only helpers; importing the runner never grants readiness its run, ledger or lock methods.
+        The models are used only through pure from_contract construction, never to evaluate or draw."""
+        path = BETFAIR / "readiness.py"
+        imports = {(module, level, tuple(names)) for module, level, names in imported_modules(path)}
+        self.assertEqual(imports, {
+            ("argparse", 0, ("argparse",)), ("dataclasses", 0, ("asdict",)), ("hashlib", 0, ("hashlib",)),
+            ("pathlib", 0, ("Path",)), ("re", 0, ("re",)),
+            ("backtest", 1, ("certificate", "runner")), ("backtest.accounting", 1, ("AccountingRules",)),
+            ("backtest.archive", 1, ("DEFAULT_LIMITS", "MARKET_ID_RE", "ArchiveProblem", "check_data_root",
+                                    "gate_snapshot", "month_gate", "safe_path")),
+            ("backtest.cohort", 1, ("ANCHOR_NOT_KNOWN", "ELIGIBLE", "NO_VIEW", "CohortRules", "classify")),
+            ("backtest.contract", 1, ("ContractFileError", "canonical_json", "load_contract", "result_status",
+                                     "validate_contract")),
+            ("backtest.engineering", 1, ("PREFIX_LIMIT_BYTES",)),
+            ("backtest.market_index", 1, ("HEAD_FILE", "MARKETS_FILE", "IndexProblem", "archive_shas")),
+            ("backtest.metrics", 1, ("BootstrapPlan",)), ("backtest.replay", 1, ("ReplayProblem", "_member")),
+        })
+        source = tree(path)
+        self.assertEqual([node.asname for node in ast.walk(source) if isinstance(node, ast.alias) and node.asname], [])
+        expected = {
+            "certificate": {"CertificateProblem", "P0_PROFILE", "_source_file", "current_key", "profile_of",
+                            "source_root"},
+            "runner": {"CODE_IDENTITY_RE", "RunRefused", "SHA256_RE", "_guard", "_inputs", "_record_months",
+                       "_records", "_regular_file", "_source_refusals"},
+            "AccountingRules": {"from_contract"}, "BootstrapPlan": {"from_contract"},
+            "CohortRules": {"from_contract"},
+        }
+        parents = {child: node for node in ast.walk(source) for child in ast.iter_child_nodes(node)}
+        for name, attributes in expected.items():
+            used = [node for node in ast.walk(source) if isinstance(node, ast.Name) and node.id == name]
+            with self.subTest(object=name):
+                self.assertTrue(all(isinstance(parents[node], ast.Attribute) and parents[node].value is node
+                                    and isinstance(parents[node].ctx, ast.Load) for node in used))
+                self.assertEqual({parents[node].attr for node in used}, attributes)
+        forbidden = {"open", "write", "write_text", "write_bytes", "mkdir", "touch", "unlink", "rmdir", "rename",
+                     "replace", "chmod", "symlink_to", "link_to", "acquire", "release", "run_backtest", "reconcile",
+                     "replay_view", "decide_market", "decide_records", "settle", "block_bootstrap", "check_prefix",
+                     "known_accounting_answers", "metrics_by_variant", "variant_metrics"}
+        self.assertEqual([ast.unparse(node) for node in ast.walk(source)
+                          if isinstance(node, ast.Call) and called_name(node) in forbidden], [])
+
     def test_no_frozen_experiment_strings(self):
         targets = code_files() + [REPO / "research" / "betfair-config.example.json"]
         for path in targets:

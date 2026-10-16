@@ -84,8 +84,9 @@ Preflight, before any trial starts (Astra's design agreement D4, D12, D14 and he
    canonical JSON, claims nothing; one that is not a regular file or cannot be inspected or read refuses. Neither
    the run_id, the code identity, the sources, the certificate nor the budget is read, so none of them clears it. A
    run_id that already named trials or a run directory refuses. Capacity: the contract's started entries plus one
-   per variant must not exceed stopping_rule.max_trials (D4: both starts are reserved together; every start ever
-   made counts). Last, the current key is computed again and must still be the certificate's (decision 12):
+   per variant must not exceed stopping_rule.max_trials (D4: starts are recorded sequentially; evaluation begins
+   only after both are recorded, and every recorded start counts). Last, the current key is computed again and must
+   still be the certificate's (decision 12):
    otherwise source:changed_before_start, or source:changed_before_start:<reason> when the sources can no longer be
    described, and nothing starts.
 
@@ -137,9 +138,12 @@ before anything retries (the trial ledger's Recovery rule).
 
 reconcile(contract, lab_state_root, code_identity) is that explicit operator action, under the same lock: it appends an
 aborted entry for every trial that started and never closed (the summary names the reason, who reconciled, the pending
-trial ids and the certificate sha256 that run's entries named, checked before anything is appended); for each
-unaccounted run directory it first writes recovery-intent.json (schema 1: the contract's variants, sorted, by exclusive
-create) and then records one started and one aborted entry per variant (every persisted partial reservation consumes
+trial ids and the certificate sha256 that run's entries named). Before any recovery append or publication, it checks
+every known ledger run's start/close certificate agreement. For already closed runs without receipts, it requires a
+run directory and checks completed evidence, including the results' own certificate binding and agreement with the
+closes. An incomplete intent that needs new starts cannot name a known certificate: those starts would name null.
+For each unaccounted run directory it first writes recovery-intent.json (schema 1: the contract's variants, sorted,
+by exclusive create) and records one started and one aborted entry per variant (every persisted reservation consumes
 budget; input_sha256 is UNKNOWN_INPUT_SHA256, 64 zeros, because the input it was for is unknown, and certificate_sha256
 is null: unknown, never invented). A run with an intent whose variants are not all recorded is recovery_incomplete: runs
 refuse, no receipt is published for it, and the next reconcile finishes it (an interruption cannot shrink the record; a
@@ -155,7 +159,11 @@ still stops the contract as an unbound claim. Statuses are honest: refused only 
 could not be created counts as nothing); once an append is confirmed or a file created, any later failure is uncertain,
 with the lock kept and the appended trials and touched runs named. Nothing is deleted, no lock is taken by force and
 nothing is evaluated again. Presence is judged with lstat throughout (receipts, intents, the ledger, run directories):
-only FileNotFoundError means absent; any other inspection error refuses before anything is written.
+only FileNotFoundError means absent; any other inspection error stops recovery, never treated as absence.
+Receipts, recovery intents, results and issuance evidence must be regular files at inspection, before opening:
+symlinks (including dangling ones), directories and FIFOs refuse as not_a_regular_file; inspection errors refuse as
+uninspectable, missing required evidence as missing_path, and failed reads as unreadable. Later failures after
+recovery writes still report uncertain under the rule above.
 
 Limits: the budget and the stop rule hold within one lab-state root and one contract sha256 (Q1): a new root, or a
 contract changed in any way (max_trials included), starts its own ledger; keep one root per contract campaign.
@@ -259,6 +267,21 @@ def _present(path, where):
     except OSError:
         raise RunRefused(f"{where}:uninspectable") from None
     return True
+
+
+def _regular_file(path, where):
+    """The guarded path of a regular leaf, inspected without following links or suppressing filesystem errors.
+    This is a point-in-time check, not protection against a concurrent writer replacing it before open."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        raise RunRefused(f"{where}:missing_path") from None
+    except OSError:
+        raise RunRefused(f"{where}:uninspectable") from None
+    # File-type mask and regular-file tag; direct lstat preserves errors that pathlib's boolean checks suppress.
+    if mode & 0o170000 != 0o100000:
+        raise RunRefused(f"{where}:not_a_regular_file")
+    return _guard(path, where)
 
 
 def _sha256_bytes(data):
@@ -575,8 +598,8 @@ def _run_dirs(runs_dir):
 
 
 def _read_json(path, where, check):
-    """The canonical JSON object at path that passes check, read through the guard; RunRefused otherwise."""
-    data = _read_capped(_guard(path, where), where)
+    """The canonical JSON object at a regular path that passes check, read through the guard; RunRefused otherwise."""
+    data = _read_capped(_regular_file(path, where), where)
     try:
         value = loads_strict(data)
     except (ValueError, RecursionError):
@@ -759,9 +782,9 @@ class _History:
 
 
 def _file_bytes_sha(path, where):
-    """(sha256, size) of a file read through the guard in chunks."""
+    """(sha256, size) of a regular file read through the guard in chunks."""
     try:
-        with _guard(path, where).open("rb") as handle:
+        with _regular_file(path, where).open("rb") as handle:
             digest, size = hashlib.sha256(), 0
             while True:
                 chunk = handle.read(CHUNK_BYTES)
@@ -867,13 +890,7 @@ def _stop_evidence(history):
         target, where = run / RESULTS_FILE, f"results:{run_id}"
         if not _present(target, where):
             continue
-        try:
-            regular = not target.is_symlink() and target.is_file()
-        except OSError:
-            raise RunRefused(f"{where}:uninspectable") from None
-        if not regular:                                          # never followed, and a FIFO never blocks the scan
-            raise RunRefused(f"{where}:not_a_regular_file")
-        data = _read_capped(_guard(target, where), where)
+        data = _read_capped(_regular_file(target, where), where)
         try:
             value = loads_strict(data)
         except (ValueError, RecursionError):
@@ -1239,8 +1256,19 @@ def reconcile(contract_path, lab_state_root, code_identity, clock=utc_now_text):
     try:
         history = _History(contract_dir, runs_dir, digest, rules.variants)
         aborted, recorded = list(history.unfinished), list(history.unaccounted)
-        certificates = {run_id: history.certificate_of(run_id)       # each aborted run's, before any append
-                        for run_id in sorted({trial_id.rsplit(".", 1)[0] for trial_id in aborted})}
+        certificates = {run_id: history.certificate_of(run_id)       # every known run, before any recovery write
+                        for run_id in sorted(history.trials_by_run)}
+        for run_id in history.missing:                              # already closed; recovery will not alter them
+            if run_id not in history.runs:
+                raise RunRefused(f"receipt:{run_id}:no_run_directory")
+            closes = [history.closed[entry["trial_id"]] for entry in history.trials_by_run[run_id]]
+            if _status_of({close["kind"] for close in closes}) == "completed":
+                _completed_evidence(history.runs[run_id], run_id, closes, digest)
+        for run_id in history.incomplete_recovery:
+            have = {entry["variant"] for entry in history.trials_by_run.get(run_id, [])}
+            if certificates.get(run_id) is not None and any(
+                    variant not in have for variant in history.intents[run_id]["variants"]):
+                raise RunRefused(f"ledger:{run_id}:certificates_disagree")
         for entry in history.started:
             if entry["trial_id"] in aborted:
                 _append(history.ledger, "aborted", entry["trial_id"], entry["variant"], contract,

@@ -136,7 +136,7 @@ CASES = (
 CASE_IDS = tuple(case_id for case_id, _, _ in CASES)
 
 # The structural P0 profile (module docstring): research/experiments/backtest-p0-bsp-v1.json's selectors, with the
-# delay P0 freezes (0; the draft leaves it null and the runner refuses any other).
+# declared delay 0 (already set in the draft; the runner refuses any other).
 P0_PROFILE = {
     "registration": "engineering_check",
     "population": {"provider": "betfair_historical_data", "tier": "BASIC", "sport": "horse_racing",

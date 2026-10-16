@@ -17,6 +17,8 @@ import contextlib
 import dataclasses
 import hashlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -357,6 +359,156 @@ class ReceiptTests(RunnerCase):
         lock.unlink()                                                    # a person, after checking no runner runs
         self.assertRefused(self.run_once("r3"), "receipt:missing:r2")
         self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)["receipted"], ["r2"])
+
+
+class EvidenceFileTests(RunnerCase):
+    """History readers reject a non-regular leaf before opening it, including same-byte and dangling links."""
+
+    def setUp(self):
+        super().setUp()
+        self.tied_inputs()
+        self.assertEqual(self.run_once()["status"], "completed")
+
+    def actions(self):
+        return (lambda: self.run_once("r2"),
+                lambda: runner.reconcile(self.contract, self.lab, "reconciler", clock=clock))
+
+    def assertUnchangedRefusal(self, action, problem):
+        before, entries = self.lab_files(), self.lab_entries()
+        self.assertEqual(action(), {"status": "refused", "problems": [problem]})
+        self.assertEqual(self.lab_files(), before)
+        self.assertEqual(self.lab_entries(), entries)
+
+    def test_history_evidence_must_be_regular_before_any_open(self):
+        real_open = Path.open
+        for name, where in ((runner.RECEIPT_FILE, "receipt"), (runner.RESULTS_FILE, "results"),
+                            (runner.ISSUANCE_FILE, "issuance"), (runner.RECOVERY_FILE, "recovery")):
+            target, saved = self.run_file(name), self.tmp / name
+            if name == runner.RECOVERY_FILE:
+                target.write_bytes(b"{}\n")
+            target.rename(saved)
+            for kind in ("same_bytes_symlink", "dangling_symlink", "directory", "fifo"):
+                with self.subTest(file=name, kind=kind), contextlib.ExitStack() as cleanup:
+                    if kind.endswith("symlink"):
+                        target.symlink_to(saved if kind == "same_bytes_symlink" else self.tmp / "absent")
+                    elif kind == "directory":
+                        target.mkdir()
+                    else:
+                        os.mkfifo(target)
+                    cleanup.callback(target.rmdir if kind == "directory" else target.unlink)
+                    for action in self.actions():
+                        opened = []
+
+                        def opening(item, *args, **kwargs):
+                            if item in (target, saved):
+                                opened.append(item)
+                                raise AssertionError("non-regular evidence was opened")
+                            return real_open(item, *args, **kwargs)
+
+                        before, entries = self.lab_files(), self.lab_entries()
+                        with mock.patch.object(Path, "open", opening):
+                            result = action()
+                        self.assertEqual(opened, [])
+                        self.assertEqual(result, {"status": "refused",
+                                                  "problems": [f"{where}:r1:not_a_regular_file"]})
+                        self.assertEqual(self.lab_files(), before)
+                        self.assertEqual(self.lab_entries(), entries)
+            saved.rename(target)
+            if name == runner.RECOVERY_FILE:
+                target.unlink()
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFOs")
+    def test_fifo_evidence_refuses_in_fresh_processes_with_a_timeout(self):
+        """No mocked opener here: a regression is bounded by the subprocess timeout instead of hanging the suite."""
+        for name, where in ((runner.RECEIPT_FILE, "receipt"), (runner.RESULTS_FILE, "results"),
+                            (runner.ISSUANCE_FILE, "issuance"), (runner.RECOVERY_FILE, "recovery")):
+            target, saved = self.run_file(name), self.tmp / name
+            if name == runner.RECOVERY_FILE:
+                target.write_bytes(b"{}\n")
+            target.rename(saved)
+            os.mkfifo(target)
+            before, entries = self.lab_files(), self.lab_entries()
+            for command in ("run-backtest", "reconcile-trials"):
+                arguments = [sys.executable, "-B", "-m", "betangel_research.betfair.backtest", command,
+                             "--contract", str(self.contract), "--lab-state-root", str(self.lab),
+                             "--code-identity", "fifo-regression"]
+                if command == "run-backtest":
+                    arguments += ["--data-root", str(self.data), "--run-id", "r2"]
+                with self.subTest(file=name, command=command):
+                    try:
+                        result = subprocess.run(arguments, capture_output=True, text=True, timeout=15,
+                                                env=dict(os.environ, BETANGEL_BETFAIR_FORBID_NETWORK="1",
+                                                         PYTHONDONTWRITEBYTECODE="1"))
+                    except subprocess.TimeoutExpired:             # the killed child cannot release its lock
+                        (self.lab / "contracts" / self.digest / runner.LOCK_NAME).unlink(missing_ok=True)
+                        raise
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(json.loads(result.stdout),
+                                     {"status": "refused", "problems": [f"{where}:r1:not_a_regular_file"]})
+                    self.assertEqual(self.lab_files(), before)
+                    self.assertEqual(self.lab_entries(), entries)
+            target.unlink()
+            saved.rename(target)
+            if name == runner.RECOVERY_FILE:
+                target.unlink()
+
+    def test_evidence_inspection_errors_are_not_absence(self):
+        real_lstat, real_open = Path.lstat, Path.open
+        for name, where in ((runner.RECEIPT_FILE, "receipt"), (runner.RESULTS_FILE, "results"),
+                            (runner.ISSUANCE_FILE, "issuance"), (runner.RECOVERY_FILE, "recovery")):
+            target = self.run_file(name)
+            if name == runner.RECOVERY_FILE:
+                target.write_bytes(b"{}\n")
+            for error in (PermissionError(13, "synthetic"), OSError(5, "synthetic"),
+                          NotADirectoryError(20, "synthetic")):
+                def lstat(item, *args, **kwargs):
+                    if item == target:
+                        raise error
+                    return real_lstat(item, *args, **kwargs)
+
+                def opening(item, *args, **kwargs):
+                    if item == target:
+                        raise AssertionError("uninspectable evidence was opened")
+                    return real_open(item, *args, **kwargs)
+
+                for action in self.actions():
+                    with self.subTest(file=name, error=type(error).__name__):
+                        before, entries = self.lab_files(), self.lab_entries()
+                        with mock.patch.object(Path, "lstat", lstat), mock.patch.object(Path, "open", opening):
+                            result = action()
+                        self.assertEqual(result, {"status": "refused", "problems": [f"{where}:r1:uninspectable"]})
+                        self.assertEqual(self.lab_files(), before)
+                        self.assertEqual(self.lab_entries(), entries)
+
+    def test_absent_results_and_issuance_keep_the_missing_path_code(self):
+        for name, where in ((runner.RESULTS_FILE, "results"), (runner.ISSUANCE_FILE, "issuance")):
+            target, saved = self.run_file(name), self.tmp / name
+            target.rename(saved)
+            for action in self.actions():
+                with self.subTest(file=name):
+                    self.assertUnchangedRefusal(action, f"{where}:r1:missing_path")
+            saved.rename(target)
+
+    def test_regular_evidence_that_cannot_be_read_remains_unreadable(self):
+        real_open = Path.open
+        for name, where in ((runner.RECEIPT_FILE, "receipt"), (runner.RESULTS_FILE, "results"),
+                            (runner.ISSUANCE_FILE, "issuance"), (runner.RECOVERY_FILE, "recovery")):
+            target = self.run_file(name)
+            if name == runner.RECOVERY_FILE:
+                target.write_bytes(b"{}\n")
+
+            def opening(item, *args, **kwargs):
+                if item == target:
+                    raise PermissionError(13, "synthetic")
+                return real_open(item, *args, **kwargs)
+
+            for action in self.actions():
+                before, entries = self.lab_files(), self.lab_entries()
+                with self.subTest(file=name), mock.patch.object(Path, "open", opening):
+                    result = action()
+                self.assertEqual(result, {"status": "refused", "problems": [f"{where}:r1:unreadable"]})
+                self.assertEqual(self.lab_files(), before)
+                self.assertEqual(self.lab_entries(), entries)
 
 
 class FailureTests(RunnerCase):
@@ -1384,7 +1536,9 @@ class EngineeringWiringTests(RunnerCase):
 
         def closes_as_schema_one(ledger, kind, *args):               # a schema 1 close names two digests only
             summary = args[-1]
-            if kind == "completed":
+            if kind == "started":
+                summary = {}                                       # its starts predate certificate bindings too
+            elif kind == "completed":
                 summary = {key: summary[key] for key in ("results_sha256", "issuance_ledger_sha256")}
             return real_append(ledger, kind, *args[:-1], summary)
 
@@ -1762,6 +1916,8 @@ class CertificateBindingTests(RunnerCase):
                 self.assertEqual(self.lab_files(), before)
                 self.run_file("receipt.json").unlink()
                 del before[str(self.run_file("receipt.json"))]
+                if name == "closes naming another certificate":  # before reading a missing receipt's evidence
+                    problem = "ledger:r1:certificates_disagree"
                 self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
                                  {"status": "refused", "problems": [problem]})
                 self.assertEqual(self.lab_files(), before)                      # nothing written by either
@@ -2055,6 +2211,146 @@ class CertificateBindingTests(RunnerCase):
                          {"status": "refused", "problems": ["ledger:b:certificate_malformed"]})
         self.assertEqual(self.lab_files(), before)
 
+    def test_closed_runs_without_receipts_are_checked_before_any_recovery_mutation(self):
+        """A later closed run cannot defer its certificate error until an earlier run has been altered."""
+        for pending in ("unfinished", "unaccounted", "recovery_intent", "missing_receipt"):
+            for kind, sha, problem in (("failed", "b" * 64, "certificates_disagree"),
+                                       ("completed", "x", "certificate_malformed"),
+                                       ("aborted", None, "certificates_disagree")):
+                with self.subTest(pending=pending, closed_kind=kind):
+                    self.fresh_roots(f"{pending}-{kind}")
+                    contract_dir = self.lab / "contracts" / self.digest
+                    contract_dir.mkdir(parents=True)
+                    ledger = TrialLedger.open(contract_dir)
+
+                    def append(run_id, entry_kind, certificate_sha):
+                        ledger.append(entry_kind, trial_id=f"{run_id}.ltp_favourite", contract=self.contract_value,
+                                      variant="ltp_favourite", input_sha256="ab" * 32, code_identity="git:old",
+                                      recorded_at="2026-10-15T00:00:00Z",
+                                      summary={"certificate_sha256": certificate_sha})
+
+                    for run_id in ("a", "z"):
+                        self.run_file(runner.RECEIPT_FILE, run_id).parent.mkdir(parents=True)
+                    if pending in ("unfinished", "missing_receipt"):
+                        append("a", "started", "a" * 64)
+                    if pending == "missing_receipt":
+                        append("a", "failed", "a" * 64)
+                    if pending == "recovery_intent":
+                        intent = {"kind": runner.RECOVERY_KIND, "schema_version": runner.RECOVERY_SCHEMA_VERSION,
+                                  "contract_sha256": self.digest, "run_id": "a", "recorded_by": "previous",
+                                  "variants": sorted(v["id"] for v in self.contract_value["variants"])}
+                        self.run_file(runner.RECOVERY_FILE, "a").write_bytes(runner.canonical_json(intent) + b"\n")
+                    append("z", "started", "a" * 64)
+                    append("z", kind, sha)
+                    before, entries = self.lab_files(), self.lab_entries()
+                    result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+                    self.assertEqual(result, {"status": "refused", "problems": [f"ledger:z:{problem}"]})
+                    self.assertEqual(self.lab_files(), before)
+                    self.assertEqual(self.lab_entries(), entries)
+
+    def test_missing_receipt_evidence_is_checked_before_any_recovery_mutation(self):
+        real_write, real_append = runner._write_new, runner._append
+        cases = (("ledger_certificate", "receipt:z:certificate_sha256_mismatch"),
+                 ("certificate_bytes", "results:z:certificate_not_its_sha256"),
+                 ("certificate_key", "results:z:certificate_not_certified"),
+                 ("acceptance_certificate", "results:z:certification_not_the_acceptances"))
+        for pending in ("unfinished", "unaccounted", "recovery_intent", "missing_receipt"):
+            for fault, problem in cases:
+                with self.subTest(pending=pending, fault=fault):
+                    self.fresh_roots(f"evidence-{pending}-{fault}")
+                    self.tied_inputs()
+
+                    def write(target, chunks, where):
+                        if where == "results":
+                            value = json.loads(b"".join(chunks))
+                            if fault == "certificate_bytes":
+                                value["certification"]["sha256"] = "0" * 64
+                            elif fault == "certificate_key":
+                                value["certification"]["key"] = "0" * 64
+                            elif fault == "acceptance_certificate":
+                                component = runner._component_ii(value["engineering_acceptance"])
+                                component["certificate_sha256"] = "0" * 64
+                            chunks = [runner.canonical_json(value) + b"\n"]
+                        return real_write(target, chunks, where)
+
+                    def append(ledger, kind, *args):
+                        summary = args[-1]
+                        if fault == "ledger_certificate":
+                            summary = dict(summary, certificate_sha256="0" * 64)
+                        return real_append(ledger, kind, *args[:-1], summary)
+
+                    with mock.patch.object(runner, "_write_new", write), mock.patch.object(runner, "_append", append):
+                        self.assertEqual(self.run_once("z")["status"], "completed")
+                    self.run_file(runner.RECEIPT_FILE, "z").unlink()
+                    self.run_file(runner.RECEIPT_FILE, "a").parent.mkdir()
+                    ledger = TrialLedger.open(self.lab / "contracts" / self.digest)
+                    kinds = {"unfinished": ("started",), "missing_receipt": ("started", "failed")}
+                    for kind in kinds.get(pending, ()):
+                        ledger.append(kind, trial_id="a.ltp_favourite", contract=self.contract_value,
+                                      variant="ltp_favourite", input_sha256="ab" * 32, code_identity="git:old",
+                                      recorded_at="2026-10-15T00:00:00Z",
+                                      summary={"certificate_sha256": "a" * 64})
+                    if pending == "recovery_intent":
+                        intent = {"kind": runner.RECOVERY_KIND, "schema_version": runner.RECOVERY_SCHEMA_VERSION,
+                                  "contract_sha256": self.digest, "run_id": "a", "recorded_by": "previous",
+                                  "variants": sorted(v["id"] for v in self.contract_value["variants"])}
+                        self.run_file(runner.RECOVERY_FILE, "a").write_bytes(runner.canonical_json(intent) + b"\n")
+                    before, entries = self.lab_files(), self.lab_entries()
+                    result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+                    self.assertEqual(result, {"status": "refused", "problems": [problem]})
+                    self.assertEqual(self.lab_files(), before)
+                    self.assertEqual(self.lab_entries(), entries)
+
+    def test_closed_run_without_a_directory_refuses_before_recovery_writes(self):
+        for closed_kind in ("completed", "failed", "aborted"):
+            with self.subTest(closed_kind=closed_kind):
+                self.fresh_roots(f"no-directory-{closed_kind}")
+                contract_dir = self.lab / "contracts" / self.digest
+                contract_dir.mkdir(parents=True)
+                self.run_file(runner.RECEIPT_FILE, "a").parent.mkdir(parents=True)
+                ledger = TrialLedger.open(contract_dir)
+                for run_id, kind in (("a", "started"), ("z", "started"), ("z", closed_kind)):
+                    ledger.append(kind, trial_id=f"{run_id}.ltp_favourite", contract=self.contract_value,
+                                  variant="ltp_favourite", input_sha256="ab" * 32, code_identity="git:old",
+                                  recorded_at="2026-10-15T00:00:00Z", summary={"certificate_sha256": "a" * 64})
+                before, entries = self.lab_files(), self.lab_entries()
+                result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+                self.assertEqual(result, {"status": "refused", "problems": ["receipt:z:no_run_directory"]})
+                self.assertEqual(self.lab_files(), before)
+                self.assertEqual(self.lab_entries(), entries)
+
+    def test_closed_run_without_a_directory_is_also_checked_before_aborting_another(self):
+        self.contract_dir.mkdir(parents=True)
+        ledger = TrialLedger.open(self.contract_dir)
+        for kind, run_id, sha in (("started", "a", "a" * 64), ("started", "z", "a" * 64),
+                                  ("failed", "z", "b" * 64)):
+            ledger.append(kind, trial_id=f"{run_id}.ltp_favourite", contract=self.contract_value,
+                          variant="ltp_favourite", input_sha256="ab" * 32, code_identity="git:old",
+                          recorded_at="2026-10-15T00:00:00Z", summary={"certificate_sha256": sha})
+        before = self.lab_files()
+        self.assertEqual(runner.reconcile(self.contract, self.lab, "reconciler", clock=clock),
+                         {"status": "refused", "problems": ["ledger:z:certificates_disagree"]})
+        self.assertEqual(self.lab_files(), before)
+
+    def test_all_run_precheck_preserves_unknown_historical_bindings(self):
+        self.contract_dir.mkdir(parents=True)
+        ledger = TrialLedger.open(self.contract_dir)
+        for run_id, summaries in (("absent", ({}, {})), ("null", ({"certificate_sha256": None}, {})),
+                                   ("known", ({"certificate_sha256": "a" * 64},) * 2)):
+            self.run_file(runner.RECEIPT_FILE, run_id).parent.mkdir(parents=True)
+            for kind, summary in zip(("started", "failed"), summaries):
+                ledger.append(kind, trial_id=f"{run_id}.ltp_favourite", contract=self.contract_value,
+                              variant="ltp_favourite", input_sha256="ab" * 32, code_identity="git:old",
+                              recorded_at="2026-10-15T00:00:00Z", summary=summary)
+        before = self.ledger()
+        shutil.rmtree(self.lab / certificate.CERTIFICATIONS_DIR)
+        result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+        self.assertEqual((result["status"], result.get("receipted")), ("reconciled", ["absent", "known", "null"]))
+        self.assertEqual(self.ledger(), before)
+        self.assertEqual({run_id: json.loads(self.run_file(runner.RECEIPT_FILE, run_id).read_bytes())[
+            "certificate_sha256"] for run_id in ("absent", "null", "known")},
+                         {"absent": None, "null": None, "known": "a" * 64})
+
     def test_reconcile_aborts_each_unfinished_run_under_its_own_certificate(self):
         self.contract_dir.mkdir(parents=True)
         ledger = TrialLedger.open(self.contract_dir)
@@ -2301,12 +2597,28 @@ class StopRuleTests(RunnerCase):
         target = self.run_file("results.json")
         elsewhere = self.tmp / "elsewhere.json"
         elsewhere.write_bytes(b"{}\n")
-        target.symlink_to(elsewhere)
-        self.refused_unchanged("results:r1:not_a_regular_file")
-        target.unlink()
-        os.mkfifo(target)
-        self.refused_unchanged("results:r1:not_a_regular_file")
-        target.unlink()
+        real_open = Path.open
+        for kind in ("symlink", "fifo"):
+            with self.subTest(kind=kind), contextlib.ExitStack() as cleanup:
+                if kind == "symlink":
+                    target.symlink_to(elsewhere)
+                else:
+                    os.mkfifo(target)
+                cleanup.callback(target.unlink)
+                before, entries, opened = self.lab_files(), self.lab_entries(), []
+
+                def opening(item, *args, **kwargs):
+                    if item in (target, elsewhere):
+                        opened.append(item)
+                        raise AssertionError("non-regular stop evidence was opened")
+                    return real_open(item, *args, **kwargs)
+
+                with mock.patch.object(Path, "open", opening):
+                    result = self.run_once("r2")
+                self.assertEqual(opened, [])
+                self.assertEqual(result, {"status": "refused", "problems": ["results:r1:not_a_regular_file"]})
+                self.assertEqual(self.lab_files(), before)
+                self.assertEqual(self.lab_entries(), entries)
         self.assertEqual(self.run_once("r2")["status"], "completed")
 
     def test_a_forged_pass_in_a_failed_close_is_an_unbound_claim(self):
@@ -2374,16 +2686,19 @@ class StopRuleTests(RunnerCase):
         self.refused_unchanged("results:r1:not_a_regular_file")
         target.unlink()
         target.write_bytes(b"{}\n")
-        for name in ("lstat", "is_symlink", "is_file"):
-            real = getattr(Path, name)
+        real = Path.lstat
+        for fail_at in (1, 2):                           # both the presence and the regular-file inspection
+            inspected = []
 
-            def failing(item, *args, real=real, **kwargs):
+            def failing(item, *args, **kwargs):
                 if item == target:
-                    raise PermissionError(13, "synthetic: permission denied")
+                    inspected.append(item)
+                    if len(inspected) == fail_at:
+                        raise PermissionError(13, "synthetic: permission denied")
                 return real(item, *args, **kwargs)
             before = self.lab_files()
-            with self.subTest(method=name):
-                with mock.patch.object(Path, name, failing):
+            with self.subTest(inspection=fail_at):
+                with mock.patch.object(Path, "lstat", failing):
                     result = self.run_once("r2")
                 self.assertEqual(result, {"status": "refused", "problems": ["results:r1:uninspectable"]})
                 self.assertEqual(self.lab_files(), before)
@@ -2528,6 +2843,39 @@ class ExactIntentTests(RunnerCase):
         self.assertEqual((receipt["status"], receipt["engineering_acceptance"], receipt["issuance_ledger_bytes"]),
                          ("aborted", None, None))
         self.assertEqual(self.run_once()["status"], "completed")
+
+    def test_intent_new_starts_cannot_mix_known_and_unknown_certificates(self):
+        variants = ["ltp_favourite", "seeded_random_runner"]
+        cases = (("known_partial", variants[:1], {"certificate_sha256": "a" * 64}),
+                 ("known_all_started", variants, {"certificate_sha256": "a" * 64}),
+                 ("null_partial", variants[:1], {"certificate_sha256": None}),
+                 ("absent_partial", variants[:1], {}))
+        for first_closed in (False, True):
+            for name, started, summary in cases:
+                with self.subTest(case=name, first_closed=first_closed):
+                    self.fresh_roots(f"{name}-{first_closed}")
+                    self.write_intent("x1", variants)
+                    contract_dir = self.lab / "contracts" / self.digest
+                    contract_dir.mkdir(parents=True)
+                    ledger = TrialLedger.open(contract_dir)
+                    for variant in started:
+                        kinds = ("started", "aborted") if first_closed and variant == variants[0] else ("started",)
+                        for kind in kinds:
+                            ledger.append(kind, trial_id=f"x1.{variant}", contract=self.contract_value,
+                                          variant=variant, input_sha256=runner.UNKNOWN_INPUT_SHA256,
+                                          code_identity="previous", recorded_at="2026-10-15T00:00:00Z", summary=summary)
+                    before, entries = self.lab_files(), self.lab_entries()
+                    result = runner.reconcile(self.contract, self.lab, "reconciler", clock=clock)
+                    if name == "known_partial":
+                        self.assertEqual(result, {"status": "refused", "problems": ["ledger:x1:certificates_disagree"]})
+                        self.assertEqual(self.lab_files(), before)
+                        self.assertEqual(self.lab_entries(), entries)
+                    else:
+                        self.assertEqual((result["status"], result.get("receipted")), ("reconciled", ["x1"]))
+                        receipt = json.loads(self.run_file(runner.RECEIPT_FILE, "x1").read_bytes())
+                        self.assertEqual(receipt["certificate_sha256"], summary.get("certificate_sha256"))
+                        self.assertEqual({e["summary"].get("certificate_sha256") for e in self.ledger()},
+                                         {summary.get("certificate_sha256")})
 
 
 class CliTests(RunnerCase):

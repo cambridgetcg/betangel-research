@@ -393,6 +393,8 @@ class BoundaryTests(unittest.TestCase):
                      "known_accounting_answers", "metrics_by_variant", "variant_metrics"}
         self.assertEqual([ast.unparse(node) for node in ast.walk(source)
                           if isinstance(node, ast.Call) and called_name(node) in forbidden], [])
+        # Bare builtin references can bind an import-time or default-argument alias around the call-name ban.
+        self.assertEqual([node.id for node in ast.walk(source) if isinstance(node, ast.Name) and node.id == "open"], [])
 
     def test_no_frozen_experiment_strings(self):
         targets = code_files() + [REPO / "research" / "betfair-config.example.json"]

@@ -11,10 +11,12 @@ Record diagnostics preserve its order and seen-set timing, but continue after ea
 clean records enter population/plan/prefix counts. A file failure discards all counts; successful output requires
 the whole stream to have been consumed and its hash verified. A null input_preflight_would_refuse is not a run
 permission: frozen validation, certification, history, budget and stop evidence remain unassessed.
-Regular-file safety inspection precedes the runner's input reader, so the first file-level diagnostic can differ
-when several files are faulty. Inventory also requires parsed record count to equal head.markets: an unterminated
-last record violates that invariant even if the runner accepts the newline count and hash. This inventory-owned
-refusal is records_count_mismatch, distinct from the runner's markets_mismatch binding failure.
+Regular-file safety inspection precedes the runner's input reader. A directory or FIFO used as a manifest, head
+or markets file is refused here as not_a_regular_file; the runner reports unreadable or may block on a FIFO.
+With several faults, the first file-level diagnostic can also differ. Inventory requires parsed record count
+to equal head.markets: an unterminated last record violates that invariant even if the runner accepts the newline
+count and hash. This inventory-owned refusal is records_count_mismatch, distinct from the runner's markets_mismatch
+binding failure.
 
 Use an unchanged checkout and inputs with no concurrent writer. The archive-set precheck occurs before any head
 or markets open; it does not lock against a later replacement. Source naming is not certification. In particular,

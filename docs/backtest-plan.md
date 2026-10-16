@@ -1,6 +1,6 @@
 # Backtest lab: data plan, point-in-time rules and the P0 BSP contract
 
-Prepared **2026-10-14**；**2026-10-15** 按 task (c) 已合併嘅代碼更新（c2b3b4，§1）。計劃同實驗合約，唔係 edge 或者盈利證據。寫第一版嗰陣 repo 冇任何 backtest 結果，亦冇跑過任何 backtest；之後 task (c) 嘅測試同 engine certification 用 synthetic 資料跑過，但就本 project 嘅記錄，**到而家都冇跑過任何真資料 backtest、冇任何真結果、冇任何 engineering pass**（記錄唔係檔案系統普查，§10.1）。Archive 嘅實際內容以 manifest 為準；lab 報告返嚟嘅數（§10）呢度冇核實。
+Prepared **2026-10-14**；**2026-10-15** 按 task (c) 已合併嘅代碼更新（c2b3b4，§1），**2026-10-16** 更新 readiness 工具狀態同 lab runbook。計劃同實驗合約，唔係 edge 或者盈利證據。寫第一版嗰陣 repo 冇任何 backtest 結果，亦冇跑過任何 backtest；之後 task (c) 嘅測試同 engine certification 用 synthetic 資料跑過，但就本 project 嘅記錄，**到而家都冇跑過任何真資料 backtest、冇任何真結果、冇任何 engineering pass**（記錄唔係檔案系統普查，§10.1）。Archive 嘅實際內容以 manifest 為準；lab 報告返嚟嘅數（§10）呢度冇核實。
 
 **回測只係實驗室：出嚟嘅數唔係 edge 嘅證據，策略嘅單永遠唔會去到 Betfair。**
 
@@ -19,7 +19,8 @@ Prepared **2026-10-14**；**2026-10-15** 按 task (c) 已合併嘅代碼更新�
 | 本文件、AGENTS.md 嘅 scope bullet、P0 experiment contract 同佢嘅 validator、兩個測試 | task (a) 交付（§4） |
 | Archive manifest、index、capability audit | task (b) 交付（§4.1；TAR 格式事實喺 §2.8）；Astra review 咗三輪，喺 794c456 接受，PR #7 合併（main da44d71） |
 | BSP runner、會計、metrics、trial ledger、report、engine certification | task (c) 交付咗 c1、c2a、c2b1、c2b2、c2b3a、c2b3b1、c2b3b2a、c2b3b2b、c2b3b3（§4）；c2b3b4 係 P0 draft 嘅文字、contract test 同本文件（加埋三個 test 檔入面跟 draft 新數值改嘅幾行：淨係 test，certificate key 唔郁）。全部只用 synthetic 資料：**冇真資料 run、冇結果、冇 engineering pass**，P0 contract 仲係 `draft`（§10） |
-| 跑真資料之前 | 文字 review、index-only readiness inventory（c2b3b 決定 14）、reviewed freeze、lab 嘅 `certify-engine`、第一個真 run：每步分開排、各自 review，Yu 事先知（§10.1）。c2b3b4 一步都冇開始，亦冇擴大 Yu 已經畀出嘅授權 |
+| Readiness R1（`readiness.py`；c2b3b 決定 14） | `betangel_research/betfair/readiness.py` 已交付，PR #20 已合併（main 1f35646）；只做 synthetic verification，未喺 lab 或真資料上跑。工具喺 certificate source descriptor 以外，唔授權 freeze、certification 或 run（§10） |
+| 跑真資料之前 | 最終工具 review/merge 後，先通知 Yu，再依次做 L1 lab-state metadata census → L2 stock index equality check → L3 draft-only index inventory → reviewed freeze → reviewed lab-state root creation（只限 L1 記錄 absent，§10.1 第 5a 步）→ lab 嘅 `certify-engine` → 第一次真 run。L1、L2、L3 都未做；L2 會讀完整 admitted members（連 settlement）、寫同刪 temporaries，唔係 read-only。每步分開排、各自 review evidence，Yu 事先知（§10.1）；冇擴大 Yu 已經畀出嘅授權 |
 | LIMIT 單、flumine 對照、付費資料、racing data、prospective | P1–P4，暫定，未批（§4） |
 
 ## 2. Data plan
@@ -448,7 +449,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 **凍結前後嘅其他規則：**
 
 - **Integrity inventory** 可以喺凍結之前跑（檔數、market 數、欄位同 BSP coverage），但唔可以做全 corpus 嘅結果分析。`archive-audit`（§4.1）就係呢個 inventory，只報整數計數；不過佢冇最少 group 大細，一個 tier × 月份 × country × type 嘅 group 得一個 market 嗰陣，dead heat、從未 CLOSED、缺 BSP 呢啲計數等於講晒嗰個 market 嘅結算 coverage（講唔到贏家、價錢或者 BSP 值）。凍結之前睇 audit 要知道呢點。
-- **Index-only readiness inventory（c2b3b 決定 14；R1）。** 獨立入口
+- **Index-only readiness inventory（c2b3b 決定 14；readiness R1，`readiness.py`）。** Readiness R1 指
+  `betangel_research/betfair/readiness.py` 嘅工具工作。獨立入口
   `python3 -B -m betangel_research.betfair.readiness`，唔接 live CLI。只收 `valid_draft`，先做 pure
   `from_contract` model construction、`delay_s` 0 同 P0 profile 預檢，再驗 data root；
   `archive_shas` 必須正好係唯一嘅 `--expect-archive`，先可以開任何 head 或 markets 檔。
@@ -480,7 +482,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
   另外保存 clean commit/tree。Input descriptor 同 runner 一樣，包括每個 archive 嘅 manifest/index/markets
   hashes、record count、`manifest_gate_current` 同整份 `input_sha256`。Non-gate outcome 值唔影響 counts/codes
   或輸出內容；改 bytes 會改 hashes，gate months 同 provenance 本身亦可以改 refusal，唔聲稱佢哋 invariant。
-  R1 只做 synthetic verification；真 L3 要先 review R1、通知 Yu，再按 §10.1 做，唔係繞過 frozen gate。
+  Readiness R1 已 review/merge（PR #20，main 1f35646），只做 synthetic verification；真 L3 要先完成
+  工具最後改動嘅 review/merge、通知 Yu，再按 §10.1 做，唔係繞過 frozen gate。
 - **Trial ledger**（`trial_ledger.py`）：`<lab-state-root>/contracts/<contract sha256>/trial-ledger-v1.jsonl`，一個 contract 一條 hash chain，記低每個 trial：started、failed、aborted、completed，每個 entry 有 contract sha256 同 seeds、variant、`input_sha256`、`training_cutoff`（null）、exposure record（§3 嘅兩個 hash 同 known minimum）、code identity，同一個 summary（最多 8,192 bytes、4 層、冇 float）。失敗同中途放棄嘅都計（[edge framework](edge-framework.md)：揀嚟揀去本身就係 overfitting 嘅來源）；budget 數嘅係呢條 ledger 入面本 contract 嘅 started entry。每個 run 寫 `<lab-state-root>/runs/<contract sha256>/<run_id>/`：`issuance-ledger.jsonl`、`results.json` 同 `receipt.json`（兩個都係 schema 2）。
 - **Holdout gate**：schema v1 嘅 validator 一律拒絕評估 holdout（`evaluate_split` 寫 `holdout` 報 `sealed`，frozen 都一樣）。Archive、index、replay 同 runner 都讀資料：holdout 靠 ingest 嘅 month gate（唔儲存）同 audit 同 runner 嘅 `stale_gate`（index 入面有而家 gate 拒絕嘅月份，成個命令拒絕）擋住。幾時、點樣解封要新 schema，同 Yu、Astra 決定（§13）。呢個係 workflow control，唔係防到直接打開 raw 檔嘅保安封條；2026-01..08 而家靠唔下載嚟封，2026-09 已暴露、唔係 holdout（§3）。
 - **P0 run 實際讀到乜（c2b3b 決定 10）**：決定 population 係成個交畀 run 嘅 input 嘅 anchor-by-t population，research split 嘅 record 都喺入面：佢哋係 `excluded`（`month_not_evaluated`），但仍然係 prefix 比較嘅 candidate，唔會因為唔 eligible 或者比較唔成功而剔走。機械上，呢個**唔係**淨係讀 `t` 之前嘅 bytes：第一輪成行 parse index 嘅每個 record（連 `evaluator_only_outcome` 嘅 `marketTime` 月份都讀，用嚟查 gate）；每個 candidate 嘅 primary member 由頭讀，解壓咗嘅行留到 `t` 嗰批完，再 parse `t` 之後第一個 message 嚟搵 boundary。`bz2.BZ2File` 會預讀：搵到 boundary 嗰陣，boundary 嗰行之後最多一個 read buffer（`io.DEFAULT_BUFFER_SIZE`；呢度嘅 Python 3.14.6 係 128 KiB，lab 嘅 interpreter 未量）已經解壓咗、留喺記憶體，libbz2 亦可能喺內部 decode 埋當前 block；呢啲 bytes 冇 parse、唔入 prefix、冇報。之後其餘嘅壓縮 bytes 淨係讀晒、hash 晒（冇解壓、冇 parse）。Eligible market 要 view 嘅話，replay 亦係咁讀 primary member（`replay._fold`）。event 檔嘅 prefix 可以有其他已經 settle 咗嘅 market 嘅結果。重新決定用嘅資料限於 `t`；research split 冇做任何策略或者結算評估（outcome 同結算淨係用喺有出單嘅 eligible market），亦冇報任何價錢或者結果，淨係報計數同 digest（失敗嘅 record 最多列 100 個 (plan, market id, stage, reason)，缺咗嘅 record 最多列 100 個 (plan, market id)）。Run 記低 input 身份（input descriptor 同 `input_sha256`），報告要連呢個 exposure 一齊寫；**唔可以因為人淨係見過計數，就話呢啲 research 資料未掂過**。Input 嘅範圍：`run-backtest` 讀 `--data-root` 底下 `manifests/` 嘅每一個 archive（未 index 嘅就拒絕，`input:<sha>:not_indexed`），全部入 input descriptor 同 `input_sha256`；除咗 `no_view` 同 `anchor_not_known_by_decision`，每個 record 嘅 primary member 都會讀，連 tier 唔啱（`plan_not_contract_tier`）同 research split 嘅 excluded record 都係。所以 PRO、ADVANCED 或者任何唔應該讀嘅 archive 要放喺另一個 data root。畀 Yu 知嘅 exposure 同 readiness inventory 都要寫明真 run 會用嘅準確 input descriptor（archive 清單，manifest、index 同 markets 嘅 sha256，`input_sha256`）；之後加或者減任何 archive、重新 index，或者 month gate 改咗，都係另一個 input，要重新話畀 Yu 知、再 review。Run 做完之後，要對返 `results.json` 同 trial ledger 入面嘅 `input_sha256` 係咪就係嗰個。Lab 2026-10-14 報告（呢度冇核實）：佢 ingest 咗一個 archive，52,561 個 market，12,208 個喺 2015–16、40,353 個喺 2023–25；如果真係咁，一個 P0 run 會機械式讀大約 4 萬個 research split 嘅 primary member，而 index 建立嗰陣已經成個 member parse 過（連結果）。真 run 之前要話畀 Yu 知。
@@ -490,12 +493,15 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
   呢個證明現有 bytes 等於今次 fresh build，唔證明第一次點建，亦冇新增 head binding/schema。
   L2 會讀完整 admitted members（連 settlement）、寫同刪 outcome-bearing `.spill`／`.partial`，唔係 read-only。
   Air 報告 lab 喺 2026-10-14 約 19:04–19:12Z、da44d71 用 CLI defaults 建立 index；呢度未核實。
+  之後 `market_index.py` 喺 0c8a8e5（c2b3a）改過，抽出 `fold_member_stream`；Claude 嘅 synthetic
+  differential（40 個 seed）報告 0 mismatch，但真資料上 byte 一樣未驗，所以 L2 仍可能報
+  `index_would_change`，照 §10.1 L2 停、交 Astra 同 Yu review，唔 re-index。
   前置檢查、磁碟空間同拒絕之後嘅處理見 §10.1 L2；唔可以靜靜重建或換 root 重試。
 - **Walk-forward** 要真係每一步只用過去資料 fit、要 purge，唔係將一個用晒成段時間揀出嚟嘅 model 按日期切開再計分。Schema v1 嘅 `fitting.kind` 只准 `none`，寫 `walk_forward` 報 `deferred`；聲明 `none` 但其實喺結果上 fit，validator 查唔到，要靠 review。
 
 ### 10.1 Runbook: from the draft to the first real run (not started)
 
-下面每一步都未做：c2b3b4 冇凍結 contract、冇做 readiness inventory、冇喺 lab 跑 `certify-engine`、冇讀任何真資料。每步分開排、各自 review，Yu 事先知；中間任何狀態都唔可以跑真 run（c2b3b 決定 1）。Astra 接受 c2b3b3 嘅時候講明：文字 review、index-only readiness、凍結同第一個真 run 都係之後分開排嘅工作，佢嘅接受冇開始任何一樣，亦冇擴大 Yu 已經畀出嘅授權。
+下面嘅 lab 步驟都未做：L1、L2、L3、freeze、root creation、lab `certify-engine` 同真 run 都未開始。Readiness R1（`readiness.py`）已 review/merge，驗證只用 synthetic 資料。每步分開排、各自 review，Yu 事先知；中間任何狀態都唔可以跑真 run（c2b3b 決定 1）。Code 同文字 review 冇開始任何 lab 工作，亦冇擴大 Yu 已經畀出嘅授權。
 
 1. **Checkout 同 interpreter（Q4、Y2、Y3、c2b3b 決定 5）。** 用一個專用、冇人掂嘅 checkout，喺最後嘅 merge commit：certify 同 run 期間冇人瀏覽、改檔、`git pull`、跑 update script 或者 suite。Source descriptor 會拒絕：backtest package 入面嘅 `.DS_Store`、editor swap 檔或者任何唔係 `.py` 嘅嘢、`__pycache__` 以外嘅子目錄、symlink、上層 `__init__.py` 或者 `temporal.py` 旁邊會蓋過佢哋嘅嘢，同 checkout 根目錄任何 importer 可以當標準庫 module 載入嘅 entry（名唔分大細楷，第一個 `.` 之前係標準庫 module 名，而且係名冇 `.` 嘅目錄，或者第一個 `.` 之後係 `py`、`pyc`，或者以 `so`、`pyd` 結尾：例如一個 `venv/` 目錄會報 `source:venv:shadows_stdlib`；`.venv`，或者一個冇副檔名、叫 `json` 嘅普通檔，冇問題）。Run 嗰陣出現呢啲，finalise 就 fail，兩個 start 照計。每次都開一個新嘅 CLI process，用 `python3 -B`（`-B` 淨係唔寫新嘅 `.pyc`，已有嘅 `__pycache__` 照讀，所以由一個冇 `__pycache__` 嘅 checkout 開始）：certificate 假設載入嘅代碼就係 disk 上嘅 source。`certify-engine` 同 `run-backtest` 喺同一個 shell 環境跑，`PYTHONPYCACHEPREFIX`、`PYTHONPATH` 同 `PYTHONOPTIMIZE` 都唔設（例如 `env | grep '^PYTHON'` 最多淨係見到 `PYTHONDONTWRITEBYTECODE`），亦冇 user site、`.pth` 或者 `sitecustomize` 加落嚟嘅嘢：`-B` 唔會阻止 Python 讀 `PYTHONPYCACHEPREFIX` 底下已有嘅 cache，所以淨係冇 `__pycache__` 嘅 checkout 唔夠。Source descriptor 一樣都唔查呢啲路：`certificate.py` 嘅 docstring 列明佢哋喺 descriptor 以外，屬 c2b3b 決定 5 嘅假設；optimize flag 唔同（`-O`、`PYTHONOPTIMIZE`）淨係令 key 唔同，嗰個 key 冇 certificate 就拒絕（`certification:missing`）。`run-backtest` 冇 import 時嘅 snapshot（Q4）；`certify-engine` 有：import 時記低 source descriptor，之後變咗就拒絕（`source:changed_since_import`），亦查載入咗嘅 module 係咪來自 descriptor 列出嘅檔；兩樣都唔證明實際載入嘅 bytecode、native library 或者標準庫（c2b3b 決定 5），所以呢個 checkout 嘅紀律係保證嘅一部分。Interpreter 就係 lab 要跑嘅嗰個（Air 嘅 note A2 話係 `/opt/homebrew/bin/python3`，而家 3.15.0；報告，未核實）：佢嘅 implementation、version、`sys.version`、cache tag、platform、`-O` 等都入 key，所以真 run 做完之前唔好換；換咗就要重新 certify。
 2. **L1：Lab-state metadata census（Q6、c2 D12、c2b3b 決定 11）。** Root 定為 lab account 嘅
@@ -511,7 +517,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
    只交 codes/counts；唔假設全部係 P0。`_stop_evidence` 會 parse results 嘅 acceptance，但唔報 outcome metrics。
    L1 唔可以 invoke run、reconcile 或 certify。保留舊 history；唔 migration、唔退 trial、唔換 root 避開。
    L1 output 先發佈同 review，先決定可唔可以去 L2。
-3. **L2：驗現有 index 嘅 content equality（c2b3b 決定 13）。** R1 同 hygiene review/merge 完，
+3. **L2：驗現有 index 嘅 content equality（c2b3b 決定 13）。** Readiness R1（`readiness.py`；PR #20）同
+   precert hardening（即 hygiene；fc38998，已喺 main；§13）已 review/merge；工具最後改動亦要先 review/merge，
    用第 1 步嘅 final source/interpreter，冇其他 backtest process／concurrent writer；PRO TAR 留喺 `incoming/`
    未 ingest。Prechecks：`manifests/` 正好得預期 BASIC sha；head 同 markets 已存在而且係 regular files，
    parents 已 guard、冇 symlink，冇 `.spill`／`.partial`。任何檔缺咗就停，唔係授權 stock command 建新 index。
@@ -524,7 +531,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
      --data-root ~/betangel-data/historic --archive <expected-basic-sha>
    ```
 
-   預期 exit 0、`state: unchanged`，persistent files 嘅 hashes、entry names/types/sizes 冇變，冇暫存殘留。
+   預期 exit 0、`state: unchanged`，persistent files 嘅 hashes、entry names/types/sizes 冇變，冇暫存殘留；
+   code 喺 reported build 之後改過，真資料 equality 未驗，`index_would_change` 亦有可能（§10 決定 13）。
    建立／刪除 temporary files 可以改 directory timestamps，所以唔要求 `ls -la` 或 directory metadata 完全一樣。
    保存呢次 index sha256 同 source/interpreter/gate evidence；只證明今次 defaults fresh build 等於現有 bytes，
    唔證明歷史 build parameters。Refusal、非預期 state、persistent bytes 變咗、interruption 或殘留都停，
@@ -563,7 +571,25 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
    python3 -B -m betangel_research.betfair.backtest validate-contract --contract research/experiments/backtest-p0-bsp-v1.json --require-frozen
    ```
 
-6. **Lab 嘅 `certify-engine`（Y2、c2b3b 決定 4、5）。** 喺 lab、用要跑嘅 interpreter、喺最後嘅 checkout 跑（第一個真 run 之前一定要有一次新嘅 lab certification）：
+   **5a：Reviewed lab-state root creation（獨立一步，第 6 步之前）。** L1 output 已發佈同 review、Yu 事先知，
+   而且 L1 記錄 proposed root 實際 not-found，先可以建立嗰個 root。先重核已存在嘅 parent
+   `~/betangel-data` 同 L1 記錄嘅 absolute path／位置限制，然後只做一次 plain `mkdir`（唔加 `-p`）：
+
+   ```sh
+   mkdir "<L1 記錄嘅 absolute lab-state-root>"
+   ```
+
+   呢個就係 lab account 嘅 `~/betangel-data/lab-state`，唔建立 parent 或另一個 root；如果 root 喺 L1 之後
+   出現、parent 缺咗，或者 `mkdir` 有任何失敗，都停、交 review。成功後喺 lab 記錄 realpath，
+   用同 L1 一樣有 entry/depth 上限、唔 follow links 嘅 metadata listing，證明 present-and-empty；
+   再核對 realpath 喺 repo／所有 Git worktree／denied live-state trees 以外，同 historic root 唔同而且互不包含。
+   如果 L1 已記錄 present-and-empty，就唔做 `mkdir`，只喺第 6 步之前重核並記錄同一組 path／empty listing 證據。
+   L1 發現內容、permission／symlink／non-directory／inspection error 時，沿用 L1 嘅停止規則。
+   呢一步證據發佈同 review 後先去第 6 步；L1 本身仍然唔建立 root，之後 root 缺失亦唔可以自行重建或換 root。
+
+6. **Lab 嘅 `certify-engine`（Y2、c2b3b 決定 4、5）。** 前提係第 5a 步核實嘅同一個 lab-state root
+   **已經存在**；命令唔會建立 root，缺失會 `lab_state_root:missing_path`、exit 2，停、交 review。
+   喺 lab、用要跑嘅 interpreter、喺最後嘅 checkout 跑（第一個真 run 之前一定要有一次新嘅 lab certification）：
 
    ```sh
    python3 -B -m betangel_research.betfair.backtest certify-engine --lab-state-root <lab-state-root> --attempt-id <新 id>
@@ -571,14 +597,17 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 
    Attempt id 跟 `[a-z0-9][a-z0-9_.-]{0,40}`，永遠唔重用；佢開 `<lab-state-root>/certifications/work/<attempt id>`（保留做證據，連 64 MiB 嘅 case 大約 0.14 GB），38 個 case 全部 as_expected 先將 certificate 寫去 `<lab-state-root>/certifications/<key>.json`。Key 係 protocol、registry、準則、profile、parameter、limit、source descriptor 同 interpreter 嘅 tagged sha256，冇 path override。同一個 key 已經有一模一樣嘅 bytes 就係 `already_certified`；bytes 唔同就拒絕（`certification:existing_differs`），兩個都保留：唔好將搬走或者刪除舊 certificate 當成例行做法；同樣嘅 key input 出唔同 bytes（例如 libbz2 唔同），要明確查清楚先再用。Air 嘅 certification 唔係 lab 嘅 certificate。c2b3b4 冇改任何 source，所以唔會郁到 key；之後再改 source 就要重新 certify。
 7. **真 run 之前話畀 Yu 知**：c2b3b 決定 10 嘅 exposure（§10），連真 run 會用嘅準確 input descriptor（`--data-root` 底下每一個 archive 都會讀，§10「P0 run 實際讀到乜」）、Y1（一份完整、passed 嘅 result 之後 operational 出事，個 contract 喺呢個 root 被擋、冇退 trial，停喺 `engineering_passed` 定 `engineering_pass_claim_unbound` 睇有冇 completed close 去到 ledger；`engineering_pass_claim_unbound` 淨係喺嗰份 `results.json` 仲喺度先擋，所以一定要保留，刪咗就放返個 contract（start 唔退）；換 root 或者換 contract 都唔係出路，之後點行要另外 review、由 Yu 同 Astra 決定）、Y3（finalise 時 source 變咗會 fail，兩個 start 照計）、`max_trials` 4 即係四個 start、最多兩次預留齊嘅 run（淨係記錄到一個 start 嘅嘗試可以令 invocation 多過兩次，每個記錄咗嘅 start 照計；exit 4 唔係 retry 嘅許可），同 commission 用嘅 rate（Yu 2026-10-15 確認嘅 Basic 2%）。
-8. **第一個真 run**，Yu 同意之後：
+8. **第一個真 run**，Yu 同意之後；前提係同一個 lab-state root **已經存在**，保留 certification 同所有 history。
+   命令唔會建立 root；缺失會 `lab_state_root:missing_path`、exit 2，停、交 review，唔自行重建或換 root：
 
    ```sh
    python3 -B -m betangel_research.betfair.backtest run-backtest --contract research/experiments/backtest-p0-bsp-v1.json --data-root <data-root> --lab-state-root <lab-state-root> --run-id <run id> --code-identity "<commit> tree <tree>"
    ```
 
    `--code-identity` 係 operator 寫嘅文字（printable ASCII，1–200 字），冇嘢核實佢。開 start 之前嘅次序（Q3、Q8）：path guard；contract `valid_frozen`、支援嘅 P0 model（`delay_s` 0）同 certified profile；兩個 root 同 id；而家 key 嘅 certificate（`certification:missing`、`malformed`、`not_this_key`、`not_all_passed` 等等）；known accounting answers；input descriptor 同每個 manifest 嘅 limits（`input:<sha>:limits_not_the_runs`）；certificate 嘅 limits（`certification:limits_not_the_runs`）；第一輪（`stale_gate`、`duplicate_market`、`malformed_record`、`member_not_the_manifests`，之後 `inputs:no_records`、`inputs:no_eligible_records`）；per-contract lock（`runner_lock:held`）。Lock 入面：history（`ledger:unfinished_trials`、`run:recovery_incomplete`、`receipt:missing`、`run:unaccounted`）、stop rule、`run_id:already_used`、`ledger:trial_budget_exhausted`、`source:changed_before_start`，之後先開兩個 start。拒絕咗嘅 run 可能留低空嘅 `contracts/<sha>/` 同 `runs/<sha>/` 目錄。Synthetic 推算（冇喺真資料量度過）：大約 52.5k 個 candidate、9–18 分鐘、0.4–0.6 GB；第一次要睇住記憶體。`--data-root` 底下淨係放第 7 步話畀 Yu 知嗰個 input descriptor 嘅 archive；run 做完之後，對返 `results.json` 同 trial ledger 入面嘅 `input_sha256` 係咪就係嗰個。
-9. **Uncertain 同 recovery。** 結果係 uncertain 就保留 lock：一個人先確認冇 writer 仲喺度跑，先移走 lock，再跑
+9. **Uncertain 同 recovery。** 前提係同一個 lab-state root **已經存在**；`reconcile-trials` 唔會建立 root，
+   缺失會 `lab_state_root:missing_path`、exit 2，停、交 review，唔自行重建或換 root。
+   結果係 uncertain 就保留 lock：一個人先確認冇 writer 仲喺度跑，先移走 lock，再跑
    `reconcile-trials --contract … --lab-state-root … --code-identity …`（reconciled 係 exit 0，其他 2）。
    Reconcile 唔使 certificate file、唔跑 stop rule、永遠唔會被停，亦唔會抹走或者升級一個 pass 聲稱。
    Q10：第一次 recovery append 或 publication 之前，先核對每個已知 ledger run 嘅 start／close certificate 一致性，
@@ -637,12 +666,14 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 - **長啲嘅 bootstrap block**：一份 contract 只揀一個 block（P0 係 `race_day`），點樣同時報週或月 block 未定（§8）。
 - **P1–P4 嘅內容同次序**：暫定（§4）。
 - **真 TAR 路徑日期同 event id 嘅意思未核實**（§2.8）：Yu 喺 portal 下載嘅一個真 BASIC GB/IE WIN M 檔 TAR，佢嘅 header listing 顯示 `archive.py` 假設嘅路徑 layout（`<PLAN>/<YYYY>/<Mon>/<D>/<eventId>/<檔>.bz2`）同容器格式：外層冇壓縮、每個 member 一個 pax header、冇 global header、以兩個 zero block 結尾。嗰次淨係列 header 同檔名，冇解壓、冇讀內容（lab 報告之後用 CLI ingest 同 index 咗一個 archive，呢度未核實，§10）。之後嘅真 TAR 唔係咁，就會成個被拒：所有 member 都係 `no_parseable_month`（`archive:nothing_kept`）、`not_a_readable_tar`、`archive:not_ended_by_zero_blocks` 或者 `archive:pax_global_header`；之後要睇過、開新 manifest schema，唔可以放寬去估。路徑日期同 `marketTime` 嘅關係（`date_mismatch`、`event_id_mismatch`）仲要讀真內容先知。
-- **跑真資料之前嘅步驟**（§10.1）：先 review/merge R1 code，再通知 Yu、依次做 L1 metadata census、
-  L2 stock index equality check、L3 draft inventory；每步先發佈同 review evidence。之後 reviewed freeze、
-  lab certification 同第一個真 run 仍然分開排。Metric deferral 已記錄，唔代表 freeze 或真資料工作已做。
+- **跑真資料之前嘅步驟**（§10.1）：readiness R1（`readiness.py`）已 review/merge（PR #20，main 1f35646），
+  工具最後改動亦要先 review/merge，再通知 Yu、依次做 L1 metadata census、L2 stock index equality check、
+  L3 draft inventory；三步都未做，每步先發佈同 review evidence。之後 reviewed freeze、reviewed root creation
+  （只限 L1 記錄 absent，第 5a 步）、lab certification 同第一個真 run 仍然分開排。
+  Metric deferral 已記錄，唔代表 freeze 或真資料工作已做。
 - **Index 建立冇綁 limit**（c2b3b 決定 13）：index head 冇記用咗乜 limit；manifest 同 certificate 嘅 limit 檢查唔證明 index 點建。要綁住就另外提議一個窄嘅 index binding。
 - **載入嘅代碼冇證明**（c2b3b 決定 5、Q4）：certificate 只係核對 disk 上嘅 source 同 interpreter；靠專用 checkout、fresh CLI（`-B`）同 §10.1 第 1 步嘅環境紀律（certify 同 run 用同一個 shell 環境；`PYTHONPYCACHEPREFIX`、`PYTHONPATH`、`PYTHONOPTIMIZE` 唔設；冇 user site、`.pth` 或者 `sitecustomize` 加落嚟）。`run-backtest` 冇 import 時嘅 snapshot（Q4），`certify-engine` 有（`source:changed_since_import`、載入 module 嘅檢查），但兩樣都唔證明實際載入嘅 bytecode。
-- **Pre-certification hardening（Q5、Q10）**：receipt、recovery intent、completed results、issuance evidence 同
+- **Pre-certification hardening（Q5、Q10；即 hygiene，fc38998，已喺 main）**：receipt、recovery intent、completed results、issuance evidence 同
   unbound-result scan 喺開檔前用 `lstat` 檢查 regular file；symlink（包括同 bytes 同 dangling link）、directory、FIFO
   都係 `not_a_regular_file`，inspection error 係 `uninspectable`。只有 `FileNotFoundError` 代表 absent；缺必要 evidence
   仍係 `missing_path`，regular file 讀唔到仍係 `unreadable`。Q10 嘅所有已知 run certificate 預檢見 §10.1 第 9 步；

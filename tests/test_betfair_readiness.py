@@ -35,6 +35,23 @@ import test_betfair_backtest_runner as runner_fx
 M = "1.100000001"
 CODE = "synthetic operator label"
 
+# None disables the process-wide hook; only the extra-archive inventory call enables it.
+_INPUT_OPEN_AUDIT = None
+
+
+def _record_input_opens(event, args):
+    if event != "open" or _INPUT_OPEN_AUDIT is None:
+        return
+    path = args[0]
+    if isinstance(path, (str, bytes, os.PathLike)):
+        roots, opened = _INPUT_OPEN_AUDIT
+        candidate = Path(os.fsdecode(path)).absolute()
+        if any(parent in candidate.parents for parent in roots):
+            opened.append(candidate)
+
+
+sys.addaudithook(_record_input_opens)
+
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
@@ -238,6 +255,29 @@ class ParityTests(ReadinessCase):
 
 
 class RecordProblemTests(ReadinessCase):
+    def test_market_id_sanitiser_is_exactly_the_index_grammar(self):
+        kept = ["1.1", "2.100000001", "12.5", "123.123456789012345", "1.1234567890", "0.0", "000.000"]
+        invalid = [1.5, 12, None, True, [], {}, "1.5\n", " 1.5", "1.5 ", "1.1234567890123456", "1234.5",
+                   "\u0661.\u0665", "1.", ".5", "1.5.6", "CANARY"]
+        for value, expected in [(value, value) for value in kept] + [(value, "invalid") for value in invalid]:
+            with self.subTest(value=value):
+                self.assertEqual(readiness._market_id({"market_id": value}), expected)
+
+    def test_float_and_whitespace_market_ids_are_not_echoed_in_diagnostics(self):
+        self.inputs()
+        for value in (1.5, "1.5\n", " 1.5", "1.5 "):
+            with self.subTest(value=value):
+                bad = copy.deepcopy(self.records[M])
+                bad["market_id"] = value
+                bad["checks"]["path_month"] = "2026-01"
+                self.rewrite([bad, self.records[M]])
+                result = self.inventory()
+                self.assertAccounting(result)
+                stage = "malformed_record" if isinstance(value, float) else "stale_gate"
+                suffix = "" if stage == "malformed_record" else ":invalid"
+                self.assertEqual(result["record_problems_listed"], [["BASIC", "invalid", stage]])
+                self.assertEqual(result["input_preflight_would_refuse"], f"input:{self.archive}:{stage}{suffix}")
+
     def test_non_one_market_id_diagnostic_codes_match_runner(self):
         mid = "2.100000001"
         self.inputs([(fx.path(mid), fx.standard_market(mid))])
@@ -371,6 +411,7 @@ class RecordProblemTests(ReadinessCase):
 
 class FileFailureTests(ReadinessCase):
     def test_extra_archive_refused_before_head_or_markets_open(self):
+        global _INPUT_OPEN_AUDIT
         self.inputs()
         extra_sha = "a" * 64
         (self.data / "manifests" / f"{extra_sha}.json").write_text("PRO CANARY")
@@ -378,13 +419,14 @@ class FileFailureTests(ReadinessCase):
         extra_index.mkdir()
         for name in (market_index.HEAD_FILE, market_index.MARKETS_FILE):
             (extra_index / name).write_text("PRO INDEX CANARY")
-        opened = []
+        opened, audited = [], []
+        input_roots = (self.data / "index", self.data / "manifests")
 
         def guarded(open_fn):
             def open_without_inputs(path, *args, **kwargs):
                 if not isinstance(path, int):
                     candidate = Path(os.fsdecode(path)).absolute()
-                    if any(parent in candidate.parents for parent in (self.data / "index", self.data / "manifests")):
+                    if any(parent in candidate.parents for parent in input_roots):
                         opened.append(candidate)
                         raise AssertionError("opened archive input before archive-set check")
                 return open_fn(path, *args, **kwargs)
@@ -395,8 +437,15 @@ class FileFailureTests(ReadinessCase):
                 stack.enter_context(mock.patch.object(module, name, guarded(getattr(module, name))))
             stack.enter_context(mock.patch.object(runner, "_inputs", side_effect=AssertionError("opened input")))
             stack.enter_context(mock.patch.object(runner, "_regular_file", side_effect=AssertionError("inspected")))
-            self.assertRefused(self.inventory(), "inputs:not_the_expected_archives")
+            # Unlike attribute patches, the audit hook sees path-based opens through import-time aliases too.
+            _INPUT_OPEN_AUDIT = (input_roots, audited)
+            try:
+                result = self.inventory()
+            finally:
+                _INPUT_OPEN_AUDIT = None
+        self.assertRefused(result, "inputs:not_the_expected_archives")
         self.assertEqual(opened, [])
+        self.assertEqual(audited, [])
 
     def test_wrong_or_absent_archive_refuses(self):
         self.inputs()
@@ -420,7 +469,9 @@ class FileFailureTests(ReadinessCase):
 
     def test_nonregular_inputs_refuse_without_opening(self):
         self.inputs()
-        for path in (self.head_path, self.markets_path, self.data / "manifests" / f"{self.archive}.json"):
+        paths = ((self.head_path, "head:unreadable"), (self.markets_path, "markets_unreadable"),
+                 (self.data / "manifests" / f"{self.archive}.json", f"manifest:{self.archive}:unreadable"))
+        for path, runner_code in paths:
             original = path.read_bytes()
             for kind in ("directory", "fifo", "symlink"):
                 with self.subTest(path=path.name, kind=kind):
@@ -434,6 +485,11 @@ class FileFailureTests(ReadinessCase):
                     with mock.patch.object(runner, "_inputs", side_effect=AssertionError("opened inputs")):
                         code = "unsafe_target" if kind == "symlink" else "not_a_regular_file"
                         self.assertRefused(self.inventory(), f"input:{self.archive}:{code}")
+                    if kind == "directory":
+                        # Even one non-regular file gets a different runner diagnostic. Never give it a FIFO.
+                        with self.assertRaises(runner.RunRefused) as caught:
+                            runner._inputs(self.data)
+                        self.assertEqual(str(caught.exception), f"input:{self.archive}:{runner_code}")
                     path.rmdir() if kind == "directory" else path.unlink()
                     path.write_bytes(original)
 

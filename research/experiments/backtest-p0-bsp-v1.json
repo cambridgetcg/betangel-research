@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "experiment_id": "backtest-p0-bsp-v1",
-  "status": "draft",
-  "frozen_on": null,
+  "status": "frozen",
+  "frozen_on": "2026-10-17",
   "registration": {
     "kind": "engineering_check",
     "note": "Engineering run of the P0 BSP pipeline on the free 2015-05..2016-04 BASIC corpus, not a registered hypothesis: it is judged only by engineering_acceptance, and its financial_rule is not_applicable. Engineering acceptance combines exactly its three criteria, and the outcome metrics the runner computes are reported, never judged: it is failed when any criterion failed; otherwise it is incomplete when a criterion is missing or extra, has an unknown status or is incomplete; otherwise it is passed. decision_timing.delay_s 0 is an instantaneous simulated-acceptance assumption, not a measured latency. stopping_rule.max_trials 4 is a budget of four recorded starts: at most two runs that reserve both variants' starts, though attempts that record only one start can make the invocations more than two, and every recorded start stays charged. The declared secondary metric ltp_to_bsp_movement_non_executable is not implemented: no code computes it and no run of this code reports it. Its disposition (explicit deferral, removal or implementation) is decided and recorded before the freeze; removal or implementation changes the certified profile or the source, needs its own reviewed change and a new certification, and would change this text. This contract never runs as a draft: it is frozen only by its own separately reviewed change, with Yu informed first, and runs and trials are named by the frozen contract's contract_sha256 (the sha256 of its canonical JSON, as validate-contract prints it, not of the file's bytes)."

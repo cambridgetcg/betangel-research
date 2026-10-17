@@ -1,4 +1,4 @@
-"""Backtest experiment-contract tests: the draft P0 contract, synthetic edits of it, file loading and the CLI.
+"""Backtest experiment-contract tests: the repository P0 contract, synthetic edits, file loading and the CLI.
 
 These show that the validator refuses what schema_version 1 refuses and that the sha256 depends only on the
 JSON value. They do not show that a contract was written before outcomes were seen, or that its corpus exists.
@@ -34,6 +34,7 @@ import test_betfair_support as support
 
 REPO = Path(__file__).resolve().parent.parent
 DRAFT = REPO / "research" / "experiments" / "backtest-p0-bsp-v1.json"
+DRAFT_BYTES_AT_IMPORT = DRAFT.read_bytes()
 RETROSPECTIVE = ("actual_off", "actual_off_time", "last_pre_off_update", "last_update_before_off", "market_close",
                  "market_closed", "in_play_transition", "turn_in_play", "inplay_start", "suspend_time", "result_time",
                  "settled_time", "bsp_reconciliation", "final_market_definition", "latest_scheduled_off",
@@ -59,7 +60,10 @@ REGISTERED_RULE = {"kind": "roi_threshold", "hypothesis": "Synthetic: a hypothes
 
 
 def draft():
-    return json.loads(DRAFT.read_text(encoding="utf-8"))
+    """A synthetic draft using P0 settings, independent of the repository contract's freeze state."""
+    value = json.loads(DRAFT.read_text(encoding="utf-8"))
+    value.update(status="draft", frozen_on=None)
+    return value
 
 
 def frozen():
@@ -146,18 +150,19 @@ class ContractTests(unittest.TestCase):
     def setUp(self):
         support.block_network(self)
 
-    def test_repo_draft_is_a_valid_engineering_draft(self):
-        value = draft()
+    def test_repo_contract_is_valid_with_the_declared_engineering_settings(self):
+        value = json.loads(DRAFT.read_text(encoding="utf-8"))
+        self.assertIn(value["status"], ("draft", "frozen"))
         found, digest = validate_contract(value)
         self.assertEqual(found, [])
-        self.assertEqual(contract_module.result_status(value, found), "valid_draft")
+        self.assertEqual(contract_module.result_status(value, found), f"valid_{value['status']}")
         self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
-        self.assertEqual((value["status"], value["registration"]["kind"]), ("draft", "engineering_check"))
+        self.assertEqual(value["registration"]["kind"], "engineering_check")
         self.assertIn("not a registered hypothesis", value["registration"]["note"])
         # Every choice is made (c2b3b4): only frozen_on waits for the separately reviewed freeze; the engineering
         # check states its purpose in full.
         nulls = sorted(path for path in leaf_paths(value) if get_path(value, path) is None)
-        self.assertEqual(nulls, ["frozen_on"])
+        self.assertEqual(nulls, ["frozen_on"] if value["status"] == "draft" else [])
         self.assertEqual((value["decision_timing"]["delay_s"], value["stopping_rule"]["max_trials"]), (0, 4))
         self.assertEqual((value["costs"]["commission_rate"], value["costs"]["rate_source"]),
                          (0.02, "declared_assumption"))
@@ -185,8 +190,7 @@ class ContractTests(unittest.TestCase):
         """Astra's control E and decision 3: the draft frozen by setting status and frozen_on alone, every text and
         value kept, is valid_frozen, has the certified P0 profile by canonical bytes (the runner's own comparison) and
         builds the runner's models with delay_s 0. The freeze itself is a separately reviewed step: the frozen value
-        is built in memory here, and the repo file stays the same draft, byte for byte."""
-        before = DRAFT.read_bytes()
+        is built in memory here, and the repo file stays unchanged, byte for byte."""
         value = draft()
         flipped = dict(value, status="frozen", frozen_on="2026-10-15")
         self.assertEqual(sorted(key for key in flipped if flipped[key] != value[key]), ["frozen_on", "status"])
@@ -204,7 +208,7 @@ class ContractTests(unittest.TestCase):
         low, high = certificate.PARAMETERS["stopping_rule.max_trials"]["domain"]
         self.assertTrue(low <= flipped["stopping_rule"]["max_trials"] <= high)
         self.assertEqual(certificate.P0_PROFILE["costs"], {"basis": "positive_net_market_winnings"})
-        self.assertEqual((DRAFT.read_bytes(), draft()["status"]), (before, "draft"))
+        self.assertEqual(DRAFT.read_bytes(), DRAFT_BYTES_AT_IMPORT)
 
     def test_cohort_text_tokens_are_cohort_literals(self):
         """The draft's cohort rules, exclusions, feature definitions and variant descriptions name reason tokens as
@@ -945,7 +949,10 @@ class ContractTests(unittest.TestCase):
             spaced.write_text(json.dumps(value, indent=4, ensure_ascii=True), encoding="utf-8")
             self.assertEqual(check_contract_file(compact)["contract_sha256"], digest)
             self.assertEqual(check_contract_file(spaced)["contract_sha256"], digest)
-            self.assertEqual(check_contract_file(DRAFT)["contract_sha256"], digest)
+            repo_value = json.loads(DRAFT.read_text(encoding="utf-8"))
+            repo_expected = hashlib.sha256(json.dumps(repo_value, sort_keys=True, separators=(",", ":"),
+                                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+            self.assertEqual(check_contract_file(DRAFT)["contract_sha256"], repo_expected)
         self.assertEqual(validate_contract({"x": float("nan")}), (["contract:not_canonical_json"], None))
         self.assertEqual(validate_contract({"x": {1, 2}}), (["contract:not_canonical_json"], None))
         # One meaning, one valid spelling: 0 and -0.0 are refused, reordered features and variants are refused.
@@ -1003,13 +1010,22 @@ class ContractCliTests(unittest.TestCase):
         return code, json.loads(out.getvalue())
 
     def test_exit_codes_and_output(self):
+        repo_value = json.loads(DRAFT.read_text(encoding="utf-8"))
+        self.assertIn(repo_value["status"], ("draft", "frozen"))
+        repo_status = f"valid_{repo_value['status']}"
         code, output = self.run_main(["validate-contract", "--contract", str(DRAFT)])
         self.assertEqual(code, 0)
-        self.assertEqual(output, {"status": "valid_draft", "contract_sha256": validate_contract(draft())[1],
+        self.assertEqual(output, {"status": repo_status, "contract_sha256": validate_contract(repo_value)[1],
                                   "problems": []})
         code, output = self.run_main(["validate-contract", "--contract", str(DRAFT), "--require-frozen"])
-        self.assertEqual((code, output["status"]), (3, "valid_draft"))
+        self.assertEqual((code, output["status"]), (0 if repo_value["status"] == "frozen" else 3, repo_status))
         with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "draft.json"
+            path.write_text(json.dumps(draft()), encoding="utf-8")
+            code, output = self.run_main(["validate-contract", "--contract", str(path)])
+            self.assertEqual((code, output["status"], output["problems"]), (0, "valid_draft", []))
+            code, output = self.run_main(["validate-contract", "--contract", str(path), "--require-frozen"])
+            self.assertEqual((code, output["status"]), (3, "valid_draft"))
             path = Path(tmp) / "frozen.json"
             path.write_text(json.dumps(frozen()), encoding="utf-8")
             code, output = self.run_main(["validate-contract", "--contract", str(path)])
@@ -1047,7 +1063,9 @@ class ContractCliTests(unittest.TestCase):
                                  "--contract", str(DRAFT)], cwd=REPO, env=env, capture_output=True, text=True,
                                 timeout=60)
         self.assertEqual((result.returncode, result.stderr), (0, ""))
-        self.assertEqual(json.loads(result.stdout)["status"], "valid_draft")
+        repo_status = json.loads(DRAFT.read_text(encoding="utf-8"))["status"]
+        self.assertIn(repo_status, ("draft", "frozen"))
+        self.assertEqual(json.loads(result.stdout)["status"], f"valid_{repo_status}")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.json"
             path.write_text('{"schema_version": 1}', encoding="utf-8")

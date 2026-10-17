@@ -2724,9 +2724,11 @@ class CliTests(Workspace):
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             main(["archive-ingest", "--tar", str(good)])
         self.assertEqual(raised.exception.code, 2)
-        code, contract = self.run_main(["validate-contract", "--contract",
-                                        str(REPO / "research" / "experiments" / "backtest-p0-bsp-v1.json")])
-        self.assertEqual((code, contract["status"]), (0, "valid_draft"))
+        contract_path = REPO / "research" / "experiments" / "backtest-p0-bsp-v1.json"
+        repo_status = json.loads(contract_path.read_bytes())["status"]
+        self.assertIn(repo_status, ("draft", "frozen"))
+        code, contract = self.run_main(["validate-contract", "--contract", str(contract_path)])
+        self.assertEqual((code, contract["status"], contract["problems"]), (0, f"valid_{repo_status}", []))
 
 
 class TarfileBoundaryTests(unittest.TestCase):

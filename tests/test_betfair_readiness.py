@@ -60,7 +60,7 @@ def sha(data):
 class ReadinessCase(fx.Workspace):
     def setUp(self):
         super().setUp()
-        self.contract_value = json.loads(fx.DRAFT.read_bytes())
+        self.contract_value = fx.draft_contract()
         self.contract_path = self.tmp / "draft.json"
         self.write_contract()
         self.data = self.manifest = self.records = self.archive = None

@@ -30,9 +30,16 @@ T = OFF + timedelta(seconds=OFFSET_S)
 EVENT = "27000001"
 
 
-def frozen_contract(delay_s=0, max_trials=4, **changes):
-    """The P0 draft frozen with operational values (as the contract tests do), changed as asked."""
+def draft_contract():
+    """A synthetic draft using P0 settings, regardless of the repository contract's freeze state."""
     value = json.loads(DRAFT.read_text(encoding="utf-8"))
+    value.update(status="draft", frozen_on=None)
+    return value
+
+
+def frozen_contract(delay_s=0, max_trials=4, **changes):
+    """P0 settings frozen with synthetic operational values, changed as asked."""
+    value = draft_contract()
     value.update(status="frozen", frozen_on="2026-10-14")
     value["decision_timing"]["delay_s"] = delay_s
     value["stopping_rule"]["max_trials"] = max_trials

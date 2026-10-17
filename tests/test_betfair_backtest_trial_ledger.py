@@ -28,7 +28,10 @@ INPUTS = "ab" * 32
 
 
 def draft():
-    return json.loads(DRAFT.read_text(encoding="utf-8"))
+    """A synthetic draft whose state does not depend on the repository contract's freeze."""
+    value = json.loads(DRAFT.read_text(encoding="utf-8"))
+    value.update(status="draft", frozen_on=None)
+    return value
 
 
 def frozen(max_trials=4):

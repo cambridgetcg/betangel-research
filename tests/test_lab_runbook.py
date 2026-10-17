@@ -56,7 +56,9 @@ binding:results binding:receipt binding:issuance binding:issuance_size binding:u
 binding:acceptance_mismatch binding:exit_mismatch binding:starts binding:trial_id binding:start_input
 binding:start_code_or_certificate binding:criteria_set binding:criterion_status binding:prefix_counts
 binding:prefix_records binding:prefix_reasons binding:unexercised_variants run:state_not_certifications_only
-runtime:check_failed consent:text consent:identifiers notice:record notice:date notice:reference""".split())
+runtime:check_failed author:worktree_state author:cache_present author:census_stderr author:census_failed
+author:head_changed author:c0_head_mismatch
+consent:text consent:identifiers notice:record notice:date notice:reference""".split())
 
 
 def current_interpreter():
@@ -207,6 +209,16 @@ class ToolTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
         return path
+
+    def author_states(self, prefix, label):
+        value = b" M research/experiments/backtest-p0-bsp-v1.json\0" if label == "c0-flip-only" else b""
+        for stage in ("before", "after"):
+            self.write(prefix + "-status-" + stage + ".z", value)
+            self.write(prefix + "-cache-" + stage + ".txt", b"")
+            self.write(prefix + "-index-" + stage + ".z", b"H tracked.txt\0")
+            for suffix in ("status-" + stage + ".z", "cache-" + stage + ".txt", "index-" + stage + ".z"):
+                self.write(prefix + "-" + suffix + ".stderr", b"")
+        self.write(prefix + "-git-after.txt", (self.root / (prefix + "-git.txt")).read_bytes())
 
     def publish(self, mode, value, name=None, lock="expected-lock"):
         name = name or fixtures()[mode][0]
@@ -538,6 +550,7 @@ class GateTests(ToolTest):
             self.write(prefix + "-suite.exit", b"0\n")
             self.write(prefix + "-git.txt", ("a" * 40 + "\n" + "b" * 40 + "\n").encode())
             self.write(prefix + "-diff.txt", changed)
+            self.author_states(prefix, label)
             rc, text = self.invoke("author-suite", self.root, prefix, label)
             self.assertEqual(rc, 0)
             self.assertIs(json.loads(text)["diff_only_contract"], expected)
@@ -679,6 +692,7 @@ class ProducerAndBoundaryTests(ToolTest):
         for value, expected in ((b"0\n", 0), (b"256\n", None), (b"1.987654321\n", None)):
             self.write(prefix + "-suite.exit", value)
             self.write(prefix + "-git.txt", b"1.987654321\nreceipt_secret\n")
+            self.author_states(prefix, "c1")
             rc, text = self.invoke("author-suite", self.root, prefix, "c1")
             self.assertEqual(rc, 0)
             self.assertEqual(json.loads(text)["exit"], expected)
@@ -1170,6 +1184,7 @@ class RunbookRegressionTests(ToolTest):
         self.write(prefix + "-suite.exit", b"0\n")
         self.write(prefix + "-git.txt", ("b" * 40 + "\n" + "c" * 40 + "\n").encode())
         self.write(prefix + "-diff.txt", b"research/experiments/backtest-p0-bsp-v1.json\nscripts/other.py\n")
+        self.author_states(prefix, "c1")
         rc, text = self.invoke("author-suite", self.root, prefix, "c1")
         self.assertEqual(rc, 0)
         value = json.loads(text)
@@ -1575,6 +1590,7 @@ lab_detach "$PREFIX" "$CHECKPOINT" lab_probe_job
         cases = (("orphan", "1 0", "1 0", None, "publication:job_pending", False),
                  ("wrapper", "0 1", "0 1", None, "publication:job_pending", False),
                  ("changed", "1 1", "0 1", None, "publication:liveness_changed", True),
+                 ("writer_changed", "1 1", "1 0", None, "publication:liveness_changed", True),
                  ("empty", "1 0", "1 0", b"", "publication:job_pending", False),
                  ("invalid", "1 0", "1 0", b"999\n", "publication:job_pending", False))
         source = '''lab_liveness() {
@@ -1593,6 +1609,8 @@ lab_publication "$PREFIX" final
             result = self.run_shell(source, {**env, "PREFIX": prefix, "FIRST": first, "SECOND": second})
             self.assertEqual(result.returncode, 2, (name, result.stdout, result.stderr))
             self.assertIn(code, result.stdout)
+            if captured:
+                self.assertNotIn("job_pending", result.stdout)
             self.assertEqual((self.root / (prefix + "-final-liveness.txt")).exists(), captured)
             self.assertFalse((self.root / (prefix + "-final-publication.jsonl")).exists())
         prefix = "step8-52"
@@ -2024,6 +2042,7 @@ lab_run_job
         source = SHELL.read_text() + "\n" + (ROOT / "docs" / "backtest-plan.md").read_text()
         templates = set(re.findall(r'(?m)^\s*lab_capture\s+"([^"\n]+)"', source))
         templates.update(re.findall(r'if lab_capture\s+"([^"\n]+)"', source))
+        templates.update(re.findall(r'lab_no_writer\s+"([^"\n]+)"', source))
         prefix_values = {
             "STEP1_PREFIX": "step1-01", "L1_PREFIX": "l1-01", "L2_PREFIX": "l2-01", "L3_PREFIX": "l3-01",
             "STEP5A_PREFIX": "step5a-01", "STEP5B_PREFIX": "step5b-01", "STEP5_FETCH_PREFIX": "step5-fetch-01",
@@ -2323,7 +2342,7 @@ class WorkflowGateTests(ToolTest):
 lab_identity_check() { return 0; }
 lab_no_writer() { [[ "$FAULT" != writer ]]; }
 lab_liveness() {
-  [[ "$FAULT" != liveness ]] || return 2
+  if [[ "$FAULT" = liveness ]]; then print -r -- 'job_pgrep_exit=1 writer_pgrep_exit=1'; return 2; fi
   if [[ "$FAULT" = writer_live ]]; then print -r -- 'job_pgrep_exit=1 writer_pgrep_exit=0'
   else print -r -- 'job_pgrep_exit=1 writer_pgrep_exit=1'; fi
   print -r -- 'block_stdout=present'
@@ -2377,6 +2396,8 @@ lab_lock_note "$STEP9_PREFIX-runner-lock" "$LAB_LOCK" || exit 2
                 selected["STEP9_VERIFY_PREFIX"] = "step9-verify-999"
             result = self.run_shell(self.RECOVERY_STUBS + 'lab_recovery_recheck "$PREFIX"\n', selected)
             self.assertEqual(result.returncode, 0 if mode == "good" else 2, (mode, result.stdout, result.stderr))
+            if mode == "unverified":
+                self.assertFalse((self.root / (prefix + "-ledger-lock.txt")).exists())
             if mode == "mismatch":
                 self.assertIn("recovery:ledger_lock_note_mismatch", result.stdout)
             if mode == "note_drift":
@@ -2406,7 +2427,7 @@ lab_lock_note "$STEP9_PREFIX-runner-lock" "$LAB_LOCK" || exit 2
                                cwd=ROOT, capture_output=True, text=True, check=False)
         self.assertEqual(child.returncode, 2, child.stdout + child.stderr)
         self.assertEqual(json.loads(child.stdout)["status"], "refused")
-        result = self.run_shell(self.RECOVERY_STUBS + "lab_ledger_verify\n", env)
+        result = self.run_shell('cd "$LAB_CHECKOUT" || exit 2\n' + self.RECOVERY_STUBS + "lab_ledger_verify\n", env)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual((self.root / "step9-verify-01-ledger-verify.json.exit").read_text(), "2\n")
         self.assertNotIn("checkpoint_saved=step9-verify-01\n", result.stdout)
@@ -2611,8 +2632,8 @@ lab_detach step8-470-job "$CHECKPOINT" lab_probe_job
             release.touch(exist_ok=True)
             try:
                 os.killpg(launcher.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            except (ProcessLookupError, PermissionError):
+                pass  # Darwin killpg may report EPERM when only unreaped zombies remain.
 
     @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
     def test_identifier_token_rejects_duplicate_conflicting_and_identical_rows(self):
@@ -2888,7 +2909,10 @@ lab_identity() {
   if [[ "$FAULT" = identity ]]; then print -r -- '{}'; return 2; fi
   if [[ "$FAULT" = identity_compare ]]; then print -r -- '{"changed":true}'; else print -r -- '{}'; fi
 }
-lab_no_writer() { [[ "$FAULT" != writer || "$1" != "$STEP8_PREFIX-writers.txt" ]]; }
+lab_no_writer() {
+  [[ "$FAULT" != after_writer || "$1" != "$STEP8_PREFIX-after-writers.txt" ]] || return 2
+  [[ "$FAULT" != writer || "$1" != "$STEP8_PREFIX-writers.txt" ]]
+}
 lab_inputs() {
   lab_capture "$1-files.json" print -r -- '{}' || return 2
   [[ "$FAULT" != inputs || "$1" != "$STEP8_PREFIX-before" ]]
@@ -2944,7 +2968,8 @@ lab_run_job
                  ("binding", "completed", 0, 2), ("binding", "completed", 4, 2),
                  ("none", "failed", 2, 2), ("none", "failed", 0, 2),
                  ("none", "refused", 2, 2), ("none", "refused", 0, 2),
-                 ("none", "uncertain", 2, 2), ("none", "unknown", 0, 2), ("classifier", "completed", 0, 2))
+                 ("none", "uncertain", 2, 2), ("none", "unknown", 0, 2), ("classifier", "completed", 0, 2),
+                 ("after_writer", "completed", 0, 2))
         for index, (fault, status, cli_rc, expected) in enumerate(cases):
             result, prefix = self.run_job_case(index, fault, status, cli_rc)
             self.assertEqual(result.returncode, expected, (fault, status, cli_rc, result.stdout, result.stderr))
@@ -2954,16 +2979,22 @@ lab_run_job
                              status == "completed" and cli_rc in (0, 4) and fault != "classifier")
             if status in {"uncertain", "unknown"}:
                 self.assertIn("run:status_unresolved", result.stdout)
+            if fault == "after_writer":
+                self.assertIn("run:postcheck_refused", result.stdout)
+                self.assertNotIn("run:status_unresolved", result.stdout)
             for suffix in ("after-files.json", "input-compare.txt", "locks-census.jsonl", "no-locks.txt", "status.txt"):
                 self.assertTrue((self.root / (prefix + "-" + suffix)).exists(), suffix)
 
     @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
     def test_l2_job_budget_and_result_gates_and_cert_job_empty_state_gate(self):
-        source = '''lab_notice() { return 0; }
-lab_preflight() { return 0; }
-lab_identity_check() { return 0; }
-lab_no_writer() { return 0; }
-lab_inputs() { lab_capture "$1-files.json" print -r -- '{}'; }
+        source = '''lab_notice() { [[ "$FAULT" != notice ]]; }
+lab_preflight() { [[ "$FAULT" != git ]]; }
+lab_identity_check() { [[ "$FAULT" != identity ]]; }
+lab_no_writer() { [[ "$FAULT" != writer ]]; }
+lab_inputs() {
+  if [[ "$FAULT" = compare ]]; then lab_capture "$1-files.json" print -r -- '{"changed":true}'
+  else lab_capture "$1-files.json" print -r -- '{}'; fi
+}
 lab_checkpoint() { print -r -- "checkpoint_saved=$1"; }
 functions[real_capture]=$functions[lab_capture]
 fake_index() {
@@ -2987,7 +3018,7 @@ lab_tool() {
         base = self.shell_environment()
         data = self.root / "data"
         self.write("data/index/" + SHA + "/markets-v1.jsonl", b"{}\n")
-        for index, fault in enumerate(("none", "space", "index")):
+        for index, fault in enumerate(("none", "space", "index", "notice", "git", "identity", "writer", "compare")):
             prefix = "l2-" + str(210 + index)
             self.write(prefix + "-before-files.json", b"{}\n")
             env = {**base, "L2_PREFIX": prefix, "STEP6_PREFIX": "step6-01", "C0": "b" * 40,
@@ -2995,20 +3026,575 @@ lab_tool() {
                    "L2_SPACE_BUDGET_KIB": "999999999999999" if fault == "space" else "1"}
             result = self.run_shell(source, env)
             self.assertEqual(result.returncode, 0 if fault == "none" else 2, (fault, result.stdout, result.stderr))
-            self.assertEqual((self.root / (prefix + "-index-called")).exists(), fault != "space")
+            self.assertEqual((self.root / (prefix + "-index-called")).exists(), fault in {"none", "index"})
             self.assertEqual("checkpoint_saved=" + prefix + "\n" in result.stdout, fault == "none")
-        for occupied in (False, True):
-            prefix = "step6-" + str(220 + int(occupied))
+        for index, fault in enumerate(("none", "occupied", "git", "identity", "writer")):
+            occupied = fault == "occupied"
+            prefix = "step6-" + str(220 + index)
             state = self.root / prefix
             state.mkdir()
             if occupied:
                 (state / "certifications").mkdir()
             env = {**base, "STEP6_PREFIX": prefix, "L2_PREFIX": "l2-01", "C1": "b" * 40,
                    "C1_TREE": "c" * 40, "LAB_STATE": str(state), "ATTEMPT_ID": "attempt-1",
-                   "FAULT": "none", "OPERATION": "lab_cert_job"}
+                   "FAULT": fault, "OPERATION": "lab_cert_job"}
             result = self.run_shell(source, env)
-            self.assertEqual(result.returncode, 2 if occupied else 0, result.stdout + result.stderr)
-            self.assertEqual((self.root / (prefix + "-certify.json")).exists(), not occupied)
+            self.assertEqual(result.returncode, 0 if fault == "none" else 2, result.stdout + result.stderr)
+            self.assertEqual((self.root / (prefix + "-certify.json")).exists(), fault == "none")
+            self.assertNotIn("checkpoint_saved", result.stdout)
+
+
+class FollowupGateTests(ToolTest):
+    shell_environment = RegistryAndShellTests.shell_environment
+    run_shell = RegistryAndShellTests.run_shell
+    recovery_fixture = WorkflowGateTests.recovery_fixture
+    RECOVERY_STUBS = WorkflowGateTests.RECOVERY_STUBS
+
+    def freeze_fence(self):
+        doc = (ROOT / "docs" / "backtest-plan.md").read_text()
+        fences = [fence for fence in re.findall(r"```sh\n(.*?)\n```", doc, re.S)
+                  if 'FREEZE_CHECKOUT=' in fence and 'author-suite' in fence]
+        self.assertEqual(len(fences), 1)
+        return fences[0]
+
+    def test_freeze_fence_keeps_captures_and_gates_around_the_suite(self):
+        fence = self.freeze_fence()
+        suite = fence.index('"$FREEZE_PY" -B -m unittest discover -s tests -v')
+        receipt = fence.index('printf \'%s\\n\' "$suite_rc" > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.exit" || exit 2')
+        publication = fence.index('"$FREEZE_TOOL" author-suite ')
+        self.assertLess(suite, receipt)
+        before_git = ('git rev-parse HEAD \'HEAD^{tree}\' > '
+                      '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-git.txt" || exit 2')
+        self.assertEqual(fence.count(before_git), 1)
+        self.assertLess(fence.index('"$(git rev-parse --verify HEAD)" = "$FREEZE_C0"'), fence.index(before_git))
+        self.assertLess(fence.index(before_git), suite)
+        for stage in ("before", "after"):
+            captures = (
+                'git --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false \\\n'
+                '  -c core.trustctime=true -c core.checkStat=default \\\n'
+                '  status --porcelain=v1 -z --untracked-files=all --ignored \\\n'
+                '  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-' + stage + '.z" \\\n'
+                '  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-' + stage + '.z.stderr"',
+                'git -c core.fsmonitor=false ls-files -v -z > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-'
+                + stage + '.z" \\\n  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-' + stage + '.z.stderr"',
+                '/usr/bin/find "$FREEZE_CHECKOUT" -name __pycache__ -print \\\n'
+                '  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-' + stage + '.txt" \\\n'
+                '  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-' + stage + '.txt.stderr"',
+            )
+            state = ('"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-state "$FREEZE_LABEL" \\\n'
+                     '  "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-' + stage + '.z" '
+                     '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-' + stage + '.txt" \\\n'
+                     '  "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-' + stage + '.z" || exit 2')
+            self.assertEqual(fence.count(state), 1)
+            state_at = fence.index(state)
+            for capture in captures:
+                capture += (' || {\n    print -r -- \'{"status":"refused","code":"author:census_failed"}\'; '
+                            'exit 2\n  }')
+                self.assertEqual(fence.count(capture), 1)
+                capture_at = fence.index(capture)
+                self.assertLess(capture_at, state_at)
+                if stage == "before":
+                    self.assertLess(state_at, suite)
+                else:
+                    self.assertLess(receipt, capture_at)
+                    self.assertLess(state_at, publication)
+            for kind, extension in (("status", ".z"), ("index", ".z"), ("cache", ".txt")):
+                target = '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-' + kind + '-' + stage + extension + '"'
+                self.assertEqual(len(re.findall(r'>\|?\s+' + re.escape(target), fence)), 1)
+        after_git = ('git rev-parse HEAD \'HEAD^{tree}\' > '
+                     '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-git-after.txt" || exit 2')
+        self.assertEqual(fence.count(after_git), 1)
+        self.assertLess(receipt, fence.index(after_git))
+        self.assertLess(fence.index(after_git), publication)
+        suite_gate = '(( suite_rc == 0 )) || exit 2'
+        self.assertEqual(fence.count(suite_gate), 1)
+        self.assertLess(publication, fence.index(suite_gate))
+        self.assertLess(fence.index(suite_gate), fence.index('typeset -p FREEZE_PREFIX'))
+
+    def test_freeze_fence_gates_c0_head_and_flip_transition_before_the_suite(self):
+        fence = self.freeze_fence()
+        suite = fence.index('"$FREEZE_PY" -B -m unittest discover -s tests -v')
+        self.assertTrue(fence.startswith('(\nset -C -u\nexport GIT_NO_REPLACE_OBJECTS=1\nFREEZE_CHECKOUT='))
+        self.assertEqual(fence.count('export GIT_NO_REPLACE_OBJECTS=1'), 1)
+        location = ('cd "$FREEZE_CHECKOUT" || exit 2\n'
+                    '[[ "$(pwd -P)" = "$FREEZE_CHECKOUT" ]] || exit 2\n'
+                    '[[ "$(git rev-parse --show-toplevel)" = "$FREEZE_CHECKOUT" ]] || exit 2\n'
+                    '[[ -z "${GIT_DIR-}${GIT_WORK_TREE-}${GIT_INDEX_FILE-}${GIT_COMMON_DIR-}\\\n'
+                    '${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}" ]] || exit 2\n')
+        head_gate = ('if [[ "$FREEZE_LABEL" != c1 ]]; then\n'
+                     '  [[ "$(git rev-parse --verify HEAD)" = "$FREEZE_C0" ]] || {\n'
+                     '    print -r -- \'{"status":"refused","code":"author:c0_head_mismatch"}\'; exit 2\n'
+                     '  }\nfi')
+        self.assertEqual(fence.count(head_gate), 1)
+        adjacent_head = location + head_gate + '\nFREEZE_TOOL="$FREEZE_CHECKOUT/scripts/lab_runbook.py"'
+        self.assertEqual(fence.count(adjacent_head), 1)
+        self.assertEqual(fence.count('[[ "$(git rev-parse --show-toplevel)" = "$FREEZE_CHECKOUT" ]] || exit 2'), 1)
+        self.assertLess(fence.index(head_gate), suite)
+        flip_gate = ('if [[ "$FREEZE_LABEL" = c0-flip-only ]]; then\n'
+                     '  git show HEAD:research/experiments/backtest-p0-bsp-v1.json \\\n'
+                     '    > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" || exit 2\n'
+                     '  "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" freeze-diff '
+                     '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" \\\n'
+                     '    "$FREEZE_CHECKOUT/research/experiments/backtest-p0-bsp-v1.json" || exit 2\nfi')
+        self.assertEqual(fence.count(flip_gate), 1)
+        self.assertEqual(fence.count('"$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-before.z" || exit 2\n'
+                                     + flip_gate + '\nif [[ "$FREEZE_LABEL" = c1 ]]; then'), 1)
+        self.assertLess(fence.index(flip_gate), suite)
+
+    def author_receipts(self, prefix, label):
+        self.write(prefix + "-suite.log", b"Ran 1 test in 0.001s\nOK\n")
+        self.write(prefix + "-suite.exit", b"0\n")
+        self.write(prefix + "-git.txt", ("a" * 40 + "\n" + "b" * 40 + "\n").encode())
+        self.write(prefix + "-diff.txt", b"research/experiments/backtest-p0-bsp-v1.json\n")
+        self.author_states(prefix, label)
+
+    def test_author_state_rejects_dirty_staged_untracked_ignored_and_cache_paths_for_every_label(self):
+        contract = "research/experiments/backtest-p0-bsp-v1.json"
+        for index, label in enumerate(("c0-draft", "c0-flip-only", "c1")):
+            checkout = self.root / label
+            checkout.mkdir()
+            def git(*args):
+                return subprocess.run(["git", "--no-optional-locks", "-C", str(checkout), *args],
+                                      capture_output=True, check=True).stdout
+            git("init", "-q")
+            (checkout / contract).parent.mkdir(parents=True)
+            (checkout / contract).write_bytes(b"draft\n")
+            (checkout / "tracked.txt").write_bytes(b"tracked\n")
+            (checkout / ".gitignore").write_bytes(b"ignored\n__pycache__/\n")
+            git("add", ".")
+            git("-c", "user.name=Runbook test", "-c", "user.email=runbook@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic baseline")
+            for fault in ("none", "unstaged", "staged", "staged_contract", "untracked", "ignored", "cache",
+                          "assume_unchanged", "skip_worktree", "assume_unchanged_first", "skip_worktree_first"):
+                with self.subTest(label=label, fault=fault):
+                    git("update-index", "--no-assume-unchanged", ".gitignore", "tracked.txt")
+                    git("update-index", "--no-skip-worktree", ".gitignore", "tracked.txt")
+                    git("restore", "--source=HEAD", "--staged", "--worktree", ".")
+                    for filename in ("untracked.py", "ignored"):
+                        (checkout / filename).unlink(missing_ok=True)
+                    cache = checkout / "__pycache__"
+                    if cache.exists():
+                        cache.rmdir()
+                    if label == "c0-flip-only":
+                        (checkout / contract).write_bytes(b"frozen\n")
+                    if fault in {"unstaged", "staged"}:
+                        (checkout / "tracked.txt").write_bytes(b"unreviewed fix\n")
+                        if fault == "staged":
+                            git("add", "tracked.txt")
+                    elif fault == "staged_contract":
+                        (checkout / contract).write_bytes(b"frozen\n")
+                        git("add", contract)
+                    elif fault in {"untracked", "ignored"}:
+                        (checkout / ("untracked.py" if fault == "untracked" else fault)).write_bytes(b"fix\n")
+                    elif fault == "cache":
+                        cache.mkdir()
+                    elif fault.startswith(("assume_unchanged", "skip_worktree")):
+                        flagged = ".gitignore" if fault.endswith("_first") else "tracked.txt"
+                        flag = fault.removesuffix("_first").replace("_", "-")
+                        git("update-index", "--" + flag, flagged)
+                        (checkout / flagged).write_bytes(b"hidden unreviewed fix\n")
+                    status = self.write("status.z", git("status", "--porcelain=v1", "-z",
+                                                       "--untracked-files=all", "--ignored"))
+                    caches = self.write("cache.txt", b"__pycache__\n" if cache.exists() else b"")
+                    index_path = self.write("index.z", git("-c", "core.fsmonitor=false", "ls-files", "-v", "-z"))
+                    for path in (status, caches, index_path):
+                        self.write(path.name + ".stderr", b"")
+                    rc, text = self.invoke("author-state", label, status, caches, index_path)
+                    self.assertEqual(rc, 0 if fault == "none" else 2, text)
+                    value = json.loads(text)
+                    if fault == "none":
+                        self.assertEqual(value, {"status": "accepted", "worktree_state":
+                                                 "contract_modified" if label == "c0-flip-only" else "clean"})
+                    else:
+                        self.assertEqual(value["code"], "author:cache_present" if fault == "cache"
+                                         else "author:worktree_state")
+                    self.assertNotIn("unreviewed", text)
+                    self.assertNotIn("untracked.py", text)
+
+    def test_author_suite_revalidates_all_census_receipts_before_recording(self):
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            prefix = "freeze-" + label + "-31"
+            self.author_receipts(prefix, label)
+            rc, text = self.invoke("author-suite", self.root, prefix, label)
+            self.assertEqual(rc, 0, text)
+            self.assertEqual(json.loads(text)["worktree_state"],
+                             "contract_modified" if label == "c0-flip-only" else "clean")
+            for stage in ("before", "after"):
+                for suffix, payload, code in (("status-" + stage + ".z", b"?? market_1.987654321\0",
+                                              "author:worktree_state"),
+                                             ("cache-" + stage + ".txt", b"__pycache__\n",
+                                              "author:cache_present"),
+                                             ("index-" + stage + ".z", b"h tracked.txt\0",
+                                              "author:worktree_state"),
+                                             *((kind + "-" + stage + extension + ".stderr", b"market_1.987654321\n",
+                                                "author:census_stderr") for kind, extension in
+                                               (("status", ".z"), ("cache", ".txt"), ("index", ".z")))):
+                    self.author_receipts(prefix, label)
+                    self.write(prefix + "-" + suffix, payload)
+                    rc, text = self.invoke("author-suite", self.root, prefix, label)
+                    self.assertEqual((rc, json.loads(text)), (2, {"status": "refused", "code": code}))
+                    self.assertNotIn("diff_only_contract", text)
+                    self.assertNotIn("987654321", text)
+
+    def test_author_state_requires_ordinary_complete_index_rows_and_exact_flip_state(self):
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            prefix = "freeze-" + label + "-32"
+            self.author_receipts(prefix, label)
+            status = self.root / (prefix + "-status-before.z")
+            cache = self.root / (prefix + "-cache-before.txt")
+            index = self.root / (prefix + "-index-before.z")
+            for data in (b"", b"H tracked.txt", b"h tracked.txt\0", b"S tracked.txt\0", b"s tracked.txt\0",
+                         b"M tracked.txt\0", b"H first.txt\0h second.txt\0", b"H tracked.txt\0\0",
+                         b"h first.txt\0H second.txt\0", b"S first.txt\0H second.txt\0",
+                         b"H first.txt\0h middle.txt\0H last.txt\0",
+                         b"H first.txt\0S middle.txt\0H last.txt\0", b"H first.txt\0H second.txt"):
+                with self.subTest(label=label, index=data):
+                    index.write_bytes(data)
+                    rc, text = self.invoke("author-state", label, status, cache, index)
+                    self.assertEqual((rc, json.loads(text)),
+                                     (2, {"status": "refused", "code": "author:worktree_state"}))
+            index.write_bytes(b"H tracked.txt\0")
+            self.assertEqual(self.invoke("author-state", label, status, cache, index)[0], 0)
+            if label == "c0-flip-only":
+                status.write_bytes(b"")
+                rc, text = self.invoke("author-state", label, status, cache, index)
+                self.assertEqual((rc, json.loads(text)["code"]), (2, "author:worktree_state"))
+            status.write_bytes(b"")
+            rc, text = self.invoke("author-state", "unknown", status, cache, index)
+            self.assertEqual((rc, json.loads(text)["code"]), (2, "extractor:shape"))
+            with self.assertRaises(lab.ExtractorRefusal) as error:
+                lab.author_state("unknown", status, cache, index)
+            self.assertEqual(error.exception.args, ("extractor:shape",))
+
+    def test_author_suite_refuses_head_or_tree_movement_after_the_suite(self):
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            prefix = "freeze-" + label + "-33"
+            for after in (("c" * 40 + "\n" + "b" * 40 + "\n"), ("a" * 40 + "\n" + "c" * 40 + "\n")):
+                self.author_receipts(prefix, label)
+                self.write(prefix + "-git-after.txt", after.encode())
+                rc, text = self.invoke("author-suite", self.root, prefix, label)
+                self.assertEqual((rc, json.loads(text)),
+                                 (2, {"status": "refused", "code": "author:head_changed"}))
+
+    def test_author_census_stderr_never_reaches_the_projection(self):
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            prefix = "freeze-" + label + "-34"
+            for suffix in ("status-before.z", "cache-before.txt", "index-before.z"):
+                self.author_receipts(prefix, label)
+                self.write(prefix + "-" + suffix + ".stderr", b"market_1.987654321\n")
+                args = [self.root / (prefix + "-" + name)
+                        for name in ("status-before.z", "cache-before.txt", "index-before.z")]
+                rc, text = self.invoke("author-state", label, *args)
+                self.assertEqual((rc, json.loads(text)),
+                                 (2, {"status": "refused", "code": "author:census_stderr"}))
+                self.assertNotIn("1.987654321", text)
+
+    def test_author_suite_requires_every_census_stderr_and_after_head_receipt(self):
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            prefix = "freeze-" + label + "-35"
+            suffixes = [kind + "-" + stage + extension + ".stderr" for stage in ("before", "after")
+                        for kind, extension in (("status", ".z"), ("cache", ".txt"), ("index", ".z"))]
+            for suffix in [*suffixes, "git-after.txt"]:
+                with self.subTest(label=label, missing=suffix):
+                    self.author_receipts(prefix, label)
+                    (self.root / (prefix + "-" + suffix)).unlink()
+                    rc, output = self.invoke("author-suite", self.root, prefix, label)
+                    self.assertEqual(rc, 2, output)
+                    self.assertEqual(json.loads(output), {"status": "refused", "code": "extractor:unexpected"})
+
+    def test_notice_and_consent_reject_near_miss_keys_and_duplicate_keys(self):
+        inventory = self.write("l3-01-inventory.json", {"input_sha256": SHA})
+        certificate = self.write("step6-01-certificate-check.json", {"sha256": SHA})
+        notice = "DATE=2026-10-17\nMESSAGE_REF=operator message 17\nC0=" + "b" * 40 + "\n"
+        consent = (notice + "NOTICE_TEXT=Yu received the identifiers.\nCONSENT_TEXT=Proceed with this run.\n"
+                   "INPUT_SHA=" + SHA + "\nCERT_SHA=" + SHA + "\n")
+        for command, text, key, args in (("notice", notice, "C0", []),
+                                         ("consent", consent, "INPUT_SHA", [inventory, certificate])):
+            record = self.write("record.md", text.encode())
+            self.assertEqual(self.invoke(command, record, *args)[0], 0)
+            for altered in (" " + key, "\t" + key, key + " ", key.lower(), "#" + key, "\ufeff" + key,
+                            "\u0421" + key[1:], key[:-1] + "\u0410", key[:1] + "a" + key[1:],
+                            "_" + key, "9" + key):
+                record.write_text(text + altered + "=conflicting\n")
+                rc, out = self.invoke(command, record, *args)
+                self.assertEqual(rc, 2, out)
+                self.assertEqual(json.loads(out)["code"], "notice:record", altered)
+            for row in (key + "＝conflicting", "MESSAGE_REF=other message", "EXTRA=one\nEXTRA=two"):
+                record.write_text(text + row + "\n")
+                rc, out = self.invoke(command, record, *args)
+                self.assertEqual(rc, 2, out)
+                self.assertEqual(json.loads(out)["code"], "notice:record", row)
+            record.write_text(text + "\nEXTRA=free form text = and # are values\n")
+            self.assertEqual(self.invoke(command, record, *args)[0], 0)
+
+    def test_notice_and_consent_use_only_lf_record_boundaries(self):
+        inventory = self.write("l3-01-inventory.json", {"input_sha256": SHA})
+        certificate = self.write("step6-01-certificate-check.json", {"sha256": SHA})
+        notice = "DATE=2026-10-17\nMESSAGE_REF=operator message 17\nC0=" + "b" * 40 + "\n"
+        consent = (notice + "NOTICE_TEXT=Yu received the identifiers.\nCONSENT_TEXT=Proceed with this run.\n"
+                   "INPUT_SHA=" + SHA + "\nCERT_SHA=" + SHA + "\n")
+        for command, text, args in (("notice", notice, []), ("consent", consent, [inventory, certificate])):
+            record = self.write("record.md", text.encode())
+            self.assertEqual(self.invoke(command, record, *args)[0], 0)
+            for separator in "\r\v\f\x1c\x1d\x1e\x85\u2028\u2029":
+                for altered in (text.replace("\n", separator), text.replace("\n", separator + "\n"),
+                                text + "EXTRA=value" + separator + "tail\n", text.rstrip("\n") + separator):
+                    with self.subTest(command=command, separator=repr(separator)):
+                        record.write_bytes(altered.encode())
+                        rc, output = self.invoke(command, record, *args)
+                        self.assertEqual((rc, json.loads(output)["code"]), (2, "notice:record"))
+            record.write_bytes(text.encode() + b"EXTRA=value\xff\n")
+            rc, output = self.invoke(command, record, *args)
+            self.assertEqual(rc, 2, output)
+            self.assertEqual(json.loads(output), {"status": "refused", "code": "extractor:unexpected"})
+
+    def test_recovery_attempt_ordering_is_numeric_and_same_number_aliases_refuse(self):
+        for index, (current, other, expected) in enumerate((("10", "9", 0), ("9", "10", 2),
+                                                           ("01", "001", 2), ("001", "01", 2))):
+            directory = self.root / str(index)
+            directory.mkdir()
+            prefix = "step8-" + current
+            (directory / ("session-" + prefix + "-job.zsh")).write_bytes(b"# job\n")
+            (directory / (prefix + "-state-check.txt.exit")).write_bytes(b"0\n")
+            (directory / (prefix + "-run.json")).write_bytes(b"")
+            (directory / ("session-step8-" + other + "-job.zsh")).write_bytes(b"# other\n")
+            rc, text = self.invoke("recovery-attempt", directory, prefix)
+            self.assertEqual(rc, expected, (current, other, text))
+            if expected:
+                self.assertEqual(json.loads(text)["code"], "recovery:newer_attempt")
+        rc, text = self.invoke("recovery-attempt", self.root, "step8-01-extra")
+        self.assertEqual((rc, json.loads(text)["code"]), (2, "recovery:attempt_prefix"))
+        with mock.patch.object(lab.Path, "lstat", side_effect=PermissionError("market_1.987654321")):
+            rc, text = self.invoke("recovery-attempt", self.root, "step8-01")
+        self.assertEqual((rc, json.loads(text)["code"]), (2, "recovery:checkpoint_not_regular"))
+
+    def test_step8_bundle_publishes_all_operator_status_and_writer_exit_signals(self):
+        for index, status in enumerate(("uncertain", "unknown", "no_json")):
+            prefix = "step8-" + str(800 + index)
+            self.write(prefix + "-status.txt", (status + "\n").encode())
+            self.write(prefix + "-status.txt.exit", b"0\n")
+            self.write(prefix + "-after-writers.txt", b"market_1.987654321\n")
+            self.write(prefix + "-after-writers.txt.exit", b"0\n")
+            rc, text = self.invoke("publish-attempt", self.root, prefix, SHA, "")
+            self.assertEqual(rc, 0, text)
+            rows = [json.loads(row) for row in text.splitlines()]
+            named = {row["raw_report"]["lab_local_file"]: row for row in rows if "raw_report" in row}
+            for suffix in ("status.txt", "after-writers.txt", "after-writers.txt.exit"):
+                self.assertIn(prefix + "-" + suffix, named)
+            self.assertIn("code", named[prefix + "-status.txt"])
+            self.assertEqual(named[prefix + "-status.txt"]["code"], status)
+            self.assertEqual(named[prefix + "-after-writers.txt"]["classification"], "unclassified")
+            self.assertEqual(named[prefix + "-after-writers.txt.exit"]["exit"], 0)
+            self.assertNotIn("1.987654321", text)
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_lock_tool_refusal_is_not_mislabelled_as_note_mismatch(self):
+        env = self.shell_environment()
+        result = self.run_shell('''lab_tool() { print -r -- '{"code":"runbook:tool_hash_mismatch"}'; return 2; }
+lab_lock_match step9-01-runner-lock "$LAB_LOCK"
+''', env)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("recovery:lock_check_refused", result.stdout)
+        self.assertNotIn('"code":"recovery:lock_note_mismatch"', result.stdout)
+        self.assertEqual((self.root / "step9-01-runner-lock-check.txt.exit").read_text(), "2\n")
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_final_publication_refuses_capture_failure_even_after_a_both_gone_row(self):
+        source = '''lab_liveness() {
+  print -r -- 'job_pgrep_exit=1 writer_pgrep_exit=1'
+  print -r -- 'block_stdout=present'
+  if [[ -f "$LAB_EVIDENCE/observed" ]]; then return 2; fi
+  print -r -- yes > "$LAB_EVIDENCE/observed"
+}
+lab_publication step8-810 final
+'''
+        self.write("session-step8-810-job.zsh", b"# job\n")
+        result = self.run_shell(source)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("publication:liveness_refused", result.stdout)
+        self.assertNotIn("job_pending", result.stdout)
+        self.assertFalse((self.root / "step8-810-final-publication.jsonl").exists())
+        self.assertEqual((self.root / "step8-810-final-liveness.txt.exit").read_text(), "2\n")
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_observation_failure_with_both_gone_row_never_reaches_the_final_capture(self):
+        self.write("session-step8-811-job.zsh", b"# job\n")
+        result = self.run_shell('''lab_liveness() {
+  print -r -- 'job_pgrep_exit=1 writer_pgrep_exit=1'
+  print -r -- 'block_stdout=present'
+  return 2
+}
+lab_publication step8-811 final
+''')
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("publication:liveness_observation_refused", result.stdout)
+        self.assertNotIn("job_pending", result.stdout)
+        self.assertFalse((self.root / "step8-811-final-liveness.txt").exists())
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_liveness_queries_ps_for_both_distinct_job_and_writer_pids(self):
+        result = self.run_shell('''pgrep() {
+  if (( $# == 3 )); then [[ "$1" = -d, && "$2" = -f ]] || return 99; print -r -- 123
+  else [[ $# == 4 && "$1" = -d, && "$2" = -f && "$3" = -- ]] || return 99; print -r -- 456; fi
+}
+ps() {
+  [[ $# == 4 && "$1" = -o && "$2" = pid=,ppid=,stat=,etime=,comm= && "$3" = -p ]] || return 99
+  print -r -- "queried_pid=$4"
+}
+lab_liveness step8-812-job
+''')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("queried_pid=123\n", result.stdout)
+        self.assertIn("queried_pid=456\n", result.stdout)
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_removal_runs_fresh_recheck_before_either_lock_can_be_removed(self):
+        for index, (operation, fault) in enumerate((operation, fault)
+                for operation in ("ledger", "runner") for fault in ("writer", "liveness", "writer_live", "drift")):
+            suffix = str(820 + index)
+            env, runner, ledger, _ = self.recovery_fixture(suffix)
+            env.update(STEP9_LEDGER_PREFIX="step9-ledger-" + suffix, FAULT=fault)
+            self.write("session-" + env["STEP9_RECHECK_PREFIX"] + ".zsh", b"# reviewed\n")
+            if operation == "runner":
+                ledger.unlink()
+                env["RECOVERY_CENSUS_PREFIX"] = "step9-ledger-" + suffix + "-after"
+                baseline = self.run_shell('lab_lock_census "$RECOVERY_CENSUS_PREFIX"\n', env)
+                self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+            if fault == "drift":
+                (runner.parent / "trial-ledger-v1.jsonl").write_bytes(b"changed-length\n")
+            prefix = env["STEP9_" + operation.upper() + "_PREFIX"]
+            result = self.run_shell(self.RECOVERY_STUBS + "lab_" + operation + "_remove\n", env)
+            self.assertEqual(result.returncode, 2, (operation, fault, result.stdout, result.stderr))
+            if fault == "drift":
+                self.assertEqual((self.root / (prefix + "-recheck-census-compare.txt.exit")).read_text(), "1\n")
+            else:
+                self.assertIn({"writer": "recovery:writer_present", "liveness": "recovery:liveness_refused",
+                               "writer_live": "recovery:job_or_writer_live"}[fault], result.stdout)
+            self.assertTrue(runner.exists())
+            self.assertEqual(ledger.exists(), operation == "ledger")
+            for ending in ("rm-ledger-lock.txt", "rm-runner-lock.txt", "reconcile.json"):
+                self.assertFalse((self.root / (prefix + "-" + ending)).exists())
+            self.assertNotIn("checkpoint_saved=" + prefix + "\n", result.stdout)
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_ledger_verify_checks_other_run_note_before_reading_a_valid_ledger(self):
+        from betangel_research.betfair.backtest.trial_ledger import TrialLedger
+        env, _, lock, note = self.recovery_fixture(verified=False)
+        ledger_path = lock.with_suffix("")
+        ledger_path.unlink()
+        lock.unlink()
+        contract = json.loads((ROOT / "research/experiments/backtest-p0-bsp-v1.json").read_text())
+        contract.update(status="frozen", frozen_on="2026-10-17")
+        TrialLedger.open(lock.parent).append("started", trial_id="run-1.ltp_favourite", contract=contract,
+            variant="ltp_favourite", input_sha256=SHA, code_identity=CODE,
+            recorded_at="2026-10-17T00:00:00Z", summary={})
+        note["trial_id"] = "run-2.ltp_favourite"
+        lock.write_text(json.dumps(note))
+        child = subprocess.run([sys.executable, "-S", "-B", "-", str(ledger_path)], input=lab.LEDGER_CODE,
+                               cwd=ROOT, capture_output=True, text=True, check=False)
+        self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
+        self.assertEqual(json.loads(child.stdout)["status"], "verified")
+        result = self.run_shell('cd "$LAB_CHECKOUT" || exit 2\n' + self.RECOVERY_STUBS + "lab_ledger_verify\n", env)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("recovery:ledger_lock_note_mismatch", result.stdout)
+        self.assertFalse((self.root / "step9-verify-01-ledger-verify.json").exists())
+        self.assertNotIn("checkpoint_saved=step9-verify-01\n", result.stdout)
+
+    def native_pgrep_probe(self):
+        marker = "runbooknative" + os.urandom(12).hex()
+        child = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c",
+                                  "import signal; signal.pause()", marker], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        try:
+            result = subprocess.run(["/usr/bin/pgrep", "-d,", "-f", "--", marker],
+                                    capture_output=True, text=True, check=False)
+            if result.returncode not in (0, 1):
+                self.skipTest("native pgrep unavailable in this sandbox (exit " + str(result.returncode) + ")")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(str(child.pid), result.stdout.strip().split(","))
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+
+    @unittest.skipUnless(all(Path(p).exists() for p in ("/bin/zsh", "/usr/bin/pgrep", "/usr/bin/nohup",
+                                                     "/usr/bin/caffeinate")), "native macOS job tools unavailable")
+    def test_native_pgrep_drives_real_detach_and_liveness_before_and_after_receipt(self):
+        self.native_pgrep_probe()
+        env = self.shell_environment()
+        release = self.root / "release"
+        env["RELEASE"] = str(release)
+        checkpoint = self.write("session-step8-850-job.zsh", b'''lab_probe_job() {
+  print -r -- ready
+  local n=0
+  while [[ ! -f "$RELEASE" ]] && (( n < 500 )); do /bin/sleep 0.02; (( n++ )); done
+  [[ -f "$RELEASE" ]] || return 6
+  return 4
+}
+''')
+        result = self.run_shell('''lab_probe_job() { return 4; }
+lab_detach step8-850-job "$CHECKPOINT" lab_probe_job
+''', {**env, "CHECKPOINT": str(checkpoint)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = self.root / "step8-850-job.block.stdout"
+        receipt = self.root / "step8-850-job.block.exit"
+        try:
+            deadline = time.monotonic() + 5
+            while (not output.exists() or output.read_text() != "ready\n") and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(output.is_file())
+            self.assertEqual(output.read_text(), "ready\n")
+            def observe():
+                # Another agent's CLI can end between pgrep and ps; retry only that exact transient.
+                for attempt in range(4):
+                    result = self.run_shell("lab_liveness step8-850-job\n", env)
+                    if result.returncode != 2 or '"code":"liveness:ps_refused"' not in result.stdout:
+                        return result
+                    time.sleep(0.02)
+                return result
+            live = observe()
+            self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+            self.assertRegex(live.stdout, r"(?m)^job_pgrep_exit=0 writer_pgrep_exit=[01]$")
+            release.touch()
+            deadline = time.monotonic() + 5
+            while (not receipt.exists() or not receipt.read_bytes()) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(receipt.read_text(), "4\n")
+            while time.monotonic() < deadline:
+                live = observe()
+                if live.returncode == 0 and "job_pgrep_exit=1 " in live.stdout:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+            self.assertRegex(live.stdout, r"(?m)^job_pgrep_exit=1 writer_pgrep_exit=[01]$")
+        finally:
+            release.touch(exist_ok=True)
+            deadline = time.monotonic() + 5
+            while not receipt.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            # Only our bounded job is released; no machine-wide signal or quiet-machine assumption.
+
+    @unittest.skipUnless(Path("/usr/bin/pgrep").exists(), "native pgrep is not installed")
+    def test_native_writer_regexes_find_owned_sentinels_with_production_flags(self):
+        self.native_pgrep_probe()
+        patterns = re.findall(r"pgrep (-fl --|-d, -f --) '(-m betangel_research[^']+)'", SHELL.read_text())
+        self.assertEqual(len(patterns), 2)
+        marker = "runbookwriter" + os.urandom(12).hex()
+        for module in ("backtest", "readiness"):
+            child = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c",
+                                      "import signal; signal.pause()", "-m", marker + ".betfair." + module,
+                                      "synthetic"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                for flags, pattern in patterns:
+                    result = subprocess.run(["/usr/bin/pgrep", *flags.split(),
+                                             pattern.replace("betangel_research", marker)],
+                                            capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 0, (flags, pattern, result.stderr))
+                    pids = (result.stdout.strip().split(",") if flags.startswith("-d,") else
+                            [row.split()[0] for row in result.stdout.splitlines()])
+                    self.assertIn(str(child.pid), pids)
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
 
 
 if __name__ == "__main__":

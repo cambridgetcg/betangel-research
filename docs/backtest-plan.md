@@ -775,6 +775,10 @@ identity/ledger child 從 stdin 接 code，argv 唔含 package snippet。`.pid` 
 有 argv/writer 同 block.stdout 就繼續等；約 60 秒冇 block.stdout、orphan、ps/pgrep error 或證據矛盾都停交 review。
 Final publication 嘅 observation 拒絕報 `publication:liveness_observation_refused`；
 fresh capture 拒絕報 `publication:liveness_refused`。兩者都唔係 `publication:job_pending`，停交 review。
+Fresh capture 成功但 job/writer 重現報 `publication:liveness_changed`／2；final-liveness label 已用，
+停交 review，唔刪檔或換名補印。內層 `liveness:*` 原因只留 captured lab-local 檔；
+final gate 首次 observation 嘅原 output 會丟棄。Operator 只見上述外層 codes、
+`job:liveness_refused` 或 `recovery:liveness_refused`；refusal file 投影係 unclassified。
 兩類 pgrep exit 1 但冇 block.exit 係 missing completion，同 operator 核對 custom writer，唔當成功。
 `lab_no_writer` 唔覆蓋 non-CLI phases，所以 recovery 仲要 argv liveness。觀察後再 poll 排除剛完成。
 若 final-liveness 已佔用但仲未有 block.exit，會報 `publication:final_liveness_already_used`；
@@ -906,7 +910,10 @@ Plan/status 更新另做 C1 後 doc commit，lab 留 C1。Metric `ltp_to_bsp_mov
 已明確延後（§13，同 report_d0fd896b）；selector 保留，registration.note 已披露未實作；冇 movement results 聲稱。
 將來改要 review profile/source 同重新 certify（§13）。Basic commission 2%（Yu 2026-10-15，§8）。
 
-Suite 喺 LAB_CHECKOUT 以外嘅 author/temp checkout，用 absolute Python 3.15。三次分別 c0-draft/c0-flip-only/c1。
+每個 label 用新 clone：c0-draft／c0-flip-only 喺 reviewed C0，c1 喺 C1；位於 LAB_CHECKOUT 同 evidence 之外。
+停用 core.ignoreStat／sparse-checkout／assume-unchanged／skip-worktree；唔用會寫檔嘅 Finder／IDE、唔建 .venv，Python 只加 -B。
+Suite 用 absolute Python 3.15。三次分別 c0-draft/c0-flip-only/c1。
+c0-draft 同 c0-flip-only 必須喺 reviewed C0 HEAD 跑；唔接受 C0 上面另加嘅 commit。
 逐次跑；同一部 Mac 嘅 L2／6／8 job 未有 block.exit，或 killed job 未完成 reviewed publication-only，
 author／freeze suites 都唔准開始；亦唔同其他 no-writer steps 重疊。
 `FREEZE_TOOL` 用 reviewed C0 tooling；下面 raw logs/diff 留 author evidence，PR 只附 module 嘅固定 projection。
@@ -914,7 +921,8 @@ author／freeze suites 都唔准開始；亦唔同其他 no-writer steps 重疊�
 ```sh
 (
 set -C -u
-FREEZE_CHECKOUT='<absolute author 或 temporary checkout>'
+export GIT_NO_REPLACE_OBJECTS=1
+FREEZE_CHECKOUT='<absolute 為今次 label 新建嘅 clone>'
 FREEZE_PY='<absolute Python 3.15 executable>'
 FREEZE_EVIDENCE='<已存在、喺 checkout/state 以外嘅 absolute evidence directory>'
 FREEZE_C0='<reviewed C0 完整 40 hex>'
@@ -926,11 +934,44 @@ FREEZE_PREFIX='<全新 freeze-c0-draft-NN／freeze-c0-flip-only-NN／freeze-c1-N
 [[ "$FREEZE_PREFIX" =~ "^freeze-$FREEZE_LABEL-[0-9]+$" ]] || exit 2
 cd "$FREEZE_CHECKOUT" || exit 2
 [[ "$(pwd -P)" = "$FREEZE_CHECKOUT" ]] || exit 2
+[[ "$(git rev-parse --show-toplevel)" = "$FREEZE_CHECKOUT" ]] || exit 2
+[[ -z "${GIT_DIR-}${GIT_WORK_TREE-}${GIT_INDEX_FILE-}${GIT_COMMON_DIR-}\
+${GIT_OBJECT_DIRECTORY-}${GIT_ALTERNATE_OBJECT_DIRECTORIES-}" ]] || exit 2
+if [[ "$FREEZE_LABEL" != c1 ]]; then
+  [[ "$(git rev-parse --verify HEAD)" = "$FREEZE_C0" ]] || {
+    print -r -- '{"status":"refused","code":"author:c0_head_mismatch"}'; exit 2
+  }
+fi
 FREEZE_TOOL="$FREEZE_CHECKOUT/scripts/lab_runbook.py"
 [[ "$(git hash-object --no-filters "$FREEZE_TOOL")" = \
    "$(git rev-parse "${FREEZE_C0}:scripts/lab_runbook.py")" ]] || exit 2
 "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-interpreter > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-interpreter.json" || exit 2
 git rev-parse HEAD 'HEAD^{tree}' > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-git.txt" || exit 2
+git --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false \
+  -c core.trustctime=true -c core.checkStat=default \
+  status --porcelain=v1 -z --untracked-files=all --ignored \
+  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-before.z" \
+  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-before.z.stderr" || {
+    print -r -- '{"status":"refused","code":"author:census_failed"}'; exit 2
+  }
+git -c core.fsmonitor=false ls-files -v -z > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-before.z" \
+  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-before.z.stderr" || {
+    print -r -- '{"status":"refused","code":"author:census_failed"}'; exit 2
+  }
+/usr/bin/find "$FREEZE_CHECKOUT" -name __pycache__ -print \
+  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-before.txt" \
+  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-before.txt.stderr" || {
+    print -r -- '{"status":"refused","code":"author:census_failed"}'; exit 2
+  }
+"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-state "$FREEZE_LABEL" \
+  "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-before.z" "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-before.txt" \
+  "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-before.z" || exit 2
+if [[ "$FREEZE_LABEL" = c0-flip-only ]]; then
+  git show HEAD:research/experiments/backtest-p0-bsp-v1.json \
+    > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" || exit 2
+  "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" freeze-diff "$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" \
+    "$FREEZE_CHECKOUT/research/experiments/backtest-p0-bsp-v1.json" || exit 2
+fi
 if [[ "$FREEZE_LABEL" = c1 ]]; then
   git diff --name-only "$FREEZE_C0" HEAD > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-diff.txt" || exit 2
 else
@@ -940,6 +981,26 @@ BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 "$FREEZE_PY" -B -m u
   > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.log" 2>&1
 suite_rc=$?
 printf '%s\n' "$suite_rc" > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.exit" || exit 2
+git rev-parse HEAD 'HEAD^{tree}' > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-git-after.txt" || exit 2
+git --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false \
+  -c core.trustctime=true -c core.checkStat=default \
+  status --porcelain=v1 -z --untracked-files=all --ignored \
+  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-after.z" \
+  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-after.z.stderr" || {
+    print -r -- '{"status":"refused","code":"author:census_failed"}'; exit 2
+  }
+git -c core.fsmonitor=false ls-files -v -z > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-after.z" \
+  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-after.z.stderr" || {
+    print -r -- '{"status":"refused","code":"author:census_failed"}'; exit 2
+  }
+/usr/bin/find "$FREEZE_CHECKOUT" -name __pycache__ -print \
+  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-after.txt" \
+  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-after.txt.stderr" || {
+    print -r -- '{"status":"refused","code":"author:census_failed"}'; exit 2
+  }
+"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-state "$FREEZE_LABEL" \
+  "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-after.z" "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-after.txt" \
+  "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-after.z" || exit 2
 "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-suite "$FREEZE_EVIDENCE" "$FREEZE_PREFIX" "$FREEZE_LABEL" || exit 2
 (( suite_rc == 0 )) || exit 2
 typeset -p FREEZE_PREFIX FREEZE_LABEL FREEZE_CHECKOUT FREEZE_PY FREEZE_EVIDENCE FREEZE_C0 \
@@ -948,7 +1009,17 @@ typeset -p FREEZE_PREFIX FREEZE_LABEL FREEZE_CHECKOUT FREEZE_PY FREEZE_EVIDENCE 
 ```
 
 C1 diff 明確對 C0 HEAD；flip-only diff 要正好單一 contract path，空 diff 唔係 true；draft 嘅 diff_only_contract=null。
-PR 記 interpreter、commit/tree、tests/status/exit、diff count、generated log 名。其他 Python green 只係補充，
+Suite 前後都 capture NUL porcelain status（包括 untracked/ignored）、NUL ls-files 同 cache census。
+Status 停用 fsmonitor／untrackedCache，強制 trustctime=true／checkStat=default；ls-files 必須非空、每行 `H `。
+assume-unchanged／skip-worktree 等 flags 都拒絕。
+Draft/C1 status 必須空；flip-only 只准未 stage 嘅單一 contract 修改（` M`），並先通過 freeze-diff。
+Flip-only 比較 parsed settings，唔係 bytes 或 mode；c1 suite 同 5b 再檢查真實 C1 tree。
+Staged／其他 path／任何 __pycache__ 都拒絕。三類 census 嘅 stderr 留本地且必須空；
+command failure 報 author:census_failed，非空 stderr 報 author:census_stderr，兩者都停 review。
+Author-suite 再驗前後 state、cache／index／stderr 同 HEAD/tree；HEAD 移動報 author:head_changed。
+全部相符先公開固定 worktree_state；原 path lists 留本地。
+期間禁止其他 writer；前後相等唔證明中途冇修改再還原。
+PR 記 interpreter、commit/tree、tests/status/exit、worktree_state、diff count、generated log 名。其他 Python green 只係補充，
 唔冒認 3.15 proof。Suite failure 先修正/review；唔擴 C1 allowlist。
 
 #### 5a. Reviewed lab-state root creation
@@ -1084,7 +1155,10 @@ lab_publication "$STEP7_PREFIX" final || exit 2
 ```
 
 Gate 驗日期/reference、恰好一行非空且無 `<>` 嘅 NOTICE_TEXT/CONSENT_TEXT；模板本身必須拒絕。
-每個 identifier key 必須恰好一行，再用 grep -Fxq 對值；notice gates 同樣拒絕 duplicate/conflicting lines。
+Notice/consent 每個非空 row 必須係 ASCII 大寫 `KEY=value`（key 由字母開頭，只含 A–Z／0–9／_），
+所有 keys 唯一；空白前綴、大小寫／Unicode look-alike、comment 同非 ASCII equals 都拒絕。
+只用 LF 分行；CR 同其他 line separators 都拒絕，與 grep 嘅 row 邊界一致。
+每個 identifier key 必須恰好一行，再用 grep -Fxq 對值；notice gates 用同一 grammar。
 INPUT_SHA/CERT_SHA 必須各一行並匹配 L3 inventory 同 step6 certificate-check。
 Capture consent sha；唔公開原內容/hash。
 Identifier gate 唔代替人 review 同意內容，任何缺項停。成功 checkpoint 帶 RUN_ID 去 step 8。
@@ -1155,9 +1229,12 @@ lab_publication "$STEP9_PREFIX" final || exit 2
 Begin 再查 C1 preflight/identity、package writer 同 captured argv liveness；兩類 pgrep exit 1 先得。
 Begin/recheck 嘅 writer gate 拒絕報 `recovery:writer_present`；liveness capture 拒絕報
 `recovery:liveness_refused`，觀察有 job/writer 報 `recovery:job_or_writer_live`；全部停交 review。
+`recovery:writer_present` 亦涵蓋 query/capture 拒絕：writers.txt.exit=0 先係發現 writer；
+2/3 係 pgrep error，缺 receipt／其他 capture refusal 亦停 review，唔當成已證實有 writer。
 同 operator 確認冇 custom writer；orphan/unknown 唔移鎖。Capture census/stat/cat，lock note 要匹配 RUN_ID/code。
 `runner_lock_path_matches` 只比較 run.json path 同 LAB_LOCK，唔係 lock note gate。
 真正 note mismatch 會報 `recovery:lock_note_mismatch`；ledger 係 `recovery:ledger_lock_note_mismatch`。
+Tool/hash/capture 拒絕等未證實 note mismatch 嘅情況報 `recovery:lock_check_refused`，同樣停 review。
 原 begin／verify 停，冇 success checkpoint；captured lock-check 嘅 `lock_note_mismatch` 令 bundle rc 2。
 Publication-only 仍會出 bundle、publication_rc=2；可用上面 read-only reprint fence，唔補跑 begin。
 Uncertain path mismatch 或缺 runner_lock（null）令 projection rc 2；begin 報 `recovery:run_projection_refused`。

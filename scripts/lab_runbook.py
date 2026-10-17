@@ -59,7 +59,9 @@ binding:results binding:receipt binding:issuance binding:issuance_size binding:u
 binding:acceptance_mismatch binding:exit_mismatch binding:starts binding:trial_id binding:start_input
 binding:start_code_or_certificate binding:criteria_set binding:criterion_status binding:prefix_counts
 binding:prefix_records binding:prefix_reasons binding:unexercised_variants run:state_not_certifications_only
-runtime:check_failed consent:text consent:identifiers notice:record notice:date notice:reference""".split())
+runtime:check_failed author:worktree_state author:cache_present author:census_stderr author:census_failed
+author:head_changed author:c0_head_mismatch
+consent:text consent:identifiers notice:record notice:date notice:reference""".split())
 
 FIXED_PAIRS = {
     "index": {"index_would_change", "gate_changed", "partial_file_present", "write_failed", "unsafe_target"},
@@ -944,7 +946,11 @@ layout-check.txt parent-compare.txt fetch.txt tree.txt job-space.txt final-liven
 notice-check.txt token-L2_SPACE_BUDGET_KIB.txt
 bundle-check.txt after-git.txt bundle-sha.txt tool-sha.txt shell-sha.txt lab_runbook.py lab_runbook.zsh
 """.split()
-AUTHOR_SUFFIXES = "interpreter.json git.txt diff.txt suite.log suite.exit publication.json".split()
+AUTHOR_SUFFIXES = ("interpreter.json git.txt diff.txt suite.log suite.exit publication.json "
+                   "status-before.z status-after.z cache-before.txt cache-after.txt "
+                   "index-before.z index-after.z git-after.txt contract-head.json "
+                   "status-before.z.stderr status-after.z.stderr cache-before.txt.stderr cache-after.txt.stderr "
+                   "index-before.z.stderr index-after.z.stderr").split()
 MODES = {"raw", "exit", "liveness", "check", "census", "l2", "l3", "run", "recovery", "certificate",
          "certify", "binding", "identity", "inputs", "ledger", "checkpoint", "entries", "contract", "digest",
          "space", "layout"}
@@ -1224,11 +1230,37 @@ def command_author_interpreter(args):
     print(json.dumps({"executable": os.path.realpath(sys.executable), "version": sys.version}, sort_keys=True))
 
 
+def author_state(label, status_path, cache_path, index_path):
+    need(label in {"c0-draft", "c0-flip-only", "c1"})
+    for path in (status_path, cache_path, index_path):
+        need(path.with_name(path.name + ".stderr").read_bytes() == b"", "author:census_stderr")
+    expected = (b" M research/experiments/backtest-p0-bsp-v1.json\0"
+                if label == "c0-flip-only" else b"")
+    need(status_path.read_bytes() == expected, "author:worktree_state")
+    index = index_path.read_bytes()
+    need(bool(index) and index.endswith(b"\0") and all(row.startswith(b"H ") for row in index.split(b"\0")[:-1]),
+         "author:worktree_state")
+    need(cache_path.read_bytes() == b"", "author:cache_present")
+    return "contract_modified" if label == "c0-flip-only" else "clean"
+
+
+def command_author_state(args):
+    need(len(args) == 4)
+    state = author_state(args[0], Path(args[1]), Path(args[2]), Path(args[3]))
+    print(json.dumps({"status": "accepted", "worktree_state": state}, sort_keys=True))
+
+
 def command_author_suite(args):
     need(len(args) == 3)
     root, prefix, label = Path(args[0]), args[1], args[2]
     need(label in {"c0-draft", "c0-flip-only", "c1"})
     need(re.fullmatch(r"freeze-" + re.escape(label) + r"-[0-9]+", prefix))
+    states = [author_state(label, root / (prefix + "-status-" + stage + ".z"),
+                           root / (prefix + "-cache-" + stage + ".txt"),
+                           root / (prefix + "-index-" + stage + ".z")) for stage in ("before", "after")]
+    need(states[0] == states[1], "author:worktree_state")
+    need((root / (prefix + "-git.txt")).read_bytes() == (root / (prefix + "-git-after.txt")).read_bytes(),
+         "author:head_changed")
     log = root / (prefix + "-suite.log")
     text = log.read_text()
     totals = re.findall(r"^Ran ([0-9]+) tests? in ", text, re.M)
@@ -1245,6 +1277,7 @@ def command_author_suite(args):
         "interpreter": {"implementation": sys.implementation.name, "version": sys.version},
         "diff_only_contract": None if label == "c0-draft" else paths == [
             "research/experiments/backtest-p0-bsp-v1.json"],
+        "worktree_state": states[0],
         "diff_count": len(paths),
         "log": {"classification": "unclassified", "bytes": log.stat().st_size, "lab_local_file": log.name},
         "diff": {"classification": "unclassified", "bytes": diff.stat().st_size, "lab_local_file": diff.name},
@@ -1272,7 +1305,12 @@ def command_job_pattern(args):
 
 def notice_rows(path):
     need(stat.S_ISREG(path.lstat().st_mode), "notice:record")
-    rows = path.read_text().splitlines()
+    rows = path.read_bytes().decode("utf-8").split("\n")
+    need(not any(separator in row for row in rows for separator in "\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"),
+         "notice:record")
+    keys = [row.partition("=")[0] for row in rows if row]
+    need(all(re.fullmatch(r"[A-Z][A-Z0-9_]*=.*", row) is not None for row in rows if row)
+         and len(keys) == len(set(keys)), "notice:record")
     dates = [row[5:] for row in rows if row.startswith("DATE=")]
     references = [row[12:] for row in rows if row.startswith("MESSAGE_REF=")]
     need(len(dates) == len(references) == 1, "notice:record")
@@ -1343,7 +1381,8 @@ COMMANDS = {
     "contract-sha": (1, command_contract_sha), "cert-key": (1, command_cert_key),
     "reconciled": (1, command_reconciled), "notice": (1, command_notice), "consent": (3, command_consent),
     "job-pattern": (1, command_job_pattern), "recovery-attempt": (2, command_recovery_attempt),
-    "author-suite": (3, command_author_suite), "author-interpreter": (0, command_author_interpreter),
+    "author-state": (4, command_author_state), "author-suite": (3, command_author_suite),
+    "author-interpreter": (0, command_author_interpreter),
 }
 
 

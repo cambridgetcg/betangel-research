@@ -188,6 +188,8 @@ flowchart LR
 
 **Tasks。** Claude 一個人寫，Astra review；每個 task 要窄、要先 claim。Collector、feeds、deploy 同 root entrypoint 唔喺呢啲 task 範圍。
 
+下表係交付時嘅歷史記錄（截至 2026-10-16）；當時嘅 draft／synthetic-only 狀態已由 §10.1 嘅首次 run 記錄取代。
+
 | Task | 交付 |
 |---|---|
 | (a) plan 同 contract | 本文件；AGENTS.md scope bullet（coordinator 套用）；`betangel_research/betfair/backtest/` 嘅 `__init__.py`（只有 docstring）、`contract.py`（schema v1 validator 同 canonical sha256）同 `__main__.py`（`validate-contract`）；P0 draft contract [`research/experiments/backtest-p0-bsp-v1.json`](../research/experiments/backtest-p0-bsp-v1.json)；[`tests/test_betfair_backtest_contract.py`](../tests/test_betfair_backtest_contract.py) 同 [`tests/test_betfair_backtest_boundaries.py`](../tests/test_betfair_backtest_boundaries.py)。冇 loader、冇 simulator、冇會計 |
@@ -315,6 +317,8 @@ python3 -m betangel_research.betfair.backtest archive-audit --data-root ~/betang
 
 ## 7. P0 BSP model
 
+§7–9 沿用 freeze 前嘅設計描述；「P0 draft」係歷史稱呼，設定已喺 2026-10-17 隨 C1 凍結（§10.1）。
+
 P0 只模擬一種單：**fixed-stake BACK at BSP（MOC）**。
 
 | 假設 | 內容 |
@@ -419,11 +423,13 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
   - `financial_rule` 有類型，一定要對應 `registration.kind`。`registered_hypothesis` 用 `roi_threshold`：hypothesis、ROI 門檻、決定規則，凍結時全部要填。`engineering_check` 用 `not_applicable` 加一段 `reason`：明確寫明冇財務 hypothesis、冇 ROI 門檻、冇決定規則；唔係留 null，亦唔使為咗過凍結作一個出嚟。用錯類型報 `not_applicable_required_for_engineering_check` 或者 `roi_threshold_required_for_registered_hypothesis`。
   - 兩種都一定要有 `engineering_acceptance`：三條確定性嘅準則，名固定（`ENGINEERING_CRITERIA`），每條有定義。`known_accounting_answers`：§9 嘅 13 個人手 case，準確到一便士；void、dead heat 呢類 case 係 unresolved 而且 exposure 照計；run 開始之前查，唔過就拒絕。`prefix_invariance`：§5 嘅兩部分，(i) 真 input 上面嘅 primary-source prefix 一致，(ii) synthetic certification（截斷、刪走、改咗嘅未來）。`issuance_exposure_reconciliation`：每個 input record 決定一次，淨係 eligible market 有行，每行屬於自己嘅決定（market、plan、axis、anchor、決定時間同重新計嘅 decision ID）；啲行係咪就係 `cohort.runner_rule` 畀嘅嗰啲、有冇行由一個決定度剔走，呢條準則都唔查（行由 `cohort.py` 出，runner 喺結算之後先由啲決定寫 ledger），不過一個 issued 嘅行剔走咗而佢嘅注仲喺交畀會計或者結算咗嘅注入面，下面嘅注對數就會 fail；每行每個 variant 只有一個結果（`issued`、`not_selected`、`abstained` 連原因、`unsupported` 連缺咗嘅 `capabilities.decision` input 或者讀唔到嘅 view（`decision_view_unreadable`）），按結果同原因數加埋等於行數；讀返落 disk 嘅 ledger 要逐個 byte 等於決定嘅 canonical ledger；issued 嘅行、交畀會計嘅注同結算咗嘅注要一樣；issued = resolved + unresolved；issued stake = `S_R + S_U`（§8）。`rule` 係固定 token `all_criteria_must_hold_outcome_metrics_not_judged`（`ENGINEERING_RULES`；寫其他嘢，包括自由文字，報 `not_allowed`）：任何一條 failed，成個 acceptance 就 failed；冇 failed 但有一條 incomplete（或者準則多咗、少咗、status 唔認得），就係 incomplete；三條都 passed 先係 passed（`engineering.engineering_status`）。觀察到嘅 ROI、net、drawdown 只係報，唔可以令 run 過或者唔過。準則嘅定義係自由文字，validator 只查 placeholder 同長度（同 feature 定義一樣），入面有冇偷偷加結果條件，要靠凍結時嘅 review。
   - Operational 嘅選擇（delay、成本、cohort、variant、seed、trial 上限同 stopping rule）兩種都一定要凍結時填好。冇任何繞過 frozen gate 嘅路：跑之前同寫 trial ledger 之前，照樣要 `valid_frozen`（`--require-frozen`）。
-- **P0 而家係 `draft`**，`registration.kind` 係 `engineering_check`：佢只評估 engineering 年；`financial_rule` 係
-  `not_applicable`，因為呢次跑嘅任何結果都唔可以支持或者否定一個 edge；`engineering_acceptance` 已經寫好。c2b3b4 填咗 operational 選擇：`delay_s` 0（c2
-  D3）、`max_trials` 4（c2 D4）、`commission_rate` 0.02（§8），cohort、原因同準則嘅文字跟足代碼（§5、§6、下面）；而家淨係 `frozen_on` 係 null。Contract
-  test 證明一個淨係改 `status` 做 `frozen` 同填 `frozen_on` 嘅 flip-only freeze 係 `valid_frozen`，而且 `certificate.profile_of` 同
-  `P0_PROFILE` 嘅 canonical bytes 一樣；但個 test 喺記憶體入面砌，冇凍結 repo 個檔。凍結係一個獨立、要 review 嘅改動，Yu 事先知（§10.1）；trial ledger 同 run
+- **P0 已喺 2026-10-17 frozen 並 engineering pass（§10.1）**；`registration.kind` 係 `engineering_check`，
+  只評估 engineering 年；`financial_rule` 係 `not_applicable`，結果唔支持亦唔否定 edge。
+  c2b3b4 填咗 operational 選擇：`delay_s` 0（c2 D3）、`max_trials` 4（c2 D4）、`commission_rate` 0.02（§8），
+  cohort、原因同準則嘅文字跟足代碼（§5、§6、下面）。2026-10-16 時只有 `frozen_on` 係 null；C1 已填好。
+  Contract test 喺記憶體砌 flip-only freeze，證明只改 `status`／`frozen_on` 可得 `valid_frozen`，
+  而且 `certificate.profile_of` 同 `P0_PROFILE` 嘅 canonical bytes 一樣；test 本身唔會凍結 repo 個檔。
+  Repo 凍結係獨立、review 過嘅改動，Yu 事先知（§10.1）；trial ledger 同 run
   用 frozen contract 嘅 `contract_sha256`（canonical JSON 嘅 sha256，`validate-contract` 印嘅嗰個，唔係檔案 bytes 嘅 sha256），唔係 draft
   嘅。P0 凍結咗先跑，唔會以 draft 身份跑：runner 拒絕唔係 `valid_frozen` 嘅 contract（`contract:not_valid_frozen`），亦拒絕 certified profile
   以外嘅 contract（`contract:not_supported:not_the_certified_profile`）。Astra 嘅 reproduction（draft 加 `status`
@@ -483,8 +489,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
   另外保存 clean commit/tree。Input descriptor 同 runner 一樣，包括每個 archive 嘅 manifest/index/markets
   hashes、record count、`manifest_gate_current` 同整份 `input_sha256`。Non-gate outcome 值唔影響 counts/codes
   或輸出內容；改 bytes 會改 hashes，gate months 同 provenance 本身亦可以改 refusal，唔聲稱佢哋 invariant。
-  Readiness R1 已 review/merge（PR #20，main 1f35646），只做 synthetic verification；真 L3 要先完成
-  工具最後改動嘅 review/merge、通知 Yu，再按 §10.1 做，唔係繞過 frozen gate。
+  Readiness R1 已 review/merge（PR #20，main 1f35646）；交付時只做 synthetic verification。
+  2026-10-17 已喺工具 review/merge 同通知 Yu 之後完成 L3（§10.1），其後先 freeze，冇繞過 frozen gate。
 - **Trial ledger**（`trial_ledger.py`）：`<lab-state-root>/contracts/<contract sha256>/trial-ledger-v1.jsonl`，一個 contract 一條 hash chain，記低每個 trial：started、failed、aborted、completed，每個 entry 有 contract sha256 同 seeds、variant、`input_sha256`、`training_cutoff`（null）、exposure record（§3 嘅兩個 hash 同 known minimum）、code identity，同一個 summary（最多 8,192 bytes、4 層、冇 float）。失敗同中途放棄嘅都計（[edge framework](edge-framework.md)：揀嚟揀去本身就係 overfitting 嘅來源）；budget 數嘅係呢條 ledger 入面本 contract 嘅 started entry。每個 run 寫 `<lab-state-root>/runs/<contract sha256>/<run_id>/`：`issuance-ledger.jsonl`、`results.json` 同 `receipt.json`（兩個都係 schema 2）。
 - **Holdout gate**：schema v1 嘅 validator 一律拒絕評估 holdout（`evaluate_split` 寫 `holdout` 報 `sealed`，frozen 都一樣）。Archive、index、replay 同 runner 都讀資料：holdout 靠 ingest 嘅 month gate（唔儲存）同 audit 同 runner 嘅 `stale_gate`（index 入面有而家 gate 拒絕嘅月份，成個命令拒絕）擋住。幾時、點樣解封要新 schema，同 Yu、Astra 決定（§13）。呢個係 workflow control，唔係防到直接打開 raw 檔嘅保安封條；2026-01..08 而家靠唔下載嚟封，2026-09 已暴露、唔係 holdout（§3）。
 - **P0 run 實際讀到乜（c2b3b 決定 10）**：決定 population 係成個交畀 run 嘅 input 嘅 anchor-by-t population，research split 嘅 record 都喺入面：佢哋係 `excluded`（`month_not_evaluated`），但仍然係 prefix 比較嘅 candidate，唔會因為唔 eligible 或者比較唔成功而剔走。機械上，呢個**唔係**淨係讀 `t` 之前嘅 bytes：第一輪成行 parse index 嘅每個 record（連 `evaluator_only_outcome` 嘅 `marketTime` 月份都讀，用嚟查 gate）；每個 candidate 嘅 primary member 由頭讀，解壓咗嘅行留到 `t` 嗰批完，再 parse `t` 之後第一個 message 嚟搵 boundary。`bz2.BZ2File` 會預讀：搵到 boundary 嗰陣，boundary 嗰行之後最多一個 read buffer（`io.DEFAULT_BUFFER_SIZE`；呢度嘅 Python 3.14.6 係 128 KiB，lab 嘅 interpreter 未量）已經解壓咗、留喺記憶體，libbz2 亦可能喺內部 decode 埋當前 block；呢啲 bytes 冇 parse、唔入 prefix、冇報。之後其餘嘅壓縮 bytes 淨係讀晒、hash 晒（冇解壓、冇 parse）。Eligible market 要 view 嘅話，replay 亦係咁讀 primary member（`replay._fold`）。event 檔嘅 prefix 可以有其他已經 settle 咗嘅 market 嘅結果。重新決定用嘅資料限於 `t`；research split 冇做任何策略或者結算評估（outcome 同結算淨係用喺有出單嘅 eligible market），亦冇報任何價錢或者結果，淨係報計數同 digest（失敗嘅 record 最多列 100 個 (plan, market id, stage, reason)，缺咗嘅 record 最多列 100 個 (plan, market id)）。Run 記低 input 身份（input descriptor 同 `input_sha256`），報告要連呢個 exposure 一齊寫；**唔可以因為人淨係見過計數，就話呢啲 research 資料未掂過**。Input 嘅範圍：`run-backtest` 讀 `--data-root` 底下 `manifests/` 嘅每一個 archive（未 index 嘅就拒絕，`input:<sha>:not_indexed`），全部入 input descriptor 同 `input_sha256`；除咗 `no_view` 同 `anchor_not_known_by_decision`，每個 record 嘅 primary member 都會讀，連 tier 唔啱（`plan_not_contract_tier`）同 research split 嘅 excluded record 都係。所以 PRO、ADVANCED 或者任何唔應該讀嘅 archive 要放喺另一個 data root。畀 Yu 知嘅 exposure 同 readiness inventory 都要寫明真 run 會用嘅準確 input descriptor（archive 清單，manifest、index 同 markets 嘅 sha256，`input_sha256`）；之後加或者減任何 archive、重新 index，或者 month gate 改咗，都係另一個 input，要重新話畀 Yu 知、再 review。Run 做完之後，要對返 `results.json` 同 trial ledger 入面嘅 `input_sha256` 係咪就係嗰個。Lab 2026-10-14 報告（呢度冇核實）：佢 ingest 咗一個 archive，52,561 個 market，12,208 個喺 2015–16、40,353 個喺 2023–25；如果真係咁，一個 P0 run 會機械式讀大約 4 萬個 research split 嘅 primary member，而 index 建立嗰陣已經成個 member parse 過（連結果）。真 run 之前要話畀 Yu 知。
@@ -495,8 +501,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
   L2 會讀完整 admitted members（連 settlement）、寫同刪 outcome-bearing `.spill`／`.partial`，唔係 read-only。
   Air 報告 lab 喺 2026-10-14 約 19:04–19:12Z、da44d71 用 CLI defaults 建立 index；呢度未核實。
   之後 `market_index.py` 喺 0c8a8e5（c2b3a）改過，抽出 `fold_member_stream`；Claude 嘅 synthetic
-  differential（40 個 seed）報告 0 mismatch，但真資料上 byte 一樣未驗，所以 L2 仍可能報
-  `index_would_change`，照 §10.1 L2 停、交 Astra 同 Yu review，唔 re-index。
+  differential（40 個 seed）報告 0 mismatch；2026-10-17 L2 已核對真 input，結果 unchanged（§10.1）。
+  原 gate 保留：遇到 `index_would_change` 就停、交 Astra 同 Yu review，唔 re-index。
   前置檢查、磁碟空間同拒絕之後嘅處理見 §10.1 L2；唔可以靜靜重建或換 root 重試。
 - **Walk-forward** 要真係每一步只用過去資料 fit、要 purge，唔係將一個用晒成段時間揀出嚟嘅 model 按日期切開再計分。Schema v1 嘅 `fitting.kind` 只准 `none`，寫 `walk_forward` 報 `deferred`；聲明 `none` 但其實喺結果上 fit，validator 查唔到，要靠 review。
 
@@ -1335,7 +1341,7 @@ completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；r
 - **Astra 2026-10-14 re-review 之後嘅更正，已接受**：佢喺 9716526 要求嘅 R1–R4 同 N1–N3（decision／outcome capability 分開（`capabilities.decision`／`capabilities.outcome`）、holdout 收窄同 `EXPOSED_MONTHS`／`NOT_PROSPECTIVE_DATES`、`financial_rule` 同 `engineering_acceptance`、boundary test 嘅 shadowing 規則、拒絕 year 0000、§8 嘅 metrics 定義），同之後 internal review 嘅收緊（`engineering_acceptance.rule` 改做固定 token、issuance ledger 每行嘅結果加咗 `not_selected`、已暴露嘅月份喺任何 split 都報、`EXPOSED_MONTHS`／`NOT_PROSPECTIVE_DATES` 加咗 `known_minimum`、boundary test 拒絕搜尋位置入面所有標準庫名（唔分大細楷）同並存嘅 `X.py`／`X/__init__.py`）：Astra 喺 5cb102d 一齊接受，PR #6 合併（main 1daee5b）。
 - **Task (b) 改咗 boundary test 三處，已接受**：`BACKTEST_STDLIB` 加 `tarfile`（註解寫明係 package-wide，由 `tests/test_betfair_backtest_archive.py` 釘死只有 `archive.py` import、只開 `"r|"`）；`__main__` 嘅 import 集合加咗 `archive`、`coverage_audit`、`market_index`（佢哋喺 function 入面 import）；R4 嘅 runtime 證明改成喺當前 interpreter 揀 `pathlib` 內部 import 嘅 module（`test_stdlib_internal_import_really_loads_a_shadow`；3.15 嘅 `pathlib` 唔再 import `fnmatch`；揀唔到 module 就 skip）。`tarfile` 係 review 過嘅 allowlist 擴闊（見上面括號，由 archive test 收窄到淨係 `archive.py`、淨係 `"r|"`）；另外兩處冇放寬任何規則。Astra 喺 794c456 連 task (b) 一齊接受，PR #7 合併（main da44d71）。
 
-**已決定（task (c)，2026-10-14 至 15）：**
+**歷史決定（task (c)，2026-10-14 至 15；下述 draft／未凍結指當時，2026-10-17 狀態見 §10.1）：**
 
 - **P0 嘅 operational 選擇**（c2 D3、D4；c2b3b4 寫入 draft，未凍結）：`delay_s` 0，即時模擬接受假設，唔係量度到嘅延遲；`max_trials` 4，四個 start、最多兩次兩個 variant 都預留齊嘅 run（invocation 可以多過兩次，§10）；pass 咗就停（§10）。
 - **`view_ends`、空 view、讀唔完嘅 member、`primary_source_refused`、content gate**（c2 D2、D5、D10）：eligible market 嘅 view 喺 `t` 或之前停咗就得一行 `selection_id` null，`member_unreadable_from_pt` 係 unsupported `decision_view_unreadable`，其他係 abstained `market_not_open_pre_off`；空 view 係 `no_view` 診斷，anchor 遲過 `t` 係 `anchor_not_known_by_decision` 診斷，兩樣都喺 population 以外、照報；source 層面嘅拒絕（ingest 拒絕嘅 member，包括 content gate、冇 index 到嘅檔、`refused_markets` 包括 `primary_source_refused`）喺 `population.source_refusals` 分三層報；`read_complete` false 嘅 market 結算一律 unresolved（§4.1、§6）。
@@ -1351,6 +1357,9 @@ completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；r
   呢個係 pre-freeze disposition，唔係 freeze，亦冇聲稱有 movement results；日後刪 selector 或實作要
   另行 review profile/source 改動同新 certification。
 
+- **首個真資料 run 嘅前置步驟已完成（2026-10-17）**：L1/L2/L3、freeze、5a/5b、lab certification、
+  第 7 步通知及 Yu 同意、首次 run 已按 §10.1 完成並 engineering pass；按 stop rule 已停止。
+
 **未決定：**
 
 - **BSP CSV 授權**（§2.5）。
@@ -1361,12 +1370,6 @@ completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；r
 - **長啲嘅 bootstrap block**：一份 contract 只揀一個 block（P0 係 `race_day`），點樣同時報週或月 block 未定（§8）。
 - **P1–P4 嘅內容同次序**：暫定（§4）。
 - **真 TAR 路徑日期同 event id 嘅意思未核實**（§2.8）：Yu 喺 portal 下載嘅一個真 BASIC GB/IE WIN M 檔 TAR，佢嘅 header listing 顯示 `archive.py` 假設嘅路徑 layout（`<PLAN>/<YYYY>/<Mon>/<D>/<eventId>/<檔>.bz2`）同容器格式：外層冇壓縮、每個 member 一個 pax header、冇 global header、以兩個 zero block 結尾。嗰次淨係列 header 同檔名，冇解壓、冇讀內容（lab 報告之後用 CLI ingest 同 index 咗一個 archive，呢度未核實，§10）。之後嘅真 TAR 唔係咁，就會成個被拒：所有 member 都係 `no_parseable_month`（`archive:nothing_kept`）、`not_a_readable_tar`、`archive:not_ended_by_zero_blocks` 或者 `archive:pax_global_header`；之後要睇過、開新 manifest schema，唔可以放寬去估。路徑日期同 `marketTime` 嘅關係（`date_mismatch`、`event_id_mismatch`）仲要讀真內容先知。
-- **跑真資料之前嘅步驟**（§10.1）：readiness R1（`readiness.py`）已 review/merge（PR #20，main 1f35646），
-  工具最後改動亦要先 review/merge，再通知 Yu、依次做 L1 metadata census、L2 stock index equality check、
-  L3 draft inventory；三步都未做，每步先發佈同 review evidence。之後 reviewed freeze、reviewed root creation
-  （只限 L1 記錄 absent，第 5a 步）、C0→C1 clean checkout 轉換（第 5b 步）、lab certification、
-  第 7 步 exposure／input／Y1／Y3／budget／commission 通知同 Yu 同意、第一個真 run 仍然分開排。
-  Metric deferral 已記錄，唔代表 freeze 或真資料工作已做。
 - **Index 建立冇綁 limit**（c2b3b 決定 13）：index head 冇記用咗乜 limit；manifest 同 certificate 嘅 limit 檢查唔證明 index 點建。要綁住就另外提議一個窄嘅 index binding。
 - **載入嘅代碼冇證明**（c2b3b 決定 5、Q4）：certificate 只係核對 disk 上嘅 source 同 interpreter；靠專用 checkout、fresh CLI（`-B`）同 §10.1 第 1 步嘅環境紀律（certify 同 run 用同一個 shell 環境；`PYTHONPYCACHEPREFIX`、`PYTHONPATH`、`PYTHONOPTIMIZE` 唔設；冇 user site、`.pth` 或者 `sitecustomize` 加落嚟）。`run-backtest` 冇 import 時嘅 snapshot（Q4），`certify-engine` 有（`source:changed_since_import`、載入 module 嘅檢查），但兩樣都唔證明實際載入嘅 bytecode。
 - **Pre-certification hardening（Q5、Q10；即 hygiene，fc38998，已喺 main）**：receipt、recovery intent、completed results、issuance evidence 同
@@ -1374,7 +1377,7 @@ completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；r
   都係 `not_a_regular_file`，inspection error 係 `uninspectable`。只有 `FileNotFoundError` 代表 absent；缺必要 evidence
   仍係 `missing_path`，regular file 讀唔到仍係 `unreadable`。Q10 嘅所有已知 run certificate 預檢見 §10.1 第 9 步；
   缺 certificate field 同 null 仍可代表 unknown，唔會捏造 certificate。呢啲係當刻檢查，唔防忽略 lock 嘅 writer 喺檢查後換檔；
-  亦唔令 reconcile 變 atomic。呢次 source 改動會移動 descriptor 同 certificate key，要喺最終 source 上重新 certify。
+  亦唔令 reconcile 變 atomic。嗰次 source 改動已令 descriptor 同 key 變；最終 source 嘅 certification 已完成（§10.1）。
 - **c2b3b3 嘅 mutation 證據唔係全殺**：c2b3b3（`runner.py` 嘅 certificate binding 同 stop rule）嘅 mutation 測試有六個聲稱等價嘅 survivor，加刻意冇釘死嘅 S6；排序名嘅 mutant check 受 hash 次序影響（Astra 對 c2b3b3 嘅 review：nonblocking 嘅測試強度限制）。呢個係嗰個 diff 嘅測試強度，唔係 certificate 證明唔到嘅嘢（§9）。
 
 ## 14. Sources with access dates

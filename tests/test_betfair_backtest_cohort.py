@@ -72,7 +72,7 @@ class RulesTests(CohortCase):
         self.assertEqual(rules.contract_sha256, contract_sha256(self.contract))
 
     def test_refusals(self):
-        draft = json.loads(fx.DRAFT.read_text(encoding="utf-8"))
+        draft = fx.draft_contract()
         draft["decision_timing"]["delay_s"] = None
         changed = fx.frozen_contract()
         changed["variants"][1]["uses_features"] = ["ltp_at_decision"]

@@ -20,7 +20,7 @@ Prepared **2026-10-14**；**2026-10-15** 按 task (c) 已合併嘅代碼更新�
 | Archive manifest、index、capability audit | task (b) 交付（§4.1；TAR 格式事實喺 §2.8）；Astra review 咗三輪，喺 794c456 接受，PR #7 合併（main da44d71） |
 | BSP runner、會計、metrics、trial ledger、report、engine certification | task (c) 交付咗 c1、c2a、c2b1、c2b2、c2b3a、c2b3b1、c2b3b2a、c2b3b2b、c2b3b3（§4）；c2b3b4 係 P0 draft 嘅文字、contract test 同本文件（加埋三個 test 檔入面跟 draft 新數值改嘅幾行：淨係 test，certificate key 唔郁）。全部只用 synthetic 資料：**冇真資料 run、冇結果、冇 engineering pass**，P0 contract 仲係 `draft`（§10） |
 | Readiness R1（`readiness.py`；c2b3b 決定 14） | `betangel_research/betfair/readiness.py` 已交付，PR #20 已合併（main 1f35646）；只做 synthetic verification，未喺 lab 或真資料上跑。工具喺 certificate source descriptor 以外，唔授權 freeze、certification 或 run（§10） |
-| 跑真資料之前 | 最終工具 review/merge 後，先通知 Yu，再依次做 L1 lab-state metadata census → L2 stock index equality check → L3 draft-only index inventory → reviewed freeze → reviewed lab-state root creation（只限 L1 記錄 absent，§10.1 第 5a 步）→ lab 嘅 `certify-engine` → 第一次真 run。L1、L2、L3 都未做；L2 會讀完整 admitted members（連 settlement）、寫同刪 temporaries，唔係 read-only。每步分開排、各自 review evidence，Yu 事先知（§10.1）；冇擴大 Yu 已經畀出嘅授權 |
+| 跑真資料之前 | 全部未開始；C0 嘅 L1/L2/L3 → freeze/5a/5b → C1 certification → 第 7 步通知及 Yu 同意 → 真 run（§10.1） |
 | LIMIT 單、flumine 對照、付費資料、racing data、prospective | P1–P4，暫定，未批（§4） |
 
 ## 2. Data plan
@@ -501,121 +501,714 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 
 ### 10.1 Runbook: from the draft to the first real run (not started)
 
-下面嘅 lab 步驟都未做：L1、L2、L3、freeze、root creation、lab `certify-engine` 同真 run 都未開始。Readiness R1（`readiness.py`）已 review/merge，驗證只用 synthetic 資料。每步分開排、各自 review，Yu 事先知；中間任何狀態都唔可以跑真 run（c2b3b 決定 1）。Code 同文字 review 冇開始任何 lab 工作，亦冇擴大 Yu 已經畀出嘅授權。
+L1、L2、L3、freeze、root creation、lab certification、第 7 步通知同 Yu 同意、真 run 全部未開始。
+Readiness R1 已 review/merge，驗證只用 synthetic 資料。每步獨立 review，Yu 事先知；呢份 code/doc review
+唔係 lab 執行許可，亦冇擴大既有授權。所有 fences 用 **`/bin/zsh -f`**，column 0 可直接複製。
 
-1. **Checkout 同 interpreter（Q4、Y2、Y3、c2b3b 決定 5）。** 用一個專用、冇人掂嘅 checkout，喺最後嘅 merge commit：certify 同 run 期間冇人瀏覽、改檔、`git pull`、跑 update script 或者 suite。Source descriptor 會拒絕：backtest package 入面嘅 `.DS_Store`、editor swap 檔或者任何唔係 `.py` 嘅嘢、`__pycache__` 以外嘅子目錄、symlink、上層 `__init__.py` 或者 `temporal.py` 旁邊會蓋過佢哋嘅嘢，同 checkout 根目錄任何 importer 可以當標準庫 module 載入嘅 entry（名唔分大細楷，第一個 `.` 之前係標準庫 module 名，而且係名冇 `.` 嘅目錄，或者第一個 `.` 之後係 `py`、`pyc`，或者以 `so`、`pyd` 結尾：例如一個 `venv/` 目錄會報 `source:venv:shadows_stdlib`；`.venv`，或者一個冇副檔名、叫 `json` 嘅普通檔，冇問題）。Run 嗰陣出現呢啲，finalise 就 fail，兩個 start 照計。每次都開一個新嘅 CLI process，用 `python3 -B`（`-B` 淨係唔寫新嘅 `.pyc`，已有嘅 `__pycache__` 照讀，所以由一個冇 `__pycache__` 嘅 checkout 開始）：certificate 假設載入嘅代碼就係 disk 上嘅 source。`certify-engine` 同 `run-backtest` 喺同一個 shell 環境跑，`PYTHONPYCACHEPREFIX`、`PYTHONPATH` 同 `PYTHONOPTIMIZE` 都唔設（例如 `env | grep '^PYTHON'` 最多淨係見到 `PYTHONDONTWRITEBYTECODE`），亦冇 user site、`.pth` 或者 `sitecustomize` 加落嚟嘅嘢：`-B` 唔會阻止 Python 讀 `PYTHONPYCACHEPREFIX` 底下已有嘅 cache，所以淨係冇 `__pycache__` 嘅 checkout 唔夠。Source descriptor 一樣都唔查呢啲路：`certificate.py` 嘅 docstring 列明佢哋喺 descriptor 以外，屬 c2b3b 決定 5 嘅假設；optimize flag 唔同（`-O`、`PYTHONOPTIMIZE`）淨係令 key 唔同，嗰個 key 冇 certificate 就拒絕（`certification:missing`）。`run-backtest` 冇 import 時嘅 snapshot（Q4）；`certify-engine` 有：import 時記低 source descriptor，之後變咗就拒絕（`source:changed_since_import`），亦查載入咗嘅 module 係咪來自 descriptor 列出嘅檔；兩樣都唔證明實際載入嘅 bytecode、native library 或者標準庫（c2b3b 決定 5），所以呢個 checkout 嘅紀律係保證嘅一部分。Interpreter 就係 lab 要跑嘅嗰個（Air 嘅 note A2 話係 `/opt/homebrew/bin/python3`，而家 3.15.0；報告，未核實）：佢嘅 implementation、version、`sys.version`、cache tag、platform、`-O` 等都入 key，所以真 run 做完之前唔好換；換咗就要重新 certify。
-2. **L1：Lab-state metadata census（Q6、c2 D12、c2b3b 決定 11）。** Root 定為 lab account 嘅
-   `~/betangel-data/lab-state`；記低喺 lab resolve 出嚟嘅 absolute path，唔借 Air 嘅 home path。
-   先核對佢喺 repo／所有 Git worktree／denied live-state trees 以外，同 `~/betangel-data/historic`
-   唔同而且互不包含；一個 campaign 始終用同一個 root。L1 只列 directory metadata，唔開內容、唔建立 root。
-   先列 proposed root，同 `~/betangel-data` 底下有冇 `contracts/`、`runs/`、`certifications/`。
-   只有實際 not-found 先叫 absent；empty directory 係 present-and-empty，permission、symlink、non-directory
-   或 inspection error 都唔可以當 absent。存在內容就停，最多做有明確 entry/depth 上限、唔 follow links 嘅
-   names/types/sizes listing；超限亦停，唔用無界 `ls -laR`。另外由 lab／Yu 確認有冇用過其他 root：
-   當刻 proposed root 冇嘢，證明唔到其他 root 冇 history。發現 state 就另行 review read-only census，
-   以每份原 contract 嘅 variants 查 `_History`、`trial_ledger.verify` 同 `_stop_evidence`，做前後 snapshot，
-   只交 codes/counts；唔假設全部係 P0。`_stop_evidence` 會 parse results 嘅 acceptance，但唔報 outcome metrics。
-   L1 唔可以 invoke run、reconcile 或 certify。保留舊 history；唔 migration、唔退 trial、唔換 root 避開。
-   L1 output 先發佈同 review，先決定可唔可以去 L2。
-3. **L2：驗現有 index 嘅 content equality（c2b3b 決定 13）。** Readiness R1（`readiness.py`；PR #20）同
-   precert hardening（即 hygiene；fc38998，已喺 main；§13）已 review/merge；工具最後改動亦要先 review/merge，
-   用第 1 步嘅 final source/interpreter，冇其他 backtest process／concurrent writer；PRO TAR 留喺 `incoming/`
-   未 ingest。Prechecks：`manifests/` 正好得預期 BASIC sha；head 同 markets 已存在而且係 regular files，
-   parents 已 guard、冇 symlink，冇 `.spill`／`.partial`。任何檔缺咗就停，唔係授權 stock command 建新 index。
-   先記 hashes、persistent entry names/types/sizes 同 free space，為 spill/partial 訂明確 temporary-space budget；
-   markets 檔兩倍只係 heuristic，唔係 disk 上限。Yu 事先知道 L2 會 parse 每個 admitted member 全部內容，
-   包括 settlement，亦會喺 index 目錄寫同刪 outcome-bearing temporaries。然後先跑：
+操作程式係 [lab_runbook.zsh](../scripts/lab_runbook.zsh)，所有 extractors、registry 同 publication
+projections 係 stdlib-only [lab_runbook.py](../scripts/lab_runbook.py)。Repo tests 覆蓋固定 cases，
+包括 producer shapes、refusal branches 同 synthetic shell gates；唔代表所有可能輸入已驗證。
+**C0** 係 reviewed pre-freeze merge commit，包含呢兩個檔；L1/L2/L3 喺 C0。
+**C1** 係獨立 freeze merge commit；5b 先 checkout C1，第 6/8/9 步用 C1。
+今次 review base 唔等於已揀好 C0。專用 checkout 唔跑 suite、update、pull。
+所有 no-writer gates 都係 machine-wide：L2 pre、L3、C1 fetch、5b、return、6、8、9 執行期間，
+整部 lab Mac 禁止其他 backtest/readiness CLI writer，包括另一 checkout 嘅 author／freeze suite children。
+L2／6／8 由 launch 到 block.exit 收據，或 killed job 完成 reviewed publication-only 前，都適用。
 
-   ```sh
-   python3 -B -m betangel_research.betfair.backtest archive-index \
-     --data-root ~/betangel-data/historic --archive <expected-basic-sha>
-   ```
+一個 step／block 只用一個 regex-gated attempt prefix。所有後續讀取都由 checkpoint 保存嘅 producer prefix
+推導，唔逐行改檔名。失敗 check/extractor 係停交 review，**唔係換名重試許可**；唔刪 evidence，唔用 `>|`。
+Review 明確准許重做先用下一個數字 prefix。以下係本 runbook 嘅 terminal points：5a 已 mkdir、6 已 certify、
+8 已 invoke runner（包括 refusal 留空目錄）、9 已移任何 lock。之後嘅 failure 要另行 reviewed procedure；
+唔靠新 prefix 重跑。Step 6 extractor 失敗亦停，唔新 certify／attempt id。Step 9 本身係指定 recovery，
+唔授權新 run。每次 removal retry 仍要 fresh recheck，同原 baseline 比。
 
-   預期 exit 0、`state: unchanged`，persistent files 嘅 hashes、entry names/types/sizes 冇變，冇暫存殘留；
-   code 喺 reported build 之後改過，真資料 equality 未驗，`index_would_change` 亦有可能（§10 決定 13）。
-   建立／刪除 temporary files 可以改 directory timestamps，所以唔要求 `ls -la` 或 directory metadata 完全一樣。
-   保存呢次 index sha256 同 source/interpreter/gate evidence；只證明今次 defaults fresh build 等於現有 bytes，
-   唔證明歷史 build parameters。Refusal、非預期 state、persistent bytes 變咗、interruption 或殘留都停，
-   交 Astra 同 Yu review；唔自動清暫存、唔 re-index、唔換新 root retry。發佈同檢查 L2 output 後先去 L3。
-4. **L3：Draft-only index inventory（c2b3b 決定 14）。** 同一 untouched checkout/interpreter，
-   用 L2 記低嘅 expected archive/index sha；先通知 Yu §10 列明嘅 full-index parse exposure 同 read-only 邊界：
+| Block | Prefix variable／例子 | 新 SSH 要 restore 嘅 checkpoint |
+|---|---|---|
+| 1 | STEP1_PREFIX=step1-01 | 冇；完整 bootstrap 一份 stdin |
+| L1 | L1_PREFIX=l1-01 | session-$STEP1_PREFIX |
+| L2 pre | L2_PREFIX=l2-01 | session-$L1_PREFIX |
+| L2 notice/launch | 同上 | session-$L2_PREFIX-review |
+| L2 poll/final | 同上 | session-$L2_PREFIX-job |
+| L3 pre | L3_PREFIX=l3-01 | session-$L2_PREFIX（成功） |
+| L3 notice/run | 同上 | session-$L3_PREFIX-pre |
+| 5 author suite | FREEZE_PREFIX=freeze-c0-draft-01 | author-side，獨立於 lab |
+| 5a pre | STEP5A_PREFIX=step5a-01 | session-$L3_PREFIX |
+| 5a mkdir/finish | 同上 | session-$STEP5A_PREFIX-pre，或同一 stdin |
+| C1 transfer | STEP5_FETCH_PREFIX=step5-fetch-01 | session-$STEP5A_PREFIX |
+| 5b | STEP5B_PREFIX=step5b-01 | session-$STEP5_FETCH_PREFIX |
+| Return | RETURN_PREFIX=step5b-return-01 | 該次 session-$STEP5B_PREFIX-pre |
+| 6 launch | STEP6_PREFIX=step6-01 | session-$STEP5B_PREFIX（成功） |
+| 6 poll/stored-cert check | 同上 | session-$STEP6_PREFIX-job |
+| 7 pre | STEP7_PREFIX=step7-01 | session-$STEP6_PREFIX（成功） |
+| 7 notice/consent | 同上 | session-$STEP7_PREFIX-pre |
+| 8 launch | STEP8_PREFIX=step8-01 | session-$STEP7_PREFIX（成功） |
+| 8 poll/final | 同上 | session-$STEP8_PREFIX-job |
+| 8 killed publication-only | 同上 | PUBLICATION_FILE=session-$STEP8_PREFIX-job（唔 operational restore） |
+| 9 baseline | STEP9_PREFIX=step9-01 | **實際 invoke runner 嘅最新** session-$STEP8_PREFIX-job |
+| 9 ledger verify | STEP9_VERIFY_PREFIX=step9-verify-01 | session-$STEP9_PREFIX（成功） |
+| 9 review recheck | STEP9_RECHECK_PREFIX=step9-recheck-01 | ledger 存在：verify 成功；否則 baseline 成功 |
+| 9 ledger removal | STEP9_LEDGER_PREFIX=step9-ledger-01 | session-$STEP9_RECHECK_PREFIX（成功） |
+| 9 runner removal | STEP9_RUNNER_PREFIX=step9-runner-01 | ledger 已移：removal 成功；否則 recheck 成功 |
 
-   ```sh
-   python3 -B -m betangel_research.betfair.readiness \
-     --contract research/experiments/backtest-p0-bsp-v1.json \
-     --data-root ~/betangel-data/historic --expect-archive <expected-basic-sha> \
-     --expect-index-sha256 <l2-index-sha256> --code-identity "<commit> tree <tree>"
-   ```
+`lab_init` 固定 LAB_EVIDENCE 為 `<physical $HOME>/betangel-runbook-evidence-$STEP1_PREFIX`，
+LAB_BOOTSTRAP 為 `<physical $HOME>/betangel-runbook-bootstrap-$STEP1_PREFIX`；operator 唔另外設定。
+先核實 lab home；例如 `/Users/user/betangel-runbook-evidence-step1-01/session-l1-01.zsh`。
+Published bundle 只顯示 basename，restore/publication fence 要填呢個 absolute path。
+完整 session 名係 `$LAB_EVIDENCE/session-<prefix>[-suffix].zsh`。無 suffix 先係 success；
+每步開始保存 -pre（5b 開始係 -attempt，checkout 前先 -pre），detached launch 前保存 -job，L2 pause 保存 -review。
+Success checkpoint 帶齊 upstream prefixes、paths、C0/C1 trees、BASIC_SHA、L2_INDEX_SHA、CONTRACT_SHA、
+CERT_KEY、ATTEMPT_ID、RUN_ID 同 lock paths。-pre/-job 只准表中 continuation、poll、publication 或指定 recovery。
+唔靠記憶補變數，唔將存在 checkpoint 當成 review acceptance。RESTORE_PREFIX 只係 transport evidence 名。
 
-   先發佈 output 同外部 clean commit/tree evidence，任何 refusal/problems/非預期狀態都停，交 Astra 同 Yu。
-   工具唔寫檔，亦唔收 lab-state-root；保存 stdout 係 operator 嘅 evidence handling。
-   之後 freeze、certify、第 7 步同真 run 仍然逐步另行 review。Freeze 有意改 `contract_sha256`，
-   唔要求 draft/frozen digest 一樣；要核對 substantive settings（特別係所有 classification settings）未變。
-   唔可以用 L3 結果調參；任何 setting 改動都係新 candidate，要重新 review 同披露之前已見嘅 counts，
-   唔係刷新 inventory 就可以沿用原候選嘅身份或當作未見資料。
-   淨係 clean inventory、相同 settings 同 inputs 先可以對 population。Certificate 嘅 `source.sha256` 同
-   `interpreter` 要對 inventory naming，保留 readiness 自己嘅 source hash；run results 同 starts 嘅
-   `input_sha256` 要對 inventory，results 嘅 clean population counts 亦要對。
-   Relevant implementation、interpreter、gate 或 inputs 變咗，對應 L2/L3 evidence 要刷新先可以依賴。
-   Inventory 唔授權 freeze、certification 或 run。
-5. **Reviewed freeze。** 仍係獨立、review 過嘅改動，Yu 事先知。
-   `ltp_to_bsp_movement_non_executable` 已明確延後（2026-10-16，§13）；contract 保留 selector，
-   `registration.note` 已披露未實作，所以 freeze 仍可 flip-only，冇 movement 結果聲稱。
-   將來刪走或實作要另外 review profile/source 改動同重新 certify。Commission 已由 Yu 2026-10-15 確認（§8）；
-   如果 Yu 喺 freeze 前換 package，先改 rate 同 note。淨係改 `status` 做 `frozen` 同填 `frozen_on`；
-   contract test 證明呢個 flip 係 `valid_frozen`、符合 profile，但 repo 檔未凍結。
-   同 L3 比 substantive settings，唔比 draft/frozen digest。下面命令要 exit 0（draft exit 3），
-   記低 `contract_sha256`（canonical JSON 嘅 sha256，唔係檔案 bytes）：trial ledger 同 run 用佢。
+**Publication 一律經固定 allowlist。** 真資料 CLI stdout、stderr、exit-3 report、results、ledger、lock note
+留 lab，唔 raw-cat，唔發佈 unsalted content hash。只發 codes、counts、非秘密 identity digests；
+未知欄位只係 `unclassified`、size、generated lab-local 名。Market/event/selection ids、價格、BSP、
+settlement/stakes、issuance rows、raw problems/exceptions/receipts 都唔公開。
+Registry 只組合固定 suffix 同保存嘅 prefix，唔公開未知檔名。Notice/consent 內容同其 hash 亦留 lab。
+Safe bundle 自己嘅 hash 可公開，用於 read-only 重印。Bundle rc 0 唔等於 step pass。
 
-   ```sh
-   python3 -B -m betangel_research.betfair.backtest validate-contract --contract research/experiments/backtest-p0-bsp-v1.json --require-frozen
-   ```
+#### 1. Checkout、paths、interpreter 同工具 pin
 
-   **5a：Reviewed lab-state root creation（獨立一步，第 6 步之前）。** L1 output 已發佈同 review、Yu 事先知，
-   而且 L1 記錄 proposed root 實際 not-found，先可以建立嗰個 root。先重核已存在嘅 parent
-   `~/betangel-data` 同 L1 記錄嘅 absolute path／位置限制，然後只做一次 plain `mkdir`（唔加 `-p`）：
+專用 checkout 嘅建立／初次 transfer 係**另行 reviewed pre-step**；先喺已核實路徑準備 C0，唔喺呢度 clone
+去未知目的地。填完整 reviewed C0 commit/tree、absolute checkout 同 interpreter。`~/betangel-data` 必須已存在；
+LAB_DATA 固定係 `~/betangel-data/historic`，LAB_STATE 固定係 `~/betangel-data/lab-state`。
+Evidence 同 bootstrap 名由 STEP1_PREFIX 推導，必須未存在，喺所有 worktrees、data/state/live-state trees 以外。
+**下面 bootstrap 一個 fence，用一份 SSH stdin 跑完**；中斷後只報 `step1_failed`，review 後新 STEP1_PREFIX
+連新 LAB_EVIDENCE/LAB_BOOTSTRAP 從頭做。未有完成 checkpoint 就唔跑後半段或 publication。
 
-   ```sh
-   mkdir "<L1 記錄嘅 absolute lab-state-root>"
-   ```
+```sh
+set -C -u
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+STEP1_PREFIX='step1-01'
+C0='<reviewed C0 完整 40 hex>'
+C0_TREE='<reviewed C0 tree 完整 40 hex>'
+LAB_CHECKOUT='<專用 checkout absolute path>'
+LAB_PY="$(realpath /opt/homebrew/bin/python3)" || { print -r -- 'step1:interpreter_missing'; exit 2; }
+BASIC_SHA='3a16add79316fccb1a44bb86098fdc9eee2e090888c48656ec76978d88aad2cb'
+[[ "$STEP1_PREFIX" =~ '^step1-[0-9]+$' && -x "$LAB_PY" ]] || {
+  print -r -- 'step1:settings_refused'; exit 2
+}
+[[ "$C0" =~ '^[0-9a-f]{40}$' && "$C0_TREE" =~ '^[0-9a-f]{40}$' ]] || {
+  print -r -- 'step1:commit_refused'; exit 2
+}
+[[ "$LAB_CHECKOUT" = /* ]] || { print -r -- 'step1:checkout_refused'; exit 2; }
+cd "$LAB_CHECKOUT" || { print -r -- 'step1:cwd_refused'; exit 2; }
+[[ "$(pwd -P)" = "$LAB_CHECKOUT" ]] || { print -r -- 'step1:cwd_refused'; exit 2; }
+[[ "$(git rev-parse HEAD)" = "$C0" && "$(git rev-parse 'HEAD^{tree}')" = "$C0_TREE" ]] || {
+  print -r -- 'step1:git_refused'; exit 2
+}
+LAB_TOOL="$LAB_CHECKOUT/scripts/lab_runbook.py"
+LAB_SHELL="$LAB_CHECKOUT/scripts/lab_runbook.zsh"
+[[ -f "$LAB_TOOL" && ! -L "$LAB_TOOL" && -f "$LAB_SHELL" && ! -L "$LAB_SHELL" ]] || {
+  print -r -- 'step1:tool_missing'; exit 2
+}
+LAB_TOOL_BLOB="$(git rev-parse "${C0}:scripts/lab_runbook.py")" || {
+  print -r -- 'step1:tool_blob_refused'; exit 2
+}
+LAB_SHELL_BLOB="$(git rev-parse "${C0}:scripts/lab_runbook.zsh")" || {
+  print -r -- 'step1:shell_blob_refused'; exit 2
+}
+[[ "$(git hash-object --no-filters "$LAB_TOOL")" = "$LAB_TOOL_BLOB" ]] || {
+  print -r -- 'step1:tool_blob_mismatch'; exit 2
+}
+[[ "$(git hash-object --no-filters "$LAB_SHELL")" = "$LAB_SHELL_BLOB" ]] || {
+  print -r -- 'step1:shell_blob_mismatch'; exit 2
+}
+LAB_TOOL_SHA="$(/usr/bin/shasum -a 256 "$LAB_TOOL")"; LAB_TOOL_SHA="${LAB_TOOL_SHA%% *}"
+LAB_SHELL_SHA="$(/usr/bin/shasum -a 256 "$LAB_SHELL")"; LAB_SHELL_SHA="${LAB_SHELL_SHA%% *}"
+[[ "$LAB_TOOL_SHA" =~ '^[0-9a-f]{64}$' && "$LAB_SHELL_SHA" =~ '^[0-9a-f]{64}$' ]] || {
+  print -r -- 'step1:hash_refused'; exit 2
+}
+source "$LAB_SHELL" || { print -r -- 'step1:helper_refused'; exit 2; }
+lab_init || exit 2
+lab_bootstrap || { print -r -- 'step1_failed'; exit 2; }
+lab_publication "$STEP1_PREFIX" final || exit 2
+```
 
-   呢個就係 lab account 嘅 `~/betangel-data/lab-state`，唔建立 parent 或另一個 root；如果 root 喺 L1 之後
-   出現、parent 缺咗，或者 `mkdir` 有任何失敗，都停、交 review。成功後喺 lab 記錄 realpath，
-   用同 L1 一樣有 entry/depth 上限、唔 follow links 嘅 metadata listing，證明 present-and-empty；
-   再核對 realpath 喺 repo／所有 Git worktree／denied live-state trees 以外，同 historic root 唔同而且互不包含。
-   如果 L1 已記錄 present-and-empty，就唔做 `mkdir`，只喺第 6 步之前重核並記錄同一組 path／empty listing 證據。
-   L1 發現內容、permission／symlink／non-directory／inspection error 時，沿用 L1 嘅停止規則。
-   呢一步證據發佈同 review 後先去第 6 步；L1 本身仍然唔建立 root，之後 root 缺失亦唔可以自行重建或換 root。
+C0 tree pin 包含兩個 tool blobs；上面逐檔比工作檔 blob，之後 `lab_bootstrap` noclobber 複製到
+`$LAB_EVIDENCE/$STEP1_PREFIX-lab_runbook.py` 同 `.zsh`。Checkpoint 保存 blob ids 同 SHA-256；
+每次 source/call 都重核 evidence copies。之後唔執行 checkout 入面嘅 helpers；C1/source 漂移都唔換 publisher。
 
-6. **Lab 嘅 `certify-engine`（Y2、c2b3b 決定 4、5）。** 前提係第 5a 步核實嘅同一個 lab-state root
-   **已經存在**；命令唔會建立 root，缺失會 `lab_state_root:missing_path`、exit 2，停、交 review。
-   喺 lab、用要跑嘅 interpreter、喺最後嘅 checkout 跑（第一個真 run 之前一定要有一次新嘅 lab certification）：
+Bootstrap 用 component-aware path gate，拒絕 symlink parent、root/worktree overlap 同 denied live-state tree。
+5a 前唔寫 lab-state。唯一 census 係 `lab_census <absolute target>`：同一 LAB_PY，`lstat/scandir`，
+depth 1，最多 200 entries，列 name/type/size，唔 follow links、唔開 entry 內容。只有 target not-found 係 absent；
+missing parent、permission、symlink/non-directory、超限都拒絕。macOS realpath 對 absent path 失敗；
+L1 用 parent_realpath 加 `/lab-state` 記 proposed path，5a 成功後先記真 realpath。
 
-   ```sh
-   python3 -B -m betangel_research.betfair.backtest certify-engine --lab-state-root <lab-state-root> --attempt-id <新 id>
-   ```
+LAB_PY 保存 `/opt/homebrew/bin/python3` 嘅 realpath（Air A2 當時報 lab 3.15.0，仍要當場核實）。
+Package CLI 用 `"$LAB_PY" -S -B`；stdlib tooling 用 `-I -S -B`，唔換／升級 interpreter。
+Step 1 同每份 checkpoint 固定 PATH 為 `/usr/bin:/bin:/usr/sbin:/sbin`；Git 等系統工具由呢度解析。
+`-B` 唔阻止讀舊 cache，所以 preflight 要 clean `git --no-optional-locks status --porcelain --ignored`
+同冇 `__pycache__`。唔刪檔扮 clean。`-S` 關 site/.pth；identity gate 要 no_site=1、enable_user_site=null、
+pycache_prefix=null、無 sitecustomize/usercustomize，PYTHON* 只准已記錄嘅 PYTHONDONTWRITEBYTECODE。
+Runtime child 嘅 sys_path[0] 係空字串，代表核對咗嘅 cwd；其他 paths 必須等於同 interpreter 嘅 isolated paths。
+Record 完整 interpreter descriptor、source descriptor sha、gate snapshot/limits 同 current_key；之後逐欄 cmp。
+L2 interpreter evidence 係呢份 baseline 加即時重核，唔係 index stdout。
+Descriptor 唔證明 native library／stdlib／bytecode 實際載入；仍依賴 dedicated checkout 紀律（Q4）。
 
-   Attempt id 跟 `[a-z0-9][a-z0-9_.-]{0,40}`，永遠唔重用；佢開 `<lab-state-root>/certifications/work/<attempt id>`（保留做證據，連 64 MiB 嘅 case 大約 0.14 GB），38 個 case 全部 as_expected 先將 certificate 寫去 `<lab-state-root>/certifications/<key>.json`。Key 係 protocol、registry、準則、profile、parameter、limit、source descriptor 同 interpreter 嘅 tagged sha256，冇 path override。同一個 key 已經有一模一樣嘅 bytes 就係 `already_certified`；bytes 唔同就拒絕（`certification:existing_differs`），兩個都保留：唔好將搬走或者刪除舊 certificate 當成例行做法；同樣嘅 key input 出唔同 bytes（例如 libbz2 唔同），要明確查清楚先再用。Air 嘅 certification 唔係 lab 嘅 certificate。c2b3b4 冇改任何 source，所以唔會郁到 key；之後再改 source 就要重新 certify。
-7. **真 run 之前話畀 Yu 知**：c2b3b 決定 10 嘅 exposure（§10），連真 run 會用嘅準確 input descriptor（`--data-root` 底下每一個 archive 都會讀，§10「P0 run 實際讀到乜」）、Y1（一份完整、passed 嘅 result 之後 operational 出事，個 contract 喺呢個 root 被擋、冇退 trial，停喺 `engineering_passed` 定 `engineering_pass_claim_unbound` 睇有冇 completed close 去到 ledger；`engineering_pass_claim_unbound` 淨係喺嗰份 `results.json` 仲喺度先擋，所以一定要保留，刪咗就放返個 contract（start 唔退）；換 root 或者換 contract 都唔係出路，之後點行要另外 review、由 Yu 同 Astra 決定）、Y3（finalise 時 source 變咗會 fail，兩個 start 照計）、`max_trials` 4 即係四個 start、最多兩次預留齊嘅 run（淨係記錄到一個 start 嘅嘗試可以令 invocation 多過兩次，每個記錄咗嘅 start 照計；exit 4 唔係 retry 嘅許可），同 commission 用嘅 rate（Yu 2026-10-15 確認嘅 Basic 2%）。
-8. **第一個真 run**，Yu 同意之後；前提係同一個 lab-state root **已經存在**，保留 certification 同所有 history。
-   命令唔會建立 root；缺失會 `lab_state_root:missing_path`、exit 2，停、交 review，唔自行重建或換 root：
+**每次新 SSH 先 restore。** 填表中 checkpoint，同之前安全輸出嘅 checkpoint sha；唔 raw-cat session.sha。
+每次 RESTORE_PREFIX 全新。成功 restore 寫六個 identity/compare stdout/stderr/exit 檔，包括只 poll 嘅 SSH。
+Refusal 用 fixed code；LAB_PY keg 消失會喺任何 capture 前印 `runbook:interpreter_unavailable`，唔燒 label。
 
-   ```sh
-   python3 -B -m betangel_research.betfair.backtest run-backtest --contract research/experiments/backtest-p0-bsp-v1.json --data-root <data-root> --lab-state-root <lab-state-root> --run-id <run id> --code-identity "<commit> tree <tree>"
-   ```
+```sh
+set -C -u
+RESTORE_FILE='<表中已 review checkpoint absolute path>'
+RESTORE_SHA='<checkpoint projection 嘅 64 hex sha256>'
+RESTORE_PREFIX='<全新 restore-NN>'
+[[ "$RESTORE_SHA" =~ '^[0-9a-f]{64}$' && "$RESTORE_PREFIX" =~ '^restore-[0-9]+$' ]] || {
+  print -r -- 'restore:arguments'; exit 2
+}
+[[ "$RESTORE_FILE" = /* && -f "$RESTORE_FILE" && ! -L "$RESTORE_FILE" ]] || {
+  print -r -- 'restore:file_refused'; exit 2
+}
+[[ "$(/usr/bin/shasum -a 256 "$RESTORE_FILE")" = "$RESTORE_SHA  $RESTORE_FILE" ]] || {
+  print -r -- 'restore:sha_mismatch'; exit 2
+}
+LAB_PUBLICATION_ONLY=0
+source "$RESTORE_FILE" || { print -r -- 'restore:checkpoint_refused'; exit 2; }
+lab_restore_identity || exit 2
+```
 
-   `--code-identity` 係 operator 寫嘅文字（printable ASCII，1–200 字），冇嘢核實佢。開 start 之前嘅次序（Q3、Q8）：path guard；contract `valid_frozen`、支援嘅 P0 model（`delay_s` 0）同 certified profile；兩個 root 同 id；而家 key 嘅 certificate（`certification:missing`、`malformed`、`not_this_key`、`not_all_passed` 等等）；known accounting answers；input descriptor 同每個 manifest 嘅 limits（`input:<sha>:limits_not_the_runs`）；certificate 嘅 limits（`certification:limits_not_the_runs`）；第一輪（`stale_gate`、`duplicate_market`、`malformed_record`、`member_not_the_manifests`，之後 `inputs:no_records`、`inputs:no_eligible_records`）；per-contract lock（`runner_lock:held`）。Lock 入面：history（`ledger:unfinished_trials`、`run:recovery_incomplete`、`receipt:missing`、`run:unaccounted`）、stop rule、`run_id:already_used`、`ledger:trial_budget_exhausted`、`source:changed_before_start`，之後先開兩個 start。拒絕咗嘅 run 可能留低空嘅 `contracts/<sha>/` 同 `runs/<sha>/` 目錄。Synthetic 推算（冇喺真資料量度過）：大約 52.5k 個 candidate、9–18 分鐘、0.4–0.6 GB；第一次要睇住記憶體。`--data-root` 底下淨係放第 7 步話畀 Yu 知嗰個 input descriptor 嘅 archive；run 做完之後，對返 `results.json` 同 trial ledger 入面嘅 `input_sha256` 係咪就係嗰個。
-9. **Uncertain 同 recovery。** 前提係同一個 lab-state root **已經存在**；`reconcile-trials` 唔會建立 root，
-   缺失會 `lab_state_root:missing_path`、exit 2，停、交 review，唔自行重建或換 root。
-   結果係 uncertain 就保留 lock：一個人先確認冇 writer 仲喺度跑，先移走 lock，再跑
-   `reconcile-trials --contract … --lab-state-root … --code-identity …`（reconciled 係 exit 0，其他 2）。
-   Reconcile 唔使 certificate file、唔跑 stop rule、永遠唔會被停，亦唔會抹走或者升級一個 pass 聲稱。
-   Q10：第一次 recovery append 或 publication 之前，先核對每個已知 ledger run 嘅 start／close certificate 一致性，
-   已經 close 但缺 receipt 嘅 run，亦先要求 run 目錄存在、核對 completed evidence 自身嘅 certificate binding 同 closes。
-   Incomplete intent 如果仲要補 start，就唔可以綁 known certificate，因為新 start 只會寫 null；已預留齊 variants 嘅
-   intent 仍可用原有 certificate close。以上衝突唔會等另一個 run 改咗先發現。佢仍然唔係 atomic：未完成嘅 run 喺 abort
-   之後先發現冇 run 目錄（`no_run_directory`）、後來重讀 evidence、寫入或者放 lock 失敗，仍可能係 uncertain；保留 lock
-   同已計嘅 start，列出已寫嘅 trials 同 touched runs，唔發 invalid 嘅 receipt。
+**失敗後 publication-only。** Operational identity drift 先停；下面獨立 subshell 只用 hash-pinned tools
+投影原 evidence，完咗即 exit，唔跑資料 CLI、extractor、移鎖或開始下一步。
+Publication-only 唔 cd checkout；即使 checkout 已移走，仍核對 evidence tools 同 interpreter 先投影。
+`PUBLICATION_STEP` 必須選表中變數；restore failure **只填 RESTORE_PREFIX** 同該次 prefix，
+投影 identity 同 compare exit，唔因此提早出版 job final。
+只有 L2 pause 准用 review phase；其餘用 final。有 -job checkpoint 時，兩個 phase 都要過 job receipt/liveness gate。
+每個 phase 只產生一次；任何 partial projection 都交 review。
+
+```sh
+set -C -u
+PUBLICATION_FILE='<該次已 review pre/job/success checkpoint absolute path>'
+PUBLICATION_SHA='<checkpoint projection 嘅 64 hex sha256>'
+PUBLICATION_STEP='<表中 PREFIX variable name>'
+PUBLICATION_PHASE='final'
+RESTORE_PREFIX='<只喺投影 restore refusal 時填該次 restore-NN>'
+[[ "$PUBLICATION_SHA" =~ '^[0-9a-f]{64}$' && "$PUBLICATION_FILE" = /* ]] || {
+  print -r -- 'publication:arguments'; exit 2
+}
+[[ -f "$PUBLICATION_FILE" && ! -L "$PUBLICATION_FILE" ]] || {
+  print -r -- 'publication:checkpoint_refused'; exit 2
+}
+[[ "$(/usr/bin/shasum -a 256 "$PUBLICATION_FILE")" = "$PUBLICATION_SHA  $PUBLICATION_FILE" ]] || {
+  print -r -- 'publication:sha_mismatch'; exit 2
+}
+case "$PUBLICATION_STEP" in
+  STEP1_PREFIX|L1_PREFIX|L2_PREFIX|L3_PREFIX|STEP5A_PREFIX|STEP5_FETCH_PREFIX|STEP5B_PREFIX|RETURN_PREFIX|\
+STEP6_PREFIX|STEP7_PREFIX|STEP8_PREFIX|STEP9_PREFIX|STEP9_VERIFY_PREFIX|STEP9_RECHECK_PREFIX|\
+STEP9_LEDGER_PREFIX|STEP9_RUNNER_PREFIX|RESTORE_PREFIX) ;;
+  *) print -r -- 'publication:step_refused'; exit 2 ;;
+esac
+(
+  LAB_PUBLICATION_ONLY=1
+  source "$PUBLICATION_FILE" || { print -r -- 'publication:checkpoint_refused'; exit 2; }
+  lab_ready || exit 2
+  lab_publication "${(P)PUBLICATION_STEP}" "$PUBLICATION_PHASE"
+)
+exit "$?"
+```
+
+`lab_publication` 繼續收集各項 projection，即使其中 rc 2；印已存 bundle，再印 `publication_rc` 同 bundle_sha256。
+Captured runner／ledger lock-check 嘅 `lock_note_mismatch` 會令 publication_rc=2；
+uncertain 嘅 runner_lock_path_matches=false 或 null（缺 runner_lock）亦係 rc 2。
+兩者唔同，path 相同唔證明 note 正確；uncertain 缺 path 係異常，停交 review。
+唔因可見 bundle 而放行 recovery。已產生 bundle 可以以下 read-only 重印；
+先按上面 hash gate source 同一 checkpoint，唔做 operational restore／新 capture，唔重跑 publication：
+
+```sh
+set -C -u
+PUBLICATION_FILE='<該 bundle 對應已 review checkpoint absolute path>'
+PUBLICATION_SHA='<checkpoint projection 嘅 64 hex sha256>'
+REPRINT_PREFIX='<之前 bundle 嘅完整 step prefix>'
+REPRINT_PHASE='final'
+REPRINT_SHA='<之前 publication 輸出嘅 bundle_sha256>'
+[[ "$PUBLICATION_SHA" =~ '^[0-9a-f]{64}$' && "$PUBLICATION_FILE" = /* ]] || exit 2
+[[ -f "$PUBLICATION_FILE" && ! -L "$PUBLICATION_FILE" ]] || exit 2
+[[ "$(/usr/bin/shasum -a 256 "$PUBLICATION_FILE")" = "$PUBLICATION_SHA  $PUBLICATION_FILE" ]] || {
+  print -r -- 'publication:sha_mismatch'; exit 2
+}
+(
+  LAB_PUBLICATION_ONLY=1
+  source "$PUBLICATION_FILE" || { print -r -- 'publication:checkpoint_refused'; exit 2; }
+  lab_reprint "$REPRINT_PREFIX" "$REPRINT_PHASE" "$REPRINT_SHA"
+)
+exit "$?"
+```
+
+**長 job 前置條件：L2、6、8 一律 detached。** 人手／Claude agent tool 都唔 foreground 跑長工作。
+Launch call 必須係該份 SSH stdin 最後一行；唔用 `-t/-tt`，唔另加 nohup/HUP trap。
+Helper 用 nohup+caffeinate -i 包住完整 zsh job、capture 同 exit receipt，POSIX_TRAPS 保留 ignored HUP。
+外部程式仍可能裝自己嘅 handler；Git status 用 --no-optional-locks 避免 optional index 寫入。
+Lab 接電、開蓋，唔 sleep/shutdown；caffeinate 唔防斷電/SIGKILL/OS crash。
+每次只 launch 一次，之後只 poll；launch exit 0 唔係完成，`<job>.block.exit` 先係整個 block 嘅收據。
+由 launch 到收據，或 killed job 完成 reviewed publication-only 前，除該 job 本身，
+整部 lab Mac 唔准有任何 backtest/readiness `-m` process；
+其他 checkout 嘅 author／freeze suites 同 certify-engine children 都計。唔喺 job 期間跑 suites。
+L2 pre、L3、C1 fetch、5b、return 同 step 9 begin/recheck/removal 嘅 no-writer gates 都用同一 machine-wide 規則。
+
+Fresh SSH 按表 restore **該 job checkpoint**，再填 JOB_STEP；未填 placeholder 會拒絕，唔預設 L2。
+下面 capture liveness 另加三個檔，ps/pgrep 原 output 留 lab：
+
+```sh
+JOB_STEP='<L2_PREFIX 或 STEP6_PREFIX 或 STEP8_PREFIX>'
+case "$JOB_STEP" in L2_PREFIX|STEP6_PREFIX|STEP8_PREFIX) ;; *) print -r -- 'job:step_refused'; exit 2 ;; esac
+JOB_PREFIX="${(P)JOB_STEP}-job"
+[[ "$JOB_PREFIX" =~ '^(l2|step6|step8)-[0-9]+-job$' ]] || { print -r -- 'job:prefix_unset'; exit 2; }
+[[ "${RESTORE_FILE##*/}" = "session-$JOB_PREFIX.zsh" ]] || { print -r -- 'job:checkpoint_mismatch'; exit 2; }
+lab_capture "$RESTORE_PREFIX-liveness.txt" lab_liveness "$JOB_PREFIX" || {
+  print -r -- 'job:liveness_refused'; exit 2
+}
+lab_publish liveness "$LAB_EVIDENCE/$RESTORE_PREFIX-liveness.txt" "$LAB_LOCK" "$RESTORE_PREFIX-liveness.txt" || exit 2
+lab_poll "$JOB_PREFIX"
+```
+
+| Poll output／exit | 意義 |
+|---|---|
+| `job=<prefix> block_exit=N`／N | 該 job 結果；0 仍要 step gates 同 review。 |
+| `job=<prefix> pending` 或 receipt not complete／3 | 未完成；查 liveness，唔 re-invoke。 |
+| `job:liveness_refused`／2 | liveness observation 拒絕；停交 review，唔當 pending。 |
+| 冇 block_exit／2 | restore/receipt refusal，唔係 job result。 |
+
+Liveness 用完整 escaped checkpoint argv marker 同 `-m betangel_research.betfair.backtest/readiness` writer pattern；
+identity/ledger child 從 stdin 接 code，argv 唔含 package snippet。`.pid` 只係 wrapper，唔單靠 PID；
+缺 .pid 仍查完整 argv 同 machine-wide writer，唔用 launch.txt.exit 推斷有冇 job。
+有 argv/writer 同 block.stdout 就繼續等；約 60 秒冇 block.stdout、orphan、ps/pgrep error 或證據矛盾都停交 review。
+Final publication 嘅 observation 拒絕報 `publication:liveness_observation_refused`；
+fresh capture 拒絕報 `publication:liveness_refused`。兩者都唔係 `publication:job_pending`，停交 review。
+兩類 pgrep exit 1 但冇 block.exit 係 missing completion，同 operator 核對 custom writer，唔當成功。
+`lab_no_writer` 唔覆蓋 non-CLI phases，所以 recovery 仲要 argv liveness。觀察後再 poll 排除剛完成。
+若 final-liveness 已佔用但仲未有 block.exit，會報 `publication:final_liveness_already_used`；
+可能係 capture 後 crash 或前次觀察失敗，停交 review，唔刪檔或換名補印。
+Kill/OOM/orphan：L2/6 保留現場 review。8 先做 step-8 publication-only（已有 bundle 就 read-only reprint）；
+runner 可能已完成／失敗、已寫 receipt 同釋放 lock，starts 亦可能已用。
+呢種情況停交 review，唔重跑 runner 或未完成嘅 post-run captures；冇完整 binding 唔當完成。
+只有保留 runner lock 嘅 uncertain／中途 killed 情況先按第 9 步 review recovery；冇 lock 都停交 review。
+唔自動 kill、移鎖或 retry。
+
+#### 2. L1：read-only metadata census
+
+Restore step 1 success。`lab_l1` capture preflight、parent/state/data census，再 gate：state absent 或 present-and-empty；
+data 正好 incoming/raw/manifests/index 四個 plain directories；parent names 只准 historic/lab-state。
+另查 parent/data 下 contracts/runs/certifications 必須 absent，全部過關先保存 success。
+Census projection 只公開已知名（包括 historic/lab-state）、type/size 同固定 refusal enum。
+
+```sh
+L1_PREFIX='l1-01'
+lab_l1 || exit 2
+lab_publication "$L1_PREFIX" final || exit 2
+```
+
+History、未知 entry、error、超限都停，唔深入讀、搬走、migration、退 trial 或換 root。
+**History branch 唔執行／發佈 `_History`、ledger.verify 或 `_stop_evidence`**；呢啲要另行 reviewed procedure。
+只可以用 publication-only 投影已 capture 嘅 metadata/refusal。另由 Yu/operator 確認有冇其他 root；listing 唔防 writer。
+
+#### 3. L2：同一 C0 驗既有 index content equality
+
+Readiness R1（PR #20）、precert hardening（fc38998）同今次 helpers 都要喺 C0。
+`lab_inputs` 固定 LAB_DATA/BASIC_SHA，manifests/index 只准該 archive，regular head/markets、冇 spill/partial。
+PRO TAR 留 incoming 未 ingest。L2 先 hash/count 現有 files，唔讀取 raw member 內容。
+Pre 先用 statvfs 公開 available_kib 同 markets_bytes，review 呢份 evidence 先定 temporary-space budget。
+Markets 兩倍只係 heuristic，唔係 disk 上限；budget 必須獨立 review。Launch 前同 job 各 gate available_kib >= budget。
+
+```sh
+L2_PREFIX='l2-01'
+lab_l2_pre || exit 2
+lab_publication "$L2_PREFIX" review || exit 2
+```
+
+**Pause，review pre evidence、定 budget，先通知 Yu。** L2 會 parse 每個 admitted member 全文，包括 settlement，
+並喺 index 寫／刪 outcome-bearing temporaries。缺檔唔准建新 index。Restore session-$L2_PREFIX-review；
+只喺真係通知後填 dated record，四行 identifiers 從 published C0/index/input projections 複製，唔用 placeholder：
+
+```sh
+cat > "$LAB_EVIDENCE/$L2_PREFIX-notice.md" <<'NOTICE'
+DATE=<YYYY-MM-DD>
+MESSAGE_REF=<已送畀 Yu 嘅訊息 reference>
+C0=<published C0>
+C0_TREE=<published C0 tree>
+BASIC_SHA=<published archive sha256>
+L2_INDEX_SHA=<published before-index-sha digest>
+L2_SPACE_BUDGET_KIB=<reviewed 正整數 KiB>
+NOTICE_TEXT=已講明 L2 讀每個 member 全文包括 settlement，同 index temporary 寫入／刪除。
+NOTICE
+```
+
+下一份 stdin 填同 record 一致嘅 reviewed budget，最後一行 launch。Launch 先 uncaptured notice/token 同 space check，
+成功先保存 -job。同 prefix 只准補原本缺少嘅 notice 後再 launch；已寫但有錯嘅 record 停交 review，唔覆寫。
+Job 開頭再逐行 grep -Fxq notice identifiers/budget、核對 dated reference、capture notice sha；
+之後 fresh preflight、identity/no-writer、inputs cmp、space recheck，再一次 archive-index。
+只接受 indexed、唯一 expected archive、unchanged；前後 file hashes/lines 必須相等先保存 success。
+
+```sh
+L2_SPACE_BUDGET_KIB='<notice 入面 reviewed 正整數 KiB>'
+lab_l2_launch || exit 2
+```
+
+照上面 JOB_STEP poll/liveness；完成後同一 -job checkpoint 可以出版 final，非零亦要投影後停：
+
+```sh
+lab_finished_publication "$L2_PREFIX"
+exit "$?"
+```
+
+所有 final publication 入口先 gate 該 job completion receipt；pending 唔燒 final label。
+冇有效 receipt 只准 fresh captured liveness 證明 job/writers 都消失後投影，唔代表 job 成功。
+一般完成 fence 仍要有效 receipt；nonzero publication_rc 優先作 exit，否則傳 block_exit，0 仍要 step gates 同 review。
+L2 stdout/stderr 留 lab；bundle 只公開 status、per-archive counts/identity hashes、fixed codes 同 stderr size/local 名。
+`raw:<path>:missing` 只出 `raw:missing`。Directory size/timestamp 可因 temporary 變，唔當 byte-equality。
+Refusal/index_would_change/變動/interruption/spill/partial 一律 review，唔清暫存、re-index、換 root。
+Success bundle review 完先 restore session-$L2_PREFIX（無 suffix），先進 L3；預覽 digest 唔係成功證明。
+
+#### 4. L3：先通知，後 draft-only inventory
+
+同一 untouched C0/LAB_DATA/interpreter。先 restore L2 success，保存 L3 -pre；呢個 fence 唔跑 readiness。
+
+```sh
+L3_PREFIX='l3-01'
+lab_l3_pre || exit 2
+```
+
+**Pause，先通知 Yu decision 14 嘅 full-index parse exposure 同 read-only 邊界。** 新 SSH restore
+session-$L3_PREFIX-pre，從 published L2 bundle 複製 identifiers，記真實日期同已送訊息 reference：
+
+```sh
+cat > "$LAB_EVIDENCE/$L3_PREFIX-notice.md" <<'NOTICE'
+DATE=<YYYY-MM-DD>
+MESSAGE_REF=<已送畀 Yu 嘅訊息 reference>
+C0=<published C0>
+C0_TREE=<published C0 tree>
+BASIC_SHA=<published archive sha256>
+L2_INDEX_SHA=<published index-sha digest>
+NOTICE_TEXT=已講明 L3 full-index parse exposure；read-only，唔跑 strategy/certify/run。
+NOTICE
+```
+
+下面先 gate notice、capture sha，再 preflight/identity/no-writer，同 explicit archive/index sha 跑 readiness。
+只接受 completed、無 refusal/preflight refusal、records.with_problems=0，naming 同 identity/C0 逐欄相等；
+最後 lab_inputs 對 L3 descriptor，再保存 success。
+
+```sh
+lab_l3_run || exit 2
+lab_publication "$L3_PREFIX" final || exit 2
+```
+
+Exit 0/2/3 或 local check 失敗都用 publication-only 投影；record_problems_listed 同 raw report 留 lab。
+Bundle 只公開 input/naming identities、records/population/source counts、固定 refusal/problem codes。
+任何問題停交 review。Source/interpreter/gate/input 變咗先 review 新 C0、刷新 L2/L3。
+**唔喺 frozen C1 重跑 L3**；readiness 拒絕 frozen。Inventory 唔授權 freeze/certification/run。
+
+#### 5. Reviewed freeze 同 suite evidence
+
+另一個 author checkout 做獨立 change，Yu 事先知。只改 contract status=frozen 同 frozen_on；
+draft fixture tests 喺 C0 前已解耦，原 repo 同 flip-only copy 要 green，唔改 runtime 掩蓋 failure。
+C0→C1 只准 `research/experiments/backtest-p0-bsp-v1.json`；freeze 等待期間唔夾其他 main commits。
+Plan/status 更新另做 C1 後 doc commit，lab 留 C1。Metric `ltp_to_bsp_movement_non_executable`
+已明確延後（§13，同 report_d0fd896b）；selector 保留，registration.note 已披露未實作；冇 movement results 聲稱。
+將來改要 review profile/source 同重新 certify（§13）。Basic commission 2%（Yu 2026-10-15，§8）。
+
+Suite 喺 LAB_CHECKOUT 以外嘅 author/temp checkout，用 absolute Python 3.15。三次分別 c0-draft/c0-flip-only/c1。
+逐次跑；同一部 Mac 嘅 L2／6／8 job 未有 block.exit，或 killed job 未完成 reviewed publication-only，
+author／freeze suites 都唔准開始；亦唔同其他 no-writer steps 重疊。
+`FREEZE_TOOL` 用 reviewed C0 tooling；下面 raw logs/diff 留 author evidence，PR 只附 module 嘅固定 projection。
+
+```sh
+(
+set -C -u
+FREEZE_CHECKOUT='<absolute author 或 temporary checkout>'
+FREEZE_PY='<absolute Python 3.15 executable>'
+FREEZE_EVIDENCE='<已存在、喺 checkout/state 以外嘅 absolute evidence directory>'
+FREEZE_C0='<reviewed C0 完整 40 hex>'
+FREEZE_LABEL='<c0-draft 或 c0-flip-only 或 c1>'
+FREEZE_PREFIX='<全新 freeze-c0-draft-NN／freeze-c0-flip-only-NN／freeze-c1-NN>'
+[[ "$FREEZE_CHECKOUT" = /* && "$FREEZE_PY" = /* && "$FREEZE_EVIDENCE" = /* ]] || exit 2
+[[ "$FREEZE_C0" =~ '^[0-9a-f]{40}$' ]] || exit 2
+[[ "$FREEZE_LABEL" = c0-draft || "$FREEZE_LABEL" = c0-flip-only || "$FREEZE_LABEL" = c1 ]] || exit 2
+[[ "$FREEZE_PREFIX" =~ "^freeze-$FREEZE_LABEL-[0-9]+$" ]] || exit 2
+cd "$FREEZE_CHECKOUT" || exit 2
+[[ "$(pwd -P)" = "$FREEZE_CHECKOUT" ]] || exit 2
+FREEZE_TOOL="$FREEZE_CHECKOUT/scripts/lab_runbook.py"
+[[ "$(git hash-object --no-filters "$FREEZE_TOOL")" = \
+   "$(git rev-parse "${FREEZE_C0}:scripts/lab_runbook.py")" ]] || exit 2
+"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-interpreter > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-interpreter.json" || exit 2
+git rev-parse HEAD 'HEAD^{tree}' > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-git.txt" || exit 2
+if [[ "$FREEZE_LABEL" = c1 ]]; then
+  git diff --name-only "$FREEZE_C0" HEAD > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-diff.txt" || exit 2
+else
+  git diff --name-only HEAD > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-diff.txt" || exit 2
+fi
+BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 "$FREEZE_PY" -B -m unittest discover -s tests -v \
+  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.log" 2>&1
+suite_rc=$?
+printf '%s\n' "$suite_rc" > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.exit" || exit 2
+"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-suite "$FREEZE_EVIDENCE" "$FREEZE_PREFIX" "$FREEZE_LABEL" || exit 2
+(( suite_rc == 0 )) || exit 2
+typeset -p FREEZE_PREFIX FREEZE_LABEL FREEZE_CHECKOUT FREEZE_PY FREEZE_EVIDENCE FREEZE_C0 \
+  > "$FREEZE_EVIDENCE/session-$FREEZE_PREFIX.zsh" || exit 2
+)
+```
+
+C1 diff 明確對 C0 HEAD；flip-only diff 要正好單一 contract path，空 diff 唔係 true；draft 嘅 diff_only_contract=null。
+PR 記 interpreter、commit/tree、tests/status/exit、diff count、generated log 名。其他 Python green 只係補充，
+唔冒認 3.15 proof。Suite failure 先修正/review；唔擴 C1 allowlist。
+
+#### 5a. Reviewed lab-state root creation
+
+L1/L3 success 已 review，Yu 事先知；通知 Yu 係 human step，呢一步冇機械 notice gate／lab notice record。
+Restore L3 success。Pre block cmp L1 state **同 parent census**。
+
+```sh
+STEP5A_PREFIX='step5a-01'
+lab_root_pre || exit 2
+```
+
+繼續用同一 stdin，或者 restore session-$STEP5A_PREFIX-pre。只有 L1 同今次都 absent 先跑 plain mkdir：
+
+```sh
+lab_root_mkdir || exit 2
+```
+
+L1 已記 present-and-empty 就跳過 mkdir。唔建 parent、唔 mkdir -p、唔換 root。之後同一 pre checkpoint finish：
+
+```sh
+lab_root_finish || exit 2
+lab_publication "$STEP5A_PREFIX" final || exit 2
+```
+
+Finish 記已存在 root realpath、要求 present-and-empty，先保存 success。mkdir 後 failure 係 terminal，唔改名重建。
+
+#### 5b. Captured C1 transfer、checkout 同 frozen gate
+
+C1 用另一部機準備、已 review 嘅 **local Git bundle**；transfer 本身另行 review，以下唔連 network。
+Restore 5a success；bundle absolute path/plain file 同 sha 先 gate，先用全新 transfer prefix。
+Helper capture C0 preflight/no-writer、bundle verify、fetch、C1 tree，再重核仍喺 clean C0，唔 checkout。
+
+```sh
+C1='<reviewed freeze merge commit 完整 40 hex>'
+C1_TREE='<reviewed C1 tree 完整 40 hex>'
+C1_BUNDLE='<已 transfer 嘅 local Git bundle absolute path>'
+C1_BUNDLE_SHA='<已 review bundle 64 hex sha256>'
+STEP5_FETCH_PREFIX='step5-fetch-01'
+lab_c1_transfer || exit 2
+lab_publication "$STEP5_FETCH_PREFIX" final || exit 2
+```
+
+Review transfer evidence，restore success，先做 checkout。先 gate C0→C1 path 只係 contract、C1 blob settings
+只變 status/frozen_on，保存 -pre 後先 checkout。之後 clean C1/tree、blob cmp、validate-contract --require-frozen
+exit 0、valid_frozen/零 problems、完整 identity 同 step 1 cmp（L3 已逐欄同 step 1 相等）。
+
+```sh
+STEP5B_PREFIX='step5b-01'
+lab_freeze_checkout || exit 2
+lab_publication "$STEP5B_PREFIX" final || exit 2
+```
+
+Bundle 公開 contract status、canonical contract_sha256、problem count，同 contract/cert-key/index digest-only modes。
+CONTRACT_SHA 唔係 file bytes hash；第 7 步直接由呢份 safe bundle 複製。
+C1 冇改 runtime，source sha/current_key/interpreter 必須同 L3 一樣。唔改 code-identity 掩蓋差異。
+Checkout 前 failure 留 C0。Checkout 後只有仍然 clean C1/tree、恢復 baseline identity 嘅 validator/extractor
+failure 先可以 reviewed return；settings gate 係 checkout 前。Checkout/clean/持續 identity failure 唔適用，
+保留現場另 review，唔 force/清理。Return 用通用 restore fence，RESTORE_FILE 填**該次** 5b -pre，
+RESTORE_PREFIX 全新；再跑：
+
+```sh
+RETURN_PREFIX='step5b-return-01'
+lab_return_c0 || exit 2
+lab_publication "$RETURN_PREFIX" final || exit 2
+```
+
+Return 唔係 retry/L3 許可。Review 修正 C1 後，先新 transfer prefix，再新 STEP5B_PREFIX；所有後續 reads
+跟成功 checkpoint。5b success evidence 已發佈同 review、checkout 留 C1，先去第 6 步。
+
+#### 6. Lab certify-engine
+
+Restore 5b success，同一 empty LAB_STATE/C1/interpreter。ATTEMPT_ID 先填新 id 並 gate，先消耗 prefix。
+符合 detached/awake 前置條件；此 fence 最後一行 launch：
+
+```sh
+STEP6_PREFIX='step6-01'
+ATTEMPT_ID='<事先記錄嘅新 attempt id>'
+lab_cert_launch || exit 2
+```
+
+Job 先 preflight/identity/no-writer、census empty gate，再 certify-engine。照 JOB_STEP=STEP6_PREFIX poll，
+block exit 0 先做 stored-cert check；新 SSH restore session-$STEP6_PREFIX-job：
+
+```sh
+lab_cert_finish || exit 2
+lab_publication "$STEP6_PREFIX" final || exit 2
+```
+
+只接受**新 certified 38/38**。already_certified 亦 exit 0，但 empty root 後出現屬非預期，停；
+not_certified exit 4、refused/failed/uncertain exit 2、interruption 都保留交 review，唔新 attempt id。
+Attempt 喺 LAB_STATE/certifications/work/$ATTEMPT_ID，連 64 MiB case 約 0.14 GB evidence。
+Extractor 比 5b CERT_KEY、stdout、stored bytes/sha/counts/source/interpreter 同 L3 naming、step 1 identity。
+Bundle 公開 certificate key/sha、source.sha256、完整 interpreter/counts；stdout 無 interpreter 唔夠。
+Air certificate 唔代替 lab certificate；extractor failure terminal，唔重新 certify。成功 review 後去第 7 步。
+
+#### 7. 真 run 前通知 Yu，記錄實際同意
+
+Restore step 6 success。通知要有 L3 input/input_sha256、C1/tree、CONTRACT_SHA、certificate key/sha、RUN_ID、
+LAB_DATA/LAB_STATE。Exposure：runner 讀所有 admitted archives；完整 passed result 後 operational failure 仍可擋
+contract；source finalise 變咗會 fail，start 照計。max_trials=4 係四個 start，唔一定兩次 invocation。
+冇 completed close 可能係 engineering_pass_claim_unbound，唔刪 results/換 root/改 contract。Exit 4 唔授權 retry。
+
+```sh
+STEP7_PREFIX='step7-01'
+RUN_ID='<通知入面嘅新 run id>'
+lab_consent_pre || exit 2
+```
+
+**Pause，等 Yu 實際同意。** 新 SSH restore session-$STEP7_PREFIX-pre；從 L3/5b/6 published bundles 複製
+identifier 行，填實際訊息 reference/date，同通知內容。以下 quoted heredoc 唔自動插入保存值，避免將未確認
+placeholder 當成同意；noclobber 防覆寫：
+
+```sh
+cat > "$LAB_EVIDENCE/$STEP7_PREFIX-notice-and-consent.md" <<'CONSENT'
+DATE=<YYYY-MM-DD>
+MESSAGE_REF=<Yu 實際同意嘅訊息 reference>
+RUN_ID=<已同意嘅 run id>
+C1=<published C1>
+C1_TREE=<published C1 tree>
+CONTRACT_SHA=<step5b contract projection digest>
+CERT_KEY=<step6 certificate projection key>
+INPUT_SHA=<L3 inventory projection input_sha256>
+CERT_SHA=<step6 certificate-check projection sha256>
+NOTICE_TEXT=<已發出通知：L3 input/input_sha256、certificate sha、roots、上述 exposure、Basic 2%>
+CONSENT_TEXT=<實際同意內容；未收到就唔寫呢份 record>
+CONSENT
+```
+
+```sh
+lab_consent_finish || exit 2
+lab_publication "$STEP7_PREFIX" final || exit 2
+```
+
+Gate 驗日期/reference、恰好一行非空且無 `<>` 嘅 NOTICE_TEXT/CONSENT_TEXT；模板本身必須拒絕。
+每個 identifier key 必須恰好一行，再用 grep -Fxq 對值；notice gates 同樣拒絕 duplicate/conflicting lines。
+INPUT_SHA/CERT_SHA 必須各一行並匹配 L3 inventory 同 step6 certificate-check。
+Capture consent sha；唔公開原內容/hash。
+Identifier gate 唔代替人 review 同意內容，任何缺項停。成功 checkpoint 帶 RUN_ID 去 step 8。
+
+#### 8. 第一個真 run
+
+Restore step 7 success，同一 C1/interpreter/roots；唔重建缺 root。Detached launch 前置條件成立，最後一行：
+
+```sh
+STEP8_PREFIX='step8-01'
+lab_run_launch || exit 2
+```
+
+Job 先 preflight/identity/no-writer，exact inputs 對 L3；state 必須只有 plain certifications directory。
+PRO/其他 TAR 未 ingest；其他 archive、symlink、spill/partial、hash/records lines 差異都停。
+`--contract`、data/state paths 全係 absolute，code-identity 係完整 `C1 tree C1_TREE`；CLI 唔替你驗 Git。
+同一 LAB_DATA 仍禁止其他 writer；前後相等唔證明中途冇改過再還原。
+CLI writer gate 係 machine-wide：即使另一 checkout 嘅 suite certify-engine，都會令 gate 拒絕。
+
+Run exit 0/4/2 都繼續 after writer/input cmp、lock census、no-lock 同 status checks，唔因 writer gate 提早停。
+Completed（0 或 4）先 run binding extractor，收齊證據後先按全部 checks 決定；
+acceptance 可以 passed/failed/incomplete，population.records 必須等於 L3 records.lines；started 只取 RUN_ID
+兩個 variant。Extractor 本地 hash results/issuance 但唔公開內容/hash；只公開 identity/input/population、
+certificate key/sha、acceptance、criterion status/fixed problem codes、prefix counts/unexercised reasons/variants。
+Failed/refused 只收 inputs/census/status。Bundle 嘅 status.txt 顯示 uncertain/unknown/no_json，配合 block_exit=2，
+就按第 9 步嘅 lock 條件處理，唔開 results 搵 outcome。
+Post-run writer hit 嘅可見 signal 係 after-writers.txt.exit=0（pgrep 搵到 writer）同 block_exit=2；
+呢個係 terminal，即使 binding passed 都停 review，唔換 prefix／run id 重跑，starts 已可能用完。
+其他 post-check 非零 exit 一樣停；冇 success checkpoint。呢條規則包含其他 checkout 嘅 suite children。
+`run:status_unresolved`／`run:postcheck_refused` 只留 job.block.stdout，bundle 唔公開呢個 raw file 嘅內容。
+
+用 JOB_STEP=STEP8_PREFIX 嘅 exact checkpoint poll/liveness，唔預設 L2。保持 awake，唔重開 run id。
+Synthetic 預估 52.5k candidates、9–18 分鐘、0.4–0.6 GB，唔係真資料量測。完成後 final publication：
+
+```sh
+lab_finished_publication "$STEP8_PREFIX"
+exit "$?"
+```
+
+Exit 0/4 completed bundle 有 binding；exit 4 必須停 review。Exit 2 failed/refused 只 publish input/lock/status/exits。
+Uncertain/malformed/no JSON 或 rc/status 唔夾保留原檔；有 runner lock 先去 step 9，否則停 review。
+冇 block.exit 嘅 killed job 用 step-8 publication-only：completed／failed run.json 仍可投影，
+PUBLICATION_FILE 用該次 runner 嘅 session-$STEP8_PREFIX-job，PUBLICATION_STEP=STEP8_PREFIX；
+可能冇 binding 或完整 post checks，唔算完成，亦唔授權重跑。唔按 exit 猜有冇 start。
+原 stdout/stderr 永遠留 lab。任何 input/binding/lock mismatch 報 exposure，唔用 pass 掩蓋。
+只有 CLI 0、completed/passed、全部 checks、no locks、block exit 0 同 review 全齊先算完成；pass 後按 stop rule 停。
+Runner invocation 之後 failure 係 terminal，唔換 prefix/attempt/run id。
+
+#### 9. Uncertain、killed run 同 reviewed recovery
+
+呢步處理保留 runner lock 嘅 recovery。Runner 已退出並釋放 lock 嘅 killed job 先用 step-8 publication-only，
+再交 review；唔因缺 post-run evidence 而重跑。若已進入 begin，census 後會報 `recovery:runner_lock_absent`，
+冇 success checkpoint；step-9 failure bundle 仍用 run projection 顯示 completed／failed run.json。
+
+Restore **實際 invoke runner 嘅最新** session-$STEP8_PREFIX-job，唔用較舊 pre-run failure。
+`lab_recovery_begin` 先要求 state-check exit 0、plain run.json（killed 可以係空）、exact job checkpoint，
+任何更高 numbered step8 job checkpoint 都會拒絕，亦拒絕相同數字嘅另一 spelling（例如 01/001），
+即使該 checkpoint 未 invoke runner 都停 review；gate 先於 STEP9 prefix，唔證明冇 start。
+精確 runner lock 係 `$LAB_STATE/contracts/$CONTRACT_SHA/runner.lock`；ledger lock 同 directory 下
+`trial-ledger-v1.jsonl.lock`。Census 只准 regular trial-ledger-v1.jsonl、runner.lock、trial-ledger-v1.jsonl.lock。
+
+```sh
+STEP9_PREFIX='step9-01'
+lab_recovery_begin || exit 2
+lab_publication "$STEP9_PREFIX" final || exit 2
+```
+
+Begin 再查 C1 preflight/identity、package writer 同 captured argv liveness；兩類 pgrep exit 1 先得。
+Begin/recheck 嘅 writer gate 拒絕報 `recovery:writer_present`；liveness capture 拒絕報
+`recovery:liveness_refused`，觀察有 job/writer 報 `recovery:job_or_writer_live`；全部停交 review。
+同 operator 確認冇 custom writer；orphan/unknown 唔移鎖。Capture census/stat/cat，lock note 要匹配 RUN_ID/code。
+`runner_lock_path_matches` 只比較 run.json path 同 LAB_LOCK，唔係 lock note gate。
+真正 note mismatch 會報 `recovery:lock_note_mismatch`；ledger 係 `recovery:ledger_lock_note_mismatch`。
+原 begin／verify 停，冇 success checkpoint；captured lock-check 嘅 `lock_note_mismatch` 令 bundle rc 2。
+Publication-only 仍會出 bundle、publication_rc=2；可用上面 read-only reprint fence，唔補跑 begin。
+Uncertain path mismatch 或缺 runner_lock（null）令 projection rc 2；begin 報 `recovery:run_projection_refused`。
+普通 completed/failed/refused 冇 runner_lock 時 runner_lock_path_matches 係 null，唔因此拒絕。
+Absent started/closed/list-count 係 null，明確空 list 先係 []/0；兩者都唔證明冇 append。
+
+Ledger lock 存在就停，先 verify，唔移 runner lock/reconcile。Restore baseline success；verify 讀 ledger，
+只公開固定 codes/counts，raw notes/receipt/errors 留 lab：
+
+```sh
+STEP9_VERIFY_PREFIX='step9-verify-01'
+lab_ledger_verify || exit 2
+lab_publication "$STEP9_VERIFY_PREFIX" final || exit 2
+```
+
+Ledger missing/empty、truncated note、verify failure 都保留交 review，唔自行 repair；UnlockError 可喺 append 後發生。
+冇 ledger lock 就跳過 verify。Recheck 開 prefix 前先要求（如適用）verify success。
+**Astra 同 Yu review 指定 removal 後**，restore table 指定 checkpoint，再做獨立 review recheck：
+
+```sh
+STEP9_RECHECK_PREFIX='step9-recheck-01'
+lab_recovery_review || exit 2
+lab_publication "$STEP9_RECHECK_PREFIX" final || exit 2
+```
+
+Recheck cmp 保存嘅 census/entries baseline、runner note/stat，同（如有）ledger note/stat；每次 removal
+仲會即場 fresh C1/no-writer/argv/census/bytes recheck，唔靠舊成功 labels。Review artifact 唔係 removal 本身。
+Ledger lock 仲喺、其 removal 已 review，restore recheck success，先跑：
+
+```sh
+STEP9_LEDGER_PREFIX='step9-ledger-01'
+lab_ledger_remove || exit 2
+lab_publication "$STEP9_LEDGER_PREFIX" final || exit 2
+```
+
+Review after-census，按表 restore ledger-removal success，checkpoint 已帶該次 after baseline；
+冇 ledger lock 就 restore recheck success，已帶 before baseline。唔手動設定 RECOVERY_CENSUS_PREFIX。
+Runner removal 亦已 review，先 plain rm 同 reconcile 一次：
+
+```sh
+STEP9_RUNNER_PREFIX='step9-runner-01'
+lab_runner_remove || exit 2
+lab_publication "$STEP9_RUNNER_PREFIX" final || exit 2
+```
+
+所有 rm 無 -f/-r/glob；失敗唔 reconcile，唔刪 ledger/results/receipts/certificates/attempts。
+Reconcile exit 0 仲要 status=reconciled 同冇任何 *.lock，先 success；bundle 只公開 fixed recovery codes/counts/exits。
+Any failure/uncertain/kill 保留交 review；lock 已移唔重做同一 removal，另需 reviewed procedure。
+Reconcile 唔使 certificate file、唔跑 stop rule、唔抹走或升級 pass 聲稱，亦唔授權再 run。
+Q10：首次 append/publication 前核對 known starts/closes certificate binding；closed 缺 receipt 仍要 run directory
+completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；reconcile 仍非 atomic，保留已計 starts。
 
 ## 11. P1: flumine cross-check conditions
 
@@ -669,7 +1262,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 - **跑真資料之前嘅步驟**（§10.1）：readiness R1（`readiness.py`）已 review/merge（PR #20，main 1f35646），
   工具最後改動亦要先 review/merge，再通知 Yu、依次做 L1 metadata census、L2 stock index equality check、
   L3 draft inventory；三步都未做，每步先發佈同 review evidence。之後 reviewed freeze、reviewed root creation
-  （只限 L1 記錄 absent，第 5a 步）、lab certification 同第一個真 run 仍然分開排。
+  （只限 L1 記錄 absent，第 5a 步）、C0→C1 clean checkout 轉換（第 5b 步）、lab certification、
+  第 7 步 exposure／input／Y1／Y3／budget／commission 通知同 Yu 同意、第一個真 run 仍然分開排。
   Metric deferral 已記錄，唔代表 freeze 或真資料工作已做。
 - **Index 建立冇綁 limit**（c2b3b 決定 13）：index head 冇記用咗乜 limit；manifest 同 certificate 嘅 limit 檢查唔證明 index 點建。要綁住就另外提議一個窄嘅 index binding。
 - **載入嘅代碼冇證明**（c2b3b 決定 5、Q4）：certificate 只係核對 disk 上嘅 source 同 interpreter；靠專用 checkout、fresh CLI（`-B`）同 §10.1 第 1 步嘅環境紀律（certify 同 run 用同一個 shell 環境；`PYTHONPYCACHEPREFIX`、`PYTHONPATH`、`PYTHONOPTIMIZE` 唔設；冇 user site、`.pth` 或者 `sitecustomize` 加落嚟）。`run-backtest` 冇 import 時嘅 snapshot（Q4），`certify-engine` 有（`source:changed_since_import`、載入 module 嘅檢查），但兩樣都唔證明實際載入嘅 bytecode。

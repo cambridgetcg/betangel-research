@@ -553,7 +553,7 @@ class FailureTests(RunnerCase):
 class PreflightTests(RunnerCase):
     def test_roots_contract_and_identifiers(self):
         self.standard_inputs()
-        draft = json.loads(fx.DRAFT.read_text(encoding="utf-8"))
+        draft = fx.draft_contract()
         cases = [
             (dict(lab_state_root=self.data), "roots:not_distinct"),
             (dict(lab_state_root=self.data / "index"), "roots:not_distinct"),

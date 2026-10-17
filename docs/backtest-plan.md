@@ -1,6 +1,7 @@
 # Backtest lab: data plan, point-in-time rules and the P0 BSP contract
 
-Prepared **2026-10-14**；**2026-10-15** 按 task (c) 已合併嘅代碼更新（c2b3b4，§1），**2026-10-16** 更新 readiness 工具狀態同 lab runbook。計劃同實驗合約，唔係 edge 或者盈利證據。寫第一版嗰陣 repo 冇任何 backtest 結果，亦冇跑過任何 backtest；之後 task (c) 嘅測試同 engine certification 用 synthetic 資料跑過，但就本 project 嘅記錄，**到而家都冇跑過任何真資料 backtest、冇任何真結果、冇任何 engineering pass**（記錄唔係檔案系統普查，§10.1）。Archive 嘅實際內容以 manifest 為準；lab 報告返嚟嘅數（§10）呢度冇核實。
+Prepared **2026-10-14**；2026-10-15/16 更新實作同 runbook；**2026-10-17** 記錄首個真資料 P0 engineering pass（§10.1）。
+計劃同實驗合約，唔係 edge 或盈利證據；最新 lab 狀態以 §10.1 嘅 dated safe-projection record 為準。
 
 **回測只係實驗室：出嚟嘅數唔係 edge 嘅證據，策略嘅單永遠唔會去到 Betfair。**
 
@@ -18,9 +19,9 @@ Prepared **2026-10-14**；**2026-10-15** 按 task (c) 已合併嘅代碼更新�
 |---|---|
 | 本文件、AGENTS.md 嘅 scope bullet、P0 experiment contract 同佢嘅 validator、兩個測試 | task (a) 交付（§4） |
 | Archive manifest、index、capability audit | task (b) 交付（§4.1；TAR 格式事實喺 §2.8）；Astra review 咗三輪，喺 794c456 接受，PR #7 合併（main da44d71） |
-| BSP runner、會計、metrics、trial ledger、report、engine certification | task (c) 交付咗 c1、c2a、c2b1、c2b2、c2b3a、c2b3b1、c2b3b2a、c2b3b2b、c2b3b3（§4）；c2b3b4 係 P0 draft 嘅文字、contract test 同本文件（加埋三個 test 檔入面跟 draft 新數值改嘅幾行：淨係 test，certificate key 唔郁）。全部只用 synthetic 資料：**冇真資料 run、冇結果、冇 engineering pass**，P0 contract 仲係 `draft`（§10） |
-| Readiness R1（`readiness.py`；c2b3b 決定 14） | `betangel_research/betfair/readiness.py` 已交付，PR #20 已合併（main 1f35646）；只做 synthetic verification，未喺 lab 或真資料上跑。工具喺 certificate source descriptor 以外，唔授權 freeze、certification 或 run（§10） |
-| 跑真資料之前 | 全部未開始；C0 嘅 L1/L2/L3 → freeze/5a/5b → C1 certification → 第 7 步通知及 Yu 同意 → 真 run（§10.1） |
+| BSP runner、會計、metrics、ledger、report、certification | task (c) 已交付；P0 已 frozen、真資料 engineering pass（§10.1） |
+| Readiness R1（`readiness.py`） | PR #20 已交付；2026-10-17 L3 `clean_inventory_and_identity`（§10.1） |
+| 首個真資料 run | 2026-10-17 前置 gates、freeze、certification、Yu 同意及 run 完成；按 stop rule 停止（§10.1） |
 | LIMIT 單、flumine 對照、付費資料、racing data、prospective | P1–P4，暫定，未批（§4） |
 
 ## 2. Data plan
@@ -499,11 +500,35 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
   前置檢查、磁碟空間同拒絕之後嘅處理見 §10.1 L2；唔可以靜靜重建或換 root 重試。
 - **Walk-forward** 要真係每一步只用過去資料 fit、要 purge，唔係將一個用晒成段時間揀出嚟嘅 model 按日期切開再計分。Schema v1 嘅 `fitting.kind` 只准 `none`，寫 `walk_forward` 報 `deferred`；聲明 `none` 但其實喺結果上 fit，validator 查唔到，要靠 review。
 
-### 10.1 Runbook: from the draft to the first real run (not started)
+### 10.1 Runbook: from the draft to the first real run (passed 2026-10-17)
 
-L1、L2、L3、freeze、root creation、lab certification、第 7 步通知同 Yu 同意、真 run 全部未開始。
-Readiness R1 已 review/merge，驗證只用 synthetic 資料。每步獨立 review，Yu 事先知；呢份 code/doc review
+2026-10-17：L1/L2/L3、freeze、5a/5b、lab certification、第 7 步通知及 Yu 同意、首次真 run 已完成。
+以下保留當時嘅 C0 runbook；每步獨立 review，Yu 事先知；呢份 status 更新
 唔係 lab 執行許可，亦冇擴大既有授權。所有 fences 用 **`/bin/zsh -f`**，column 0 可直接複製。
+
+**首次 run 記錄（2026-10-17，按 lab safe projections／operator 記錄）**：lab 留 C1，tooling 沿用 pinned C0 blobs。
+C0=`e452f2e`／tree `3a5ce236`；C1=`07aca95b82c1e69ccbe1ada357226d6eacb0ee33`／tree `9f3f9398`（PR #24 rebase）。
+Lab-local receipts：`/Users/user/betangel-runbook-evidence-step1-01`；dedicated checkout：
+`/Users/user/betangel-runbook-checkout-prestep-01`（pre-step P2 已完成）。
+Yu 同意先將 `~/betangel-data/logs` 搬到 `~/betangel-logs`（update-test logs 亦改址），historic/.DS_Store 搬出。
+`step1-01` identity_baseline_ok；`l1-01` clean_layout；L2/L3 都先通知 Yu。
+`l2-01` budget 16,777,216 KiB，約 11 分鐘；block_exit 0、indexed/unchanged；52,561 markets，94 unreadable:malformed_runner。
+L2_INDEX_SHA=`9e13c6d74b7fbe4752d7ae25811a76737f3610279b84907cd8964321c93d0200`（不變）。
+`l3-01` clean_inventory_and_identity；records 52,561、with_problems 0；eligible 12,175、excluded 40,301、no_view 85。
+Excluded reasons：month_not_evaluated 40,292、country_not_in_population 9；
+input_sha256=`6e5a8275c5840286e0b58ff53555cab60902e64c6e1e64d52b3e10cc5b3f27c2`。
+Freeze 經 Yu 同意、Astra accept；Python 3.15.0 fresh clones 嘅 c0-draft／c0-flip-only／c1 suite 各 1677 OK、exit 0。
+worktree_state/diff_only_contract 依次 clean/null、contract_modified/true、clean/true；5a present_and_empty。
+C1 full-history bundle SHA `5b6dd52b…`；5b valid_frozen、settings_equal_except_status_and_frozen_on。
+CONTRACT_SHA=`4633c7d11a867115533e200c8dfaf0bb1f9ac80c7fec1a7f4f4b5d4a55e34aa9`。
+`step6-01` ATTEMPT_ID=`lab-c1-07aca95-cert-01`：新 certified 38/38；CERT_KEY=`579ac61d…`（同 L3）。
+Certificate SHA=`d92eef919fed147ef10f5a59f0282b90eab0366058342259a65ced37e962fec8`。
+`step7-01`：已通知，Yu 明確同意 RUN_ID=`p0-bsp-v1-c1-run-01`，consent_recorded。
+`step8-01` 22:09–22:21Z：completed；CLI exit／block_exit／publication_rc 都 0；engineering_acceptance=passed。
+issuance_exposure_reconciliation、known_accounting_answers、prefix_invariance 全 passed，problem_codes=[]。
+population.records=52,561 同 L3；prefix_tally compared/passed=52,476、failed/missing=0；no_locks、無 writer、inputs 前後相等。
+ltp_favourite 同 seeded_random_runner 都 started：cumulative_starts=2/max_trials=4；按 stop rule 呢份 contract 已完成，唔再 run。
+新 candidate 要另立 contract、review 同 certification；outcome metrics 留 lab，唔公開；呢次 engineering pass 唔係盈利證據。
 
 操作程式係 [lab_runbook.zsh](../scripts/lab_runbook.zsh)，所有 extractors、registry 同 publication
 projections 係 stdlib-only [lab_runbook.py](../scripts/lab_runbook.py)。Repo tests 覆蓋固定 cases，

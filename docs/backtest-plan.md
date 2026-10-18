@@ -509,7 +509,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 ### 10.1 Runbook: from the draft to the first real run (passed 2026-10-17)
 
 2026-10-17：L1/L2/L3、freeze、5a/5b、lab certification、第 7 步通知及 Yu 同意、首次真 run 已完成。
-以下保留當時嘅 C0 runbook；每步獨立 review，Yu 事先知；呢份 status 更新
+以下以當時嘅 C0 runbook 為本；post-P0 加入 author-bytes、-E -s -S -B 同 author:c1_diff gate，新 contract 要另定 C0。
+2026-10-17 freeze 跑 C0 e452f2e 嘅 fence，suite line 只有 -B。每步獨立 review，Yu 事先知；本文件
 唔係 lab 執行許可，亦冇擴大既有授權。所有 fences 用 **`/bin/zsh -f`**，column 0 可直接複製。
 
 **首次 run 記錄（2026-10-17，按 lab safe projections／operator 記錄）**：lab 留 C1，tooling 沿用 pinned C0 blobs。
@@ -942,8 +943,10 @@ Plan/status 更新另做 C1 後 doc commit，lab 留 C1。Metric `ltp_to_bsp_mov
 將來改要 review profile/source 同重新 certify（§13）。Basic commission 2%（Yu 2026-10-15，§8）。
 
 每個 label 用新 clone：c0-draft／c0-flip-only 喺 reviewed C0，c1 喺 C1；位於 LAB_CHECKOUT 同 evidence 之外。
-停用 core.ignoreStat／sparse-checkout／assume-unchanged／skip-worktree；唔用會寫檔嘅 Finder／IDE、唔建 .venv，Python 只加 -B。
+停用 core.ignoreStat／sparse-checkout／assume-unchanged／skip-worktree；唔用會寫檔嘅 Finder／IDE、唔建 .venv，Python 一律加 -B。
 Suite 用 absolute Python 3.15。三次分別 c0-draft/c0-flip-only/c1。
+Suite process 用 -E -s -S -B：忽略 PYTHON* 設定、唔載入 site／.pth／sitecustomize，保留 checkout import。
+子程序未必沿用呢啲 flags；仍須可信 interpreter／system，同禁止其他 writer，唔係 sandbox。
 c0-draft 同 c0-flip-only 必須喺 reviewed C0 HEAD 跑；唔接受 C0 上面另加嘅 commit。
 逐次跑；同一部 Mac 嘅 L2／6／8 job 未有 block.exit，或 killed job 未完成 reviewed publication-only，
 author／freeze suites 都唔准開始；亦唔同其他 no-writer steps 重疊。
@@ -979,7 +982,7 @@ FREEZE_TOOL="$FREEZE_CHECKOUT/scripts/lab_runbook.py"
 "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-interpreter > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-interpreter.json" || exit 2
 git rev-parse HEAD 'HEAD^{tree}' > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-git.txt" || exit 2
 git --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false \
-  -c core.trustctime=true -c core.checkStat=default \
+  -c core.trustctime=true -c core.checkStat=default -c core.ignorecase=false \
   status --porcelain=v1 -z --untracked-files=all --ignored \
   > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-before.z" \
   2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-before.z.stderr" || {
@@ -997,6 +1000,7 @@ git -c core.fsmonitor=false ls-files -v -z > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-in
 "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-state "$FREEZE_LABEL" \
   "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-before.z" "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-before.txt" \
   "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-before.z" || exit 2
+"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-bytes "$FREEZE_LABEL" || exit 2
 if [[ "$FREEZE_LABEL" = c0-flip-only ]]; then
   git show HEAD:research/experiments/backtest-p0-bsp-v1.json \
     > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" || exit 2
@@ -1008,13 +1012,13 @@ if [[ "$FREEZE_LABEL" = c1 ]]; then
 else
   git diff --name-only HEAD > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-diff.txt" || exit 2
 fi
-BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 "$FREEZE_PY" -B -m unittest discover -s tests -v \
+BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 "$FREEZE_PY" -E -s -S -B -m unittest discover -s tests -v \
   > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.log" 2>&1
 suite_rc=$?
 printf '%s\n' "$suite_rc" > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.exit" || exit 2
 git rev-parse HEAD 'HEAD^{tree}' > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-git-after.txt" || exit 2
 git --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false \
-  -c core.trustctime=true -c core.checkStat=default \
+  -c core.trustctime=true -c core.checkStat=default -c core.ignorecase=false \
   status --porcelain=v1 -z --untracked-files=all --ignored \
   > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-after.z" \
   2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-after.z.stderr" || {
@@ -1032,6 +1036,11 @@ git -c core.fsmonitor=false ls-files -v -z > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-in
 "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-state "$FREEZE_LABEL" \
   "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-after.z" "$FREEZE_EVIDENCE/$FREEZE_PREFIX-cache-after.txt" \
   "$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-after.z" || exit 2
+"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-bytes "$FREEZE_LABEL" || exit 2
+if [[ "$FREEZE_LABEL" = c0-flip-only ]]; then
+  "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" freeze-diff "$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" \
+    "$FREEZE_CHECKOUT/research/experiments/backtest-p0-bsp-v1.json" || exit 2
+fi
 "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-suite "$FREEZE_EVIDENCE" "$FREEZE_PREFIX" "$FREEZE_LABEL" || exit 2
 (( suite_rc == 0 )) || exit 2
 typeset -p FREEZE_PREFIX FREEZE_LABEL FREEZE_CHECKOUT FREEZE_PY FREEZE_EVIDENCE FREEZE_C0 \
@@ -1040,10 +1049,16 @@ typeset -p FREEZE_PREFIX FREEZE_LABEL FREEZE_CHECKOUT FREEZE_PY FREEZE_EVIDENCE 
 ```
 
 C1 diff 明確對 C0 HEAD；flip-only diff 要正好單一 contract path，空 diff 唔係 true；draft 嘅 diff_only_contract=null。
+C1 唔係單一 contract diff，suite 後 author-suite 即報 author:c1_diff，唔寫 checkpoint。
 Suite 前後都 capture NUL porcelain status（包括 untracked/ignored）、NUL ls-files 同 cache census。
-Status 停用 fsmonitor／untrackedCache，強制 trustctime=true／checkStat=default；ls-files 必須非空、每行 `H `。
-assume-unchanged／skip-worktree 等 flags 都拒絕。
-Draft/C1 status 必須空；flip-only 只准未 stage 嘅單一 contract 修改（` M`），並先通過 freeze-diff。
+Status 停用 fsmonitor／untrackedCache，強制 trustctime=true／checkStat=default／ignorecase=false；ls-files 必須非空、每行 `H `。
+assume-unchanged／skip-worktree 等 flags 都拒絕；非 `H ` rows 報 author:worktree_state。
+每次 clean-state check 後，author-bytes 要求每個 HEAD entry 都係 100644/100755 blob，worktree path 係 regular file；
+用 git hash-object --no-filters 對 ls-tree HEAD，只喺 c0-flip-only 跳過 contract 嘅 bytes 比較。
+Symlink／gitlink entry、缺失或非 regular path、git／OS failure 或 bytes 唔相等，都報 author:tracked_bytes；
+擋住 clean filter／attributes 隱藏同大小改動。
+呢個係 bytes check，唔證明 mode、執行時載入嘅 bytes，亦偵測唔到兩次檢查之間改完再還原。
+Draft/C1 status 必須空；flip-only 只准未 stage 嘅單一 contract 修改（` M`），suite 前後都要通過 freeze-diff。
 Flip-only 比較 parsed settings，唔係 bytes 或 mode；c1 suite 同 5b 再檢查真實 C1 tree。
 Staged／其他 path／任何 __pycache__ 都拒絕。三類 census 嘅 stderr 留本地且必須空；
 command failure 報 author:census_failed，非空 stderr 報 author:census_stderr，兩者都停 review。
@@ -1358,7 +1373,7 @@ completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；r
   另行 review profile/source 改動同新 certification。
 
 - **首個真資料 run 嘅前置步驟已完成（2026-10-17）**：L1/L2/L3、freeze、5a/5b、lab certification、
-  第 7 步通知及 Yu 同意、首次 run 已按 §10.1 完成並 engineering pass；按 stop rule 已停止。
+  第 7 步通知及 Yu 同意、首次 run 已按當時（C0 e452f2e）§10.1 完成並 engineering pass；按 stop rule 已停止。
 
 **未決定：**
 

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -57,7 +58,7 @@ binding:acceptance_mismatch binding:exit_mismatch binding:starts binding:trial_i
 binding:start_code_or_certificate binding:criteria_set binding:criterion_status binding:prefix_counts
 binding:prefix_records binding:prefix_reasons binding:unexercised_variants run:state_not_certifications_only
 runtime:check_failed author:worktree_state author:cache_present author:census_stderr author:census_failed
-author:head_changed author:c0_head_mismatch
+author:head_changed author:c0_head_mismatch author:tracked_bytes author:c1_diff
 consent:text consent:identifiers notice:record notice:date notice:reference""".split())
 
 
@@ -552,8 +553,12 @@ class GateTests(ToolTest):
             self.write(prefix + "-diff.txt", changed)
             self.author_states(prefix, label)
             rc, text = self.invoke("author-suite", self.root, prefix, label)
-            self.assertEqual(rc, 0)
-            self.assertIs(json.loads(text)["diff_only_contract"], expected)
+            if label == "c1" and not expected:
+                self.assertEqual((rc, json.loads(text)),
+                                 (2, {"status": "refused", "code": "author:c1_diff"}))
+            else:
+                self.assertEqual(rc, 0)
+                self.assertIs(json.loads(text)["diff_only_contract"], expected)
             self.assertNotIn("raw_problem_secret", text)
 
     def test_runtime_subprocess_is_fixed_code_and_suppresses_raw_failure(self):
@@ -1186,10 +1191,11 @@ class RunbookRegressionTests(ToolTest):
         self.write(prefix + "-diff.txt", b"research/experiments/backtest-p0-bsp-v1.json\nscripts/other.py\n")
         self.author_states(prefix, "c1")
         rc, text = self.invoke("author-suite", self.root, prefix, "c1")
+        self.assertEqual((rc, json.loads(text)), (2, {"status": "refused", "code": "author:c1_diff"}))
+        self.write(prefix + "-diff.txt", b"research/experiments/backtest-p0-bsp-v1.json\n")
+        rc, text = self.invoke("author-suite", self.root, prefix, "c1")
         self.assertEqual(rc, 0)
-        value = json.loads(text)
-        self.assertFalse(value["diff_only_contract"])
-        self.assertEqual(value["status"], "unclassified")
+        self.assertEqual(json.loads(text)["status"], "unclassified")
 
 
 class BindingBranchTests(ToolTest):
@@ -3059,7 +3065,7 @@ class FollowupGateTests(ToolTest):
 
     def test_freeze_fence_keeps_captures_and_gates_around_the_suite(self):
         fence = self.freeze_fence()
-        suite = fence.index('"$FREEZE_PY" -B -m unittest discover -s tests -v')
+        suite = fence.index('"$FREEZE_PY" -E -s -S -B -m unittest discover -s tests -v')
         receipt = fence.index('printf \'%s\\n\' "$suite_rc" > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.exit" || exit 2')
         publication = fence.index('"$FREEZE_TOOL" author-suite ')
         self.assertLess(suite, receipt)
@@ -3071,7 +3077,7 @@ class FollowupGateTests(ToolTest):
         for stage in ("before", "after"):
             captures = (
                 'git --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false \\\n'
-                '  -c core.trustctime=true -c core.checkStat=default \\\n'
+                '  -c core.trustctime=true -c core.checkStat=default -c core.ignorecase=false \\\n'
                 '  status --porcelain=v1 -z --untracked-files=all --ignored \\\n'
                 '  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-' + stage + '.z" \\\n'
                 '  2> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-status-' + stage + '.z.stderr"',
@@ -3100,20 +3106,37 @@ class FollowupGateTests(ToolTest):
                     self.assertLess(state_at, publication)
             for kind, extension in (("status", ".z"), ("index", ".z"), ("cache", ".txt")):
                 target = '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-' + kind + '-' + stage + extension + '"'
-                self.assertEqual(len(re.findall(r'>\|?\s+' + re.escape(target), fence)), 1)
+                self.assertEqual(len(re.findall(r'>&?[|!]?\s*' + re.escape(target), fence)), 1)
+                self.assertEqual(fence.count(target), 2)
+        self.assertNotRegex(fence, r'>&?[|!]')
         after_git = ('git rev-parse HEAD \'HEAD^{tree}\' > '
                      '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-git-after.txt" || exit 2')
         self.assertEqual(fence.count(after_git), 1)
         self.assertLess(receipt, fence.index(after_git))
         self.assertLess(fence.index(after_git), publication)
+        for suffix in ("-git.txt", "-git-after.txt"):
+            self.assertEqual(fence.count('$FREEZE_EVIDENCE/$FREEZE_PREFIX' + suffix), 1)
         suite_gate = '(( suite_rc == 0 )) || exit 2'
         self.assertEqual(fence.count(suite_gate), 1)
         self.assertLess(publication, fence.index(suite_gate))
         self.assertLess(fence.index(suite_gate), fence.index('typeset -p FREEZE_PREFIX'))
+        run_block = ('BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 '
+                     '"$FREEZE_PY" -E -s -S -B -m unittest discover -s tests -v \\\n'
+                     '  > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.log" 2>&1\n'
+                     'suite_rc=$?\n'
+                     'printf \'%s\\n\' "$suite_rc" > "$FREEZE_EVIDENCE/$FREEZE_PREFIX-suite.exit" || exit 2\n')
+        self.assertEqual(fence.count(run_block), 1)  # F3-MUT-1: no fabricated or overwritten suite rc.
+        self.assertEqual(fence.count('suite_rc='), 1)
+        finish = ('"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-suite '
+                  '"$FREEZE_EVIDENCE" "$FREEZE_PREFIX" "$FREEZE_LABEL" || exit 2\n'
+                  + suite_gate + '\n'
+                  'typeset -p FREEZE_PREFIX FREEZE_LABEL FREEZE_CHECKOUT FREEZE_PY FREEZE_EVIDENCE FREEZE_C0 \\\n'
+                  '  > "$FREEZE_EVIDENCE/session-$FREEZE_PREFIX.zsh" || exit 2\n)')
+        self.assertEqual(fence.count(finish), 1)  # Gate cannot be wrapped in if false.
 
     def test_freeze_fence_gates_c0_head_and_flip_transition_before_the_suite(self):
         fence = self.freeze_fence()
-        suite = fence.index('"$FREEZE_PY" -B -m unittest discover -s tests -v')
+        suite = fence.index('"$FREEZE_PY" -E -s -S -B -m unittest discover -s tests -v')
         self.assertTrue(fence.startswith('(\nset -C -u\nexport GIT_NO_REPLACE_OBJECTS=1\nFREEZE_CHECKOUT='))
         self.assertEqual(fence.count('export GIT_NO_REPLACE_OBJECTS=1'), 1)
         location = ('cd "$FREEZE_CHECKOUT" || exit 2\n'
@@ -3128,6 +3151,24 @@ class FollowupGateTests(ToolTest):
         self.assertEqual(fence.count(head_gate), 1)
         adjacent_head = location + head_gate + '\nFREEZE_TOOL="$FREEZE_CHECKOUT/scripts/lab_runbook.py"'
         self.assertEqual(fence.count(adjacent_head), 1)
+        head = ('(\nset -C -u\nexport GIT_NO_REPLACE_OBJECTS=1\n'
+                "FREEZE_CHECKOUT='<absolute 為今次 label 新建嘅 clone>'\n"
+                "FREEZE_PY='<absolute Python 3.15 executable>'\n"
+                "FREEZE_EVIDENCE='<已存在、喺 checkout/state 以外嘅 absolute evidence directory>'\n"
+                "FREEZE_C0='<reviewed C0 完整 40 hex>'\n"
+                "FREEZE_LABEL='<c0-draft 或 c0-flip-only 或 c1>'\n"
+                "FREEZE_PREFIX='<全新 freeze-c0-draft-NN／freeze-c0-flip-only-NN／freeze-c1-NN>'\n"
+                '[[ "$FREEZE_CHECKOUT" = /* && "$FREEZE_PY" = /* && "$FREEZE_EVIDENCE" = /* ]] || exit 2\n'
+                '[[ "$FREEZE_C0" =~ \'^[0-9a-f]{40}$\' ]] || exit 2\n'
+                '[[ "$FREEZE_LABEL" = c0-draft || "$FREEZE_LABEL" = c0-flip-only '
+                '|| "$FREEZE_LABEL" = c1 ]] || exit 2\n'
+                '[[ "$FREEZE_PREFIX" =~ "^freeze-$FREEZE_LABEL-[0-9]+$" ]] || exit 2\n'
+                + adjacent_head + '\n'
+                '[[ "$(git hash-object --no-filters "$FREEZE_TOOL")" = \\\n'
+                '   "$(git rev-parse "${FREEZE_C0}:scripts/lab_runbook.py")" ]] || exit 2\n'
+                '"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-interpreter '
+                '> "$FREEZE_EVIDENCE/$FREEZE_PREFIX-interpreter.json" || exit 2\n')
+        self.assertRegex(fence, r'\A' + re.escape(head))  # F3-MUT-3: no wrapper/pushd before the gates.
         self.assertEqual(fence.count('[[ "$(git rev-parse --show-toplevel)" = "$FREEZE_CHECKOUT" ]] || exit 2'), 1)
         self.assertLess(fence.index(head_gate), suite)
         flip_gate = ('if [[ "$FREEZE_LABEL" = c0-flip-only ]]; then\n'
@@ -3138,6 +3179,7 @@ class FollowupGateTests(ToolTest):
                      '    "$FREEZE_CHECKOUT/research/experiments/backtest-p0-bsp-v1.json" || exit 2\nfi')
         self.assertEqual(fence.count(flip_gate), 1)
         self.assertEqual(fence.count('"$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-before.z" || exit 2\n'
+                                     '"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-bytes "$FREEZE_LABEL" || exit 2\n'
                                      + flip_gate + '\nif [[ "$FREEZE_LABEL" = c1 ]]; then'), 1)
         self.assertLess(fence.index(flip_gate), suite)
 
@@ -3595,6 +3637,234 @@ lab_detach step8-850-job "$CHECKPOINT" lab_probe_job
             finally:
                 child.terminate()
                 child.wait(timeout=5)
+
+
+class PostP0FreezeTests(ToolTest):
+    freeze_fence = FollowupGateTests.freeze_fence
+    CONTRACT = "research/experiments/backtest-p0-bsp-v1.json"
+
+    def git(self, checkout, *args):
+        return subprocess.run(["git", "--no-optional-locks", "-c", "core.hooksPath=/dev/null",
+                               "-C", str(checkout), *args], env=self.git_env, capture_output=True,
+                              check=True).stdout
+
+    def repository(self, name):
+        self.git_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_NO_REPLACE_OBJECTS": "1"}
+        checkout = self.root / name
+        checkout.mkdir()
+        self.git(checkout, "init", "-q")
+        (checkout / self.CONTRACT).parent.mkdir(parents=True)
+        (checkout / self.CONTRACT).write_text('{"status":"draft","frozen_on":null}\n')
+        (checkout / "tracked.py").write_text("VALUE=1\n")
+        (checkout / "name with space\nand\ttab.txt").write_text("ordinary bytes\n")
+        self.commit(checkout)
+        return checkout
+
+    def commit(self, checkout):
+        self.git(checkout, "add", ".")
+        self.git(checkout, "-c", "user.name=Runbook test", "-c", "user.email=runbook@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic freeze fixture")
+
+    def bytes_gate(self, checkout, label):
+        return subprocess.run([sys.executable, "-I", "-S", "-B", str(TOOL), "author-bytes", label],
+                              cwd=checkout, env=self.git_env, capture_output=True, text=True, check=False)
+
+    def clean_filter(self, checkout):
+        (checkout / ".git/info/attributes").write_text("tracked.py filter=restore\n")
+        self.git(checkout, "config", "filter.restore.clean", "sed s/VALUE=2/VALUE=1/")
+
+    def test_author_bytes_refuses_filter_hidden_edits_for_each_label(self):
+        # F3-FW-R1: status and diff are clean after the index learns the filtered bytes.
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            with self.subTest(label=label):
+                checkout = self.repository(label)
+                if label == "c0-flip-only":
+                    (checkout / self.CONTRACT).write_text('{"status":"frozen","frozen_on":"2026-10-17"}\n')
+                clean = self.bytes_gate(checkout, label)
+                self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+                self.assertEqual(json.loads(clean.stdout), {"status": "accepted", "checked":
+                                 2 if label == "c0-flip-only" else 3, "skipped": int(label == "c0-flip-only")})
+                self.clean_filter(checkout)
+                path = checkout / "tracked.py"
+                before = path.stat()
+                path.write_text("VALUE=2\n")
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                expected = (b" M " + self.CONTRACT.encode() + b"\0" if label == "c0-flip-only" else b"")
+                self.assertEqual(self.git(checkout, "status", "--porcelain=v1", "-z"), expected)
+                self.assertEqual(self.git(checkout, "diff", "--name-only", "HEAD"),
+                                 (self.CONTRACT + "\n").encode() if label == "c0-flip-only" else b"")
+                result = self.bytes_gate(checkout, label)
+                self.assertEqual((result.returncode, json.loads(result.stdout)),
+                                 (2, {"status": "refused", "code": "author:tracked_bytes"}))
+                self.assertEqual(result.stderr, "")
+
+    def test_author_bytes_checks_all_paths_and_only_skips_the_flip_contract(self):
+        checkout = self.repository("paths")
+        for label in ("c0-draft", "c0-flip-only", "c1"):
+            for name in ("name with space\nand\ttab.txt", self.CONTRACT, "tracked.py"):
+                with self.subTest(label=label, name=name):
+                    self.git(checkout, "restore", ".")
+                    (checkout / name).write_text("market_1.987654321\n")
+                    result = self.bytes_gate(checkout, label)
+                    accepted = label == "c0-flip-only" and name == self.CONTRACT
+                    self.assertEqual(result.returncode, 0 if accepted else 2, result.stdout)
+                    if not accepted:
+                        self.assertEqual(json.loads(result.stdout)["code"], "author:tracked_bytes")
+                    self.assertNotIn("987654321", result.stdout + result.stderr)
+        self.git(checkout, "restore", ".")
+        target = checkout / "tracked.py"
+        target.unlink()
+        self.assertEqual(self.bytes_gate(checkout, "c1").returncode, 2)
+        target.symlink_to(checkout / "name with space\nand\ttab.txt")
+        self.assertEqual(self.bytes_gate(checkout, "c1").returncode, 2)
+        self.assertEqual(self.bytes_gate(checkout, "unknown").returncode, 2)
+
+    def test_freeze_fence_runs_byte_gates_immediately_after_both_state_checks(self):
+        fence = self.freeze_fence()
+        gate = '"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-bytes "$FREEZE_LABEL" || exit 2\n'
+        self.assertEqual(fence.count(gate), 2)
+        for stage in ("before", "after"):
+            self.assertIn('"$FREEZE_EVIDENCE/$FREEZE_PREFIX-index-' + stage + '.z" || exit 2\n' + gate, fence)
+        flip_recheck = ('if [[ "$FREEZE_LABEL" = c0-flip-only ]]; then\n'
+                        '  "$FREEZE_PY" -I -S -B "$FREEZE_TOOL" freeze-diff '
+                        '"$FREEZE_EVIDENCE/$FREEZE_PREFIX-contract-head.json" \\\n'
+                        '    "$FREEZE_CHECKOUT/research/experiments/backtest-p0-bsp-v1.json" || exit 2\nfi\n')
+        self.assertEqual(fence.count(flip_recheck), 1)
+        self.assertIn(gate + flip_recheck + '"$FREEZE_PY" -I -S -B "$FREEZE_TOOL" author-suite ', fence)
+
+    def test_freeze_prose_names_byte_limits_and_non_h_refusal(self):
+        doc = (ROOT / "docs/backtest-plan.md").read_text()
+        section = doc.split("#### 5. Reviewed freeze", 1)[1].split("#### 5a.", 1)[0]
+        self.assertTrue("Python 一律加 -B" in section)  # DOC-F3-1, old text: Python 只加 -B.
+        self.assertFalse("Python 只加 -B" in section)
+        for phrase in ("Suite process 用 -E -s -S -B：", "唔載入 site／.pth／sitecustomize",
+                       "suite 後 author-suite 即報 author:c1_diff", "非 `H ` rows 報 author:worktree_state。",
+                       "只喺 c0-flip-only 跳過 contract", "唔證明 mode、執行時載入嘅 bytes",
+                       "偵測唔到兩次檢查之間改完再還原", "clean filter／attributes", "子程序",
+                       "每次 clean-state check 後，author-bytes 要求每個 HEAD entry 都係 100644/100755 blob，"
+                       "worktree path 係 regular file；",
+                       "Symlink／gitlink entry、缺失或非 regular path、git／OS failure 或 bytes 唔相等，"
+                       "都報 author:tracked_bytes；", "suite 前後都要通過 freeze-diff。"):
+            self.assertEqual(section.count(phrase), 1, phrase)
+        self.assertNotRegex(section, r'(?i)再試|重試|retry|rerun')
+
+    def test_history_distinguishes_post_p0_gates_from_the_first_freeze(self):
+        doc = (ROOT / "docs/backtest-plan.md").read_text()
+        preamble = doc.split("### 10.1 Runbook:", 1)[1].split("**首次 run 記錄", 1)[0]
+        self.assertIn("post-P0 加入 author-bytes、-E -s -S -B 同 author:c1_diff gate", preamble)
+        self.assertIn("2026-10-17 freeze 跑 C0 e452f2e 嘅 fence，suite line 只有 -B。", preamble)
+        self.assertEqual(doc.count("按當時（C0 e452f2e）§10.1 完成"), 1)
+
+    def test_suite_flags_block_python_environment_and_site_startup_but_keep_checkout_imports(self):
+        fence = self.freeze_fence()
+        flags = shlex.split(re.search(r'"\$FREEZE_PY" ([-\w ]+) -m unittest', fence)[1])
+        checkout = self.root / "discovery"
+        (checkout / "tests").mkdir(parents=True)
+        (checkout / "local_fixture.py").write_text("VALUE=17\n")
+        (checkout / "tests/test_smoke.py").write_text(
+            "import sys, unittest, local_fixture\n"
+            "class Smoke(unittest.TestCase):\n"
+            "    def test_startup(self):\n"
+            "        self.assertEqual(local_fixture.VALUE, 17)\n"
+            "        self.assertTrue(sys.flags.ignore_environment)\n"
+            "        self.assertTrue(sys.flags.no_site)\n"
+            "        self.assertTrue(sys.flags.no_user_site)\n"
+            "        self.assertEqual(sys.flags.optimize, 0)\n"
+            "        self.assertNotIn('sitecustomize', sys.modules)\n")
+        poison = self.root / "poison"
+        poison.mkdir()
+        marker = self.root / "startup-ran"
+        (poison / "sitecustomize.py").write_text("from pathlib import Path\nPath(" + repr(str(marker))
+                                                + ").write_text('unexpected startup')\n")
+        env = {**os.environ, "PYTHONPATH": str(poison), "PYTHONOPTIMIZE": "1", "PYTHONUSERBASE": str(poison)}
+        for home in (None, str(self.root / "not-a-python-home")):
+            if home is not None:
+                env["PYTHONHOME"] = home
+            result = subprocess.run([sys.executable, *flags, "-m", "unittest", "discover", "-s", "tests", "-v"],
+                                    cwd=checkout, env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Ran 1 test", result.stderr)
+            self.assertFalse(marker.exists())
+            self.assertFalse(any(checkout.rglob("__pycache__")))
+
+    def mini_fence(self, case, label):
+        checkout = self.repository(case)
+        (checkout / self.CONTRACT).write_text('{"status":"draft","frozen_on":null,"max_trials":4}\n')
+        (checkout / "scripts").mkdir()
+        shutil.copyfile(TOOL, checkout / "scripts/lab_runbook.py")
+        (checkout / "tests").mkdir()
+        (checkout / "tests/test_smoke.py").write_text(
+            "from pathlib import Path\nimport json, os, subprocess, unittest\n"
+            "class Smoke(unittest.TestCase):\n"
+            "    def test_one(self):\n"
+            "        if os.environ['FREEZE_CASE'] == 'after_filter':\n"
+            "            path = Path('tracked.py')\n"
+            "            before = path.stat()\n"
+            "            path.write_text('VALUE=2\\n')\n"
+            "            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))\n"
+            "        if os.environ['FREEZE_CASE'] == 'head_move':\n"
+            "            subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-c',\n"
+            "                'user.name=Runbook test', '-c', 'user.email=runbook@example.invalid',\n"
+            "                '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'moved'], check=True)\n"
+            "        if os.environ['FREEZE_CASE'] == 'contract_rewrite':\n"
+            "            path = Path('research/experiments/backtest-p0-bsp-v1.json')\n"
+            "            contract = json.loads(path.read_text())\n"
+            "            contract['max_trials'] = 9\n"
+            "            path.write_text(json.dumps(contract) + '\\n')\n"
+            "        self.assertNotEqual(os.environ['FREEZE_CASE'], 'suite_failure')\n")
+        self.commit(checkout)
+        c0 = self.git(checkout, "rev-parse", "HEAD").decode().strip()
+        if case == "extra_c1_path":
+            (checkout / "tracked.py").write_text("VALUE=2\n")
+            self.commit(checkout)  # MUT-C1BASE-1: HEAD^..HEAD alone would miss this code commit.
+        if label != "c0-draft":
+            (checkout / self.CONTRACT).write_text('{"status":"frozen","frozen_on":"2026-10-17","max_trials":4}\n')
+            if label == "c1":
+                self.commit(checkout)
+        if case == "case_rename":
+            self.git(checkout, "config", "core.ignorecase", "true")
+            (checkout / "tests/test_smoke.py").rename(checkout / "tests/Test_smoke.py")
+        if case in {"before_filter", "after_filter"}:
+            self.clean_filter(checkout)
+        if case == "before_filter":
+            (checkout / "tracked.py").write_text("VALUE=2\n")
+        evidence = self.root / (case + "-evidence")
+        evidence.mkdir()
+        wrapper = self.root / (case + "-python")
+        # Air tests use their actual interpreter; only the lab's 3.15 prerequisite is stubbed.
+        wrapper.write_text("#!/bin/zsh -f\nif [[ \"$5\" = author-interpreter ]]; then\n"
+                           "  print -r -- '{}'; exit 0\nfi\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+        wrapper.chmod(0o700)
+        prefix = "freeze-" + label + "-81"
+        values = {"FREEZE_CHECKOUT": checkout, "FREEZE_PY": wrapper, "FREEZE_EVIDENCE": evidence,
+                  "FREEZE_C0": c0, "FREEZE_LABEL": label, "FREEZE_PREFIX": prefix}
+        fence = self.freeze_fence()
+        for key, value in values.items():
+            fence = re.sub(r"(?m)^" + key + r"=.*$", lambda _: key + "=" + shlex.quote(str(value)), fence)
+        result = subprocess.run(["/bin/zsh", "-f"], input=fence, cwd=self.root,
+                                env={**self.git_env, "FREEZE_CASE": case}, capture_output=True,
+                                text=True, check=False, timeout=30)
+        return result, evidence, prefix
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_literal_freeze_fence_refuses_hidden_bytes_c1_diff_and_failed_suite(self):
+        cases = (("draft", "c0-draft", None), ("flip", "c0-flip-only", None), ("frozen", "c1", None),
+                 ("before_filter", "c0-draft", "author:tracked_bytes"),
+                 ("after_filter", "c0-draft", "author:tracked_bytes"),
+                 ("extra_c1_path", "c1", "author:c1_diff"), ("suite_failure", "c0-draft", "FAILED"),
+                 ("case_rename", "c0-draft", "author:worktree_state"),
+                 ("head_move", "c0-draft", "author:head_changed"),
+                 ("contract_rewrite", "c0-flip-only", "contract:settings_changed"))
+        for case, label, code in cases:
+            with self.subTest(case=case):
+                result, evidence, prefix = self.mini_fence(case, label)
+                self.assertEqual(result.returncode, 0 if code is None else 2, result.stdout + result.stderr)
+                if code is not None:
+                    self.assertIn(code, result.stdout)
+                self.assertEqual((evidence / ("session-" + prefix + ".zsh")).exists(), code is None)
+                self.assertEqual((evidence / (prefix + "-suite.exit")).exists(),
+                                 case not in {"before_filter", "case_rename"})
 
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ binding:acceptance_mismatch binding:exit_mismatch binding:starts binding:trial_i
 binding:start_code_or_certificate binding:criteria_set binding:criterion_status binding:prefix_counts
 binding:prefix_records binding:prefix_reasons binding:unexercised_variants run:state_not_certifications_only
 runtime:check_failed author:worktree_state author:cache_present author:census_stderr author:census_failed
-author:head_changed author:c0_head_mismatch
+author:head_changed author:c0_head_mismatch author:tracked_bytes author:c1_diff
 consent:text consent:identifiers notice:record notice:date notice:reference""".split())
 
 FIXED_PAIRS = {
@@ -1250,6 +1250,38 @@ def command_author_state(args):
     print(json.dumps({"status": "accepted", "worktree_state": state}, sort_keys=True))
 
 
+def command_author_bytes(args):
+    need(len(args) == 1 and args[0] in {"c0-draft", "c0-flip-only", "c1"})
+
+    def git(*arguments):
+        result = subprocess.run(["git", *arguments], capture_output=True, check=False)
+        need(result.returncode == 0, "author:tracked_bytes")
+        return result.stdout
+
+    try:
+        tree = git("ls-tree", "-rz", "--full-tree", "HEAD")
+        need(bool(tree) and tree.endswith(b"\0"), "author:tracked_bytes")
+        checked = skipped = 0
+        for row in tree.split(b"\0")[:-1]:
+            metadata, separator, name = row.partition(b"\t")
+            fields = metadata.split()
+            need(separator and len(fields) == 3 and fields[0] in {b"100644", b"100755"}
+                 and fields[1] == b"blob" and re.fullmatch(rb"[0-9a-f]{40}", fields[2]), "author:tracked_bytes")
+            path = Path(os.fsdecode(name))
+            need(name and not path.is_absolute() and ".." not in path.parts
+                 and stat.S_ISREG(path.lstat().st_mode), "author:tracked_bytes")
+            if args[0] == "c0-flip-only" and name == b"research/experiments/backtest-p0-bsp-v1.json":
+                skipped += 1
+                continue
+            need(git("hash-object", "--no-filters", "--", os.fsdecode(name)).strip() == fields[2],
+                 "author:tracked_bytes")
+            checked += 1
+        need(checked > 0 and skipped == int(args[0] == "c0-flip-only"), "author:tracked_bytes")
+    except (OSError, subprocess.SubprocessError):
+        raise ExtractorRefusal("author:tracked_bytes") from None
+    print(json.dumps({"status": "accepted", "checked": checked, "skipped": skipped}, sort_keys=True))
+
+
 def command_author_suite(args):
     need(len(args) == 3)
     root, prefix, label = Path(args[0]), args[1], args[2]
@@ -1269,6 +1301,7 @@ def command_author_suite(args):
     git = (root / (prefix + "-git.txt")).read_text().splitlines()
     diff = root / (prefix + "-diff.txt")
     paths = diff.read_text().splitlines()
+    need(label != "c1" or paths == ["research/experiments/backtest-p0-bsp-v1.json"], "author:c1_diff")
     print(json.dumps({
         "status": results[0] if len(results) == 1 else "unclassified",
         "tests": int(totals[0]) if len(totals) == 1 else None,
@@ -1382,7 +1415,7 @@ COMMANDS = {
     "reconciled": (1, command_reconciled), "notice": (1, command_notice), "consent": (3, command_consent),
     "job-pattern": (1, command_job_pattern), "recovery-attempt": (2, command_recovery_attempt),
     "author-state": (4, command_author_state), "author-suite": (3, command_author_suite),
-    "author-interpreter": (0, command_author_interpreter),
+    "author-interpreter": (0, command_author_interpreter), "author-bytes": (1, command_author_bytes),
 }
 
 

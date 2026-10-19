@@ -2,7 +2,7 @@
 
 Prepared **2026-10-10**. Order-path design and operating guide, not evidence of profitability. No credentials existed, no order was placed and no live call was made when this was written.
 
-**預設 paper；live 要全部條件齊、人喺終端機逐張打返，任何未知結果先對數、唔重發。**
+**預設 paper；live 要全部條件齊、人喺終端機逐張打返，任何未知結果先對數、唔重發。**（RS-19 例外：登記咗嘅 pilot executor 嘅單唔使逐張打，由 Yu 每個 racing day 打嘅 `PILOT ARM` 行加 decision record 代替；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。）
 
 呢份文件講 `betangel_research/betfair` 點樣落單、取消、對數、人手 settle 同 kill；改單（replace）只限 paper。v1 嘅 live 範圍喺 2026-10-10 收窄咗（§1，[amendment A3](../.team-work/betfair-exchange-20261010/amendment-v1-live-scope.md)）。Setup、Keychain、state root 同讀資料喺 [接入指南](betfair-integration.md)；外部事實（F-id）喺 [fact register](betfair-facts.md)。威脅模型（擋到咩、擋唔到咩）見 [接入指南 §2](betfair-integration.md#2-threat-model)：一個以 Yu 嘅 macOS user 身份刻意作惡嘅 process 唔喺保護範圍內。
 
@@ -10,7 +10,7 @@ live 安全靠以下七樣嘢，冇一樣係靠 app key 類型：
 
 1. 預設 paper。live 要每個命令都明確寫 `--mode live`，**同時** config 要 arm 咗。
 2. 只有一個 choke point：`gateway.py`。每個 capability 綁定準確 request body bytes 嘅 sha256；transport 拒絕任何唔係讀取、又冇對應 digest 嘅 JSON-RPC call。
-3. 每張 live 單，Yu 都要喺 `/dev/tty` 打返一次。
+3. 每張 live 單，Yu 都要喺 `/dev/tty` 打返一次。RS-19 pilot 單例外：Yu 每個 racing day 喺 `/dev/tty` 打一次 `PILOT ARM` 行，每張 pilot 單由 policy §4 嘅 decision record 代替逐張打（E1）；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。
 4. 每部 Mac 一個固定 state root，喺所有 worktree 以外；kill file 同 gateway lock 係全域；journal anchor 放 Keychain；每次 live 開始都同 exchange 對數。
 5. Journal 只可以加、唔可以改，有 hash chain；每條紀錄喺任何 byte 出網之前用 `F_FULLFSYNC` commit。
 6. 未知結果永遠唔當零。UNKNOWN、ABSENT_UNCONFIRMED（同 paper 嘅 provisional replace child）用全額不利 exposure 計，未解決之前唔准再落新單；永遠唔會自動重發。Live 嘅 exchange 證據只可以證明一張 bet 存在、提高已知 matched size，永遠唔會降低計住嘅 worst case；冇任何嘢會自動 settle 一張 live 單（§8）。
@@ -23,7 +23,7 @@ live 安全靠以下七樣嘢，冇一樣係靠 app key 類型：
 | 點樣揀 | 唔使做嘢 | 每個命令都要 `--mode live`，而且 `orders.live.armed: true`；config 自己揀唔到 live |
 | Gateway | 用 `rpc=None` 起，結構上去唔到任何落單 endpoint | `rpc.app_key_slot == "live"`，`read` 包同一個 rpc |
 | Book 來源 | snapshot 檔、recording，或者 delayed key 讀取（只有讀 call） | gateway 自己用 live key 攞；`--book` 會被拒 |
-| 落單來源 | `cli_manual` 或者程式 API `source="api"` | 只限 `cli_manual`；`api` 會 `OrderRefused("api_source_paper_only")` |
+| 落單來源 | `cli_manual` 或者程式 API `source="api"` | 只限 `cli_manual`；`api` 會 `OrderRefused("api_source_paper_only")`。RS-19 例外：`pilot` 只喺 PA1–PA4 同 R13 全部過先收（E3），`api` 照舊只限 paper；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊 |
 | Journal | `orders/journal-paper.sqlite` | `orders/journal-live.sqlite` |
 | 提示 | | 每個提示之前喺 stderr 印 `MODE=LIVE` |
 
@@ -144,6 +144,15 @@ Exit 5 嘅情況同訊息（JSON 照印，之後先 exit）：
 | `kill`（own scope） | 只要 A4 同 A13 嘅 state-root 部分；**唔攞、唔等 `.gateway.lock`**。kill file 同 journal HALT 喺任何檢查之前已經寫好；login 係 emergency login |
 | `kill --scope account` | 再加 A11 同打一句確認（§9） |
 | `resume`（live） | A2、A11、A13；kill file 一定要已經唔存在 |
+| `pilot-register`（RS-19） | Yu 打 `REGISTER PILOT` 行，policy §14 第 3 步之後：A2、A11、A13；寫 registration receipt |
+| `PILOT ARM` 行（RS-19） | Yu 每個 racing day 打一次：A2、A11、A13；開一個 session（policy §3） |
+| `pilot-run --mode live`：決定同落單（RS-19） | executor，喺 arm 咗嘅 session：每次 placement open 都過 A1–A19、PA1–PA4、R1–R13、policy §4–§6 同 §5 嘅 first-byte gate |
+| `pilot-run`：剩餘取消（RS-19） | executor：`cancel` 嗰套（A4、A5、A8、A10、A12–A15，只要 login）；HALT 同 KILL 期間照行；冇 PA gate；只可以整張取消自己嘅 pilot 單；KILL 期間跟 policy §8 |
+| `pilot-run` 入面嘅 `SETTLE MARKET`（RS-19） | Yu 喺 settle point 打：`settle-market` 嗰套，再加 policy §8 嘅 settle-point 規則 |
+| `pilot-capture`（RS-19，只讀） | session 入面由 executor 喺 placement open 之間跑；session 之後 Yu 打（policy §11）：唔使 arming 行、乜都唔送、唔郁單嘅狀態或者 exposure；有 session arm 住嗰陣 Yu 自己跑會被拒 |
+| `PILOT ACK` 行（RS-19） | Yu 打：A2、A11、A13；清一個 review stop |
+
+RS-19 嗰幾行（`pilot-*` 同 `PILOT …`）只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先存在；之前冇呢啲命令，表入面其他行照舊。
 
 Live `replace` 冇 arming：喺任何檢查之前已經拒絕（§1）。`status`、`journal`、`doctor`、`keychain-setup` 同 `init-config` 全部離線，唔使 arming。
 
@@ -179,10 +188,10 @@ flowchart LR
 
 1. CLI 解析參數。錢同價錢用 `ticks.parse_money`／`parse_price`；`nan`、`inf`、`1e1`、≤ 0 全部拒絕。
 2. `static_arming`；有任何失敗就拒絕，exit 2。
-3. 叫操作者確認（`gateway.preconfirm`）：喺 `open()` 攞 lock **之前**，`confirmer.confirm_line(order_echo_line(...), banner=LIVE_BANNER)`，stderr 先印 `MODE=LIVE`。打好嘅行留喺嗰個 gateway object；`place` 用一次就消耗，並 journal 做 `operator_confirm`（`typed_before_lock: true`）。冇打過嘅行會 `OrderRefused("operator_confirmation_missing")`。咁樣一個冇人答嘅提示唔會攞住全域 lock、擋住另一個 process 嘅 kill。
+3. 叫操作者確認（`gateway.preconfirm`）：喺 `open()` 攞 lock **之前**，`confirmer.confirm_line(order_echo_line(...), banner=LIVE_BANNER)`，stderr 先印 `MODE=LIVE`。打好嘅行留喺嗰個 gateway object；`place` 用一次就消耗，並 journal 做 `operator_confirm`（`typed_before_lock: true`）。冇打過嘅行會 `OrderRefused("operator_confirmation_missing")`。咁樣一個冇人答嘅提示唔會攞住全域 lock、擋住另一個 process 嘅 kill。RS-19 pilot 單冇呢步：冇逐張打嘅行，由 session 嘅 `PILOT ARM` 行加 policy §4 嘅 decision record 代替（E1）；reservation、fetch 同 decision 全部喺 `open()` 之後、lock 之下做；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。
 4. `gateway.open()`：再跑一次 static arming；攞全域 `.gateway.lock`（最多等 `order_deadline_s + 5` 秒；成個 process 期間都持有；`kill` 永遠唔攞，§9）；驗 journal hash chain；喺 lock 之下再對一次 Keychain anchor（A13，先讀 Keychain 後讀 journal head）；fold 入面 SUBMITTING 嘅單變 UNKNOWN（`crash_between_submit_and_report`），仲係 RECORDED 嘅單變 REFUSED（`crash_before_submit`：submit 一定喺任何 byte 之前 journal，所以未有 submit 嘅單一定冇送過）；兩樣都係 compare-and-append，對住 fold 之前讀嘅 head（round 4：一個 `.gateway.lock` 檔被換咗嘅 gateway 可以喺 fold 同 append 之間 journal 自己嘅 submit，以前會將一張送緊嘅單變 REFUSED、零 exposure），head 郁咗就乜都唔寫，單留喺原位（SUBMITTING 照讀做 UNKNOWN，RECORDED 嘅落單唔計 exposure），下一次 open 再做；login；檢查 account registry；`startup_reconcile`（§7）；`place` 同 `live-probe` 再為每張 UNKNOWN 單跑 `reconcile_unknown`（最新嗰張先；成個 open 最多 120 秒；只 fold 一次揀單，之後每對完一張先再 fold，所以成本跟 unresolved 單數，唔跟 journal 有幾多張單；KILL file 一出現就停，張單保持 UNKNOWN、照全額不利計，唔同 kill 爭 F18 嘅 3 個 concurrency；對到之前嘅單係 live bet，呢次落單就會被拒，`earlier_unknown_resolved_at_open`，§1）；最後經 `publish_anchor` 將 journal head 寫入 Keychain anchor（§7）。寫唔到 anchor 嘅話，`place`、`live-probe`、`reconcile --accept` 同 `settle-market` 拒絕（`journal_anchor_write_failed`；佢哋等另一個寫 anchor 嘅人最多 `credentials.ANCHOR_PUBLISH_WAIT_S`，30 秒）；`cancel` 同 `reconcile` 照做，記低 note，而且最多只等 `killswitch.JOURNAL_BUSY_TIMEOUT_S`（2 秒），因為佢哋等緊嘅時候攞住 `.gateway.lock`、cancel 未送（§7）。
 5. 用 `getAccountFunds` 攞新 funds（journal 做 `funds_check`）。Funds 喺 book **之前**讀（amendment C2）：book 嘅年齡窗口限住送單時間，所以呢個窗口只需要包 risk decision、journal append 同連線，唔使包 funds 嗰個 round trip。
-6. 自己攞 book：`read.market_snapshot(market_id, fetched_by="gateway_self_fetch")`，用 live key。Book 喺操作者打完之後先攞；按 monotonic clock 或者 wall clock 已經舊過 `max_book_age_s` 就再攞一次（V10 同 A18 亦兩個時鐘都要過）。之後 `dynamic_arming`（連 A18）、`validate_place` 同 `guard.evaluate_place`（§6）。被拒就 journal `intent` 同 `risk_decision(refused)`，exit 2。
+6. 自己攞 book：`read.market_snapshot(market_id, fetched_by="gateway_self_fetch")`，用 live key。Book 喺操作者打完之後先攞；按 monotonic clock 或者 wall clock 已經舊過 `max_book_age_s` 就再攞一次（V10 同 A18 亦兩個時鐘都要過）。之後 `dynamic_arming`（連 A18）、`validate_place` 同 `guard.evaluate_place`（§6）。被拒就 journal `intent` 同 `risk_decision(refused)`，exit 2。RS-19 pilot 單冇人逐張打：send book 喺 policy §4 嘅 PLACE record 之後先攞，照樣過 A18、V0–V14 同 V9b，再加 V13，off 要同 record 一樣；決定只由 decision book 做，唔會用 send book 重新決定；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。
 7. 砌 params，`prepared = rpc.prepare_order(PLACE_METHOD, params)`。
 8. `cap = guard.issue(decision, prepared, now_monotonic_ns=...)`：TTL 5 秒，綁 `prepared["body_sha256"]`。
 9. Journal `submit`（body sha、refs、decision id、params），用 `F_FULLFSYNC` commit。寫之前查兩樣，任何一樣唔啱就唔送、單變 REFUSED：(a) `.gateway.lock` 個 path 仲係指住我哋鎖住嗰個檔（`gateway_lock_lost`，live 會 HALT；例如有人當佢係舊 lock 刪咗，第二個 gateway 鎖咗個新檔）；(b) 由 risk guard fold 嗰刻到而家，journal 入面只有呢張單自己嘅 event（`journal_changed_since_decision`）。`submit` 本身係 compare-and-append：喺同一個 `BEGIN IMMEDIATE` 入面對 head，所以查完同寫之間冇嘢插得入。拒絕嘅 `risk_decision` 將呢個 request 自己未送嘅 ref 變 REFUSED；另一個 gateway 已經 REFUSED 咗嘅 ref（佢 open 時嘅孤兒 pass）就照留，唔會令 append 失敗（round 4）。
@@ -224,11 +233,11 @@ flowchart LR
 - `TtyConfirmer.require_present()`：stdin 一定係 tty，`/dev/tty` 一定讀寫得；否則 `NotPresent("operator_tty_required")`。
 - `confirm_line(expected, banner=...)`：先清走預先打咗嘅字，喺 `/dev/tty` 寫 banner 同 `Type exactly: <expected>`，再由 `/dev/tty` 讀一行（最多 1024 bytes）；`.strip()` 之後要完全一樣，否則 `OrderRefused("operator_echo_mismatch")`。`answer_timeout_s`（預設 120 秒）之內冇答完就 `OrderRefused("operator_echo_timeout")`。
 - 落單要打嘅一行，例如 `1.234567 12345 LAY 1.01 1.00`（market、selection、side、price、size）。Live replace 刪咗，冇 replace 嘅句子；paper 乜都唔使打。Live cancel 冇句子，即刻送。
-- 其他要打嘅句子：`PROBE <market> <selection> LAY 1.01 1.00`、`ACCEPT ABSENT <ref>`、`SETTLE MARKET <market>`（先印 §8 嘅 banner，列晒我哋喺嗰個 market 嘅單同 worst case）、`RESUME LIVE`、`RESET LOGIN FAILURES`、`CANCEL ALL UNMATCHED ON ACCOUNT INCLUDING BET ANGEL STOPS`。
+- 其他要打嘅句子：`PROBE <market> <selection> LAY 1.01 1.00`、`ACCEPT ABSENT <ref>`、`SETTLE MARKET <market>`（先印 §8 嘅 banner，列晒我哋喺嗰個 market 嘅單同 worst case）、`RESUME LIVE`、`RESET LOGIN FAILURES`、`CANCEL ALL UNMATCHED ON ACCOUNT INCLUDING BET ANGEL STOPS`。RS-19 pilot 加三句：`REGISTER PILOT <contract12> <code12>`、`PILOT ARM <contract12> <YYYYMMDD> UNTIL <HHMM>Z`、`PILOT ACK <contract12> <stop-id>`（policy §3、§6）；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。
 - Banner 講真話（round 4）：`LIVE_BANNER`（`MODE=LIVE: this sends a real order to Betfair with real money.`）只用喺落單同 probe。`ACCEPT ABSENT` 嘅 banner 由一次唯讀 fold 砌：`MODE=LIVE: ACCEPT ABSENT sends no order. It stops counting order <ref> (market <M> sel <s> <side> @ <price> size <size>, now <state>, worst case £x.xx) as possibly live, and lets new orders through. Do this only after the Betfair website or Bet Angel shows no such bet.`（journal 冇呢張單就喺打句子之前拒絕，`accept_unknown_order`）。`RESUME LIVE`：`MODE=LIVE: RESUME sends no order. It clears the journal HALT as of journal seq <n> (halt reasons: …); after it, live place and live-probe can send orders again once every other arming condition passes.` Account-wide 嗰句：`MODE=LIVE: this cancels every unmatched bet on the Betfair account, Bet Angel's included; matched bets cannot be undone.` `RESET LOGIN FAILURES` 嘅 banner 講明 ban 唔會清、修壞行會開一個 20 分鐘、連 kill 都擋嘅 ban（§9 第 7 步）。
 - `place`、`live-probe`、`reconcile --accept` 同 `settle-market` 嘅句子喺 `open()` 攞 lock 之前打（`OrderGateway.preconfirm`，§3）。Account-wide 嗰句係 spec 要求喺 kill 開咗之後先打；kill 唔攞 lock，所以呢個提示唔會擋住任何人，`answer_timeout_s` 照樣做後備。
 
-**佢證明到咩、證明唔到咩。** 佢令 cron、CI、agent、冇 tty 嘅 script 落唔到 live 單，亦令每張單都要人睇過內容先出。佢唔係密碼學證明：一個以 Yu 身份運行、刻意作惡嘅 process 可以假扮 pty。佢只係拖慢自動化，唔係認證。
+**佢證明到咩、證明唔到咩。** 佢令 cron、CI、agent、冇 tty 嘅 script 落唔到 live 單，亦令每張單都要人睇過內容先出。佢唔係密碼學證明：一個以 Yu 身份運行、刻意作惡嘅 process 可以假扮 pty。佢只係拖慢自動化，唔係認證。RS-19 pilot 單例外：Yu 成個 session 喺終端機前面睇住，但唔會逐張睇；每張單嘅內容由 policy §4 嘅 decision record 定。打行仍然只係摩擦，所以禁止 agent 同 script 起 `pilot-run` 或者打 pilot 句子嘅係 policy 本身（policy §3）；只喺 [pilot policy](betfair-pilot-policy.md) 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。
 
 ## 5. Lifecycle state machine
 
@@ -628,6 +637,7 @@ python3 -m betangel_research.betfair live-probe --market <id> --selection <id> -
 ## 15. No strategy may auto-trade
 
 - 冇任何策略可以自動落 live 單。程式 API（`OrderGateway`，`source="api"`）**只限 paper**，留畀將來凍結咗嘅實驗做模擬；live 用就係 `OrderRefused("api_source_paper_only")`。要開放 live 程式落單，一定要先改 `AGENTS.md`，而且要 Yu 批准。
+- **RS-19 例外（pilot executor）。** [Pilot policy](betfair-pilot-policy.md) 登記咗嘅 pilot executor 可以為 Yu 登記嘅一份 contract 計 live 決定，經 order gateway 送出（intent source `pilot`），只限 Yu arm 咗、本人睇住嘅 session；其他策略、agent、script 或者 scheduler 一律唔得。呢個例外只喺嗰份 policy 之下、過齊佢 §14 嘅批准之後先適用；之前行為照舊。`source="api"` 照舊只限 paper。
 - `test_betfair_boundaries` 用 AST 掃 `betangel_research/betfair/*.py`（唔 import）：落單 method literal（`placeOrders`、`cancelOrders`）只喺 `gateway.py`；`replaceOrders`、`updateOrders` 同 `HeartbeatAPING` 邊度都冇；`risk.ACTION_VERBS` 冇 `replace`；`hedge_credit=True` 只喺 §6 列出嘅地方；`send_gate`／`send_by_monotonic_ns` 只由落單路徑傳入；`_mint` 只喺 `risk.py` call；`OrderCapability` 只喺 `capability.py` 建立；`reveal()` 只喺 transport、auth、esa、credentials、killswitch、gateway；`transport.request` 只喺 auth 同 api；`order_digest=` 只喺 api；`gateway` 只畀 `cli` import；只用標準庫；冇 `logging`；root modules 唔 import betfair；`betfair/__init__.py` 冇 import；`__main__` 有 guard；冇 `frozen_experiment` 字串。
 - Root package（replay、motifs、collector）唔 import betfair；collector 嘅 Fly image 經 S0 之後唔包 betfair。
 
@@ -648,4 +658,4 @@ python3 -m betangel_research.betfair live-probe --market <id> --selection <id> -
 
 **刻意刪咗（v1 live 收窄，Yu 2026-10-10 決定）：** live replace（同 `live-probe --replace-step`、T11）；live 減 size 嘅 cancel；自動 live settlement（由 cleared rows close 或 settle、`pnl_basis_mismatch`），改用人手 `settle-market`；live 嘅 hedge credit；kill 等 `.gateway.lock`、kill 嘅 `sourceIdKey` 腿同 `kill_file_only`。Paper 保留 replace、減 size 同 settlement model。
 
-**未做：** 未落過任何 live 單；first-live-test 只做咗 2026-10-13 嘅 delayed-key 讀取（T1、T4、T6、T7、T8 嘅一部分，[fact register](betfair-facts.md#first-live-test-checklist)），落單嗰啲（T9、T10）未做；冇 order stream；冇 live 程式 API；冇 Heartbeat API；冇 in-play 或其他 order 類型；live 只限 UK `.com` 同 GBP；Betfair 唔再返嘅 CLOSED market 喺 v1 settle 唔到，worst case 一直計住（Yu 2026-10-11 決定保留，CLOSED 之後盡快 settle，§8；amendment A20）。Shared-file patch S0（`AGENTS.md`、`betangel_research/__init__.py`、`.gitignore`、`.dockerignore`）已經套用（Yu 同 Codex 同意，獨立 commit）；merge 去 main 之前仲要過 merge gate（`BETANGEL_BETFAIR_MERGE_GATE=1`，見 handoff）。
+**未做：** 未落過任何 live 單；first-live-test 只做咗 2026-10-13 嘅 delayed-key 讀取（T1、T4、T6、T7、T8 嘅一部分，[fact register](betfair-facts.md#first-live-test-checklist)），落單嗰啲（T9、T10）未做；冇 order stream；冇 live 程式 API（RS-19 嘅 pilot executor 只係 [pilot policy](betfair-pilot-policy.md) 入面嘅設計，代碼仲未寫；佢只喺嗰份 policy 之下、過齊佢 §14 嘅批准之後先可以落 live 單）；冇 Heartbeat API；冇 in-play 或其他 order 類型；live 只限 UK `.com` 同 GBP；Betfair 唔再返嘅 CLOSED market 喺 v1 settle 唔到，worst case 一直計住（Yu 2026-10-11 決定保留，CLOSED 之後盡快 settle，§8；amendment A20）。Shared-file patch S0（`AGENTS.md`、`betangel_research/__init__.py`、`.gitignore`、`.dockerignore`）已經套用（Yu 同 Codex 同意，獨立 commit）；merge 去 main 之前仲要過 merge gate（`BETANGEL_BETFAIR_MERGE_GATE=1`，見 handoff）。

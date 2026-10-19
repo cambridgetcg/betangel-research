@@ -1,0 +1,319 @@
+{
+  "bsp": {
+    "cutoff_hours_after_off": 24,
+    "otherwise": "no BSP; NaN, Infinity and a missing value count as none; reads before CLOSED, and corrections after it, are logged and never used",
+    "source": "raw listMarketBook with SP_TRADED",
+    "valid_if": [
+      "finite and above 1",
+      "our runner WINNER or LOSER in it",
+      "bspReconciled true"
+    ],
+    "value": "actualSP from the first raw read that shows the market CLOSED"
+  },
+  "caps": {
+    "config_names": "orders.caps.<name without its unit suffix>, and orders.rules.external_exposure_tolerance; the config writes money in pounds and max_book_age_s in seconds",
+    "external_exposure_tolerance_p": 0,
+    "max_book_age_ms": 2000,
+    "max_daily_loss_p": 5000,
+    "max_instructions_per_request": 1,
+    "max_liability_per_order_p": 200,
+    "max_market_exposure_p": 200,
+    "max_minutes_before_off": 10,
+    "max_orders_per_day": 25,
+    "max_orders_per_hour": 12,
+    "max_orders_per_minute": 2,
+    "max_price_deviation_ticks": 2,
+    "max_stake_per_order_p": 200,
+    "max_total_exposure_p": 2000
+  },
+  "commission_rate": "0.02",
+  "customer_strategy_ref": "p1-fav-t5",
+  "drawdown": {
+    "ack": "The stop-id names the threshold and the peak it was measured from; the ACK disarms that threshold for that peak only, and placing may go on until the next threshold. A disarmed threshold re-arms only when equity sets a new peak above every earlier one. Equity and the peak are never reset, caps are never edited, and a higher threshold is never waived. The fold rebuilds peaks, stops and ACKs from the journal.",
+    "at_threshold": "a PLACE whose -200p would reach an armed threshold becomes SKIP(drawdown); the stop is journaled at once",
+    "basis": "peak to trough: peak equity minus current equity, from the first registration; the peak starts at 0p and both carry over to a new registration or a replacement contract",
+    "new_place_counted_at_p": -200,
+    "thresholds": [
+      {
+        "drawdown_p": 30000,
+        "stop": "a session stop and a review stop, at once",
+        "to_continue": "Yu's written review and PILOT ACK"
+      },
+      {
+        "drawdown_p": 60000,
+        "stop": "HALT and a review stop",
+        "to_continue": "Yu's written review, PILOT ACK and RESUME LIVE"
+      },
+      {
+        "drawdown_p": 100000,
+        "stop": "kill, and the contract ends",
+        "to_continue": "never: it never re-arms"
+      }
+    ]
+  },
+  "endings": {
+    "final_date": "2027-06-30",
+    "placing_ends_at_first_of": [
+      "N reached: the first 400 eligible bets in decision order are final, and so is every earlier PLACE record",
+      "the lifetime cap",
+      "the 100000p drawdown stop",
+      "the final date",
+      "any breach of the policy",
+      "Yu withdrawing it in writing"
+    ],
+    "protocol_violation": "ends placing at once"
+  },
+  "final_execution": {
+    "after_final": "later reads and corrections (C, L, CLOSED or BSP) are logged and never change a final record",
+    "agreement": "exact: sizes and prices as written in the raw JSON, parsed with Decimal (never through float); they agree only if exactly equal, with no rounding; PT1 and PT4 cannot choose a tolerance",
+    "canonical_observation": "the earliest qualifying observation by durable capture sequence in the journal, never by loading order; for C the earliest read showing EXECUTION_COMPLETE; for L the earliest logged row, usable from the PT receipt; later observations are logged as corrections and never replace it",
+    "consistency_check": "the final matched size is at least the place report's, and matched + cancelled + lapsed + voided size equals 200p, the four sizes from C when C is read; a failure makes the size unresolved and sets a review stop",
+    "deadline_days_after_off": 7,
+    "removal_first": "a bet already classed void or post_decision_removal is not price-compared",
+    "sources": {
+      "C": "listCurrentOrders once the bet is EXECUTION_COMPLETE, read before its market settles; sizeMatched and averagePriceMatched at full precision",
+      "L": "listClearedOrders after Betfair settles; sizeSettled, priceMatched and priceReduced; counts as read only once a PT1 or PT4 receipt has verified those fields against the website"
+    },
+    "table": [
+      {
+        "final_size_and_P": "L's sizeSettled and priceMatched",
+        "final_when": "when L is read",
+        "read_by_deadline": "C and L: sizes and prices exactly equal, priceReduced false"
+      },
+      {
+        "final_size_and_P": "none: measurement_unresolved",
+        "final_when": "when L is read",
+        "read_by_deadline": "C and L: anything else"
+      },
+      {
+        "final_size_and_P": "C's sizeMatched and averagePriceMatched",
+        "final_when": "at the deadline; pending until then",
+        "read_by_deadline": "C only"
+      },
+      {
+        "final_size_and_P": "L's sizeSettled and priceMatched if priceReduced is false; else measurement_unresolved",
+        "final_when": "when L is read",
+        "read_by_deadline": "L only"
+      },
+      {
+        "final_size_and_P": "none: measurement_unresolved",
+        "final_when": "at the deadline",
+        "read_by_deadline": "neither"
+      }
+    ]
+  },
+  "frozen_on": null,
+  "id": "p1",
+  "inference": {
+    "G": "the number of dates with at least one sample bet",
+    "alpha_one_sided": "0.025",
+    "below_min_clusters": "G < 15 gives INCONCLUSIVE: too_few_clusters",
+    "cluster": "the UTC date of the decision time",
+    "critical_value": "the 97.5% point of Student's t with G - 1 degrees of freedom",
+    "fail": "m + t * SE < 0",
+    "limitation": "CR1 with t(G-1) is a common minimum correction; it does not give exact coverage with few clusters (Cameron and Miller 2015, section VI)",
+    "mean": "m = sum(x_i) / N",
+    "min_clusters": 15,
+    "min_clusters_at_the_day_limit": 16,
+    "otherwise": "INCONCLUSIVE",
+    "pass": "m >= t * SE",
+    "se_zero_or_undefined": "INCONCLUSIVE: se_undefined",
+    "standard_error": "CR1: SE^2 = G/(G-1) * sum_g [sum_{i in g} (x_i - m)]^2 / N^2"
+  },
+  "intent_source": "pilot",
+  "ledger": {
+    "S_loser": "minus the final matched stake",
+    "S_requires": [
+      "Yu's typed settle-market for the market succeeded",
+      "the final execution record is resolved",
+      "the CLOSED read shows one WINNER, our runner WINNER or LOSER, no void and no runner removed after the decision",
+      "Betfair's per-bet profit is present and the commission check passed",
+      "the PT4 receipt exists"
+    ],
+    "S_winner": "gross = final matched size x (P - 1), P at full precision, floored to the penny; commission = commission_rate x the positive market gross, rounded up to the penny; net = gross - commission; the value is the lower of our net and Betfair's per-bet profit minus that commission",
+    "W": "minus the final matched stake if the final execution record gives it, else -200p; a resolved zero match is 0p, including a record with no submit event or FAILED(transport_not_sent)",
+    "always_w": [
+      "a dead heat",
+      "a void",
+      "any runner removed after the decision",
+      "an unknown result, price or size",
+      "any settlement that cannot be verified"
+    ],
+    "equity": "the sum of one value per PLACE record, each in exactly one part: W (worst case, the default) or S (settled and verified)",
+    "gap_tolerance_p": 1,
+    "over_tolerance": "the bet stays in W and a review stop is set, from the first bet, PT4 included"
+  },
+  "measurement_classes": {
+    "definitions": {
+      "definitely_unsent": "no submit event, or FAILED(transport_not_sent)",
+      "eligible": "none of the above",
+      "measurement_unresolved": "the final matched size, or a matched bet's price, is unresolved",
+      "missing_bsp": "no frozen BSP",
+      "post_decision_removal": "another runner ACTIVE in the decision book was later removed (seen in the CLOSED read or in L), whether or not a reduction factor changed our price; decided before any price comparison",
+      "protocol_violation": "it broke the policy or this contract",
+      "unmatched": "the final matched size is 0",
+      "void": "the market was voided, or our runner was removed"
+    },
+    "final_when": "the execution record is final and the BSP rule has decided, and at off + 7 days at the latest; anything still unknown then is measurement_unresolved; later reads never change a final class",
+    "order": [
+      "protocol_violation",
+      "definitely_unsent",
+      "void",
+      "post_decision_removal",
+      "measurement_unresolved",
+      "unmatched",
+      "missing_bsp",
+      "eligible"
+    ],
+    "rule": "Each PLACE record ends in exactly one class; the first that applies wins. Only eligible bets enter the primary; every other class is an exclusion, counted and reported."
+  },
+  "metric": {
+    "BSP": "the frozen BSP (bsp)",
+    "P": "the final execution record's price: L's priceMatched when C and L agree exactly, else that of the one source used",
+    "c": "commission_rate",
+    "estimand": "mean NCLV over eligible bets; conditional on filling",
+    "formula": "(1 + (P - 1) * (1 - c)) / BSP - 1",
+    "name": "NCLV",
+    "one_minus_c": "0.98",
+    "partial_fills": "eligible and unweighted; NCLV depends on the price, not the size",
+    "reading": "A positive mean is a commission-adjusted price advantage over BSP, assuming 1/BSP is a calibrated win probability for this population. It is not proof of positive expected profit."
+  },
+  "placement_limits": {
+    "counts": "PLACE records, not R6's submitted instructions; a PLACE takes its lifetime slot and day slot in its own append; a slot whose request was definitely not sent stays used",
+    "lifetime_place_records": 495,
+    "place_records_per_pt4_session_day": 5,
+    "place_records_per_utc_day": 25,
+    "reservations": "every reservation uses up its market, SKIP included; no reservation is ever released",
+    "when_full": "SKIP(cap)"
+  },
+  "plan": "docs/betfair-pilot-1-plan.md",
+  "policy": "docs/betfair-pilot-policy.md",
+  "reporting": {
+    "at_the_end_never_deciding": [
+      "the stake-weighted mean over the primary bets (s_i = final matched size) and the count of every class",
+      "the decision-price series: NCLV at the decision price for every PLACE record in the same decision range, sent or not, filled or not, with its own exclusions (void, post-decision removal, missing BSP)",
+      "surplus bets",
+      "raw CLV by price band and country",
+      "BSP calibration by band",
+      "profit after commission and the drawdown path, as plain tables"
+    ],
+    "data_lock": "the analysis waits until every PLACE record made before placing ended has its final class, or has passed off + 7 days; then it runs once, on the Air, in the terminal, and Astra recomputes it independently there; no earlier efficacy figure and no provisional PASS",
+    "interim": "operational counts and codes only, in the terminal: reservations; decisions; SKIPs by code; PLACE records; sends; refusals by rule; fills (full, partial, none); cancels; UNKNOWNs; settles; classes still pending; missing BSP; stops; sessions; no NCLV, profit, price-band or calibration figure",
+    "private_risk_view": "Yu only, on the Air: balance, exposure, the ledger and drawdown; never copied into Git or agent reports; it changes nothing in the analysis",
+    "publication": "nothing enters Git or reports/ unless Yu approves the exact fields and a test checks their projection",
+    "unplanned_looks": "logged; they cannot change the rule, inclusion, N or the threshold"
+  },
+  "rule": {
+    "decisions_per_market_for_the_contract_life": 1,
+    "evidence": "After the reservation, one fresh, uncached live-key listMarketCatalogue row with the MARKET_DESCRIPTION, EVENT_TYPE, MARKET_START_TIME and EVENT projections, then one decision book with isMarketDataDelayed false; no second fetch; a caller-supplied book, catalogue or country is refused",
+    "id": "P1-FAV-T5",
+    "market": {
+      "betting_type": "ODDS",
+      "country_codes": [
+        "GB",
+        "IE"
+      ],
+      "country_source": "event.countryCode in the fresh catalogue row",
+      "event_type_id": "7",
+      "market_type": "WIN",
+      "min_active_runners_in_decision_book": 5,
+      "number_of_winners": 1,
+      "price_ladder": "CLASSIC"
+    },
+    "off": "marketStartTime in the fresh catalogue row; the event's openDate is never the off",
+    "on_failed_predicate": "SKIP with a code",
+    "order": {
+      "instructions_per_request": 1,
+      "limit_price": "exactly the decision book's best back price; nothing is snapped",
+      "order_type": "LIMIT",
+      "persistence_type": "LAPSE",
+      "side": "BACK",
+      "size_p": 200
+    },
+    "remainder": "whole cancel of the unmatched remainder of the pilot order, straight after the place report (during a KILL, policy section 8 says when)",
+    "selection": {
+      "best_back_max_h": 400,
+      "best_back_min_h": 150,
+      "max_best_lay_ticks_above_best_back": 2,
+      "min_available_at_best_back_p": 1000,
+      "runner": "the only ACTIVE runner with the lowest best back price",
+      "tie": "SKIP"
+    },
+    "send_book": "V0-V14 and V9b as today, and V13 (no more than 2 ticks of movement); the selection is still ACTIVE; refused if the send book's market_time differs from the record's off; never re-decides",
+    "send_deadline_offset_s": -240,
+    "summary": "Back the clear favourite in a GB or IE horse-racing WIN market with at least 5 runners, about five minutes before the off, at its best back price, 200p flat, when that price is 1.50 to 4.00 and the book is deep and tight. Any unmatched part is cancelled at once. No retry, re-entry, lay or second runner.",
+    "window": {
+      "decision_book_observed_from_offset_s": -300,
+      "length_s": 15,
+      "outside": "SKIP(window)",
+      "text": "the decision book was observed from off - 300 s to off - 300 s + 15 s"
+    }
+  },
+  "sample": {
+    "analysis_population": "if N is reached, the PLACE records up to and including the 400th eligible one; otherwise every PLACE record; PT4 records reported apart are in neither",
+    "decision_order": "the journal sequence of each PLACE record's reservation; it never changes",
+    "late_completion": "a PLACE record made before placing ended may still complete N if it is final by the data lock",
+    "n_eligible": 400,
+    "primary": "the first 400 eligible bets in decision order; a bet counts only once every earlier PLACE record has its final class; placing stops there",
+    "pt4": {
+      "covers": "the PLACE records of every PT4 session, if PT4 repeats",
+      "joins_sample_if": "the first session after the PT4 receipt runs under PT4's registration receipt",
+      "otherwise": "reported apart; they still use their slots, and the sample starts after them"
+    },
+    "surplus": "PLACE records after the 400th eligible one, in decision order: finalised, counted and reported, outside the primary and the validity gates"
+  },
+  "schema": "betangel.pilot-contract/v1",
+  "status": "proposed",
+  "units": "Money in integer pence (_p), prices in integer hundredths (_h), durations in the unit their key names; rates and shares are decimal strings, read with Decimal.",
+  "validity_gates": {
+    "checked": "once, at the data lock, on the analysis population; they never end placing early",
+    "fill_rate": {
+      "definition": "bets with final matched size above 0 / sent bets whose final matched size is resolved",
+      "min": "0.80"
+    },
+    "measurement_unresolved_share": {
+      "definition": "measurement_unresolved / sent bets (every PLACE record except definitely_unsent)",
+      "max": "0.01"
+    },
+    "missing_bsp_share": {
+      "definition": "missing_bsp / (missing_bsp + eligible)",
+      "max": "0.02"
+    },
+    "zero_denominator": "there is no eligible bet: the gate is not evaluated, and the result is INCONCLUSIVE: insufficient_eligible_sample unless INVALID applies"
+  },
+  "values_yu_to_confirm": [
+    "/customer_strategy_ref",
+    "/commission_rate",
+    "/rule/window/length_s",
+    "/caps/max_total_exposure_p",
+    "/caps/max_daily_loss_p",
+    "/caps/max_orders_per_minute",
+    "/caps/max_orders_per_hour",
+    "/caps/max_orders_per_day",
+    "/caps/max_minutes_before_off",
+    "/caps/max_price_deviation_ticks",
+    "/caps/max_book_age_ms",
+    "/caps/external_exposure_tolerance_p",
+    "/placement_limits/lifetime_place_records",
+    "/placement_limits/place_records_per_pt4_session_day",
+    "/placement_limits/place_records_per_utc_day",
+    "/sample/n_eligible",
+    "/sample/pt4/joins_sample_if",
+    "/final_execution/deadline_days_after_off",
+    "/bsp/cutoff_hours_after_off",
+    "/inference/min_clusters",
+    "/validity_gates/measurement_unresolved_share/max",
+    "/endings/final_date",
+    "/drawdown/thresholds/0/drawdown_p",
+    "/drawdown/thresholds/1/drawdown_p",
+    "/drawdown/thresholds/2/drawdown_p"
+  ],
+  "verdict": {
+    "ending_before_n": "INCONCLUSIVE: insufficient_eligible_sample unless INVALID applies (the lifetime cap, a terminal safety stop, Yu abandoning it, or the final date); never an early PASS or a smaller-N test; the cap is never raised to rescue completion",
+    "order": [
+      "INVALID: a failed validity gate or a protocol violation",
+      "INCONCLUSIVE: insufficient_eligible_sample, when fewer than 400 eligible bets exist at the data lock",
+      "the inference test"
+    ]
+  }
+}

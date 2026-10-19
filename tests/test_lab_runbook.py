@@ -59,7 +59,8 @@ binding:start_code_or_certificate binding:criteria_set binding:criterion_status 
 binding:prefix_records binding:prefix_reasons binding:unexercised_variants run:state_not_certifications_only
 runtime:check_failed author:worktree_state author:cache_present author:census_stderr author:census_failed
 author:head_changed author:c0_head_mismatch author:tracked_bytes author:c1_diff
-consent:text consent:identifiers notice:record notice:date notice:reference""".split())
+consent:text consent:identifiers notice:record notice:date notice:reference
+parent:uninspectable parent:changed""".split())
 
 
 def current_interpreter():
@@ -394,12 +395,29 @@ class GateTests(ToolTest):
     def test_l1_layout_allows_only_the_exact_fresh_layout(self):
         state = self.census("state", status="absent")
         data = self.census("data", [(name, "d") for name in ("incoming", "raw", "manifests", "index")])
-        parent = self.census("parent", [("historic", "d")])
-        rc, text = self.invoke("l1-layout", state, data, parent)
-        self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(text)["reason"], "clean_layout")
-        self.census("state")
-        self.assertEqual(self.invoke("l1-layout", state, data, parent)[0], 0)
+        for names in (("historic",), ("historic-pro",), ("suite.noindex",),
+                      ("historic", "lab-state", "historic-pro", "suite.noindex")):
+            for status in ("absent", "present_and_empty"):
+                with self.subTest(names=names, state=status):
+                    self.census("state", status=status)
+                    parent = self.census("parent", [(name, "d") for name in names])
+                    rc, text = self.invoke("l1-layout", state, data, parent)
+                    self.assertEqual((rc, json.loads(text)),
+                                     (0, {"status": "accepted", "reason": "clean_layout"}))
+
+    def test_l1_optional_parent_names_require_exact_spelling_and_plain_directories(self):
+        state = self.census("state", status="absent")
+        data = self.census("data", [(name, "d") for name in ("incoming", "raw", "manifests", "index")])
+        entries = [(name, kind) for name in ("historic-pro", "suite.noindex") for kind in ("l", "-")]
+        entries += [(name, "d") for name in ("Historic-pro", "HISTORIC-PRO", "historic-pro2", "suite",
+                                            "Suite.noindex", "SUITE.NOINDEX", "suite.noindex.bak",
+                                            "old-historic-pro", "x.suite.noindex", "old-lab-state", "pre-historic")]
+        for name, kind in entries:
+            with self.subTest(name=name, kind=kind):
+                parent = self.census("parent", [("historic", "d"), ("lab-state", "d"), (name, kind)])
+                rc, text = self.invoke("l1-layout", state, data, parent)
+                self.assertEqual((rc, json.loads(text)),
+                                 (2, {"status": "refused", "reason": "parent_layout"}))
 
     def test_l1_history_unexplained_names_and_symlinks_fail_with_fixed_reasons(self):
         state = self.census("state", status="absent")
@@ -420,24 +438,58 @@ class GateTests(ToolTest):
             target.write_bytes(old)
 
     def test_census_knows_parent_names_but_redacts_unknown_and_hex_names(self):
-        raw = self.census("raw", [("historic", "d"), ("lab-state", "d"), (SHA, "d"),
-                                  ("market_1.987654321", "d")]).read_bytes()
+        raw = self.census("raw", [("historic", "d"), ("lab-state", "d"), ("historic-pro", "d"),
+                                  ("suite.noindex", "d"), (SHA, "d"),
+                                  ("market_1.987654321", "d"), ("historic-pro-1.987654321", "d"),
+                                  ("1.987654321.noindex", "d"), ("Historic-pro", "d")]).read_bytes()
         rc, text = self.publish("census", raw)
         self.assertEqual(rc, 0)
         value = json.loads(text)
         self.assertEqual([row["name"] for row in value["entries"]],
-                         ["historic", "lab-state", "unclassified", "unclassified"])
+                         ["historic", "lab-state", "historic-pro", "suite.noindex"] + ["unclassified"] * 5)
         self.assertNotIn(SHA, text)
+        self.assertNotIn("987654321", text)
+
+    def test_l1_l2_prose_keeps_optional_roots_separate_from_historic(self):
+        doc = (ROOT / "docs/backtest-plan.md").read_text()
+        section = doc.split("#### 2. L1：", 1)[1].split("#### 4.", 1)[0]
+        for sentence in (
+            "\ndata 正好 incoming/raw/manifests/index 四個 plain directories；"
+            "parent names 只准 historic/lab-state/historic-pro/suite.noindex。\n",
+            "historic-pro 同 suite.noindex 係 optional，所有 parent entries 仍須係 plain directories；"
+            "名稱 exact match，唔深入兩個新目錄。",
+            "Census projection 只公開已知名（包括 historic/lab-state/historic-pro/suite.noindex）、"
+            "type/size 同固定 refusal enum。",
+            "\nPRO TAR 仍留 historic/incoming；pro-ingest-01 已寫入獨立 historic-pro，historic 冇改。\n",
+            "\nL1 至 5a 期間，任何人都唔建立／移除呢兩個目錄，亦唔改佢哋嘅 mode。\n",
+        ):
+            self.assertEqual(section.count(sentence), 1, sentence)
+        self.assertNotIn("PRO TAR 留 incoming 未 ingest", section)
+        run = doc.split("#### 8. 第一個真 run", 1)[1].split("#### 9.", 1)[0]
+        self.assertEqual(run.count("PRO/其他 TAR 冇 ingest 入 historic；其他 archive、symlink、spill/partial、"
+                                   "hash/records lines 差異都停。"), 1)
+        self.assertNotIn("PRO/其他 TAR 未 ingest", run)
+        step5a = doc.split("#### 5a.", 1)[1].split("#### 5b.", 1)[0]
+        for line in (
+            "Restore L3 success。Pre block cmp L1 state；parent compare 只忽略 historic-pro 同 suite.noindex entry 嘅 size。",
+            "Parent census 嘅 name、type、mode、presence、行序同其餘欄位仍須相同。",
+        ):
+            self.assertEqual(step5a.count("\n" + line + "\n"), 1)
 
     def test_census_never_opens_entries_or_follows_symlinks(self):
         directory = self.root / "directory"
         directory.mkdir()
         target = self.write("secret", b"settlement_secret")
         (directory / "link").symlink_to(target)
-        with mock.patch.object(Path, "open", side_effect=AssertionError("census opened an entry")):
+        for name in ("historic-pro", "suite.noindex"):
+            self.write("directory/" + name + "/private.json", b"settlement_secret")
+        with mock.patch.object(Path, "open", side_effect=AssertionError("census opened an entry")), \
+                mock.patch.object(os, "scandir", wraps=os.scandir) as scan:
             rc, text = self.invoke("census", directory)
+        scan.assert_called_once_with(directory)
         self.assertEqual(rc, 0)
         self.assertNotIn("settlement_secret", text)
+        self.assertNotIn("private.json", text)
         self.assertIn('"mode": "l', text)
 
     def test_census_absent_target_and_refused_parent_are_distinct(self):
@@ -573,6 +625,97 @@ class GateTests(ToolTest):
         self.assertEqual(args, [sys.executable, "-S", "-B", "-", str(self.root)])
         self.assertEqual(run.call_args.kwargs["input"], lab.IDENTITY_CODE.encode())
         self.assertNotIn("betangel_research", " ".join(args))
+
+
+class ParentCompareTests(ToolTest):
+    def rows(self):
+        return [{"target": "/synthetic/data", "parent_realpath": "/synthetic"},
+                {"path": "/synthetic/data", "mode": "drwx------", "size": 128},
+                {"realpath": "/synthetic/data"},
+                *({"name": name, "mode": "drwx------", "size": 128}
+                  for name in ("historic", "historic-pro", "suite.noindex")),
+                {"status": "present_with_entries", "entries": 3}]
+
+    def compare(self, before, after):
+        def raw(rows):
+            return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+        return self.invoke("parent-compare", self.write("before.jsonl", raw(before)),
+                           self.write("after.jsonl", raw(after)))
+
+    def test_parent_compare_accepts_only_optional_directory_size_changes(self):
+        before = self.rows()
+        self.assertEqual(self.compare(before, before), (0, "parent_census_equal\n"))
+        for name in ("historic-pro", "suite.noindex"):
+            for size in (0, 256):
+                with self.subTest(name=name, size=size):
+                    after = copy.deepcopy(before)
+                    next(row for row in after if row.get("name") == name)["size"] = size
+                    self.assertEqual(self.compare(before, after), (0, "parent_census_equal\n"))
+
+    def test_parent_compare_refuses_other_rows_fields_presence_and_order_changes(self):
+        before = self.rows()
+        changes = [(3, "size", 256), (0, "target", "/elsewhere"), (0, "parent_realpath", "/elsewhere"),
+                   (1, "path", "/elsewhere"), (1, "size", 256), (1, "mode", "drwxr-xr-x"),
+                   (2, "realpath", "/elsewhere")]
+        changes += [(index, "mode", mode) for index in (4, 5) for mode in ("drwxr-xr-x", "lrwx------")]
+        for index, key, value in changes:
+            with self.subTest(index=index, key=key, value=value):
+                after = copy.deepcopy(before)
+                after[index][key] = value
+                self.assertEqual(self.compare(before, after),
+                                 (2, '{"status": "refused", "code": "parent:changed"}\n'))
+        for name in ("historic-pro", "suite.noindex", "new-parent"):
+            after = copy.deepcopy(before)
+            after.insert(-1, {"name": name, "mode": "drwx------", "size": 128})
+            after[-1]["entries"] += 1
+            if name != "new-parent":
+                after = [row for row in before if row.get("name") != name]
+                after = copy.deepcopy(after)
+                after[-1]["entries"] -= 1
+            for left, right in ((before, after), (after, before)):
+                with self.subTest(name=name, left=len(left)):
+                    self.assertEqual(self.compare(left, right)[0], 2)
+        after = copy.deepcopy(before)
+        after[4], after[5] = after[5], after[4]
+        self.assertEqual(self.compare(before, after)[0], 2)
+        for name in ("Suite.noindex", "suite.noindex.bak", "historic-pro2", "Historic-pro"):
+            before = self.rows()
+            before[4]["name"] = name
+            after = copy.deepcopy(before)
+            after[4]["size"] += 1
+            self.assertEqual(self.compare(before, after)[0], 2, name)
+
+    def test_parent_compare_refuses_malformed_uninspectable_and_nonregular_inputs(self):
+        good = self.write("good.jsonl", b"".join(json.dumps(row).encode() + b"\n" for row in self.rows()))
+        malformed = [b"", b"{", b"[]\n", b"{}\n", b"\xff\n",
+                     b'{"status":"uninspectable","errno":13}\n',
+                     good.read_bytes().replace(b'"size": 128', b'"size": true', 1),
+                     good.read_bytes().replace(b'"size": 128', b'"size": 128, "size": 128', 1),
+                     good.read_bytes().replace(b'"entries": 3', b'"entries": 4'),
+                     good.read_bytes().replace(b'"present_with_entries"', b'"uninspectable"')]
+        for raw in malformed:
+            for left, right in ((good, self.write("bad.jsonl", raw)), (self.root / "bad.jsonl", good)):
+                self.assertEqual(self.invoke("parent-compare", left, right),
+                                 (2, '{"status": "refused", "code": "parent:uninspectable"}\n'))
+        link = self.root / "link"
+        link.symlink_to(good)
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo)
+        for path in (self.root / "missing", self.root, link, fifo):
+            self.assertEqual(self.invoke("parent-compare", good, path),
+                             (2, '{"status": "refused", "code": "parent:uninspectable"}\n'))
+
+    def test_parent_compare_receipt_publishes_only_fixed_codes(self):
+        name = "step5a-01-parent-compare.txt"
+        self.assertEqual(lab.registered_name(name), "check")
+        for raw, expected in ((b"parent_census_equal\n", "parent_census_equal"),
+                              ({"status": "refused", "code": "parent:changed"}, "parent:changed"),
+                              ({"status": "refused", "code": "parent:uninspectable"}, "parent:uninspectable")):
+            rc, text = self.publish("check", raw, name)
+            self.assertEqual((rc, json.loads(text)["code"]), (0, expected))
+        rc, text = self.publish("check", b"parent_census_equal\n1.987654321", name)
+        self.assertEqual((rc, json.loads(text)["classification"]), (0, "unclassified"))
+        self.assertNotIn("987654321", text)
 
 
 class ProducerAndBoundaryTests(ToolTest):
@@ -2145,6 +2288,55 @@ lab_run_job
     def test_zsh_syntax(self):
         result = subprocess.run(["/bin/zsh", "-n", str(SHELL)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
+    def test_root_pre_compares_real_parent_censuses_and_stops_before_state_on_mismatch(self):
+        env = self.shell_environment()
+        parent = self.root / "data"
+        for name in ("historic", "historic-pro", "suite.noindex"):
+            (parent / name).mkdir(parents=True)
+        state = parent / "lab-state"
+        env.update(LAB_PARENT=str(parent), LAB_STATE=str(state), L1_PREFIX="l1-01", L3_PREFIX="l3-01")
+        self.write("session-l1-01.zsh", b"# synthetic L1 checkpoint\n")
+        self.write("session-l3-01.zsh", b"# synthetic L3 checkpoint\n")
+        self.write("l1-01-state.jsonl", self.invoke("census", state)[1].encode())
+        for index, (name, change) in enumerate((
+            ("historic-pro", "add"), ("historic-pro", "remove"),
+            ("suite.noindex", "add"), ("suite.noindex", "remove"),
+            ("suite.noindex", "mode"), ("historic", "size"),
+        ), 1):
+            with self.subTest(name=name, change=change):
+                directory = parent / name
+                child = directory / "exports"
+                if change == "remove":
+                    child.mkdir(exist_ok=True)
+                before = self.invoke("census", parent)[1]
+                if change == "size":
+                    rows = [json.loads(line) for line in before.splitlines()]
+                    next(row for row in rows if row.get("name") == name)["size"] += 1
+                    before = "".join(json.dumps(row) + "\n" for row in rows)
+                self.write("l1-01-parent.jsonl", before.encode())
+                if change == "add":
+                    child.mkdir()
+                elif change == "remove":
+                    child.rmdir()
+                elif change == "mode":
+                    directory.chmod(0o700 if directory.stat().st_mode & 0o077 else 0o755)
+                prefix = "step5a-" + str(index)
+                result = self.run_shell('lab_root_pre\nprint -r -- pre_finished\n',
+                                        {**env, "STEP5A_PREFIX": prefix})
+                accepted = change in {"add", "remove"}
+                self.assertEqual(result.returncode, 0 if accepted else 2, result.stdout + result.stderr)
+                receipt = self.root / (prefix + "-parent-compare.txt.exit")
+                self.assertTrue(receipt.is_file())
+                self.assertEqual(receipt.read_text(),
+                                 "0\n" if accepted else "2\n")
+                self.assertEqual((self.root / (prefix + "-state-compare.txt.exit")).exists(), accepted)
+                self.assertEqual("pre_finished" in result.stdout, accepted)
+                self.assertFalse(state.exists())
+                code = (self.root / (prefix + "-parent-compare.txt")).read_text()
+                self.assertEqual(code, "parent_census_equal\n" if accepted else
+                                 '{"status": "refused", "code": "parent:changed"}\n')
 
     @unittest.skipUnless(Path("/bin/zsh").exists(), "zsh is not installed")
     def test_root_continuation_requires_both_successful_precheck_receipts(self):
@@ -3740,7 +3932,8 @@ class PostP0FreezeTests(ToolTest):
         self.assertFalse("Python 只加 -B" in section)
         for phrase in ("Suite process 用 -E -s -S -B：", "唔載入 site／.pth／sitecustomize",
                        "suite 後 author-suite 即報 author:c1_diff", "非 `H ` rows 報 author:worktree_state。",
-                       "只喺 c0-flip-only 跳過 contract", "唔證明 mode、執行時載入嘅 bytes",
+                       "\n用 git hash-object --no-filters 對 ls-tree HEAD，只喺 c0-flip-only 跳過 contract 嘅 bytes 比較。\n",
+                       "唔證明 mode、執行時載入嘅 bytes",
                        "偵測唔到兩次檢查之間改完再還原", "clean filter／attributes", "子程序",
                        "每次 clean-state check 後，author-bytes 要求每個 HEAD entry 都係 100644/100755 blob，"
                        "worktree path 係 regular file；",
@@ -3748,11 +3941,15 @@ class PostP0FreezeTests(ToolTest):
                        "都報 author:tracked_bytes；", "suite 前後都要通過 freeze-diff。"):
             self.assertEqual(section.count(phrase), 1, phrase)
         self.assertNotRegex(section, r'(?i)再試|重試|retry|rerun')
+        self.assertEqual(section.count("\n期間禁止其他 writer；前後相等唔證明中途冇修改再還原。\n"), 1)
 
     def test_history_distinguishes_post_p0_gates_from_the_first_freeze(self):
         doc = (ROOT / "docs/backtest-plan.md").read_text()
         preamble = doc.split("### 10.1 Runbook:", 1)[1].split("**首次 run 記錄", 1)[0]
-        self.assertIn("post-P0 加入 author-bytes、-E -s -S -B 同 author:c1_diff gate", preamble)
+        self.assertEqual(preamble.count("\n以下以當時嘅 C0 runbook 為本；post-P0 加入 author-bytes、"
+                                        "-E -s -S -B、author:c1_diff、\n"), 1)
+        self.assertIn("兩次 status census 嘅 core.ignorecase=false、c0-flip-only suite 後 freeze-diff，"
+                      "同 L1 parent names 擴展；新 contract 要另定 C0。", preamble)
         self.assertIn("2026-10-17 freeze 跑 C0 e452f2e 嘅 fence，suite line 只有 -B。", preamble)
         self.assertEqual(doc.count("按當時（C0 e452f2e）§10.1 完成"), 1)
 
@@ -3803,7 +4000,7 @@ class PostP0FreezeTests(ToolTest):
             "            before = path.stat()\n"
             "            path.write_text('VALUE=2\\n')\n"
             "            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))\n"
-            "        if os.environ['FREEZE_CASE'] == 'head_move':\n"
+            "        if os.environ['FREEZE_CASE'].startswith('head_move'):\n"
             "            subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-c',\n"
             "                'user.name=Runbook test', '-c', 'user.email=runbook@example.invalid',\n"
             "                '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'moved'], check=True)\n"
@@ -3855,6 +4052,8 @@ class PostP0FreezeTests(ToolTest):
                  ("extra_c1_path", "c1", "author:c1_diff"), ("suite_failure", "c0-draft", "FAILED"),
                  ("case_rename", "c0-draft", "author:worktree_state"),
                  ("head_move", "c0-draft", "author:head_changed"),
+                 ("head_move_flip", "c0-flip-only", "author:head_changed"),
+                 ("head_move_c1", "c1", "author:head_changed"),
                  ("contract_rewrite", "c0-flip-only", "contract:settings_changed"))
         for case, label, code in cases:
             with self.subTest(case=case):

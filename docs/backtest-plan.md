@@ -509,7 +509,8 @@ python3 -m betangel_research.betfair.backtest validate-contract --contract resea
 ### 10.1 Runbook: from the draft to the first real run (passed 2026-10-17)
 
 2026-10-17：L1/L2/L3、freeze、5a/5b、lab certification、第 7 步通知及 Yu 同意、首次真 run 已完成。
-以下以當時嘅 C0 runbook 為本；post-P0 加入 author-bytes、-E -s -S -B 同 author:c1_diff gate，新 contract 要另定 C0。
+以下以當時嘅 C0 runbook 為本；post-P0 加入 author-bytes、-E -s -S -B、author:c1_diff、
+兩次 status census 嘅 core.ignorecase=false、c0-flip-only suite 後 freeze-diff，同 L1 parent names 擴展；新 contract 要另定 C0。
 2026-10-17 freeze 跑 C0 e452f2e 嘅 fence，suite line 只有 -B。每步獨立 review，Yu 事先知；本文件
 唔係 lab 執行許可，亦冇擴大既有授權。所有 fences 用 **`/bin/zsh -f`**，column 0 可直接複製。
 
@@ -824,9 +825,11 @@ runner 可能已完成／失敗、已寫 receipt 同釋放 lock，starts 亦可�
 #### 2. L1：read-only metadata census
 
 Restore step 1 success。`lab_l1` capture preflight、parent/state/data census，再 gate：state absent 或 present-and-empty；
-data 正好 incoming/raw/manifests/index 四個 plain directories；parent names 只准 historic/lab-state。
+data 正好 incoming/raw/manifests/index 四個 plain directories；parent names 只准 historic/lab-state/historic-pro/suite.noindex。
+historic-pro 同 suite.noindex 係 optional，所有 parent entries 仍須係 plain directories；名稱 exact match，唔深入兩個新目錄。
+L1 至 5a 期間，任何人都唔建立／移除呢兩個目錄，亦唔改佢哋嘅 mode。
 另查 parent/data 下 contracts/runs/certifications 必須 absent，全部過關先保存 success。
-Census projection 只公開已知名（包括 historic/lab-state）、type/size 同固定 refusal enum。
+Census projection 只公開已知名（包括 historic/lab-state/historic-pro/suite.noindex）、type/size 同固定 refusal enum。
 
 ```sh
 L1_PREFIX='l1-01'
@@ -842,7 +845,8 @@ History、未知 entry、error、超限都停，唔深入讀、搬走、migratio
 
 Readiness R1（PR #20）、precert hardening（fc38998）同今次 helpers 都要喺 C0。
 `lab_inputs` 固定 LAB_DATA/BASIC_SHA，manifests/index 只准該 archive，regular head/markets、冇 spill/partial。
-PRO TAR 留 incoming 未 ingest。L2 先 hash/count 現有 files，唔讀取 raw member 內容。
+PRO TAR 仍留 historic/incoming；pro-ingest-01 已寫入獨立 historic-pro，historic 冇改。
+L2 先 hash/count 現有 files，唔讀取 raw member 內容。
 Pre 先用 statvfs 公開 available_kib 同 markets_bytes，review 呢份 evidence 先定 temporary-space budget。
 Markets 兩倍只係 heuristic，唔係 disk 上限；budget 必須獨立 review。Launch 前同 job 各 gate available_kib >= budget。
 
@@ -1071,7 +1075,8 @@ PR 記 interpreter、commit/tree、tests/status/exit、worktree_state、diff cou
 #### 5a. Reviewed lab-state root creation
 
 L1/L3 success 已 review，Yu 事先知；通知 Yu 係 human step，呢一步冇機械 notice gate／lab notice record。
-Restore L3 success。Pre block cmp L1 state **同 parent census**。
+Restore L3 success。Pre block cmp L1 state；parent compare 只忽略 historic-pro 同 suite.noindex entry 嘅 size。
+Parent census 嘅 name、type、mode、presence、行序同其餘欄位仍須相同。
 
 ```sh
 STEP5A_PREFIX='step5a-01'
@@ -1219,7 +1224,7 @@ lab_run_launch || exit 2
 ```
 
 Job 先 preflight/identity/no-writer，exact inputs 對 L3；state 必須只有 plain certifications directory。
-PRO/其他 TAR 未 ingest；其他 archive、symlink、spill/partial、hash/records lines 差異都停。
+PRO/其他 TAR 冇 ingest 入 historic；其他 archive、symlink、spill/partial、hash/records lines 差異都停。
 `--contract`、data/state paths 全係 absolute，code-identity 係完整 `C1 tree C1_TREE`；CLI 唔替你驗 Git。
 同一 LAB_DATA 仍禁止其他 writer；前後相等唔證明中途冇改過再還原。
 CLI writer gate 係 machine-wide：即使另一 checkout 嘅 suite certify-engine，都會令 gate 拒絕。

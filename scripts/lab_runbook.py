@@ -61,7 +61,8 @@ binding:start_code_or_certificate binding:criteria_set binding:criterion_status 
 binding:prefix_records binding:prefix_reasons binding:unexercised_variants run:state_not_certifications_only
 runtime:check_failed author:worktree_state author:cache_present author:census_stderr author:census_failed
 author:head_changed author:c0_head_mismatch author:tracked_bytes author:c1_diff
-consent:text consent:identifiers notice:record notice:date notice:reference""".split())
+consent:text consent:identifiers notice:record notice:date notice:reference
+parent:uninspectable parent:changed""".split())
 
 FIXED_PAIRS = {
     "index": {"index_would_change", "gate_changed", "partial_file_present", "write_failed", "unsafe_target"},
@@ -283,7 +284,7 @@ def project(mode, raw, lock=None):
                  "only_plain_certifications", "no_locks", "no_locks_contract_directory_absent", "reconciled",
                  "completed", "failed", "refused", "uncertain", "unknown", "no_json",
                  "lock_note_matches", "lock_note_mismatch", "settings_equal_except_status_and_frozen_on",
-                 "notice_recorded", "consent_recorded", "recovery_attempt_current"}
+                 "notice_recorded", "consent_recorded", "recovery_attempt_current", "parent_census_equal"}
         if text in known:
             return {"code": text}
         if not text:
@@ -296,7 +297,7 @@ def project(mode, raw, lock=None):
         rows = [json.loads(line) for line in raw.splitlines()]
         known = {"incoming", "raw", "manifests", "index", "certifications", "contracts", "runs", "work",
                  "trial-ledger-v1.jsonl", "runner.lock", "trial-ledger-v1.jsonl.lock",
-                 "head-v1.json", "markets-v1.jsonl", "historic", "lab-state"}
+                 "head-v1.json", "markets-v1.jsonl", "historic", "lab-state", "historic-pro", "suite.noindex"}
         out = []
         for row in rows:
             need(isinstance(row, dict))
@@ -961,7 +962,7 @@ def suffix_mode(suffix):
         return "raw"
     if suffix.endswith(".exit"):
         return "exit"
-    exact = {"contract.json": "contract", "layout-check.txt": "layout",
+    exact = {"contract.json": "contract", "layout-check.txt": "layout", "parent-compare.txt": "check",
              "settings.txt": "check", "identity-gate.txt": "check"}
     if suffix in exact:
         return exact[suffix]
@@ -1138,6 +1139,45 @@ def command_space(args):
     return 0 if accepted else 2
 
 
+def command_parent_compare(args):
+    def pairs(items):
+        value = dict(items)
+        need(len(value) == len(items), "parent:uninspectable")
+        return value
+
+    def census(filename):
+        try:
+            with os.fdopen(os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
+                need(stat.S_ISREG(os.fstat(handle.fileno()).st_mode), "parent:uninspectable")
+                rows = [json.loads(line, object_pairs_hook=pairs) for line in handle.read().splitlines()]
+            need(4 <= len(rows) <= 204 and all(isinstance(row, dict) for row in rows), "parent:uninspectable")
+            need(set(rows[0]) == {"target", "parent_realpath"} and
+                 all(isinstance(value, str) for value in rows[0].values()), "parent:uninspectable")
+            need(set(rows[2]) == {"realpath"} and isinstance(rows[2]["realpath"], str), "parent:uninspectable")
+            for row, key in [(rows[1], "path"), *((row, "name") for row in rows[3:-1])]:
+                need(set(row) == {key, "mode", "size"} and isinstance(row[key], str) and row[key] and
+                     isinstance(row["mode"], str) and re.fullmatch(r"[bcdlps?-][rwxStTs-]{9}", row["mode"]) and
+                     type(row["size"]) is int and row["size"] >= 0, "parent:uninspectable")
+            need(rows[1]["mode"].startswith("d"), "parent:uninspectable")
+            names = [row["name"] for row in rows[3:-1]]
+            need(len(names) == len(set(names)), "parent:uninspectable")
+            status = "present_with_entries" if names else "present_and_empty"
+            need(rows[-1] == {"status": status, "entries": len(names)} and
+                 type(rows[-1].get("entries")) is int, "parent:uninspectable")
+            return rows
+        except (OSError, ValueError, TypeError, UnicodeError):
+            raise ExtractorRefusal("parent:uninspectable") from None
+
+    before, after = map(census, args)
+    need(len(before) == len(after), "parent:changed")
+    for left, right in zip(before, after):
+        if left.get("name") in {"historic-pro", "suite.noindex"}:
+            left = {key: value for key, value in left.items() if key != "size"}
+            right = {key: value for key, value in right.items() if key != "size"}
+        need(left == right, "parent:changed")
+    print("parent_census_equal")
+
+
 def command_l1_layout(args):
     need(len(args) == 3)
     rows = [[json.loads(line) for line in Path(name).read_bytes().splitlines()] for name in args]
@@ -1160,7 +1200,8 @@ def command_l1_layout(args):
             {"incoming", "raw", "manifests", "index"}, True):
         reason = "data_layout"
     elif (parent[-1]["status"] not in {"present_and_empty", "present_with_entries"}
-          or not entries(parent)[0] <= {"historic", "lab-state"} or not entries(parent)[1]):
+          or not entries(parent)[0] <= {"historic", "lab-state", "historic-pro", "suite.noindex"}
+          or not entries(parent)[1]):
         reason = "parent_layout"
     print(json.dumps({"status": "accepted" if reason == "clean_layout" else "refused", "reason": reason}))
     return 0 if reason == "clean_layout" else 2
@@ -1409,7 +1450,8 @@ COMMANDS = {
     "l2-check": (2, command_l2_check), "l3-check": (3, command_l3_check), "freeze-diff": (2, command_freeze_diff),
     "certificate-check": (6, command_certificate_check), "run-binding": (10, command_run_binding),
     "run-state": (1, command_run_state), "empty-state": (1, command_empty_state), "run-status": (1, command_run_status),
-    "l1-layout": (3, command_l1_layout), "space": (None, command_space), "ledger-verify": (2, command_ledger_verify),
+    "l1-layout": (3, command_l1_layout), "parent-compare": (2, command_parent_compare),
+    "space": (None, command_space), "ledger-verify": (2, command_ledger_verify),
     "extract-digest": (2, command_extract_digest), "index-sha": (1, command_index_sha),
     "contract-sha": (1, command_contract_sha), "cert-key": (1, command_cert_key),
     "reconciled": (1, command_reconciled), "notice": (1, command_notice), "consent": (3, command_consent),

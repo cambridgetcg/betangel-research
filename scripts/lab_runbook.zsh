@@ -619,7 +619,7 @@ lab_require_success "$L3_PREFIX" l3 || exit 2
 lab_new_prefix "$STEP5A_PREFIX" step5a || exit 2
 lab_checkpoint "$STEP5A_PREFIX-pre" || exit 2
 lab_capture "$STEP5A_PREFIX-parent.jsonl" lab_census "$LAB_PARENT" || exit 2
-lab_capture "$STEP5A_PREFIX-parent-compare.txt" cmp "$LAB_EVIDENCE/$L1_PREFIX-parent.jsonl" \
+lab_capture "$STEP5A_PREFIX-parent-compare.txt" lab_tool parent-compare "$LAB_EVIDENCE/$L1_PREFIX-parent.jsonl" \
   "$LAB_EVIDENCE/$STEP5A_PREFIX-parent.jsonl" || exit 2
 lab_capture "$STEP5A_PREFIX-before.jsonl" lab_census "$LAB_STATE" || exit 2
 lab_capture "$STEP5A_PREFIX-state-compare.txt" cmp "$LAB_EVIDENCE/$L1_PREFIX-state.jsonl" \

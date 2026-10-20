@@ -40,7 +40,7 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, against betangel-research mai
 | The ledger's one equity equation, the commission rate, cleared-figure checks, drawdown stops, what an ACK covers and when a stop re-arms | §10 |
 | Final execution record, when an L row counts, its finalization table, exact C/L agreement and the NCLV price, unmatched bets pending to the deadline, BSP cutoff, capture after sessions, measurement classes | §11 |
 | Interim allowlist, private risk view, data lock, publication | §12 |
-| Approvals and the order of steps (build, gate, activation, REGISTER, PT4); the gate's test receipts; what PT1-PT4 and the PT4 receipt cover; adversarial tests | §14 |
+| Approvals and the order of steps (freeze, build, gate, activation, REGISTER, PT4); the gate's test receipts; what PT1-PT4 and the PT4 receipt cover; adversarial tests | §14 |
 | Endings | §15 |
 
 ## Sample and verdict (frozen in contract p1; #8-#10; R2-5, R2-6, R2-9)

@@ -2161,6 +2161,45 @@ class LiveGatewayTests(unittest.TestCase):
         self.assertEqual(probe_result["current_after_cancel_read_error"], "skipped_kill")
         self.assertTrue(result["found_by_ref"])     # the lookup itself did round-trip the ref
 
+    def test_probe_cleared_read_errors_do_not_cost_the_marker(self):
+        env = gw.build_live_gateway(self, roundtrip=False)
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        original = env.exchange.cleared_orders
+
+        def exploding(status, **kw):
+            if status == "LAPSED":
+                raise RuntimeError("cleared read exploded")
+            return original(status, **kw)
+        env.exchange.cleared_orders = exploding
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        self.assertTrue(result["ref_roundtrip_verified"])
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertEqual((probe_result["cleared_cancelled_read_error"], probe_result["cleared_lapsed_read_error"]),
+                         (None, "RuntimeError"))
+
+    def test_probe_rechecks_the_kill_before_each_diagnostic_read(self):
+        # A KILL first engaged during the cancel: the cancel itself completes; every later read is skipped.
+        env = gw.build_live_gateway(self, roundtrip=False)
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        original = env.exchange.cancel
+
+        def kill_during_cancel(params):
+            engage(env.paths, "operator kill", clock=env.clock)
+            return original(params)
+        env.exchange.cancel = kill_during_cancel
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        self.assertEqual(result["cancel"]["orders"][0]["state"], "EXECUTION_COMPLETE")
+        self.assertTrue(result["ref_roundtrip_verified"])
+        ref = result["place"]["orders"][0]["customer_order_ref"]
+        self.assertEqual(sum(1 for name, keys in env.exchange.timeline
+                             if name == "listCurrentOrders" and keys == (ref,)), 1)
+        self.assertFalse(any(c[0] == "listClearedOrders" and c[1].get("customer_order_refs") == [ref]
+                             for c in env.exchange.calls))
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertTrue(probe_result["kill_engaged"])
+        self.assertEqual({probe_result["current_after_cancel_read_error"], probe_result["cleared_cancelled_read_error"],
+                          probe_result["cleared_lapsed_read_error"]}, {"skipped_kill"})
+
     def test_env_none_reads_the_process_environment(self):
         env = self.env
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):

@@ -347,18 +347,11 @@ def session_window_open(events, *, now_ns):
 
 
 def latch_for(rule, reason=None):
-    """'market', 'session', 'review' or 'none' for a refusal rule (and its first reason) on the pilot path."""
-    if rule == "halted" and reason in KILL_REASONS:
-        return "session"                         # critique 2: a KILL file seen ends the session in the journal
-    if rule in NO_NOTE_LATCH:
-        return "none"
-    if rule == "validation:V9" and reason in MARKET_V9_REASONS:
-        return "market"
-    if rule in MARKET_LATCH:
-        return "market"
-    if rule in SESSION_LATCH:
-        return "session"
-    return "review"
+    """'market', 'session', 'review' or 'none' for a refusal rule (and its reason) on the pilot path: the one
+    scope table's durable (pilot.scope_of, P1-08 §3.1), with review_unless_halt read as none (the gateway leaves A17
+    to its HALT; pilot-run journals its review occurrence)."""
+    durable = pilot.scope_of(rule, reason).durable
+    return "none" if durable == "review_unless_halt" else durable
 
 
 def session_stop_id(code, *, reservation_seq, open_id):

@@ -63,7 +63,7 @@ from .paths import StatePaths, network_forbidden, overrides_allowed
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPS_KEYS = frozenset({"home", "keychain_runner", "http_transport", "stream_socket_factory", "clock", "confirmer",
-                       "env"})
+                       "env", "pilot_context", "processes"})
 READ_STATUS = "betfair_read_response_personal_use_not_for_redistribution"
 GITIGNORE_PATTERNS = ("*.crt", "*.key", "*.p12", "*.pfx", "*.pem")
 LOGIN_RESET_PHRASE = "RESET LOGIN FAILURES"
@@ -476,7 +476,8 @@ def _anchor_warning(code):
 
 
 @contextlib.contextmanager
-def _gateway(args, ctx, *, command, mode, confirm=None):
+def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=None, pilot=None,
+             in_session_settle=False, stop_requested=None):
     """An opened OrderGateway for one command; closes it (anchor, lock), logs out and closes the journal.
 
     confirm(gateway), live only, runs after static arming and before open(): the operator types the
@@ -485,6 +486,12 @@ def _gateway(args, ctx, *, command, mode, confirm=None):
     deferred (ctx.signals), so the report, step 15, the cleanup and the result still happen and the
     command then exits 5. The cleanup below always runs. A journal anchor that could not be written on
     close is reported on stderr (ctx.warnings).
+
+    P1-08 §3.5, optional and off by default (today's behaviour): clock replaces ctx.clock for every part (pilot-run
+    hands a fresh ObservedClock per open); credentials skips the Keychain read (pilot-run's preloaded live_orders);
+    pilot is the gateway's PilotContext; in_session_settle marks pilot-run's own settle point; stop_requested() is
+    checked first inside the try, so a stop that landed during setup raises SignalStop before any credential use,
+    login or lock, and the finally still restores the outer handler.
     """
     from .gateway import OrderGateway
     from .journal import OrderJournal
@@ -498,7 +505,9 @@ def _gateway(args, ctx, *, command, mode, confirm=None):
     signals.install()
     ctx.signals = signals
     try:
-        guard = RiskGuard(config, mode=mode, clock=ctx.clock, paths=paths)
+        if stop_requested is not None and stop_requested():
+            raise SignalStop("outer_stop")
+        guard = RiskGuard(config, mode=mode, clock=clock or ctx.clock, paths=paths)
         if mode == "paper":
             held["journal"] = OrderJournal(paths.journal_path(mode), mode=mode, clock=ctx.clock)
             read = None
@@ -509,7 +518,8 @@ def _gateway(args, ctx, *, command, mode, confirm=None):
             held["gateway"].open(command=command)
         else:
             _live_gateway(args, ctx, paths, config, guard, command=command, confirm=confirm, held=held,
-                          on_send=signals.order_sent)
+                          on_send=signals.order_sent, clock=clock, credentials=credentials, pilot=pilot,
+                          in_session_settle=in_session_settle)
         yield held["gateway"], config, paths
     finally:
         signals.deferring = True
@@ -548,10 +558,12 @@ def _journal_view(journal, now_ns):
         return journal.anchor(), None
 
 
-def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on_send=None):
+def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on_send=None, clock=None,
+                  credentials=None, pilot=None, in_session_settle=False):
     """Static arming first (no secret is read, and no live journal created, before it passes), then
     credentials, the operator's typed lines (no lock held), login and open. Fills held as it goes.
-    on_send goes to the gateway, except for the kill (it never defers a signal, amendment A3 A16)."""
+    on_send goes to the gateway, except for the kill (it never defers a signal, amendment A3 A16).
+    clock, credentials, pilot and in_session_settle: _gateway's P1-08 options (None and False keep today's)."""
     from .api import JsonRpcClient, ReadClient
     from .arming import static_arming
     from .auth import SessionManager
@@ -559,13 +571,14 @@ def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on
     from .errors import NotArmed
     from .gateway import OrderGateway
     from .journal import OrderJournal
+    clock = clock or ctx.clock
     kill = command in ("kill", "kill-account")
     if not kill:
         _coexistence(config, args)          # kill needs A4 and A13 only (spec section 9.2)
     confirmer = ctx.live_confirmer()
-    now_ns = ctx.clock.time_ns()
+    now_ns = clock.time_ns()
     # The kill's static A13 is the state root only (amendment A3, D4): no journal is opened for it here.
-    existing = None if kill else _existing_journal(paths, "live", ctx.clock)
+    existing = None if kill else _existing_journal(paths, "live", clock)
     try:
         anchor, journal_state = _journal_view(existing, now_ns)
         static = static_arming(config, command=command, paths=paths, cli_mode="live",
@@ -583,20 +596,24 @@ def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on
         raise NotArmed(static["failures"][0], detail={"failures": static["failures"]})
     ctx.err.write("MODE=LIVE\n")
     ctx.err.flush()
-    held["journal"] = (_kill_journal(paths, ctx.clock) if kill
-                       else OrderJournal(paths.journal_path("live"), mode="live", clock=ctx.clock))
+    held["journal"] = (_kill_journal(paths, clock) if kill
+                       else OrderJournal(paths.journal_path("live"), mode="live", clock=clock))
     if kill:
         _kill_line(ctx, "reading credentials from the Keychain; if macOS asks, click Allow (not Always Allow)")
-    credentials = load_credentials(config, purpose="live_orders", profile=paths.profile, runner=ctx.keychain_runner)
+    if credentials is None:
+        credentials = load_credentials(config, purpose="live_orders", profile=paths.profile,
+                                       runner=ctx.keychain_runner)
     held["session"] = session = SessionManager(config, credentials, paths=paths, transport=ctx.http_transport,
-                                               clock=ctx.clock,
+                                               clock=clock,
                                                coexistence_ack=bool(getattr(args, "bet_angel_paused", False)))
-    rpc = JsonRpcClient(config, session, clock=ctx.clock)
-    read = ReadClient(rpc, paths=paths, clock=ctx.clock,
+    rpc = JsonRpcClient(config, session, clock=clock)
+    read = ReadClient(rpc, paths=paths, clock=clock,
                       catalogue_cache_max_age_s=config["read"]["catalogue_cache_max_age_s"])
+    injected = ctx.deps.get("pilot_context")          # tests: the settle guard's contract reader (P1-08 §4.13)
     gateway = OrderGateway(config, paths=paths, mode="live", journal=held["journal"], guard=guard, rpc=rpc, read=read,
-                           confirmer=confirmer, clock=ctx.clock, env=dict(ctx.env), keychain_runner=ctx.keychain_runner,
-                           on_send=None if kill else on_send)
+                           confirmer=confirmer, clock=clock, env=dict(ctx.env), keychain_runner=ctx.keychain_runner,
+                           on_send=None if kill else on_send, pilot=pilot, in_session_settle=in_session_settle,
+                           contract_reader=injected.read_contract if injected is not None else None)
     if confirm is not None:
         confirm(gateway)
     if kill:

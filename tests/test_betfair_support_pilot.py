@@ -361,9 +361,10 @@ def other_writer(env, clock=None):
     return writer
 
 
-def new_gateway(env, *, clock=None, config=None, pilot_context=True):
+def new_gateway(env, *, clock=None, config=None, pilot_context=True, in_session_settle=False, contract_reader=None):
     """A restart, or another process: a new gateway object, journal connection, session and guard on the same state
-    root (optionally its own clock, another config, or no PilotContext)."""
+    root (optionally its own clock, another config, or no PilotContext). in_session_settle and contract_reader are
+    the P1-08 settle-guard flags (§4.13): pilot-run's in-run settle, and the guard's contract reader."""
     clock = pilot_gate.ObservedClock(clock or env.clock)
     config = config or env.config
     credentials = load_credentials(config, purpose="live_orders", profile=env.paths.profile, runner=env.runner)
@@ -375,7 +376,8 @@ def new_gateway(env, *, clock=None, config=None, pilot_context=True):
     guard = RiskGuard(config, mode="live", clock=clock, paths=env.paths)
     return OrderGateway(config, paths=env.paths, mode="live", journal=journal, guard=guard, rpc=rpc, read=read,
                         confirmer=gw.FakeConfirmer(), clock=clock, env={}, keychain_runner=env.runner,
-                        pilot=env.ctx if pilot_context else None)
+                        pilot=env.ctx if pilot_context else None, in_session_settle=in_session_settle,
+                        contract_reader=contract_reader)
 
 
 class Death(BaseException):

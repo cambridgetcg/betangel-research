@@ -225,11 +225,11 @@ class PilotGateTests(unittest.TestCase):
             ("daily_loss", None): "session", ("unresolved_orders", None): "session", ("lock_busy", None): "session",
             ("kill_file", None): "session", ("halted", "kill_engaged"): "session",
             ("halted", "kill_state_unknown"): "session", ("halted", "journal_halted"): "none",
-            ("halted", "clock_regression"): "none", ("unexplained_account_exposure", None): "none",
+            ("halted", "clock_regression"): "review", ("unexplained_account_exposure", None): "none",
             ("funds", "insufficient_available_to_bet"): "review", ("market_exposure", None): "market",
             ("total_exposure", None): "market", ("transport_not_sent", None): "review",
             ("send_gate_failed", None): "review", ("connect_failed", None): "review",
-            ("INVALID_SESSION_INFORMATION", None): "review", ("pilot_gate_head_unreadable", None): "review",
+            ("INVALID_SESSION_INFORMATION", None): "review", ("pilot_gate_head_unreadable", None): "market",
             ("pilot_send_book_off_differs", None): "market", ("journal_changed_since_decision", None): "market",
             ("book_fetch_failed", None): "market", ("pilot_submit_too_late", None): "review",
             ("r13_body_differs", None): "review", ("pa2_tree_dirty", None): "review",
@@ -668,6 +668,15 @@ class PilotCase(unittest.TestCase):
 
     def notes(self, record_type=None):
         return [e["payload"]["pilot"] for e in sp.pilot_notes(self.env, record_type)]
+
+    def carried(self, result, carrier_kind):
+        """P1-08 §3.2: a review latch after a durable carrier is a review stop note '<code>-<res>-<carrier seq>' (the
+        id the fold derives from that carrier), never a refusal note. -> ([(stop_id, reason)] of the review stop notes,
+        the id expected for the last carrier_kind event)."""
+        carrier = [e for e in sp.events(self.env) if e["kind"] == carrier_kind][-1]
+        stops = [(n["stop_id"], n["reason"]) for n in self.notes("stop") if n["scope"] == "review"]
+        return stops, lambda code: pilot.carried_review_stop_id(code, result["pilot"]["reservation_seq"],
+                                                                carrier["seq"])
 
     def reads(self, name=None, market=None):
         return self.env.router.reads_of(name, market.market_id if market is not None else None) if name else \
@@ -1297,7 +1306,9 @@ class ReservationTests(PilotCase):
         refused_again(sp.new_gateway(env))                                  # after cancel and a restart
         market.status = "CLOSED"
         env.exchange.hide_cancelled_unmatched = True
-        settler = sp.new_gateway(env)
+        # The session is still armed here: P1-08 §4.13 refuses a second-process settle, so this one is pilot-run's
+        # own settle point (in_session_settle), the only settle allowed during an armed session.
+        settler = sp.new_gateway(env, in_session_settle=True)
         settler.preconfirm("settle-market", market_id=market.market_id)
         settler.open(command="settle-market", confirm_token=env.token)
         self.addCleanup(settler.close)
@@ -1514,7 +1525,9 @@ class FirstByteTests(PilotCase):
         with patch.object(env.journal, "append", side_effect=late_submit):
             result = self.place(market)
         self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("pilot_submit_too_late", "review"))
-        self.assertEqual([n["code"] for n in self.notes("refusal")], ["pilot_submit_too_late"])
+        stops, carried_id = self.carried(result, "risk_decision")             # P1-08 §3.2: the refusing decision
+        self.assertEqual((self.notes("refusal"), stops),
+                         ([], [(carried_id("pilot_submit_too_late"), "pilot_submit_too_late")]))
         self.assertNotIn("submit", self.kinds())
         self.assertEqual([o["state"] for o in result["orders"]], ["REFUSED"])
         self.clean()
@@ -1806,7 +1819,7 @@ class StopsAndLatchTests(PilotCase):
         self.open()
         before, reads = self.kinds(), len(self.reads())
         result = self.place(eleventh)
-        self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("total_exposure", None))
+        self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("total_exposure", "market"))
         self.assertEqual((self.kinds(), len(self.reads())), (before, reads))
         state = self.clean()
         self.assertEqual(state.lifetime_used, 10)
@@ -2382,8 +2395,9 @@ class CodeReviewRound1Tests(PilotCase):
         self.assertEqual((result["send_exception"]["code"], result["pilot"]["latch"]), ("capability_expired", "review"))
         self.assertEqual([(o["state"], o["error_code"]) for o in result["orders"]], [("FAILED", "transport_not_sent")])
         self.assertEqual(env.router.order_requests, [])
-        refusal = self.notes("refusal")[-1]
-        self.assertEqual(refusal["code"], "capability_expired")
+        stops, carried_id = self.carried(result, "report")           # P1-08 §3.2: capability-expired-<res>-<report>
+        self.assertEqual((self.notes("refusal"), stops),
+                         ([], [(carried_id("capability_expired"), "capability_expired")]))
         env.gateway.close()
         env.gateway.on_send = None
         self.assertEqual(self.open()["failures"], ["pa3_session_ended"])
@@ -2452,7 +2466,9 @@ class CodeReviewRound1Tests(PilotCase):
         self.assertEqual(([o["state"] for o in result["orders"]], "submit" in self.kinds()), (["REFUSED"], False))
         state = self.clean()
         self.assertEqual((state.lifetime_used, state.place_records[0].submit_seq), (1, None))     # slot kept
-        self.assertEqual([n["code"] for n in self.notes("refusal")], ["pilot_submit_too_late"])
+        stops, carried_id = self.carried(result, "risk_decision")             # P1-08 §3.2: the refusing decision
+        self.assertEqual((self.notes("refusal"), stops),
+                         ([], [(carried_id("pilot_submit_too_late"), "pilot_submit_too_late")]))
         env2 = self.build()
         market2 = self.market()
         self.open()
@@ -2998,8 +3014,9 @@ class ReviewRound2Tests(PilotCase):
         with patch.object(pilot_gate, "first_byte_refusal", side_effect=RuntimeError("fault")):
             result = self.place(market)
         self.assert_not_sent_at_first_byte(result, "send_gate_failed")
-        self.assertEqual((result["pilot"]["latch"], [n["code"] for n in self.notes("refusal")]),
-                         ("review", ["send_gate_failed"]))
+        stops, carried_id = self.carried(result, "report")             # P1-08 §3.2: the not-sent report carries it
+        self.assertEqual((result["pilot"]["latch"], self.notes("refusal"), stops),
+                         ("review", [], [(carried_id("send_gate_failed"), "send_gate_failed")]))
         self.reopen_is_refused(later)
         self.clean()
 
@@ -3013,8 +3030,9 @@ class ReviewRound2Tests(PilotCase):
         result = self.place(market)
         self.assertEqual([(o["state"], o["error_code"]) for o in result["orders"]], [("FAILED", "transport_not_sent")])
         self.assertEqual((env.transport.bytes_written[-1], result["send_exception"]["code"]), (0, "connect_failed"))
-        self.assertEqual((result["pilot"]["latch"], [n["code"] for n in self.notes("refusal")]),
-                         ("review", ["connect_failed"]))
+        stops, carried_id = self.carried(result, "report")             # P1-08 §3.2: the not-sent report carries it
+        self.assertEqual((result["pilot"]["latch"], self.notes("refusal"), stops),
+                         ("review", [], [(carried_id("connect_failed"), "connect_failed")]))
         self.assertTrue(sp.fold(env, live_open_id=env.gateway._open_id).place_records[-1].failed_not_sent)
         self.reopen_is_refused(later)
         self.clean()
@@ -3034,8 +3052,9 @@ class ReviewRound2Tests(PilotCase):
                 self.assertEqual((result["send_exception"]["outcome"], len(env.router.order_requests)),
                                  ("FAILED_REJECTED", 1))
                 self.assertFalse(env.journal.fold(now_ns=env.clock.time_ns())["halted"])
-                self.assertEqual((result["pilot"]["latch"], [n["code"] for n in self.notes("refusal")]),
-                                 ("review", [pilot_gate.refusal_code(code)]))
+                stops, carried_id = self.carried(result, "report")    # P1-08 §3.2: FAILED_REJECTED carries it
+                self.assertEqual((result["pilot"]["latch"], self.notes("refusal"), stops),
+                                 ("review", [], [(carried_id(code), pilot_gate.refusal_code(code))]))
                 self.reopen_is_refused(later)
                 self.assertEqual(len(env.router.order_requests), 1)
                 self.clean()
@@ -3102,9 +3121,11 @@ class ReviewRound2Tests(PilotCase):
                 self.assertNotIn(result["orders"][0]["state"], ("EXECUTABLE", "EXECUTION_COMPLETE"))
                 self.assertEqual(env.journal.fold(now_ns=env.clock.time_ns())["halt_reasons"], halts)
                 self.assertEqual(result["pilot"]["latch"], latch)
-                notes = [n["code"] for n in self.notes("refusal")]
-                self.assertEqual(notes, [pilot_gate.refusal_code(noted)] if noted else [])
-                self.assertEqual([s["reason"] for s in sp.fold(env).active_stops], notes)
+                # P1-08 §3.2: no refusal note; one review stop note '<code>-<res>-<report seq>', reason normalised.
+                stops, carried_id = self.carried(result, "report")
+                self.assertEqual(self.notes("refusal"), [])
+                self.assertEqual(stops, [(carried_id(noted), pilot_gate.refusal_code(noted))] if noted else [])
+                self.assertEqual([s["reason"] for s in sp.fold(env).active_stops], [reason for _, reason in stops])
                 if code == "ERROR_IN_ORDER":
                     # Not a definitive code: the order stays unresolved, and A17 refuses the next open until
                     # reconcile resolves it or Yu accepts it, on top of the market latch.
@@ -3316,11 +3337,10 @@ class ReviewRound3Tests(PilotCase):
                 self.assertEqual([(o["state"], o["error_code"]) for o in result["orders"]],
                                  [("FAILED", "transport_not_sent")])
                 self.assertEqual(env.transport.bytes_written[-1:] if cause == "connect_failed" else [0], [0])
-                self.assertEqual([n["code"] for n in self.notes("refusal")], [cause])
-                self.assertEqual([(n["scope"], n["reason"]) for n in self.notes("stop")], [("session", "kill_file")])
-                order = [e["payload"]["pilot"]["type"] for e in sp.pilot_notes(env) if e["payload"]["pilot"]["type"]
-                         in ("refusal", "stop")]
-                self.assertEqual(order, ["refusal", "stop"])          # the stronger stop first (round 4, item 4)
+                # P1-08 §3.2: the code's own review stop is the carried stop note; the stronger stop first (round 5).
+                self.assertEqual(self.notes("refusal"), [])
+                self.assertEqual([(n["scope"], n["reason"]) for n in self.notes("stop")],
+                                 [("review", cause), ("session", "kill_file")])
                 os.remove(env.paths.kill_file)
                 env.gateway.close()
                 self.assertEqual(self.open()["failures"], ["pa3_session_ended"])     # journals the due review stop
@@ -3368,7 +3388,7 @@ class ReviewRound4Tests(PilotCase):
         ahead: at pilot_place's token read (the reservation's R6 check, at its own raw reading, refuses: nothing
         reserved) or at the reservation step's raw reading (the reservation passes; the risk decision, at its own
         raw reading, refuses rate_minute, that market only). Never a third request."""
-        for caller, latch in (("pilot_place", None), ("_pilot_decide", "market")):
+        for caller, latch, reserved in (("pilot_place", "market", 2), ("_pilot_decide", "market", 3)):
             with self.subTest(transient_at=caller):
                 env = self.build()
                 start = env.clock.time_ns()
@@ -3388,7 +3408,7 @@ class ReviewRound4Tests(PilotCase):
                 self.assertEqual((len(hit), len(env.router.order_requests)), (1, 2))      # no third request
                 self.assertEqual((result["decision"], result["refusal"]["rule"], result["pilot"]["latch"]),
                                  ("refused", "rate_minute", latch))
-                self.assertEqual(len(self.notes("reservation")), 2 if latch is None else 3)
+                self.assertEqual(len(self.notes("reservation")), reserved)
                 self.clean()
 
     def test_r4_2_a_backward_reading_at_the_risk_decision_is_a_negative_age(self):

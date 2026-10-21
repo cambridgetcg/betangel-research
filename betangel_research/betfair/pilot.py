@@ -2366,6 +2366,7 @@ class _Folder:
             if has_bet or _is_int(fields.get("size_matched_p"), 0):
                 self.sending(rec, seq, ns)
             dirty.add(rec.index)
+        self.carrier(kind, payload, moves, seq)
         return dirty
 
     def carrier(self, kind, payload, moves, seq):

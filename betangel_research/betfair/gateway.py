@@ -1030,7 +1030,8 @@ class OrderGateway:
             wall_ns = self.clock.time_ns()
             seen_ns = max(pilot["seen_ns"], self._pilot_seen_ns or 0)          # every read so far, this one included
             # Check 2 again at the retained time (P106-R3-1): the book's wall age at the latest time this open has
-            # seen is an upper bound too; the raw check above keeps the negative-age and both-clock rules.
+            # seen is an upper bound too; the raw check above (_book_age_ok, on the gate's own reading) keeps the
+            # negative-age rule and the monotonic age.
             age_at_mark = self._book_wall_age_ns(book, now_ns=seen_ns)
             if age_at_mark is None or age_at_mark > int(self.config["orders"]["caps"]["max_book_age_s"] * _NS_PER_S):
                 return "book_stale_before_send"
@@ -1425,10 +1426,10 @@ class OrderGateway:
             return
         if self._open_id is None:
             self._open_id = "open-" + secrets.token_hex(8)
-        self._open_refusal_noted = True
         self._append("note", pilot_rules.pilot_note(
             "refusal", registered, session_id=session["session_id"], open_id=self._open_id, reservation_seq=None,
             code=pilot_gate.refusal_code(code), row_sha256=None, book_sha256=None))
+        self._open_refusal_noted = True
 
     def _pilot_now(self):
         """The wall clock raised to the largest time this pilot-place open has observed (note §5 check 4; P106-1,
@@ -1480,8 +1481,8 @@ class OrderGateway:
         if self._resolved_at_open:
             # One refusal note per open (R2-N3): a later call in the same open refuses alike and writes nothing.
             if not self._open_refusal_noted:
-                self._open_refusal_noted = True
                 self._pilot_refusal_note(RESOLVED_AT_OPEN_RULE, None)
+                self._open_refusal_noted = True             # only once written: a failed append is retried
             info["latch"] = "review"
             return dict(self._resolved_refusal(), pilot=info)
         decided = self._pilot_decide(market_id, scheduler_off_ns, info)
@@ -1640,8 +1641,9 @@ class OrderGateway:
                 self.clock.sleep((trigger - t0 + 1_000_000) / _NS_PER_S)
                 continue
             # Critique 1: the rules the journal already predicts, before a reservation can use a slot.
+            # The R6 windows at this check's raw reading (round 4): a transient forward reading must not move them.
             failures = self.guard.evaluate_pilot_reservation(market_id, state=core, now_ns=t0, size_p=C.size_p,
-                                                             kill_engaged=kill_engaged(self.paths))
+                                                             kill_engaged=kill_engaged(self.paths), raw_now_ns=wall)
             if failures:
                 latches = []
                 for failure in failures:
@@ -1840,14 +1842,19 @@ class OrderGateway:
                                                            "contract_sha256": pilot["contract"].sha256}}
         strategy_ref = order_strategy_ref(self.config, source)
         state = self._state()
-        # A pilot decision is judged at the open's retained time (P106-R3-1): the state is read first, then the mark,
-        # which holds that read and every earlier one, so no wall reading the open has seen is undone (V10 included).
-        # The refs keep the raw reading; a manual order keeps the raw clock.
-        risk_now_ns = now_ns if pilot is None else self._pilot_now()
+        # A pilot decision (P106-R3-1, round 4): the state is read first, then one raw reading for this decision;
+        # staleness is judged at the open's retained time (that reading and every earlier one, an upper bound), the
+        # R6/R7 windows and the negative-age floors at the raw reading. The refs keep the first raw reading; a
+        # manual order keeps the raw clock alone.
+        if pilot is None:
+            risk_now_ns, raw = now_ns, {}
+        else:
+            raw_ns = self.clock.time_ns()
+            risk_now_ns, raw = self._pilot_observe(raw_ns), {"raw_now_ns": raw_ns}
         decision = self.guard.evaluate_place(
             market_id, instructions, book=book, state=state, arming=arming, funds=funds, now_ns=risk_now_ns,
             probe=probe, now_monotonic_ns=self.clock.monotonic_ns(), kill_engaged=kill_engaged(self.paths),
-            customer_ref=cref, customer_order_refs=refs, funds_checked_at=funds_checked_at, **binding)
+            customer_ref=cref, customer_order_refs=refs, funds_checked_at=funds_checked_at, **binding, **raw)
         journaled = []
         for ref, instruction in zip(refs, listed):
             if _instruction_echo(instruction) is None or not isinstance(market_id, str):
@@ -1992,18 +1999,23 @@ class OrderGateway:
                 # (note §9); any other failure before the first byte keeps its own latch: a refused capability,
                 # a connect, TLS or preflight failure, a fault inside the gate, a review stop (Q11; P106-C3).
                 # A KILL file adds its session stop to, never replaces, a stop the code needs on its own: a
-                # capability, connect or preflight failure keeps its review stop (P106-R3-2); a §5 first-byte
-                # code with a KILL file is the session stop alone.
+                # capability, connect or preflight failure keeps its review stop (P106-R3-2), journaled first, so
+                # a crash between the two appends leaves the stronger one; a §5 first-byte code with a KILL file
+                # is the session stop alone. The result names the strongest latch.
                 code = extra["send_exception"]["code"]
                 killed = code == "kill_engaged_before_send" or kill_engaged(self.paths)
                 own = (None if code == "kill_engaged_before_send" or code in pilot_gate.FIRST_BYTE_CODES
                        else pilot_gate.latch_for(code))
+                if own in ("review", "session"):
+                    self._pilot_latch(pilot, code)
                 if killed:
+                    strongest = pilot["latch"]
                     self._pilot_latch(pilot, "halted", reason="kill_engaged")
-                if own is None:
-                    if not killed:
-                        pilot["latch"] = "market"
-                elif own in ("review", "session") or not killed:
+                    if strongest == "review":
+                        pilot["latch"] = "review"
+                elif own is None:
+                    pilot["latch"] = "market"
+                elif own not in ("review", "session"):
                     self._pilot_latch(pilot, code)
             elif pilot is not None and outcome == "FAILED_REJECTED":
                 # Betfair refused the call (an ApiError: session, rate limit and the rest). A HALT journaled with

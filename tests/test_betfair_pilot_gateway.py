@@ -3318,6 +3318,9 @@ class ReviewRound3Tests(PilotCase):
                 self.assertEqual(env.transport.bytes_written[-1:] if cause == "connect_failed" else [0], [0])
                 self.assertEqual([n["code"] for n in self.notes("refusal")], [cause])
                 self.assertEqual([(n["scope"], n["reason"]) for n in self.notes("stop")], [("session", "kill_file")])
+                order = [e["payload"]["pilot"]["type"] for e in sp.pilot_notes(env) if e["payload"]["pilot"]["type"]
+                         in ("refusal", "stop")]
+                self.assertEqual(order, ["refusal", "stop"])          # the stronger stop first (round 4, item 4)
                 os.remove(env.paths.kill_file)
                 env.gateway.close()
                 self.assertEqual(self.open()["failures"], ["pa3_session_ended"])     # journals the due review stop
@@ -3337,6 +3340,140 @@ class ReviewRound3Tests(PilotCase):
                 self.assertEqual((result["decision"], result["pilot"]["state"]), ("accepted", "EXECUTABLE"))
                 self.assertEqual(len(env.router.order_requests), sent_before + 1)
                 self.clean()
+
+
+class ReviewRound4Tests(PilotCase):
+    """The refute-first workflow on d650056 (round 4); each test fails on d650056."""
+
+    def one_reading(self, caller, step_s):
+        """The first wall reading (time_ns) made by the gateway function caller is step_s seconds off; the clock is
+        right again for the next. Installed on the raw clock under the shared observed one; -> the record."""
+        env, hit = self.env, []
+        clock = env.clock
+        raw = type(clock).time_ns
+
+        def time_ns():
+            value = raw(clock)
+            if not hit and sys._getframe(2).f_code.co_name == caller:
+                hit.append(value)
+                return value + int(step_s * S)
+            return value
+
+        clock.time_ns = time_ns
+        self.addCleanup(lambda: clock.__dict__.pop("time_ns", None))
+        return hit
+
+    def test_r4_1_one_forward_reading_does_not_open_the_minute_window(self):
+        """Orders at T - 59.5 s and T - 29.75 s, a cap of 2 a minute, then the third open at T with one reading 1 s
+        ahead: at pilot_place's token read (the reservation's R6 check, at its own raw reading, refuses: nothing
+        reserved) or at the reservation step's raw reading (the reservation passes; the risk decision, at its own
+        raw reading, refuses rate_minute, that market only). Never a third request."""
+        for caller, latch in (("pilot_place", None), ("_pilot_decide", "market")):
+            with self.subTest(transient_at=caller):
+                env = self.build()
+                start = env.clock.time_ns()
+                lead = OFF - start
+                markets = [self.market(off_ns=OFF + int(o * S)) for o in (0.0, 29.75, 59.5)]
+                gateways = [env.gateway, sp.new_gateway(env), sp.new_gateway(env)]
+                for market, gateway in zip(markets[:2], gateways[:2]):
+                    if env.clock.time_ns() < market.off_ns - lead:
+                        sp.set_time(env.clock, market.off_ns - lead)
+                    self.open(gateway)
+                    self.assertEqual(self.place(market, gateway=gateway)["decision"], "accepted")
+                    gateway.close()
+                sp.set_time(env.clock, markets[2].off_ns - lead)
+                self.open(gateways[2])
+                hit = self.one_reading(caller, 1.0)
+                result = self.place(markets[2], gateway=gateways[2])
+                self.assertEqual((len(hit), len(env.router.order_requests)), (1, 2))      # no third request
+                self.assertEqual((result["decision"], result["refusal"]["rule"], result["pilot"]["latch"]),
+                                 ("refused", "rate_minute", latch))
+                self.assertEqual(len(self.notes("reservation")), 2 if latch is None else 3)
+                self.clean()
+
+    def test_r4_2_a_backward_reading_at_the_risk_decision_is_a_negative_age(self):
+        """The one raw reading the risk decision takes, 1 s or 3 s behind the send book's observed_at (and the
+        funds read), then right again: V10 book_age_negative and R11 refuse, as at 4536c2e; a review stop, nothing
+        sent."""
+        for step_s in (-1, -3):
+            with self.subTest(step_s=step_s):
+                env = self.build()
+                market = self.market()
+                self.open()
+                state, armed = env.gateway._state, []
+
+                def risk_fold():
+                    out = state()
+                    if "_place_core" in [frame.function for frame in inspect.stack()[:8]]:
+                        armed.append(True)
+                    return out
+
+                clock = env.clock
+                raw = type(clock).time_ns
+                stepped = []
+
+                def time_ns():
+                    value = raw(clock)
+                    if armed and not stepped:
+                        stepped.append(value)
+                        return value + step_s * S
+                    return value
+
+                clock.time_ns = time_ns
+                self.addCleanup(lambda: clock.__dict__.pop("time_ns", None))
+                with patch.object(env.gateway, "_state", side_effect=risk_fold):
+                    result = self.place(market)
+                self.assertEqual(len(stepped), 1)
+                self.assertEqual((result["decision"], result["pilot"]["latch"]), ("refused", "review"))
+                self.assertEqual(risk_failures(result), [("validation:V10", "book_age_negative"),
+                                                         ("funds", "funds_stale_refresh_required")])
+                self.assertEqual((env.router.order_requests, "submit" in self.kinds()), ([], False))
+                self.clean()
+
+    def test_r4_3_a_failed_resolved_at_open_note_is_retried(self):
+        """earlier_unknown_resolved_at_open's note append fails once: the same open's retry writes it (the
+        once-per-open flag is set only after the write), so a reopen under the same ARM is refused."""
+        from betangel_research.betfair.errors import ApiError
+        env = self.build(pt4_done=True)
+        market, second, third = self.market(), self.market(off_ns=OFF + 1800 * S), self.market(off_ns=OFF + 3600 * S)
+        self.open()
+        accept = env.exchange.place
+
+        def placed_but_lost(params):
+            env.exchange.place_handler = None
+            accept(params)
+            raise TransportError("connection_lost", phase="receive", may_have_arrived=True)
+
+        env.exchange.place_handler = placed_but_lost
+        env.exchange.read_failures["listCurrentOrders"] = [ApiError("TIMEOUT_ERROR", surface="aping")] * 200
+        self.assertTrue(self.place(market)["pilot"]["unknown"])
+        env.gateway.close()
+        env.exchange.read_failures.clear()
+        sp.set_time(env.clock, second.off_ns - 299 * S)
+        self.open()
+        self.assertTrue(env.gateway._resolved_at_open)
+        note, failed = env.gateway._pilot_note, []
+
+        def fail_once(payload, **columns):
+            if not failed and payload["pilot"]["type"] == "refusal":
+                failed.append(True)
+                raise JournalError("synthetic_append_failure")
+            return note(payload, **columns)
+
+        with patch.object(env.gateway, "_pilot_note", side_effect=fail_once):
+            with self.assertRaises(JournalError):
+                self.place(second)
+        self.assertEqual(self.notes("refusal"), [])
+        refused = self.place(second)                       # the same open, again
+        self.assertEqual((refused["refusal"]["rule"], refused["pilot"]["latch"]),
+                         ("earlier_unknown_resolved_at_open", "review"))
+        self.assertEqual([n["code"] for n in self.notes("refusal")], ["earlier_unknown_resolved_at_open"])
+        env.gateway.close()
+        sp.set_time(env.clock, third.off_ns - 299 * S)
+        self.assertEqual(self.open()["failures"], ["pa3_session_ended"])
+        with self.assertRaises(NotArmed):
+            self.place(third)
+        self.clean()
 
 
 if __name__ == "__main__":

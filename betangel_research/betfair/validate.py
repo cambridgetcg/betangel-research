@@ -86,8 +86,10 @@ def _fail(failures, rule, reason, index=None):
     failures.append({"rule": rule, "reason": reason, "instruction": index})
 
 
-def _book_failures(book, market_id, config, *, mode, now_ns, now_monotonic_ns):
-    """Market-level V1, V9, V9b, V10 and V12 failures, plus the validated book or None."""
+def _book_failures(book, market_id, config, *, mode, now_ns, now_monotonic_ns, floor_ns=None):
+    """Market-level V1, V9, V9b, V10 and V12 failures, plus the validated book or None. floor_ns (live, an RS-19
+    pilot decision): the raw wall reading when now_ns is a later retained time; the book's wall age is negative
+    when either reading is before its observed_at."""
     failures = []
     if not isinstance(market_id, str) or not MARKET_ID_RE.fullmatch(market_id):
         _fail(failures, "V1", "market_id_invalid")
@@ -146,8 +148,9 @@ def _book_failures(book, market_id, config, *, mode, now_ns, now_monotonic_ns):
                 _fail(failures, "V10", "book_stale")
             else:
                 # The monotonic clock stops while a Mac sleeps: the wall-clock age must pass as well.
-                wall_age = now_ns - parse_utc_ns(book["observed_at"])
-                if wall_age < 0:
+                observed_ns = parse_utc_ns(book["observed_at"])
+                wall_age = now_ns - observed_ns
+                if wall_age < 0 or (floor_ns is not None and floor_ns < observed_ns):
                     _fail(failures, "V10", "book_age_negative")
                 elif wall_age > int(caps["max_book_age_s"] * _NS_PER_S):
                     _fail(failures, "V10", "book_stale_wall_clock")
@@ -288,17 +291,17 @@ def _check_instruction(index, instruction, *, book, config, mode, probe, failure
 
 
 def validate_place(market_id, instructions, *, book, open_orders, config, mode, now_ns, probe=False,
-                   now_monotonic_ns=None, customer_ref=None, customer_order_refs=None):
+                   now_monotonic_ns=None, customer_ref=None, customer_order_refs=None, floor_ns=None):
     """Every V-rule failure for one place request (empty list = valid).
 
     open_orders: our order records (any market; filtered here) for the V8 self-match check.
     Live mode measures book age on the monotonic clock (A18), so now_monotonic_ns is required
-    there; without it the book is refused as unmeasurable.
+    there; without it the book is refused as unmeasurable. floor_ns: see _book_failures.
     """
     if mode not in ("paper", "live"):
         raise ValueError("mode must be paper or live")
     failures, book = _book_failures(book, market_id, config, mode=mode, now_ns=now_ns,
-                                    now_monotonic_ns=now_monotonic_ns)
+                                    now_monotonic_ns=now_monotonic_ns, floor_ns=floor_ns)
     if not isinstance(instructions, list) or not instructions:
         _fail(failures, "V7", "no_instructions")
         return failures

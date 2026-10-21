@@ -65,7 +65,7 @@ NO_NEW_STOP_CODES = frozenset({"pa4_pilot_stop", "pa4_placing_ended", "pa3_sessi
 # "market": that market only, nothing more journaled (its reservation already uses it up). "session": a session stop.
 # "review": a refusal note, from which the fold derives a review stop. "none": the HALT already ends the session.
 # MARKET_NOT_OPEN_FOR_BETTING and MARKET_SUSPENDED in a place report are the post-send forms of V9 market_not_open
-# and market_inplay (Nuance's ruling, 2026-10-21).
+# (a market not open for betting, or suspended, which need not be in play; Nuance's ruling, 2026-10-21).
 MARKET_LATCH = frozenset({"validation:V13", "validation:V9b", "rate_minute", "rate_hour", "pilot_send_book_off_differs",
                           "journal_changed_since_decision", "book_fetch_failed", "market_exposure", "total_exposure",
                           "MARKET_NOT_OPEN_FOR_BETTING", "MARKET_SUSPENDED"})
@@ -356,18 +356,23 @@ def open_manual_refs(events, orders):
 
 def place_report_failure(report):
     """The code of a normalised place report in which Betfair refused the pilot's one instruction (the report's or
-    the instruction's status FAILURE), else None: the instruction's own code, else, when it has none or only
-    ERROR_IN_ORDER (failed because the whole request did), the report's, else "place_report_failure"."""
+    the instruction's status FAILURE), else None. Each level may carry only a marker that points at the other: the
+    instruction's ERROR_IN_ORDER (it failed because the whole request did) and the report's BET_ACTION_ERROR (an
+    instruction failed; errors.py's "partial"). Of the codes left, the stronger: one that is not market only (a
+    review stop) wins, so the result is market only when every code left is a market code. Markers alone, or no
+    code at all, give the marker itself or "place_report_failure" (a review stop)."""
     if not isinstance(report, dict):
         return None
     items = report.get("instructions") or []
     item = items[0] if items and isinstance(items[0], dict) else {}
     if report.get("status") != "FAILURE" and item.get("status") != "FAILURE":
         return None
-    code = item.get("error_code")
-    if code in (None, "ERROR_IN_ORDER"):
-        code = report.get("error_code") or code
-    return code or "place_report_failure"
+    instruction, whole = item.get("error_code"), report.get("error_code")
+    codes = [code for code in (None if instruction == "ERROR_IN_ORDER" else instruction,
+                               None if whole == "BET_ACTION_ERROR" else whole) if code is not None]
+    if not codes:
+        return instruction or whole or "place_report_failure"
+    return next((code for code in codes if latch_for(code) != "market"), codes[0])
 
 
 def session_window_open(events, *, now_ns):

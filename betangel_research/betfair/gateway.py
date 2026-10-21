@@ -388,7 +388,9 @@ class OrderGateway:
                     and all(getattr(part, "clock", None) is clock
                             for part in (journal, guard, rpc, read, getattr(rpc, "session", None)))):
                 # Every wall-clock read of a placement open is kept in its high-water mark (P106-R2-1): one observed
-                # clock, shared by the journal, the risk guard, the JSON-RPC and read clients and the session.
+                # clock, shared by the journal, the risk guard, the JSON-RPC and read clients and the session. The
+                # transports (rpc.transport, session.transport) are not checked: they must keep reading the
+                # monotonic clock only (transport.py's send-by and budget), never the wall clock.
                 raise ConfigError("pilot_gateway_needs_one_observed_clock")
         self.config = config
         self.paths = paths
@@ -979,9 +981,10 @@ class OrderGateway:
         wall_age = self._book_wall_age_ns(book)
         return 0 <= age <= limit and wall_age is not None and 0 <= wall_age <= limit
 
-    def _book_wall_age_ns(self, book):
+    def _book_wall_age_ns(self, book, *, now_ns=None):
+        """The book's wall-clock age at now_ns (default: a fresh reading), or None when it has no usable time."""
         try:
-            return self.clock.time_ns() - parse_utc_ns(book["observed_at"])
+            return (self.clock.time_ns() if now_ns is None else now_ns) - parse_utc_ns(book["observed_at"])
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -1026,6 +1029,11 @@ class OrderGateway:
                 return None
             wall_ns = self.clock.time_ns()
             seen_ns = max(pilot["seen_ns"], self._pilot_seen_ns or 0)          # every read so far, this one included
+            # Check 2 again at the retained time (P106-R3-1): the book's wall age at the latest time this open has
+            # seen is an upper bound too; the raw check above keeps the negative-age and both-clock rules.
+            age_at_mark = self._book_wall_age_ns(book, now_ns=seen_ns)
+            if age_at_mark is None or age_at_mark > int(self.config["orders"]["caps"]["max_book_age_s"] * _NS_PER_S):
+                return "book_stale_before_send"
             return pilot_gate.first_byte_refusal(dict(pilot, seen_ns=seen_ns), wall_ns=wall_ns,
                                                  mono_ns=self.clock.monotonic_ns(), head=head)
 
@@ -1470,7 +1478,11 @@ class OrderGateway:
                 "outcome": None, "code": None, "submit_seq": None, "state": None, "bet_id": None,
                 "size_remaining_p": None, "unknown": False, "latch": None}
         if self._resolved_at_open:
-            info["latch"] = self._pilot_refusal_note(RESOLVED_AT_OPEN_RULE, None)
+            # One refusal note per open (R2-N3): a later call in the same open refuses alike and writes nothing.
+            if not self._open_refusal_noted:
+                self._open_refusal_noted = True
+                self._pilot_refusal_note(RESOLVED_AT_OPEN_RULE, None)
+            info["latch"] = "review"
             return dict(self._resolved_refusal(), pilot=info)
         decided = self._pilot_decide(market_id, scheduler_off_ns, info)
         if decided is None or decided.get("refusal") is not None or decided["decision"] == "skipped":
@@ -1827,8 +1839,13 @@ class OrderGateway:
             binding = {"source": source, "pilot_binding": {"record_sha256": pilot["digest"],
                                                            "contract_sha256": pilot["contract"].sha256}}
         strategy_ref = order_strategy_ref(self.config, source)
+        state = self._state()
+        # A pilot decision is judged at the open's retained time (P106-R3-1): the state is read first, then the mark,
+        # which holds that read and every earlier one, so no wall reading the open has seen is undone (V10 included).
+        # The refs keep the raw reading; a manual order keeps the raw clock.
+        risk_now_ns = now_ns if pilot is None else self._pilot_now()
         decision = self.guard.evaluate_place(
-            market_id, instructions, book=book, state=self._state(), arming=arming, funds=funds, now_ns=now_ns,
+            market_id, instructions, book=book, state=state, arming=arming, funds=funds, now_ns=risk_now_ns,
             probe=probe, now_monotonic_ns=self.clock.monotonic_ns(), kill_engaged=kill_engaged(self.paths),
             customer_ref=cref, customer_order_refs=refs, funds_checked_at=funds_checked_at, **binding)
         journaled = []
@@ -1974,12 +1991,19 @@ class OrderGateway:
                 # (critique 2; R2-N2); a §5 first-byte refusal (deadline, freshness, head) ends that market only
                 # (note §9); any other failure before the first byte keeps its own latch: a refused capability,
                 # a connect, TLS or preflight failure, a fault inside the gate, a review stop (Q11; P106-C3).
+                # A KILL file adds its session stop to, never replaces, a stop the code needs on its own: a
+                # capability, connect or preflight failure keeps its review stop (P106-R3-2); a §5 first-byte
+                # code with a KILL file is the session stop alone.
                 code = extra["send_exception"]["code"]
-                if code == "kill_engaged_before_send" or kill_engaged(self.paths):
+                killed = code == "kill_engaged_before_send" or kill_engaged(self.paths)
+                own = (None if code == "kill_engaged_before_send" or code in pilot_gate.FIRST_BYTE_CODES
+                       else pilot_gate.latch_for(code))
+                if killed:
                     self._pilot_latch(pilot, "halted", reason="kill_engaged")
-                elif code in pilot_gate.FIRST_BYTE_CODES:
-                    pilot["latch"] = "market"
-                else:
+                if own is None:
+                    if not killed:
+                        pilot["latch"] = "market"
+                elif own in ("review", "session") or not killed:
                     self._pilot_latch(pilot, code)
             elif pilot is not None and outcome == "FAILED_REJECTED":
                 # Betfair refused the call (an ApiError: session, rate limit and the rest). A HALT journaled with
@@ -1990,7 +2014,8 @@ class OrderGateway:
                     self._pilot_latch(pilot, extra["send_exception"]["code"])
             elif pilot is not None and outcome is None:
                 # A report: a HALT it journaled ends the session; a refused instruction with no HALT is never left
-                # unlatched: MARKET_NOT_OPEN_FOR_BETTING or MARKET_SUSPENDED end that market (the post-send V9),
+                # unlatched: MARKET_NOT_OPEN_FOR_BETTING or MARKET_SUSPENDED end that market (the post-send V9
+                # market_not_open),
                 # every other code is a review stop (Q11; Nuance's ruling).
                 if reported.get("halts"):
                     pilot["latch"] = "none"

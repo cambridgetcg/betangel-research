@@ -50,6 +50,25 @@ class LockBusy(BetfairError):
     pass
 
 
+class AdmissionRefused(BetfairError):
+    """A recorder start, a live admission or a release refused (admission.py). str() is the outcome code,
+    then ":" and a safe detail code when there is one; owner and generation name the admission in force."""
+
+    def __init__(self, outcome, *, detail=None, owner=None, generation=None, problems=()):
+        outcome = safe_code(outcome)
+        detail = safe_code(detail) if detail is not None else None
+        super().__init__(outcome if detail is None else f"{outcome}:{detail}")
+        self.outcome = outcome
+        self.detail = detail
+        self.owner = safe_code(owner) if owner is not None else None
+        self.generation = generation if type(generation) is int else None
+        self.problems = [safe_code(problem) for problem in problems]
+
+
+class RecorderRunning(AdmissionRefused, LockBusy):
+    """Another recorder holds recordings/.recorder.lock (a LockBusy too, as the lock refusal always was)."""
+
+
 TRANSPORT_PHASES = ("preflight", "connect", "send", "receive", "decode")
 
 

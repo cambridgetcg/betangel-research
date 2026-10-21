@@ -113,6 +113,8 @@ PILOT = f"{BETFAIR}.pilot"
 # Forbidden to the backtester: account, credential, session, network, order-path or live-state modules.
 FORBIDDEN_BETFAIR = {
     "__main__": "the betfair client entry point: runs cli.main",
+    "admission": ("recording admission: the profile's recordings/ admission files and locks, the login ledger (auth), "
+                  "a read-only fold of the live journal and SIGTERM to a recorder process"),
     "api": "exchange JSON-RPC client: Betting/Accounts reads, order preparation and the single order send",
     "arming": "live arming: Keychain presence, the journal anchor, the KILL file and the account registry",
     "auth": "SSO login, keepAlive, logout and the persistent login ledger under the profile",
@@ -128,6 +130,7 @@ FORBIDDEN_BETFAIR = {
     "presence": "operator presence on the controlling terminal before each live action",
     "reconcile": "reconciles live order state against the exchange through a ReadClient",
     "recorder": "live stream recorder: esa.StreamClient, the profile's recordings dir and recorder lock",
+    "recordings": "offline index and verify-day over the profile's recordings dir and run ledger; imports recorder",
     "risk": "RiskGuard: mints order capabilities (capability._mint) and reads the KILL file (paths.kill_engaged)",
     "transport": "HTTPS and TLS-socket transports for SSO, JSON-RPC and the stream",
 }

@@ -597,6 +597,47 @@ class UnreadableJournal:
         return None
 
 
+READ_ONLY_BUSY_TIMEOUT_S = 2
+
+
+def read_only_fold(path, *, mode, now_ns, busy_timeout_s=READ_ONLY_BUSY_TIMEOUT_S):
+    """The fold of a journal file opened with SQLite's mode=ro, or None when no file exists.
+
+    For recording admission's release (admission.py): the connection can never write an event or take
+    the write lock, and nothing is created when the file is absent. Anything else fails closed with
+    JournalError("journal_unreadable_read_only"): a busy or locked file, one that is not a database, the
+    wrong schema or mode, an event that is not strict JSON, or a committed prefix that cannot be folded.
+    The schema checks are OrderJournal's, without the write transaction it takes for a new file."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    db = None
+    try:
+        db = sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, timeout=busy_timeout_s,
+                             isolation_level=None)
+        db.execute(f"PRAGMA busy_timeout={int(busy_timeout_s * 1000)}")
+        if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            raise JournalError("journal_schema_version_mismatch")
+        names = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+        columns = tuple(row[1] for row in db.execute("PRAGMA table_info(events)"))
+        if not (REQUIRED_TABLES | REQUIRED_TRIGGERS | REQUIRED_INDEXES) <= names or columns != EVENT_COLUMNS:
+            raise JournalError("journal_schema_incomplete")
+        meta = {key: value for key, value in db.execute("SELECT key, value FROM journal_meta")}
+        if meta.get("schema_version") != str(SCHEMA_VERSION) or meta.get("mode") != mode:
+            raise JournalError("journal_mode_mismatch")
+        events = []
+        for row in db.execute(_SELECT_SQL + " ORDER BY seq"):
+            event = dict(zip(EVENT_COLUMNS, row))
+            event["payload"] = strict_json_loads(event.pop("payload_json"))
+            events.append(event)
+        return fold_events(events, mode=mode, now_ns=now_ns)
+    except (sqlite3.Error, JournalError) + _FOLD_ERRORS:
+        raise JournalError("journal_unreadable_read_only") from None
+    finally:
+        if db is not None:
+            db.close()
+
+
 def _safety_append(kind, payload):
     """True for the events the kill switch needs while the committed prefix cannot be folded."""
     if kind == "submit":

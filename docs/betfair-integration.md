@@ -58,7 +58,7 @@ flowchart LR
 
 由此引出幾條設計：
 
-- 讀資料同 recorder 預設用 delayed key（`read.app_key_slot` 同 `stream.app_key_slot` 預設 `delayed`）。用 live key 錄 stream 要 `recorder.allow_live_key: true`，因為 live key 只讀係唔准嘅（F46）。
+- 讀資料同 recorder 預設用 delayed key（`read.app_key_slot` 同 `stream.app_key_slot` 預設 `delayed`）。用 live key 錄 stream 要 `recorder.allow_live_key: true`，因為 live key 只讀係唔准嘅（F46）。F46 嘅來源 SA/25033076334748（2026-08-22 更新）將 read-only 講成冇打算落注、只係讀或者收集價格／market data，叫唔打算落注嘅人用 delayed key，冇講任何比例或者監察指引。`record --require-delayed-key` 唔理 `allow_live_key`，session 唔係 delayed key 就拒絕（§9）。
 - live 落單一定用 live key：`JsonRpcClient.prepare_order` 要求 `app_key_slot == "live"`。用 delayed key 落單嘅路徑根本冇起。
 - arming 唔依賴 key 類型去保證安全，因為 delayed key 都落到真注（F44）。
 - 美國、德國、荷蘭、法國、新加坡等地嘅 IP 會被擋（F64）。live arming A10 要求操作者聲明係喺 UK 出網，而且環境冇 CI 或雲端標記。
@@ -165,6 +165,13 @@ security add-generic-password -U -s betangel-research.betfair.app-key.live -a de
     reads/<request_id>/{response.json,receipt.json}
     catalogue-cache/<market_id>.json
     recordings/run-ledger.jsonl
+    recordings/.recorder.lock            # 每個 recorder 成個 run（連網絡同收尾）都攞住
+    recordings/admission.lock            # recording admission：每次轉換只攞幾毫秒（§9）
+    recordings/INHIBIT                   # 存在就冇 recorder 可以開始
+    recordings/ADMISSION                 # 而家 admit 咗嘅 live owner 同 generation
+    recordings/admission-generation.json # 發過嘅最後一個 generation，只會增加
+    recordings/recorder.pid              # 行緊嗰個 recorder 嘅 pid、process 開始時間、invocation id
+    recordings/index/<YYYY-MM-DD>.json   # recordings index 嘅逐 market 結構索引，只留喺呢部 Mac
     recordings/<session_id>/...
 ```
 
@@ -173,7 +180,7 @@ security add-generic-password -U -s betangel-research.betfair.app-key.live -a de
 **點解要喺 worktree 以外。** 呢部 Mac 而家有兩個 worktree：呢個（`feat/betfair-exchange`）同 Codex 用緊嗰個（`research/offline-edge-lab`）。如果 state 放喺 checkout 入面，每個 checkout 就有自己嘅 KILL、lock 同 journal：喺一個 checkout kill 咗，另一個照落單；風險上限變成「每個 checkout 各自計」；`git clean -fdx` 或者 rebase 可能刪走 journal；仲有 commit 錯嘢嘅風險。固定一個 root，加上全域 `KILL`、`.gateway.lock` 同 `accounts.json`（同一個 account 唔准第二個 profile 用，F76），就避免晒。
 
 - `recorder.root` 同 `read.out_root` 可以設做所有 worktree 以外嘅絕對路徑，例如用大啲嘅硬碟。
-- 其他嘢都唔可以改位置：`KILL`、`.gateway.lock`、`accounts.json`、`journal-live.sqlite`、`login-ledger.jsonl`、`config.json`。
+- 其他嘢都唔可以改位置：`KILL`、`.gateway.lock`、`accounts.json`、`journal-live.sqlite`、`login-ledger.jsonl`、`config.json`，同埋 `recordings/` 入面嘅 admission 檔、`run-ledger.jsonl` 同 `index/`（`recorder.root` 只係搬 session 目錄）。
 - `--state-root`、`--config` 同 in-process `deps["home"]` 只喺 `BETANGEL_BETFAIR_FORBID_NETWORK=1` 時有效；嗰個變數係測試用嘅，有佢就連網絡都關埋。實作要求呢個變數喺 process 環境入面，而且被 override 嘅 root 一樣要喺所有 worktree 以外。
 
 `doctor` 會印出解析咗嘅路徑：
@@ -292,11 +299,28 @@ Catalogue projection：`MARKET_DESCRIPTION` 同 `RUNNER_METADATA` 各 1 分，�
 
 ```sh
 python3 -m betangel_research.betfair record --max-seconds 3600 --bet-angel-paused
+python3 -m betangel_research.betfair record --require-delayed-key --invocation-id <id> \
+  --end-at 2026-10-21T22:00:00Z --bet-angel-paused   # 自動錄音（wrapper）用嘅形式
 python3 -m betangel_research.betfair verify-recording \
   --session "<recordings_dir>/<session_id>"      # recordings_dir：`status` 或 `doctor` 印出嘅 paths.recordings_dir
+python3 -m betangel_research.betfair recordings index --day 2026-10-21   # 離線、只讀；stdout 只有數目
+python3 -m betangel_research.betfair verify-day --day 2026-10-21         # 離線、只讀
 ```
 
-`record` 會逐行印 JSON 進度（`segment_opened`、`segment_closed`、每 60 秒 `heartbeat_at`、`gap`、`stopped`），最後印 summary。
+`record` 會逐行印 JSON 進度（`segment_opened`、`segment_closed`、每 60 秒 `heartbeat_at`、`gap`、`stopped`），最後印 summary（有 `--invocation-id` 就連埋佢）。
+
+- **`--require-delayed-key`（C6）。** Config 嘅 `stream.app_key_slot` 唔係 `delayed` 就喺讀 Keychain 之前 exit 2（`recorder_delayed_key_required`）；`StreamRecorder` 自己亦再查 session 真正用嘅 `app_key_slot`，唔理 `recorder.allow_live_key` 點寫。
+- **`--invocation-id <id>`（C7）。** 1–64 個 `A-Z a-z 0-9 . _ : -`，字母或數字開頭。寫入 `recorder.pid`、`receipt.partial.json`、`receipt.json` 同 run-ledger 嗰行，等 wrapper 用 id 對返自己嗰次，唔使靠目錄新舊。冇呢個 flag 嘅話 receipt 同 ledger row 形狀照舊。
+- **`--end-at <UTC instant>`（C8）。** 要有 `Z` 或者 offset；唔喺而家之後就 exit 2（`end_at_not_after_now`），即係永遠唔會有非正數嘅時段。Recorder 用 `clock.time_ns()`（wall clock）喺每次停止檢查查一次，每次 pre-count、login（`authenticate`）、relogin 同 keepAlive 之前再查一次，過咗就停（`end_at_reached`）。原因：呢部 Air 嘅 `time.monotonic_ns` 係 `mach_absolute_time`，瞓覺時唔行，所以 `--max-seconds` 管唔住 wall-clock 嘅一日。
+
+**Recording admission（C5；recording design v3 §2、v4 §A／§E、v5）。** 所有檔案喺 profile 嘅 `recordings/`，喺所有 checkout 以外，所以每個 worktree 見到同一個狀態（§6）。
+
+1. `record` 嘅第一句就係 trap SIGTERM、SIGINT 同 SIGHUP：三個都只係叫 recorder 停（C1：關咗 terminal 一樣乾淨收尾，exit 0）。
+2. 讀任何 credential 或者 login 之前：攞 `admission.lock`（最多等 10 秒）；有 `INHIBIT` 或者 `ADMISSION`、或者狀態讀唔到，就 exit 2 `Betfair recording refused: inhibited`（或者 `admission_state_unknown`），stdout 有一行 `{"refused": {...}}`；`.recorder.lock` 用 LOCK_NB 攞，攞唔到就 `recorder_running`；寫 `recorder.pid`（pid、process 開始時間、invocation id）；放 `admission.lock`。點樣開 recorder 都一樣：`StreamRecorder.run` 冇收到 ticket 就自己行一次。
+3. Recorder 成個 run 都攞住 `.recorder.lock`，收尾時先刪自己嘅 `recorder.pid`，再放 lock。佢永遠唔攞 `.gateway.lock`。
+4. **Live admission**（`admission.admit`，畀 P1-08 同之後嘅 arm script 用；而家冇 CLI 命令 call 佢）：喺 lock 之下，`ADMISSION` 屬於另一個 owner 就拒絕（`admission_held`，講明 owner 同 generation），永遠唔會覆蓋；冇就寫 `INHIBIT` 同 `ADMISSION` N+1（`{generation, owner, purpose, created_at}`，atomic）。同一個 owner 要明確交返同一個 generation 先可以繼續。之後喺 lock 以外 drain recorder：`.recorder.lock` 俾人攞住，就用 `recorder.pid` 嘅 pid 同 process 開始時間核對（pid 俾人重用或者唔夾就拒絕，`recorder_pid_mismatch`，永遠唔會 signal 陌生 process），送 SIGTERM，等 lock 放（最多 90 秒，`recorder_did_not_stop`）；lock 有人攞但冇 `recorder.pid`（舊版 recorder）就只等、唔 signal。再做 step 8：login ledger（`auth.ledger_review`）喺最後一個 `login_reset` 或者成功之後有任何失敗、任何冇結果嘅 `login_attempt`（唔理幾舊），或者 ban 仲生效，就拒絕；ledger 有壞行一樣拒絕。被拒嘅新 admission 會收返自己嘅 `ADMISSION`，但 `INHIBIT` 留低。
+5. **Release**（`admission.release`）：喺 lock 之下，generation 要等於而家 `ADMISSION` 嗰個（舊 generation 永遠放唔到新嘅），live journal 要乾淨（用 SQLite `mode=ro` fold：每張單都係終結狀態，或者 `EXECUTION_COMPLETE` 而 `size_remaining_p` 係 0；冇生效緊嘅 HALT，resume 咗嘅舊 `kill` 唔計；冇 KILL file；journal 忙或者讀唔到就拒絕），step 8 要過，再加 caller 畀嘅額外檢查（P1-08 嘅 armed-session 檔）；全部過咗先刪 `ADMISSION` 同 `INHIBIT`。冇 `ADMISSION` 淨係得 `INHIBIT`（例如被拒嘅 admission 留低）就只可以用 `generation=None` 嘅人手 release，條件一樣。人手打嘅 `recording-release` 命令未做。
+6. **Emergency kill 永遠唔攞、唔等 `admission.lock`**，亦唔讀呢度任何檔案（[落單路徑 §9](betfair-order-path.md#9-kill-switch)）。
 
 **Session 同 segment。** 一次執行係一個 session；一個 subscription 係一個 segment。每個新 subscription 開新 segment，由新嘅 `SUB_IMAGE` 開始；recorder 永遠唔用 clock 續訂。所以每個 segment 檔都可以單獨 replay。訂閱一定送 `segmentationEnabled: false`（F52 未驗證佢一定有效，所以見到分段 line 就 close segment）。
 
@@ -326,10 +350,11 @@ Delayed key 嘅 stream 上限係 200 個 market（F44、F55），預設 `max_mar
 | `events.jsonl` | connected、auth_status、subscribed、echo、status_message、rejected_line、disconnected、gap、segment_closed、stopped，加上 keepalive_failed、refresh_failed、echo_out_of_range、stream_factory_refused、ignored_message，全部有 `at` 同 `monotonic_ns` |
 | `receipt.partial.json` | session 開始時已寫一次，之後每個 segment 關閉時 atomic 重寫；crash 之後只得呢個，`"complete": false` |
 | `receipt.json` | session 關閉時 atomic 寫入 |
+| `precount.jsonl` | 每個 segment 一行（C4）：規劃嗰個 segment 嘅 pre-count，只有 catalogue 嘅 `market_id` 同 `market_start_time`（UTC 毫秒；冇或者唔係時間就 `null`），加 `taken_at`、`lookback_s`、`count`、`possibly_more`、`subscription_mode`、`requested_count`；receipt 嘅 `precount` 記行數同 sha256 |
 
 Raw line 唔會包一層 envelope：`stream.messages()` 會丟棄冇 `op` 嘅 line。本地收到時間放喺 sidecar，唔改原始 line。
 
-**Receipt** 記錄 `status: "betfair_stream_recording_not_profitability_evidence"`、key type、endpoint、`data_freshness`（要求同 echo 嘅 conflateMs、heartbeatMs、label `delayed_conflated`／`live_unconflated`／`live_conflated`）、subscription、時鐘來源、每個 segment 嘅 hash、行數、`first_pt`／`last_pt`、`close_reason`、`replay_check`、gap 清單、`coverage: "continuous_within_segment_only_gaps_listed"`、licence note、`config_sha256`、`code_sha256`、git 狀態、`limitations` 同 `economic_result: null`。
+**Receipt** 記錄 `status: "betfair_stream_recording_not_profitability_evidence"`、key type、endpoint、`data_freshness`（要求同 echo 嘅 conflateMs、heartbeatMs、label `delayed_conflated`／`live_unconflated`／`live_conflated`）、subscription、時鐘來源、每個 segment 嘅 hash、行數、`first_pt`／`last_pt`、`close_reason`、`replay_check`、gap 清單、`coverage: "continuous_within_segment_only_gaps_listed"`、licence note、`config_sha256`、`code_sha256`、git 狀態、`limitations`、`economic_result: null`、`precount`（`{path, rows, sha256}`），有 `--invocation-id` 就加 `invocation_id`。
 
 - **時鐘。** `pt` 係 Betfair publish time；`received_at` 係本地 wall clock，冇獨立驗證；`monotonic_ns` 只可以喺同一 session 內比較。呢個 recorder 係 repo 第一個真正嘅本地收到時間來源。
 - **Gap。** segment 之間嘅時間一律記做 gap，冇 forward-fill。重連會開新 segment（新 `img`），所以唔會靜靜咁將斷線前後駁埋。Paper replay 讀 receipt 嘅 segment `first_pt`／`last_pt` 同 `market_ids`，**按 market、按同一個 window 判斷**（R3#7、R3#8）：
@@ -337,12 +362,21 @@ Raw line 唔會包一層 envelope：`stream.messages()` 會丟棄冇 `op` 嘅 li
   - Receipt 列咗、但冇 int `first_pt`..`last_pt` 嘅 segment（`lines 0`：未有 image 已經斷線）係一個空 window，即係嗰段乜都冇睇到；佢唔會令 gap guard 失效。
   - 一個 recording 只有喺冇任何 receipt 列佢時先算「未知」：全部未知就冇 window，report `limitations` 寫 `recording_gaps_unknown_no_receipt` 或者 `recording_gaps_unknown_segment_not_in_receipt`；已知同未知混埋一齊會拒絕（`ValueError("recordings_mix_known_and_unknown_gap_windows")`），因為未知嗰啲會令已知嗰啲嘅 gap guard 失效。
   - 剩餘風險（有記錄）：explicit mode refresh 令一個 segment 中途唔再帶某個 market，嗰個 market 仍然當覆蓋到 segment 嘅 `last_pt`；`max_snapshot_age_s` 限住生效 book 可以幾舊。
-- **停止。** `max_duration_s`、`--max-seconds`、`max_bytes`（只停唔刪）、SIGTERM、SIGINT 都會關 segment、寫 receipt、logout。每個關閉咗嘅 session 喺 profile 嘅 `recordings/run-ledger.jsonl` 加一行（`recorder.root` 改咗位置都係寫返 profile 入面）。
+- **停止。** `max_duration_s`、`--max-seconds`、`--end-at`（wall clock）、`max_bytes`（只停唔刪）、SIGTERM、SIGINT、SIGHUP 都會關 segment、寫 receipt、logout。每個關閉咗嘅 session 喺 profile 嘅 `recordings/run-ledger.jsonl` 加一行（`recorder.root` 改咗位置都係寫返 profile 入面）。
 - **重連。** `MAX_CONNECTION_LIMIT_EXCEEDED`、`TOO_MANY_REQUESTS` 最少等 60 秒，每次加倍，最多 3600 秒（我哋自己嘅設計，Betfair 冇講）；`max_reconnects_per_hour` 用完就停（`reconnect_budget_exhausted`）。未列明嘅 server code 當 `unrecognized`，停 session。
 - **Echo 同 503。** Server echo 嘅 heartbeat 唔喺 500–30000 ms、或者 conflation 唔喺 0–180000 ms，就當冇 echo（記 `echo_out_of_range` event），liveness 用較短嘅 timeout。有 `status`（例如 503）嘅 mcm 照寫入 segment，但之後到下一個冇 status 嘅 mcm 之前，book cache 嘅 `snapshot()` 拒絕（`stream_unreliable`）。讀 recording 嗰陣（Astra C3）：stream 由健康變唔可靠嗰個 message，會將 cache 入面**每一個**有 definition 嘅 market 都以 `invalid_reason="stream_unreliable"` 出 snapshot，唔理個 503 有冇 `mc`、改咗邊個 market（冇改到嘅 market 用嗰個 message 嘅 `pt`、`observed_at` 同 `monotonic_ns`）；之後 503 期間嘅 message 只出佢哋改到嘅 market；第一個健康 message 再喺佢嘅 `pt` 出一次所有受影響 market 嘅可用 snapshot。Paper 唔用唔可用嘅 snapshot fill 或者生效，被動 fill 要前一個 snapshot 可用，traded volume 嘅 high-water mark 喺恢復嗰個 snapshot 先提升，所以 503 期間成交嘅量永遠唔會變成 fill；503 帶住嘅改變（例如 in-play）亦唔會因為 market 之後冇再變而唔見咗。
 - **Paper replay 嘅 provenance（Astra C4）。** `paper-replay` 嘅結果唔單止取決於 recording 同 orders，仲取決於 replay 讀嘅其他檔案。所以 report 嘅 `inputs.dependencies` 逐個 recording 記低：`receipt.json` 同 `receipt.partial.json` 在唔在、佢哋嘅 sha256、用咗邊個（`receipt_used`），同 recv sidecar 嘅名、在唔在同 sha256；receipt 由被 hash 嘅同一批 bytes parse。`inputs.resolved` 記低解析出嚟嘅假設：`key_type`、`key_type_source`（`explicit`、`receipt` 或 `inferred_historical`）、gap `windows`（`[first_pt, last_pt, [market_ids]]`）同 `windows_status`（`known`、`unknown_no_receipt`、`unknown_segment_not_in_receipt`）。Ledger row 嘅 key 唔變，但 `source_sha256` 包埋 dependencies 同 resolved，所以同一份 recording 加唔加 receipt 會得出唔同嘅 `source_sha256`。
 - **Stream client 一定要用同一個 session 同 config。** `stream_factory()` 返嚟嘅 client 唔係用 recorder 收到嗰個 `SessionManager`，或者 host、port、heartbeat、conflation 同 config 唔同，就停 session（`stream_factory_mismatch:<field>`），唔會連線。`recorder.allow_live_key` 唔係 true 就唔准用 live key 錄。
 - **`verify-recording`** 核對 receipt hash 同檔案、recv row 由 1 連續到 `lines`、每行 sha256、`stream.messages()` 食晒每個 segment、`first_pt`／`last_pt` 同資料一致，同埋 receipt 用 `strict_json_loads` 讀得返。
+
+**`recordings index` 同 `verify-day`（C2）。** 兩個都離線、只讀：唔讀 credential、唔連網絡，只寫 `recordings/index/<day>.json`（0600，喺 state root，唔離開呢部 Mac）。Segment 每行只攞白名單入面嘅 key：`pt`，同每個 market change 嘅 `id`、`img`、`marketDefinition.status`／`inPlay`／`marketTime`／`eventId`；runner、`rc`、價錢、成交量、BSP、`bspReconciled` 全部唔讀入任何輸出。`recordings index` 嘅 stdout 只有數目（session、segment、每個 class 同 flag 幾多個、gap 數）同索引檔嘅 sha256。
+
+- **一日**：market 屬於佢 anchor 嘅 UTC 日：第一個 change 嘅 `marketTime`，冇就用 pre-count 嘅 catalogue 開始時間，再冇就第一次見到嘅時間。讀 [日 − 1 小時, 日 + 1 日 + 6 小時) 入面嘅 session。
+- **Window（v4 §F）**：由初始 `marketTime` − 60 分鐘，到第一次見到 CLOSED；冇見到 CLOSED 就到最後一個見到佢嘅 session 完結。時間全部用 receipt sidecar 嘅 `received_at`；`publish_pt` 同 in-play／CLOSED 時間係 delayed stream conflate 咗嘅 publish time，唔係轉變嘅時間。
+- **覆蓋**：一個 segment 入面，market 由佢自己喺嗰個 segment 第一次出現嗰行開始覆蓋（中途加入嘅 market 唔會攞 segment 開頭），到 segment 最後一行；兩行之間隔得長過 stream client 嘅 liveness timeout（conflation + 2 × heartbeat + 5 秒）就係 stall（多數係 Mac 瞓咗覺），唔算覆蓋。
+- **Gap**：window 入面冇覆蓋嘅時間，記低原因同秒數，跨 segment、跨 session 都保留；新 image 只係還原狀態，唔會補返中間冇見到嘅嘢。唯一容忍嘅係 `scheduled_refresh` 交接：market 喺下一個 segment 嘅 image 入面、喺一個 conflation 間隔以內再出現。
+- **Class 同 flag**：flag 係一個 set，class 係最高優先嗰個：`UNVERIFIED`（任何用到嘅 segment 唔係 complete receipt 入面、hash 對得返嘅，例如 crash 咗嘅 session）、`NOT_OBSERVED`（pre-count 有、但從來冇見過，用 catalogue 開始時間做 anchor）、`NO_ANCHOR`（見到但第一個 change 冇 `marketTime`）、`DROPPED_EXPLICIT`、`LATE_START`、`GAP`、`NO_CLOSE`、`CLOSED_WITHOUT_OBSERVED_INPLAY`、`SCHEDULE_CHANGED`、`COMPLETE`。`COMPLETE` 只係話喺呢個 window 同容忍度之下有覆蓋，唔證明每個變化都錄到。冇 pre-count 嘅舊 session 冇 `NOT_OBSERVED`：佢哋只證明有系統咁試過，唔證明成個 card 都錄到。
+- **`verify-day`**：每個同嗰日有重疊嘅 session：關咗嘅 session 要過 `verify-recording`、`receipt.json` 嘅 sha256 要等於 run-ledger 入面唯一一行嘅 `receipt_sha256`（`receipt_path` 要指返佢）、要有 `events.jsonl`、receipt 嘅 gap 清單要等於 segment 邊界推出嚟嘅 gap、唔可以有 recorder 以外嘅檔案。Crash 咗嘅 session（得 `receipt.partial.json`）同冇 receipt 列嘅 segment 只係分類同計數，唔當失敗；佢哋列咗嘅 segment 照 hash 核對。Atomic 寫入中途 crash 留低嘅暫存檔只計數。Ledger 有行但 session 目錄唔見咗、或者 ledger 讀唔到，都算失敗。輸出只有數目同失敗咗嘅 check 名，失敗就 exit 2（`day_failed_verification`）。
 
 **Delayed key 嘅 180 秒 conflation。** Delayed key 嘅 stream 會 conflate 到 180000 ms（F44、F51）：名義上大約每 3 分鐘一個 data message，包晒過去 3 分鐘嘅變化（initial image 唔跟呢個節奏；T6 只記咗非 heartbeat 最大相隔 180.013 秒，冇記最短）；HEARTBEAT 照 heartbeatMs 嚟（T6：conflateMs 冇要求、echo 180000，heartbeatMs echo 5000；600 秒入面 3 條 DELTA、116 條 HEARTBEAT，條條都有 `clk`）。Receipt 會標 `delayed_conflated`。**呢啲資料唔支持任何細過 180 秒嘅 feature**。Motif pipeline 唔睇 conflateMs：佢只查 decision 同 lookback 兩個時間點各自嘅 snapshot 年齡（`max_snapshot_age_s`，預設 10 秒；`microstructure.py` 嘅 `stale_decision_snapshot`／`stale_lookback_snapshot`），超過先排除；兩個時間點啱啱都落喺 data message 之後 10 秒內嘅記錄照樣用得，所以 conflate 咗嘅 recording 唔會自動被排除。
 
@@ -383,7 +417,8 @@ python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.j
 |---|---|---|
 | 基礎：常數、錯誤分類、schema、config、路徑、secret、Keychain、capability、收據、filter、transport | `constants.py`、`errors.py`、`schemas.py`、`config.py`、`paths.py`、`secret.py`、`credentials.py`、`capability.py`、`receipts.py`、`filters.py`、`transport.py` | `test_betfair_constants`、`test_betfair_schemas`、`test_betfair_config`、`test_betfair_paths`、`test_betfair_secret`、`test_betfair_credentials`、`test_betfair_receipts`、`test_betfair_filters`、`test_betfair_transport`、`test_betfair_syntax_floor` |
 | Login 同 REST read path | `auth.py`、`api.py` | `test_betfair_auth`、`test_betfair_api` |
-| Stream client 同 recorder | `esa.py`、`book.py`、`recorder.py` | `test_betfair_esa`、`test_betfair_book`、`test_betfair_recorder` |
+| Stream client 同 recorder | `esa.py`、`book.py`、`recorder.py` | `test_betfair_esa`、`test_betfair_book`、`test_betfair_recorder`、`test_betfair_recorder_controls` |
+| Recording admission、結構索引同 verify-day | `admission.py`、`recordings.py` | `test_betfair_admission`、`test_betfair_recordings` |
 | 落單核心（純函數） | `ticks.py`、`validate.py`、`risk.py`、`pnl.py`、`journal.py`、`lifecycle.py`、`paper.py` | `test_betfair_ticks`、`test_betfair_validate`、`test_betfair_pnl`、`test_betfair_risk`、`test_betfair_risk_properties`、`test_betfair_journal`、`test_betfair_lifecycle`、`test_betfair_paper` |
 | Gateway 同 CLI | `gateway.py`、`reconcile.py`、`arming.py`、`killswitch.py`、`presence.py`、`cli.py` | `test_betfair_gateway`、`test_betfair_reconcile`、`test_betfair_arming`、`test_betfair_killswitch`、`test_betfair_presence`、`test_betfair_cli`、`test_betfair_boundaries` |
 | 文件一致性 | 本文件、[落單路徑](betfair-order-path.md)、[fact register](betfair-facts.md) | `test_betfair_facts_doc`、`test_betfair_reports_no_account_data` |
@@ -405,7 +440,7 @@ python3 -m betangel_research motifs --format adv --input <session_dir>/seg-000.j
 2026-10-10 讀取（fact register 有 14 行 2026-10-12 重讀過）。完整清單（每條事實嘅來源、日期同等級）喺 [fact register](betfair-facts.md)。主要來源：
 
 - Betfair developer docs（`official_documentation`）：[Non-Interactive (bot) login](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687915)（v114，2026-07-01）、[Interactive login](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687772)、[Login & Session Management](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869)、[Application Keys](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687105)（v143，2026-05-07）、[Market Data Request Limits](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687478)、[Exchange Stream API](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687396)、[Betting Type Definitions](https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687465)。
-- Betfair developer support（`official_current_policy`／`official_documentation`，`zendesk_api_read`）：[API 費用](https://support.developer.betfair.com/hc/en-us/articles/115003864531-Are-there-any-costs-associated-with-API-access)（2026-10-08 更新）、[read-only access](https://support.developer.betfair.com/hc/en-us/articles/25033076334748-What-is-read-only-Betfair-API-access)、[Delayed 定 Live key](https://support.developer.betfair.com/hc/en-us/articles/360009638032-When-should-I-use-the-Delayed-or-Live-Application-Key)、[IP 地區限制](https://support.developer.betfair.com/hc/en-us/articles/28271961503516-Which-IP-regions-are-restricted-from-accessing-the-Betfair-API)（2026-09-21 更新）。
+- Betfair developer support（`official_current_policy`／`official_documentation`，`zendesk_api_read`）：[API 費用](https://support.developer.betfair.com/hc/en-us/articles/115003864531-Are-there-any-costs-associated-with-API-access)（2026-10-08 更新）、[read-only access](https://support.developer.betfair.com/hc/en-us/articles/25033076334748-What-is-read-only-Betfair-API-access)（2026-08-22 更新；2026-10-21 重讀，見 F46）、[Delayed 定 Live key](https://support.developer.betfair.com/hc/en-us/articles/360009638032-When-should-I-use-the-Delayed-or-Live-Application-Key)、[IP 地區限制](https://support.developer.betfair.com/hc/en-us/articles/28271961503516-Which-IP-regions-are-restricted-from-accessing-the-Betfair-API)（2026-09-21 更新）。
 - [ESA Swagger schema](https://raw.githubusercontent.com/betfair/stream-api-sample-code/master/ESASwaggerSchema.json)（`official_page_read`）同 [Historical Data Feed Specification](https://historicdata.betfair.com/files/Betfair-Historical-Data-Feed-Specification.pdf)（`official_data_specification`，`official_four_page_pdf_read`）。
 - Betfair General T&Cs（`official_current_policy`；live 頁返 403，改讀 [Wayback 2026-05-11](https://web.archive.org/web/20260511012028/https://support.betfair.com/app/answers/detail/betfair-general-terms-and-conditions/)）。
 - macOS `man security`、`man 2 fsync`（`man_page_read`，本機）。

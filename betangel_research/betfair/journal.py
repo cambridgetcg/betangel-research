@@ -502,8 +502,10 @@ class OrderJournal:
         anchor() dict, {} for an empty journal) makes the append conditional: JournalError
         journal_head_moved unless the head inside the write transaction is exactly that.
         before_ns (the pilot's authority boundary, P1-06 P106-2) makes it conditional on time as well:
-        JournalError journal_append_too_late unless the event's own recorded_at, and the wall clock read
-        again inside the write transaction, are both before it. Without it nothing changes.
+        JournalError journal_append_too_late, and nothing written, unless the event's recorded_at (stamped before
+        the write lock is taken) is before it, and the wall clock read again once the lock is held and again just
+        before COMMIT is too. The commit's own flush can still finish after before_ns; the pilot fold judges the
+        event by its recorded_at, and the first-byte gate re-checks a submit's time. Without it nothing changes.
         """
         if before_ns is not None and type(before_ns) is not int:
             raise JournalError("before_ns_invalid")
@@ -561,6 +563,8 @@ class OrderJournal:
                        (seq, event["event_id"], recorded_at, monotonic_ns, kind, self.mode, intent_id,
                         customer_order_ref, customer_ref, bet_id, market_id, state_after, payload_json, previous,
                         event["event_sha256"]))
+            if before_ns is not None and self.clock.time_ns() >= before_ns:
+                raise JournalError("journal_append_too_late")      # the fold above can take time: rolled back
             db.execute("COMMIT")
         except sqlite3.IntegrityError:
             db.execute("ROLLBACK")

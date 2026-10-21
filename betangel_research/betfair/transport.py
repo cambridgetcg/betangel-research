@@ -154,7 +154,8 @@ def check_send_bounds(idempotent, send_by_monotonic_ns, send_gate):
 def send_refusal(clock, send_by_ns, send_gate):
     """The code that stops a request at its first byte, or None: send_window_expired when the monotonic
     clock has reached send_by_ns, else the gate's own code (an exception in the gate counts as
-    send_gate_failed). Shared with the test fakes so they enforce exactly this."""
+    send_gate_failed), else send_window_expired when send_by_ns has passed while the gate ran. Shared with the
+    test fakes so they enforce exactly this."""
     if send_by_ns is not None and clock.monotonic_ns() >= send_by_ns:
         return "send_window_expired"
     if send_gate is None:
@@ -163,7 +164,13 @@ def send_refusal(clock, send_by_ns, send_gate):
         code = send_gate()
     except Exception:
         return "send_gate_failed"
-    return None if code is None else safe_code(code)
+    if code is not None:
+        return safe_code(code)
+    # The gate may take time (the pilot gate reads the journal head, P1-06 P106-C1): the absolute send-by
+    # bound, the capability's expiry included, is checked again after it, right before the first byte.
+    if send_by_ns is not None and clock.monotonic_ns() >= send_by_ns:
+        return "send_window_expired"
+    return None
 
 
 def validate_deadline(deadline_s):

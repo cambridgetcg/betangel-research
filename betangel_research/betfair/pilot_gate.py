@@ -28,6 +28,7 @@ from .errors import ConfigError
 from .receipts import (atomic_write_bytes, atomic_write_json, canonical_sha256, code_hashes, git_identity,
                        parse_utc_ns, strict_json_loads, utc_compact_from_ns)
 from .reconcile import CLOCK_STEP_TOLERANCE_S
+from .schemas import TERMINAL_STATES
 
 NS = pilot.NS
 END_MARGIN_NS = 360 * NS                 # note §3: no reservation starts within 6 min of the session's end (Q13)
@@ -68,8 +69,19 @@ MARKET_LATCH = frozenset({"validation:V13", "validation:V9b", "rate_minute", "ra
                           "market_exposure", "total_exposure"})
 MARKET_V9_REASONS = frozenset({"market_not_open", "market_inplay"})
 SESSION_LATCH = frozenset({"rate_day", "daily_loss", "unresolved_orders", "lock_busy", "kill_file"})
-NO_NOTE_LATCH = frozenset({"halted", "unexplained_account_exposure"})
+# RS-19: "No manual or Bet Angel bet is open on the account during a session. If the code finds one, it halts."
+MANUAL_BET_OPEN = "manual_bet_open_during_session"
+NO_NOTE_LATCH = frozenset({"halted", "unexplained_account_exposure", MANUAL_BET_OPEN})
 KILL_REASONS = frozenset({"kill_engaged", "kill_state_unknown"})
+# The note §5 first-byte refusals, FAILED(transport_not_sent) and market only (note §9) unless their cause ends more
+# (a KILL file: a session stop). Any other failure before the first byte (a refused capability, P106-C3) keeps its
+# own latch.
+FIRST_BYTE_CODES = frozenset({"send_window_expired", "book_stale_before_send", "send_gate_failed",
+                              "pilot_gate_head_moved", "pilot_gate_head_unreadable", "pilot_gate_deadline",
+                              "pilot_gate_window", "pilot_gate_clock_drift"})
+# Dynamic arming codes at a pilot-place open that journal no refusal note: A17's foreign or contradicting bets
+# HALT through the startup pass, and its unresolved orders stop placing until reconciled (note §9).
+HALT_IMPLYING_OPEN_CODES = frozenset({"unresolved_or_foreign_orders"})
 
 
 def _pin_code_hashes():
@@ -275,6 +287,17 @@ def latest_note(events, record_type, contract_sha256=None):
         if kind == record_type and (contract_sha256 is None or inner["contract_sha256"] == contract_sha256):
             found = inner
     return found
+
+
+def open_manual_refs(events, orders):
+    """Refs of our orders that are not the pilot's (their intent's source is not "pilot") and are open on the
+    account or matched and unsettled: not RECORDED (never sent), not terminal, and not EXECUTION_COMPLETE with
+    nothing matched. orders is the core fold's (workflow #3)."""
+    pilot_refs = {event.get("customer_order_ref") for event in events if event.get("kind") == "intent"
+                  and isinstance(event.get("payload"), dict) and event["payload"].get("source") == "pilot"}
+    return sorted(ref for ref, order in orders.items()
+                  if ref not in pilot_refs and order["state"] != "RECORDED" and order["state"] not in TERMINAL_STATES
+                  and not (order["state"] == "EXECUTION_COMPLETE" and order["size_matched_p"] == 0))
 
 
 def session_window_open(events, *, now_ns):

@@ -51,6 +51,9 @@ CLASSES = ("UNVERIFIED", "NOT_OBSERVED", "NO_ANCHOR", "DROPPED_EXPLICIT", "LATE_
 FLAG_CLASSES = (("unverified", "UNVERIFIED"), ("not_observed", "NOT_OBSERVED"), ("no_anchor", "NO_ANCHOR"),
                 ("dropped_explicit", "DROPPED_EXPLICIT"), ("late_start", "LATE_START"), ("gap", "GAP"),
                 ("no_close", "NO_CLOSE"), ("closed_without_observed_inplay", "CLOSED_WITHOUT_OBSERVED_INPLAY"),
+                # CLOSED before its window began: the initial marketTime did not hold, and the window has no
+                # coverage figures, so it is never COMPLETE (Astra REC-R2-1).
+                ("closed_before_window", "SCHEDULE_CHANGED"),
                 ("schedule_changed", "SCHEDULE_CHANGED"))
 MARKET_STATUSES = frozenset({"INACTIVE", "OPEN", "SUSPENDED", "CLOSED"})
 _NS = 1_000_000_000

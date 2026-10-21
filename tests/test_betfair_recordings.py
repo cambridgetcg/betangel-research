@@ -229,6 +229,15 @@ class IndexTests(unittest.TestCase):
         row = self.index()[1]["1.162"]
         self.assertEqual((row["class"], set(row["flags"])),
                          ("CLOSED_WITHOUT_OBSERVED_INPLAY", {"closed_before_window", "closed_without_observed_inplay"}))
+        # Astra REC-R2-1: the same early close with in-play observed is still never COMPLETE.
+        self.writer = SessionWriter(self.paths)
+        early_inplay = ([image(t("06:00:00"), ("1.163", definition("16:00:00", inPlay=True)))]
+                        + beats(t("06:00:00"), t("07:00:00"))
+                        + [change(t("06:30:00"), "1.163", status="CLOSED", inPlay=True, market_time="16:00:00")])
+        self.writer.session(t("06:00:00"), [seg(early_inplay)])
+        row = self.index()[1]["1.163"]
+        self.assertEqual((row["class"], set(row["flags"])), ("SCHEDULE_CHANGED", {"closed_before_window"}))
+        self.assertNotEqual(row["class"], "COMPLETE")
 
     def test_reconnect_gap_tolerated_refresh_and_a_late_market_in_a_segment(self):
         seg0 = [image(t("12:30:00"), ("1.101", definition("14:00:00")), ("1.107", definition("14:00:00")))] + \

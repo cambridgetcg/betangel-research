@@ -80,7 +80,7 @@
       }
     ]
   },
-  "frozen_on": null,
+  "frozen_on": "2026-10-21",
   "id": "p1",
   "inference": {
     "G": "the number of dates with at least one sample bet",
@@ -251,7 +251,7 @@
     "surplus": "PLACE records after the 400th eligible one, in decision order: finalised, counted and reported, outside the primary and the validity gates"
   },
   "schema": "betangel.pilot-contract/v1",
-  "status": "proposed",
+  "status": "frozen",
   "units": "Money in integer pence (_p), prices in integer hundredths (_h), durations in the unit their key names; rates and shares are decimal strings, read with Decimal.",
   "validity_gates": {
     "checked": "once, at the data lock, on the analysis population; they never end placing early",

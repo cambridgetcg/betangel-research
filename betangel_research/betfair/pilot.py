@@ -77,6 +77,7 @@ R13_CODES = ("r13_not_place", "r13_other_open", "r13_other_session", "r13_other_
              "r13_market_differs", "r13_body_differs", "r13_ref_differs", "r13_strategy_ref_differs")
 REMOVED = ("REMOVED", "REMOVED_VACANT")
 LEDGER_GAP_REASONS = ("cleared_figure_gap", "commission_gap", "commission_mismatch", "ledger_contradiction")
+UNSENT_CLASSES = ("protocol_violation", "definitely_unsent")     # final without the execution table
 RESULTS = ("WINNER", "LOSER")
 # The 27 top-level keys of contract p1 (critique 4).
 CONTRACT_KEYS = frozenset({
@@ -839,7 +840,8 @@ NOTE_FIELDS = {
     "bsp_decided": {"decided_at_ns": _is_ns, "outcome": _one_of("bsp", "none"),
                     "actual_sp": _opt(lambda v: isinstance(v, str) and DECIMAL_TEXT_RE.fullmatch(v) is not None),
                     "read_seq": _opt(lambda v: _is_int(v, 1))},
-    "finalized": {"final_at_ns": _is_ns, "row": lambda v: _is_int(v, 1) and v <= 5,
+    # row None only for the classes that are final without the execution table (Nuance R2-3).
+    "finalized": {"final_at_ns": _is_ns, "row": _opt(lambda v: _is_int(v, 1) and v <= 5),
                   "class": _one_of(*CLASS_ORDER)},
 }
 MARKET_NOTES = ("reservation", "decision", "capture_book", "capture_commission")
@@ -1358,18 +1360,18 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
     re-checked with the same bytes. If an ending, a stop or full capacity holds then, the result is never PLACE.
     Returns {"refusal": None | code, "record": decision payload | None, "stops": [stop payloads],
     "refusal_record": refusal payload | None}. A refusal makes no decision record, so the reservation folds as
-    SKIP(interrupted); every refusal but placing_ended sets a review stop (N:117), which the fold also derives from
-    the refusal record when that is journaled (Astra #2). There is no country, off, book or catalogue parameter:
-    everything is read from the two bodies, and nothing is fetched again. Deterministic in its inputs."""
+    SKIP(interrupted). Every refusal but placing_ended sets a review stop (N:117): the gateway journals the
+    refusal record, and the fold derives that stop from it as its own occurrence, '<code>-<reservation seq>-<note
+    seq>' (Astra #2; Nuance R2-4), so a refusal returns no separate stop. There is no country, off, book or
+    catalogue parameter: everything is read from the two bodies, and nothing is fetched again. Deterministic in its
+    inputs."""
     def refuse(code):
         source = reservation_seq if _is_int(reservation_seq, 1) else None
-        stops = [] if code == "placing_ended" else [
-            stop_payload(contract, stop_id_for(code, source), "review", code, source_seq=source)]
         record = {"v": 1, "type": "refusal", "contract_sha256": contract.sha256,
                   "session_id": session_id if isinstance(session_id, str) and ID_RE.fullmatch(session_id) else None,
                   "open_id": open_id if isinstance(open_id, str) and ID_RE.fullmatch(open_id) else None,
                   "reservation_seq": source, "code": code}
-        return {"refusal": code, "record": None, "stops": stops, "refusal_record": record}
+        return {"refusal": code, "record": None, "stops": [], "refusal_record": record}
 
     def decided(record, stops=()):
         return {"refusal": None, "record": record, "stops": list(stops), "refusal_record": None}
@@ -1525,7 +1527,9 @@ class _Rec:
         self.execution = self.bsp = None     # frozen once final / decided
         self.measurement = {"class": None, "final": False, "final_at_ns": None}
         self.basis = None
-        self.contradicted_seq = None
+        self.contradicted_seq = self.contradiction_basis = None
+        self.last_own_ns = ns                # its decision or intent: when an unsent record was established
+        self.frontiers = []                  # (seq, finalized note) to verify once the fold has every fact
         self.value_p = -contract.size_p
         self.ledger = {"part": "W", "value_p": self.value_p, "basis": None, "reason": "worst_case"}
 
@@ -1570,7 +1574,8 @@ class _Folder:
         self.pause_fired, self.pause_acked = {}, {}
         self.violations, self.invalid, self.ending_notes = [], [], []
         self.halts = []                      # (seq, market_id or None) of HALTs in force, as the core fold keeps them
-        self.n_done = None                   # {"seq", "trigger_ns"}: where in the journal N was reached
+        self.n_done = None                   # {"seq", "trigger_ns", "at_ns"}: where and when N was reached
+        self.cap_reached = None              # {"seq", "ns", "index"}: the PLACE record that took the last slot
         self.newly_final = False
         self.resolved_gaps = {}              # gap stop id -> seq of its resolution (Astra #6)
         self.at_seq = self.at_ns = None      # where in the journal the fold is: the event, or the trigger before it
@@ -1604,6 +1609,27 @@ class _Folder:
     def imply_review(self, reason, source_seq):
         self.imply(stop_payload(self.contract, stop_id_for(reason, source_seq), "review", reason,
                                 source_seq=source_seq))
+
+    def occurrence_closed(self, stop_id, seq):
+        """Whether a stop occurrence was resolved or acknowledged before seq: evidence after that is new."""
+        resolved = self.resolved_gaps.get(stop_id)
+        return (resolved is not None and resolved < seq) or any(at < seq for at, acked in self.acks if acked == stop_id)
+
+    def occurrences(self, rec, reason, items):
+        """Stop occurrences over [(seq, agrees)] in seq order (Nuance R2-1): disagreeing evidence while no
+        occurrence is open raises a new one, '<reason>-<decision seq>-<seq>'; agreeing evidence (agrees True, not
+        None) resolves the open one up to its seq; a resolution or an ACK closes it, so any later disagreement is a
+        new, unacknowledged occurrence that ends the current session."""
+        head, current = "-".join(reason.split("_")), None
+        for seq, agrees in items:
+            if current is not None and self.occurrence_closed(current, seq):
+                current = None
+            if agrees is False and current is None:
+                current = f"{head}-{rec.decision_seq}-{seq}"
+                self.imply(stop_payload(self.contract, current, "review", reason, source_seq=rec.decision_seq))
+            elif agrees is True and current is not None:
+                self.resolved_gaps.setdefault(current, seq)
+                current = None
 
     def invalid_note(self, seq):
         self.invalid.append(seq)
@@ -1685,7 +1711,7 @@ class _Folder:
         ordered = sorted(self.records, key=lambda rec: (rec.reservation_seq, rec.decision_seq))
         now = trigger_ns if trigger_ns is not None else self.clock
         if _n_walk(ordered, self.contract.n_eligible, now)["reached"]:
-            self.n_done = {"seq": boundary, "trigger_ns": trigger_ns}
+            self.n_done = {"seq": boundary, "trigger_ns": trigger_ns, "at_ns": now}
 
     # -- events --------------------------------------------------------------------------------------------------
 
@@ -1810,6 +1836,8 @@ class _Folder:
             self.violation(code, seq, ns, rec)
         self.lifetime_used += 1
         self.day_used[inner["utc_day"]] = self.day_used.get(inner["utc_day"], 0) + 1
+        if self.lifetime_used == self.contract.lifetime_place_records and self.cap_reached is None:
+            self.cap_reached = {"seq": seq, "ns": self.clock, "index": rec.index}
         self.equity += rec.value_p
         if self.next_trigger is None or rec.triggers[0] < self.next_trigger:
             self.next_trigger = rec.triggers[0]
@@ -1998,11 +2026,12 @@ class _Folder:
             self.ending_notes.append({"reason": inner["reason"], "code": inner["code"], "seq": seq, "ns": ns})
 
     def note_refusal(self, inner, event, seq, ns):
-        """A journaled classify refusal implies the review stop classify returned with it (Astra #2)."""
+        """A journaled classify refusal implies its review stop (Astra #2). Each refusal note is its own occurrence,
+        '<code>-<reservation seq>-<note seq>': an ACK of an earlier one never covers it (Nuance R2-4)."""
         if inner["code"] != "placing_ended":
             source = inner["reservation_seq"]
-            self.imply(stop_payload(self.contract, stop_id_for(inner["code"], source), "review", inner["code"],
-                                    source_seq=source))
+            self.imply(stop_payload(self.contract, f"{stop_id_for(inner['code'], source)}-{seq}", "review",
+                                    inner["code"], source_seq=source))
 
     def gap_stop(self, stop_id):
         """The review stop of a ledger gap with this id, journaled or implied, or None."""
@@ -2025,8 +2054,7 @@ class _Folder:
         this note give it, and any later read is only logged. A note the evidence does not support (no decision yet,
         or another outcome, actualSP or read) sets the review stop bsp_decided_mismatch; its value is never adopted."""
         rec = self.by_ref.get(event["customer_order_ref"])
-        if (rec is None or inner["decided_at_ns"] > ns
-                or (inner["outcome"] == "bsp") != (inner["actual_sp"] is not None)):
+        if rec is None or (inner["outcome"] == "bsp") != (inner["actual_sp"] is not None):
             self.invalid_note(seq)
             return
         if rec.bsp is None:
@@ -2036,24 +2064,35 @@ class _Folder:
                 rec.bsp = bsp
         claimed = None if inner["actual_sp"] is None else Decimal(inner["actual_sp"])
         if (rec.bsp is None or rec.bsp["bsp"] != claimed or rec.bsp["read_seq"] != inner["read_seq"]
-                or (claimed is None) != (inner["outcome"] == "none")):
+                or rec.bsp["decided_at_ns"] != inner["decided_at_ns"]):      # the time must match exactly (R2-5)
             self.imply_review("bsp_decided_mismatch", seq)
         return {rec.index}
 
     def note_finalized(self, inner, event, seq, ns):
         """The durable finalization frontier (Astra #7): from here the record's execution record and class are
-        frozen as the journal before this note gives them, and later evidence is only logged. A record that is
-        not final here, or whose row or class differs from the note, gets the review stop finalized_mismatch."""
+        frozen as the journal before this note gives them, and later evidence is only logged. The note is verified
+        at the end of the fold, once every fact it rests on is established (an open that ended, an absent submit,
+        FAILED(transport_not_sent); Nuance R2-3). Row None is for the classes final without the execution table."""
         rec = self.by_ref.get(event["customer_order_ref"])
-        if rec is None or inner["final_at_ns"] > ns:
+        if rec is None or (inner["row"] is None and inner["class"] not in UNSENT_CLASSES):
             self.invalid_note(seq)
             return
         self.evaluate(rec, seq, self.clock)
-        execution, measurement = rec.execution, rec.measurement
-        if (execution is None or not measurement["final"] or execution["row"] != inner["row"]
-                or measurement["class"] != inner["class"]):
-            self.imply_review("finalized_mismatch", seq)
+        rec.frontiers.append((seq, inner))
         return {rec.index}
+
+    def verify_frontiers(self):
+        """A finalized note that the derived record does not match exactly (final, class, final time, and row or
+        None for an unsent or violating class) sets the review stop finalized_mismatch. The derived record is
+        kept: the note's class is never adopted and the final time is never moved to the note (R2-3, R2-5)."""
+        for rec in self.records:
+            measurement = rec.measurement
+            row = None if rec.execution is None else rec.execution["row"]
+            for seq, inner in rec.frontiers:
+                row_ok = inner["row"] == row or (inner["row"] is None and measurement["class"] in UNSENT_CLASSES)
+                if not (measurement["final"] and measurement["class"] == inner["class"] and row_ok
+                        and measurement["final_at_ns"] == inner["final_at_ns"]):
+                    self.imply_review("finalized_mismatch", seq)
 
     def note_violation(self, inner, event, seq, ns):
         rec = next((r for r in self.records if r.decision_seq == inner["source_seq"]), None)
@@ -2077,6 +2116,7 @@ class _Folder:
             self.violation("second_intent", seq, ns, rec)
             return {rec.index}
         rec.intent_seq = seq
+        rec.last_own_ns = max(rec.last_own_ns, ns)
         code = check_binding(rec.record, contract=self.contract, market_id=event.get("market_id"),
                              instruction=payload.get("order"), customer_order_ref=ref,
                              customer_strategy_ref=payload.get("customer_strategy_ref"), open_id=rec.open_id,
@@ -2221,6 +2261,21 @@ class _Folder:
             self.violation_once("sent_after_session_end", seq, ns, rec)
         if rec.submit_ns >= self.contract.final_date_ns:
             self.violation_once("sent_after_final_date", seq, ns, rec)
+        ending = self.derived_ending_ns(rec)
+        if ending is not None and rec.submit_ns >= ending:
+            self.violation_once("sent_after_ending", seq, ns, rec)
+
+    def derived_ending_ns(self, rec):
+        """When placing ended for a send by this record, from what the fold derived (Nuance R2-2): N reached (at its
+        trigger time, or the journal's time at the event that completed it) or the lifetime cap (at the append of
+        the PLACE record that took the last slot, whose own send it does not end). The final date has its own
+        check; an ending note is judged at the submit."""
+        times = []
+        if self.n_done is not None:
+            times.append(self.n_done["at_ns"])
+        if self.cap_reached is not None and self.cap_reached["index"] != rec.index:
+            times.append(self.cap_reached["ns"])
+        return min(times) if times else None
 
     # -- evaluation ----------------------------------------------------------------------------------------------
 
@@ -2277,6 +2332,7 @@ class _Folder:
         if rec.measurement["final"] and not was_final:
             self.newly_final = True
         self.ledger(rec, void, removal)
+        self.contradiction_occurrences(rec)
 
     def execution(self, rec, seq, now):
         """The final execution record (note §11), frozen at its first final computation. Through the deadline
@@ -2305,7 +2361,8 @@ class _Folder:
                 size_p=c.size_p):
             size = price = None
             consistency_failed = True
-            self.imply_review("consistency_failed", rec.decision_seq)
+            self.imply(stop_payload(c, f"consistency-failed-{rec.decision_seq}-{seq}", "review", "consistency_failed",
+                                    source_seq=rec.decision_seq))
         rec.execution = dict(table, size=size, P=price,
                              unresolved=size is None or (size > 0 and price is None and not (void or removal)),
                              consistency_failed=consistency_failed, final_seq=seq,
@@ -2322,8 +2379,9 @@ class _Folder:
             if rec.violations:
                 cls, established = "protocol_violation", rec.violations[0][2]
             else:
+                # Its last own event, not when a fold learned that its open had ended: the same in every fold.
                 cls = "definitely_unsent"
-                established = rec.failed_ns if rec.failed_ns is not None else rec.open_ended_ns
+                established = rec.failed_ns if rec.failed_ns is not None else rec.last_own_ns
             final = bsp_at is not None
             return {"class": cls, "final": final, "final_at_ns": max(established, bsp_at) if final else None}
         execution = rec.execution
@@ -2400,17 +2458,24 @@ class _Folder:
             gross, commission = figures["gross_p"], figures["commission_p"]
         else:
             gross, commission = loss_pence(size), 0
-        if bf is None or abs(gross - bf) > c.gap_tolerance_p:
-            self.gap(rec, "cleared_figure_gap", [_pence_or_none(r["row"].get("profit")) for r in rec.l_rows
-                                                 if r["row"].get("betStatus") == "SETTLED"], gross)
+        tolerance = c.gap_tolerance_p
+
+        def agrees(ours_p, theirs):
+            return theirs is not None and abs(ours_p - theirs) <= tolerance
+
+        # Every captured figure takes part in the gap occurrences; S itself still rests on the canonical L row and
+        # on every API commission capture, never just the first (Astra #3, #6; Nuance R2-1).
+        profits = [(r["seq"], _pence_or_none(r["row"].get("profit"))) for r in rec.l_rows
+                   if r["row"].get("betStatus") == "SETTLED" and r["row"].get("profit") is not None]
+        captured = [(x["seq"], _pence_or_none(x["commission"])) for x in self.commissions.get(rec.market_id, [])
+                    if x["commission"] is not None]
+        self.occurrences(rec, "cleared_figure_gap", [(seq, agrees(gross, p)) for seq, p in profits])
+        self.occurrences(rec, "commission_gap", [(seq, agrees(commission, p)) for seq, p in captured])
+        if not agrees(gross, bf):
             return False, "cleared_figure_gap", [], None, {}
         value = min(gross - commission, bf - commission) if ours == "WINNER" else gross
-        captured = [_pence_or_none(x["commission"]) for x in self.commissions.get(rec.market_id, [])
-                    if x["commission"] is not None]
         if captured:
-            # Every API commission capture is held against ours, never just the first (Astra #3).
-            if any(p is None or abs(commission - p) > c.gap_tolerance_p for p in captured):
-                self.gap(rec, "commission_gap", captured, commission)
+            if not all(agrees(commission, p) for _, p in captured):
                 return False, "commission_gap", [], None, {}
         elif not self.commission_method_verified():
             return False, "commission_unverified", [], None, {}
@@ -2421,15 +2486,7 @@ class _Folder:
         row = settled_l["row"]
         return True, None, [], value, {"P": price, "profit": row.get("profit"), "result": ours,
                                        "outcome": row.get("betOutcome"), "commission_p": commission,
-                                       "betfair_commission_p": captured[0] if captured else None}
-
-    def gap(self, rec, reason, figures, ours):
-        """Set a ledger gap's review stop; it is resolved when the latest captured figure agrees with ours within
-        the tolerance (Astra #6). Resolution clears the gap for an ACK; it never moves the record into S."""
-        stop_id = stop_id_for(reason, rec.decision_seq)
-        self.imply_review(reason, rec.decision_seq)
-        if len(figures) > 1 and figures[-1] is not None and abs(figures[-1] - ours) <= self.contract.gap_tolerance_p:
-            self.resolved_gaps.setdefault(stop_id, self.at_seq)
+                                       "betfair_commission_p": captured[0][1] if captured else None}
 
     def profit_basis(self):
         """The sign and basis of Betfair's profit as the PT receipts recorded it; None until one does, or when
@@ -2447,45 +2504,57 @@ class _Folder:
                     return True
         return False
 
+    def contradicts(self, rec, basis, kind, item):
+        """Whether one execution item contradicts a size basis: a different matched size, a larger one in a
+        report, or for S a different price (a later EXECUTION_COMPLETE C or L), profit, result or API commission
+        (more than 1p from the one S used or from ours) (note §10; decision Q12; Astra #3)."""
+        tolerance = self.contract.gap_tolerance_p
+        if kind == "c":
+            found = item.get("sizeMatched") is None or item["sizeMatched"] != basis["size"]
+            if basis["rule"] == "s" and item.get("status") == "EXECUTION_COMPLETE":
+                found = found or item.get("averagePriceMatched") != basis["P"]
+            return found
+        if kind == "commission":
+            captured = _pence_or_none(item)
+            return basis["rule"] == "s" and (
+                captured is None or abs(captured - basis["commission_p"]) > tolerance
+                or (basis["betfair_commission_p"] is not None
+                    and abs(captured - basis["betfair_commission_p"]) > tolerance))
+        if kind == "l":
+            found = item.get("sizeSettled") is None or item["sizeSettled"] != basis["size"]
+            if basis["rule"] == "s" and item.get("betStatus") == "SETTLED":
+                found = (found or item.get("priceMatched") != basis["P"]
+                         or _decimal_text_value(item.get("profit")) != _decimal_text_value(basis["profit"])
+                         or item.get("betOutcome") != basis["outcome"])
+            return found
+        if kind in ("report", "cancel"):
+            return item > Fraction(basis["size"]) * 100
+        runners = item["runners"] if item["status"] == "CLOSED" else None          # a book read
+        return basis["rule"] == "s" and runners is not None and (
+            (runners.get(str(rec.selection_id)) or {}).get("status") != basis["result"]
+            or [(r or {}).get("status") for r in runners.values()].count("WINNER") != 1)
+
     def contradiction(self, rec, basis):
-        """Every execution item journaled after the basis's own source observation that shows a different matched
-        size, a larger one in a report, or for S a different price (a later EXECUTION_COMPLETE C or L), profit,
-        result or API commission (more than 1p from the one S used or from ours), moves the record to W at -200
-        for good and sets a review stop (note §10; decision Q12; finding 6; Astra #3). Only a size basis is
-        contradicted (critique 11)."""
+        """Every execution item journaled after the basis's own source observation is compared with it; the first
+        that contradicts it moves the record to W at -200 for good (finding 6). Only a size basis is contradicted
+        (critique 11)."""
         if rec.contradicted_seq is not None or basis is None:
             return
-        basis_p = Fraction(basis["size"]) * 100
         for kind, at, _, item in rec.evidence:
-            if at <= basis["source"]:
-                continue
-            if kind == "c":
-                found = item.get("sizeMatched") is None or item["sizeMatched"] != basis["size"]
-                if basis["rule"] == "s" and item.get("status") == "EXECUTION_COMPLETE":
-                    found = found or item.get("averagePriceMatched") != basis["P"]       # Astra #3
-            elif kind == "commission":
-                captured = _pence_or_none(item)
-                found = basis["rule"] == "s" and (
-                    captured is None or abs(captured - basis["commission_p"]) > self.contract.gap_tolerance_p
-                    or (basis["betfair_commission_p"] is not None
-                        and abs(captured - basis["betfair_commission_p"]) > self.contract.gap_tolerance_p))
-            elif kind == "l":
-                found = item.get("sizeSettled") is None or item["sizeSettled"] != basis["size"]
-                if basis["rule"] == "s" and item.get("betStatus") == "SETTLED":
-                    found = (found or item.get("priceMatched") != basis["P"]
-                             or _decimal_text_value(item.get("profit")) != _decimal_text_value(basis["profit"])
-                             or item.get("betOutcome") != basis["outcome"])
-            elif kind in ("report", "cancel"):
-                found = item > basis_p
-            else:                                        # a book read
-                runners = item["runners"] if item["status"] == "CLOSED" else None
-                found = basis["rule"] == "s" and runners is not None and (
-                    (runners.get(str(rec.selection_id)) or {}).get("status") != basis["result"]
-                    or [(r or {}).get("status") for r in runners.values()].count("WINNER") != 1)
-            if found:
-                rec.contradicted_seq = at
-                self.imply_review("ledger_contradiction", rec.decision_seq)
+            if at > basis["source"] and self.contradicts(rec, basis, kind, item):
+                rec.contradicted_seq, rec.contradiction_basis = at, basis
                 return
+
+    def contradiction_occurrences(self, rec):
+        """The ledger_contradiction stop occurrences: each contradicting item after the basis's source, against the
+        basis the record lost; never resolved by agreeing evidence (the -200 is sticky), only by gap_resolved or an
+        ACK, after which a further contradicting item is a new occurrence (Nuance R2-1)."""
+        basis = rec.contradiction_basis
+        if basis is None:
+            return
+        self.occurrences(rec, "ledger_contradiction",
+                         [(at, False) for kind, at, _, item in rec.evidence
+                          if at > basis["source"] and self.contradicts(rec, basis, kind, item)])
 
     def ledger(self, rec, void, removal):
         part, value, basis, reason, stops = self.ledger_basis(rec, void, removal)
@@ -2523,6 +2592,7 @@ class _Folder:
             self.evaluate(rec, self.last_seq, now)
         self.pause_check(self.last_seq)
         self.n_check(self.last_seq, None)
+        self.verify_frontiers()
         return now
 
 

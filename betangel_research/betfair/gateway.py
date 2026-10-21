@@ -1833,23 +1833,34 @@ class OrderGateway:
             return self._probe_read(lambda: list(self.read.iter_current_orders(
                 customer_order_refs=[ref], order_projection="ALL")))
 
-        # Look the bet up by ref before the cancel. Betfair drops a fully cancelled bet with nothing matched from
-        # listCurrentOrders at once, and it is not in the cleared views before settlement (first live probe,
-        # 2026-10-21), so a lookup after the cancel never finds it. The bet stays live for one more read and can
-        # lose at most £0.01. The cancel runs even if the lookup raises.
-        current, current_error = None, None
+        # Look the bet up by ref before the cancel. In the first live probe (2026-10-21) the fully unmatched bet,
+        # once cancelled, was absent from both later listCurrentOrders reads and from the cleared views before
+        # settlement, so a lookup after the cancel may never verify the ref. The bet stays live until the lookup
+        # ends: one read, or up to the read client's retries and a relogin (about 35-45 s at the default config).
+        # It can lose at most £0.01. The cancel runs even if the lookup raises, and also under a KILL: it only
+        # reduces risk, and a file-only KILL sweeps nothing. If a kill's sweep got there first, the duplicate
+        # cancel leaves a conservative UNKNOWN and the CLI hands the bet to the operator (exit 5).
+        current, current_error, killed = None, None, False
         try:
             current, current_error = current_by_ref()
         finally:
             order = self._state()["orders"][ref]
+            killed = kill_engaged(self.paths)
             if order["state"] == "EXECUTABLE" and order["bet_id"] is not None:
                 out["cancel"] = self._cancel(market_id, [{"bet_id": order["bet_id"], "size_reduction_p": None}],
                                              kill_targets=None, reconcile=True)
-        after, after_error = current_by_ref()
-        cleared = {}
-        for status in ("CANCELLED", "LAPSED"):
-            cleared[status], _ = self._probe_read(lambda: list(self.read.iter_cleared_orders(
-                status, settled_from_utc=utc_from_ns(started_ns - 60 * _NS_PER_S), customer_order_refs=[ref])))
+        after, after_error = None, "skipped_kill"
+        cleared = {"CANCELLED": None, "LAPSED": None}
+        if not killed:
+            # Best effort: these reads only describe what happened; the round trip is already decided above.
+            # Under a KILL they are skipped so they do not compete with the kill's reads (F18).
+            try:
+                after, after_error = current_by_ref()
+            except Exception as exc:
+                after, after_error = None, safe_code(type(exc).__name__)
+            for status in ("CANCELLED", "LAPSED"):
+                cleared[status], _ = self._probe_read(lambda: list(self.read.iter_cleared_orders(
+                    status, settled_from_utc=utc_from_ns(started_ns - 60 * _NS_PER_S), customer_order_refs=[ref])))
         found = any(isinstance(item, dict) and item.get("customerOrderRef") == ref for item in current or [])
         directory = self.paths.live_tests_dir / f"probe-{utc_compact_from_ns(self.clock.time_ns())}-{ref[-8:]}"
         self.paths.ensure()
@@ -1858,7 +1869,7 @@ class OrderGateway:
                     "cleared_cancelled.json": scrub(cleared["CANCELLED"]),
                     "cleared_lapsed.json": scrub(cleared["LAPSED"])}
         hashes = {name: atomic_write_json(directory / name, {"items": value}) for name, value in receipts.items()}
-        self._append("probe_result", {"found_by_ref": found, "lookup": "before_cancel",
+        self._append("probe_result", {"found_by_ref": found, "lookup": "before_cancel", "kill_engaged": killed,
                                       "current_count": len(current or []), "current_read_error": current_error,
                                       "current_after_cancel_count": len(after or []),
                                       "current_after_cancel_read_error": after_error,

@@ -36,7 +36,7 @@ live 安全靠以下七樣嘢，冇一樣係靠 app key 類型：
 | `place` | 有 | 有：只限 LIMIT、`persistenceType` LAPSE；funds 喺 book 之前讀；R8–R10 冇 hedge credit（C1）；送第一個 byte 之前一刻再查（C2，§3）；exit 5（X5）；送出之後 signal 延後；HALT 同觸發佢嘅 event 一齊 journal |
 | `cancel` | 有（可以減 size） | 有：只取消自己嘅 bet，**只可以整張取消**（`--size-reduction` 拒絕）；冇 send-by、冇 first-byte gate；capability 喺送出前一刻先 mint；exit 5 |
 | `replace` | 有 | **刪咗**：喺任何 Keychain、journal、lock、login 或網絡之前拒絕（`live_replace_removed_v1`，exit 2） |
-| `live-probe` | 冇（`probe_is_live_only`） | 有：只係落單再即刻取消；`--replace-step` flag 刪咗；T11 剔走 |
+| `live-probe` | 冇（`probe_is_live_only`） | 有：落單、用 ref 查一次、即刻取消；`--replace-step` flag 刪咗；T11 剔走 |
 | `paper-step`、`paper-replay` | 有 | 冇 |
 | `reconcile` | 冇 exchange 可以對（`paper_has_no_exchange_to_reconcile`） | 有，收窄：只解決 UNKNOWN／ABSENT_UNCONFIRMED，跟 §8 嘅證據規則；唔 refresh open 單、唔用 cleared rows close 單、唔 settle |
 | `reconcile --accept REF` | 有 | 有（要打 `ACCEPT ABSENT <ref>`） |
@@ -618,7 +618,7 @@ python3 -m betangel_research.betfair live-probe --market <id> --selection <id> -
 
 - 固定落 `LAY £1.00 @ 1.01`，selection 由 Yu 揀。就算 match 咗最多輸 £0.01（liability = 1.00 × 0.01）。除咗 V13 豁免，其他規則全部照過，cap 唔變。
 - 流程：喺攞 lock 之前打 `PROBE <market> <selection> LAY 1.01 1.00` 確認，之後落單 → **趁張單仲生效**用 `listCurrentOrders(customerOrderRefs=[ref], orderProjection=ALL)` 確認搵到 → 即刻用 betId 取消（查詢出錯或者拋 exception 都照取消）→ 再讀一次 `listCurrentOrders`，記低取消後仲搵唔搵到 → `listClearedOrders(CANCELLED|LAPSED, customerOrderRefs=[ref])`（T10）→ raw response 寫入 `live-tests/probe-<ts>/`（`current_orders.json`、`current_orders_after_cancel.json`、兩個 cleared）→ 加 `probe_result`（`lookup: before_cancel`）；只有取消前用 `customerOrderRef` 搵到先加 `ref_roundtrip_verified`。
-- 點解喺取消之前查（2026-10-21 第一次 live probe，私人收據 `probe-20261021T114801Z-…`）：一張完全冇 match、取消咗嘅單，取消之後即刻喺 `listCurrentOrders` 消失，兩分鐘後再讀都冇；settle 之前 CANCELLED／LAPSED 嘅 cleared views 亦冇佢。舊流程先取消後查，所以永遠搵唔到，A19 設唔到。改咗之後張單會多生效一次讀取嘅時間，最多都係輸 £0.01。
+- 點解喺取消之前查（2026-10-21 第一次 live probe，私人收據 `probe-20261021T114801Z-…`）：今次呢張完全冇 match 嘅 probe，取消之後兩次讀 `listCurrentOrders`（即刻同兩分鐘後）都搵唔到；settle 之前 CANCELLED／LAPSED 嘅 cleared views 亦冇佢。呢個係一次觀察，唔係 Betfair 寫明嘅規則；但先取消後查未必驗證到 ref，所以改喺取消前查。改咗之後張單要等查詢完先取消：通常係一次讀取，讀取出錯就最多等 read client 嘅重試同一次重新 login（預設 config 大約 35–45 秒）；最多都係輸 £0.01。查詢期間 KILL 生效嘅話，probe 照樣取消（取消只會減風險，而淨係 KILL file 唔會 sweep）；如果 kill 嘅 sweep 搶先取消咗，呢個重複取消會留低一個保守嘅 UNKNOWN，CLI exit 5 叫你處理；之後嘅讀取會略過，費事同 kill 爭讀取（F18）。取消之後嗰次讀取同 cleared 讀取只係記錄，出錯唔影響 A19。
 - Probe 只係落單再取消：`--replace-step` 同 live replace 一齊刪咗（argparse exit 2），T11 剔走。Probe bet 冇取消到就 exit 5，stderr 寫明 betId 同點樣即刻取消（§1）。
 - T10 加長（F77）：probe 嘅 market settle 咗之後，用 `settle-market` 嗰兩個讀取睇 listMarketBook 返 CLOSED 返幾耐、listCurrentOrders 係咪唔再列已 settle 嘅 bet。
 

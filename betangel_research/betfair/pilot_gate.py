@@ -99,6 +99,49 @@ def process_code_hashes_sha256():
     return _PROCESS_CODE_HASHES_SHA256
 
 
+class ObservedClock:
+    """The one clock every part of a pilot gateway reads (P106-C2, P106-R2-1): the gateway itself, its journal,
+    JSON-RPC client, read client, session and risk guard, and every helper the gateway hands its clock to. Each call
+    passes straight through to the clock it wraps; each wall reading (time_ns as an int, utc_now as its text) is
+    also reported to the one observer its pilot gateway sets, which keeps it in a placement open's high-water mark.
+    A second, different observer is refused: a clock another gateway took over would stop reporting to the first.
+    With no observer, or outside a pilot-place open, it is the wrapped clock exactly. Attributes it does not define
+    (a test fake's advance, step_wall) come from the wrapped clock. P1-08's CLI builds one and hands it to every
+    part; the gateway refuses a pilot whose parts do not share it."""
+
+    __slots__ = ("_clock", "_observer")
+
+    def __init__(self, clock):
+        object.__setattr__(self, "_clock", clock)
+        object.__setattr__(self, "_observer", None)
+
+    def set_observer(self, observer):
+        if self._observer is not None and self._observer != observer:
+            raise ConfigError("observed_clock_has_another_gateway")
+        object.__setattr__(self, "_observer", observer)
+
+    def time_ns(self):
+        value = self._clock.time_ns()
+        if self._observer is not None:
+            self._observer(value)
+        return value
+
+    def utc_now(self):
+        text = self._clock.utc_now()
+        if self._observer is not None:
+            self._observer(text)
+        return text
+
+    def monotonic_ns(self):
+        return self._clock.monotonic_ns()
+
+    def sleep(self, seconds):
+        return self._clock.sleep(seconds)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_clock"), name)
+
+
 @dataclass(frozen=True)
 class PilotContext:
     """What the pilot gateway reads its identity from (P1-08's CLI builds it; tests inject fakes). repo_root must be

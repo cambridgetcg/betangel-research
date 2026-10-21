@@ -212,22 +212,23 @@ def build_pilot_gateway(test, *, overrides=None, start=None, contract_raw=CONTRA
     paths = gw.unoverridden_paths(test, profile=profile)
     config = gw.live_config(paths, support.deep_merge(pilot_profile(contract.sha256), overrides or {}))
     clock = support.FakeClock(start or pilot.utc_text_from_ns(OFF - 299 * S))
+    observed = pilot_gate.ObservedClock(clock)          # the one clock every part of a pilot gateway reads
     runner = support.FakeKeychainRunner()
     exchange = gw.SimExchange(clock)
     router = PilotBetfair(exchange)
     transport = PilotTransport(router, clock=clock)
     credentials = load_credentials(config, purpose="live_orders", profile=paths.profile, runner=runner)
-    session = SessionManager(config, credentials, paths=paths, transport=transport, clock=clock)
-    rpc = JsonRpcClient(config, session, clock=clock)
-    read = ReadClient(rpc, paths=paths, clock=clock)
-    journal = OrderJournal(paths.journal_path("live"), mode="live", clock=clock)
+    session = SessionManager(config, credentials, paths=paths, transport=transport, clock=observed)
+    rpc = JsonRpcClient(config, session, clock=observed)
+    read = ReadClient(rpc, paths=paths, clock=observed)
+    journal = OrderJournal(paths.journal_path("live"), mode="live", clock=observed)
     test.addCleanup(journal.close)
     if roundtrip:
         journal.append("ref_roundtrip_verified", {"customer_order_ref_found": True})
     else:
         journal.append("note", {"reason": "harness_start_without_ref_roundtrip"})      # A19 then fails
     anchor_write(paths.profile, dict(journal.anchor(), updated_at=clock.utc_now()), runner=runner)
-    guard = RiskGuard(config, mode="live", clock=clock, paths=paths)
+    guard = RiskGuard(config, mode="live", clock=observed, paths=paths)
     state = SimpleNamespace(contract_raw=contract_raw, disk_hashes=dict(CODE_HASHES), contract_reads=0)
     git = FakeGit()
 
@@ -242,7 +243,7 @@ def build_pilot_gateway(test, *, overrides=None, start=None, contract_raw=CONTRA
                                   pinned_code_hashes_sha256=canonical_sha256(CODE_HASHES))
     confirmer = gw.FakeConfirmer()
     gateway = OrderGateway(config, paths=paths, mode="live", journal=journal, guard=guard, rpc=rpc, read=read,
-                           confirmer=confirmer, clock=clock, env={}, keychain_runner=runner, pilot=ctx)
+                           confirmer=confirmer, clock=observed, env={}, keychain_runner=runner, pilot=ctx)
     env = SimpleNamespace(paths=paths, config=config, clock=clock, runner=runner, exchange=exchange, router=router,
                           transport=transport, session=session, rpc=rpc, read=read, journal=journal, guard=guard,
                           confirmer=confirmer, gateway=gateway, token=expected_token(config, clock.time_ns()),
@@ -363,7 +364,7 @@ def other_writer(env, clock=None):
 def new_gateway(env, *, clock=None, config=None, pilot_context=True):
     """A restart, or another process: a new gateway object, journal connection, session and guard on the same state
     root (optionally its own clock, another config, or no PilotContext)."""
-    clock = clock or env.clock
+    clock = pilot_gate.ObservedClock(clock or env.clock)
     config = config or env.config
     credentials = load_credentials(config, purpose="live_orders", profile=env.paths.profile, runner=env.runner)
     session = SessionManager(config, credentials, paths=env.paths, transport=env.transport, clock=clock)

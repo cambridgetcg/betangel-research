@@ -13,8 +13,10 @@ with a pilot fold showing no protocol violation. They do not show Betfair's real
 import contextlib
 import copy
 import hashlib
+import inspect
 import json
 import os
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -2628,6 +2630,119 @@ class CodeReviewRound1Tests(PilotCase):
                          (seq, seq, "net", ()))
         registered.arm(0)
         self.assertFalse(registered.fold().sessions[-1]["pt4"])
+
+
+
+class ClockObservationTests(PilotCase):
+    """P106-R2-1: every wall-clock read of a pilot-place open is kept in its high-water mark, the gateway's shared
+    reads (_state, the risk decision's time) and its collaborators' included. Production margins throughout."""
+
+    UNTIL = OFF + 600 * S                          # 10:10, inside the 6-minute end margin's reach at 09:55:01
+
+    def test_r2_1_one_state_read_past_until_is_kept(self):
+        """Astra's witness: the decision is made at about 09:55; the one _state() call inside _place_core sees
+        10:10:01; the clock steps back before the later checks. Nothing is sent, and the mark keeps 10:10:01."""
+        env = self.build(until_ns=self.UNTIL)
+        market = self.market()
+        self.open()
+        state = env.gateway._state
+        seen = []
+
+        def core_state():
+            chosen = not seen and "_place_core" in [frame.function for frame in inspect.stack()[:6]]
+            wall = env.clock.wall_ns
+            if chosen:
+                seen.append(True)
+                env.clock.wall_ns = self.UNTIL + S
+            try:
+                return state()
+            finally:
+                env.clock.wall_ns = wall
+
+        with patch.object(env.gateway, "_state", side_effect=core_state):
+            result = self.place(market)
+        self.assertEqual((seen, env.router.order_requests), ([True], []))
+        self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("pilot_submit_too_late", "review"))
+        self.assertGreaterEqual(env.gateway._pilot_seen_ns, self.UNTIL + S)
+        self.clean()
+
+    def drive(self, step_at):
+        """Open and place with every production wall-clock read counted from the open on; the step_at-th one sees
+        UNTIL + 1 s, and the clock is back for the next. -> (env, result, reads counted when the order went out)."""
+        env = self.build(until_ns=self.UNTIL)
+        market = self.market()
+        count = {"reads": 0, "active": False, "sent_at": None}
+        package = str(sp.REPO / "betangel_research")
+
+        def counted(read):
+            def wall_read():
+                caller = sys._getframe(1).f_code.co_filename
+                if not count["active"] or not caller.startswith(package):
+                    return read()
+                count["reads"] += 1
+                if count["reads"] != step_at:
+                    return read()
+                wall = env.clock.wall_ns
+                env.clock.wall_ns = self.UNTIL + S
+                try:
+                    return read()
+                finally:
+                    env.clock.wall_ns = wall
+            return wall_read
+
+        accept = env.exchange.place
+
+        def placed(params):
+            count["sent_at"] = count["reads"]
+            return accept(params)
+
+        env.clock.time_ns, env.clock.utc_now = counted(env.clock.time_ns), counted(env.clock.utc_now)
+        env.exchange.place = placed
+        count["active"] = True
+        try:
+            self.open()
+            try:
+                result = self.place(market)
+            except NotArmed as refused:                # a read during the open: the open itself refused
+                result = {"refused_at_open": refused.rule}
+        finally:
+            count["active"] = False
+        return env, result, count
+
+    def test_r2_1_every_wall_read_past_until_sends_nothing(self):
+        """Each production wall-clock read from the open to the first byte, in turn, sees UNTIL + 1 s at that read
+        only: nothing is sent and the fold shows no violation. (Without a step the same open sends.)"""
+        env, result, count = self.drive(step_at=0)
+        self.assert_sent(result)
+        reads = count["sent_at"]
+        self.assertGreater(reads, 20)
+        for step_at in range(1, reads + 1):
+            with self.subTest(read=step_at):
+                env, result, _ = self.drive(step_at=step_at)
+                self.assertEqual(env.router.order_requests, [])
+                self.clean()
+
+    def test_r2_1_a_pilot_gateway_needs_one_observed_clock(self):
+        env = self.build()
+        with self.assertRaisesRegex(ConfigError, "pilot_gateway_needs_one_observed_clock"):
+            OrderGateway(env.config, paths=env.paths, mode="live", journal=env.journal, guard=env.guard, rpc=env.rpc,
+                         read=env.read, confirmer=gw.FakeConfirmer(), clock=env.clock, env={},
+                         keychain_runner=env.runner, pilot=env.ctx)
+        other = pilot_gate.ObservedClock(env.clock)                 # a second wrapper: the parts do not share it
+        with self.assertRaisesRegex(ConfigError, "pilot_gateway_needs_one_observed_clock"):
+            OrderGateway(env.config, paths=env.paths, mode="live", journal=env.journal, guard=env.guard, rpc=env.rpc,
+                         read=env.read, confirmer=gw.FakeConfirmer(), clock=other, env={},
+                         keychain_runner=env.runner, pilot=env.ctx)
+        with self.assertRaisesRegex(ConfigError, "observed_clock_has_another_gateway"):
+            OrderGateway(env.config, paths=env.paths, mode="live", journal=env.journal, guard=env.guard, rpc=env.rpc,
+                         read=env.read, confirmer=gw.FakeConfirmer(), clock=env.gateway.clock, env={},
+                         keychain_runner=env.runner, pilot=env.ctx)           # it would take env.gateway's reads
+        plain = OrderGateway(env.config, paths=env.paths, mode="live", journal=env.journal, guard=env.guard,
+                             rpc=env.rpc, read=env.read, confirmer=gw.FakeConfirmer(), clock=env.clock, env={},
+                             keychain_runner=env.runner)
+        self.assertIs(plain.clock, env.clock)                          # without a pilot nothing is required
+        observed = env.gateway.clock
+        self.assertEqual((observed.time_ns(), observed.utc_now()), (env.clock.time_ns(), env.clock.utc_now()))
 
 
 if __name__ == "__main__":

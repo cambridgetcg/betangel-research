@@ -1143,6 +1143,12 @@ class Run:
             return True
         return False
 
+    def signal_stopped(self, exc):
+        """A SignalStop the inner guard raised is Yu's stop; its signal names the summary's signal when unset."""
+        self.stop.requested = True
+        if self.stop.name is None and str(exc) in _SIGNAL_NAMES.values():
+            self.stop.name = str(exc)
+
     def deferring(self, value):
         signals = getattr(self.env.ctx, "signals", None)
         if signals is not None:
@@ -1499,18 +1505,21 @@ class Run:
         signal_stop = self.env.signal_stop
         outcome = "end"
         try:
-            with self.env.gateway_factory("pilot-place", credentials=self.credentials, stop=self.stop) as gateway:
+            # P108-R2-1: the gateway is kept in ctx before open() runs (the factory's confirm step), so its open
+            # report and its kept pilot_place result reach finish_owed whatever line a signal lands on.
+            with self.env.gateway_factory("pilot-place", credentials=self.credentials, stop=self.stop,
+                                          confirm=lambda opened: ctx.__setitem__("gateway", opened)) as gateway:
                 if self.stop.requested:                      # P108-1: the first statement inside the context
                     raise signal_stop("outer_stop")
                 outcome = self.in_open(gateway, ctx, market_id, off)
-        except signal_stop:                                  # before yield, or no submit: Yu's stop, orderly
+        except signal_stop as exc:                           # before yield, or no submit: Yu's stop, orderly
             self.finish_owed(ctx)
             self.ledger_check_after_signal()
-            self.stop.requested = True
+            self.signal_stopped(exc)
             outcome = "end"
         except _HandedOff as handed:                         # §3.7 already journaled what the exception owes
             if isinstance(handed.original, signal_stop):
-                self.stop.requested = True
+                self.signal_stopped(handed.original)
             outcome = "end"
         except NotArmed as exc:                              # static, or under the lock (§4.5 step 2)
             self.not_armed(exc, ctx)
@@ -1561,13 +1570,14 @@ class Run:
             refusal = result.get("refusal") or {}
             if (result["pilot"]["latch"] is None and refusal.get("rule") == "pilot_reserve_too_early"
                     and not ctx["retried"]):
-                ctx["result"] = None
-                self.deferring(False)                        # the retry stays interruptible (nothing is owed)
+                ctx["result"] = None                         # still deferred: the first too-early owes nothing
+                ctx["retried"] = True
+                gateway.forget_pilot_result()
+                self.deferring(False)                        # the retry stays interruptible
                 pending = getattr(self.env.ctx, "signals", None)
                 if pending is not None and pending.pending:
                     self.stop.take_pending(pending)
                     return None
-                ctx["retried"] = True
                 continue
             return result
 
@@ -1636,7 +1646,15 @@ class Run:
         before = getattr(getattr(self.env.ctx, "signals", None), "deferring", None)
         self.deferring(True)
         try:
-            result, report = ctx.get("result"), ctx.get("report")
+            result, report, gateway = ctx.get("result"), ctx.get("report"), ctx.get("gateway")
+            if result is None and gateway is not None:         # P108-R2-1: returned, not yet saved by the caller
+                result = gateway.last_pilot_result
+            if report is None and result is None and gateway is not None:
+                report = gateway.open_report()                 # open() returned it before the caller saved it
+                if report is not None and report.get("armed"):
+                    report = None
+                if report is not None and ctx.get("open_id") is None:
+                    ctx["open_id"] = report.get("open_id") or gateway.open_id
             if result is not None and result.get("pilot", {}).get("latch") is None:
                 self.write_owed(ctx, result)
             elif report is not None:
@@ -1987,10 +2005,10 @@ class Run:
                         self.w.line(f"settle {market_id}: {exc.rule}; the order stays at worst case; settle later")
                         return None
                     raise
-        except signal_stop:
+        except signal_stop as exc:
             self.finish_owed(ctx)
             self.ledger_check_after_signal()
-            self.stop.requested = True
+            self.signal_stopped(exc)
             return "end"
         except NotArmed as exc:
             self.not_armed(exc, ctx)

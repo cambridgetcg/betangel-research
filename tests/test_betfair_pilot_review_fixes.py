@@ -1353,5 +1353,150 @@ class SkipLatchTests(GatewayFixCase):
         self.assertNotIn(result["pilot"]["code"], ("pause", "cap"))
 
 
+# --- Astra round 2: P108-R2-1 and P108-R2-2 -----------------------------------------------------------------------
+
+
+def fire_on_line(function, text, *, when=lambda frame: True):
+    """A trace that fires SIGINT once, as function reaches the first source line containing text (when(frame) True).
+    -> (the trace function, the list it appends to when it fires)."""
+    import inspect
+    source, first = inspect.getsourcelines(function)
+    target = first + next(i for i, line in enumerate(source) if text in line)
+    fired = []
+
+    def trace(frame, event, arg):
+        if (event == "line" and frame.f_code is function.__code__ and frame.f_lineno == target and not fired
+                and when(frame)):
+            fired.append(target)
+            sr.fire(signal.SIGINT)
+        return trace
+
+    return trace, fired
+
+
+class ReturnBoundaryTests(RunCase):
+    """P108-R2-1 (Astra's signal-return-boundary and unarmed-return-boundary witnesses): a signal on the first line
+    after the gateway returned its result or its open report, before pilot-run saved either. The gateway keeps both
+    (last_pilot_result, open_report) and pilot-run holds the gateway from before open(), so the owed note is written.
+    At 0565a02 both exited 0, released and let the next-day ARM through with no ACK."""
+
+    def traced(self, env, trace):
+        import sys
+        sys.settrace(trace)
+        try:
+            return sr.arm_run(env)
+        finally:
+            sys.settrace(None)
+
+    def early_twice(self):
+        original = pilot_run.Run.sleep_until
+        return patch.object(pilot_run.Run, "sleep_until", lambda run, target, outside_open=True: True
+                            if not outside_open else original(run, target, outside_open=outside_open))
+
+    def test_a_signal_before_the_second_too_early_is_saved(self):
+        env = self.one_market()
+        trace, fired = fire_on_line(pilot_run.Run.place_once, 'ctx["result"] = result',
+                                    when=lambda frame: frame.f_locals["ctx"]["retried"])
+        with self.early_twice():
+            code, out, err = self.traced(env, trace)
+        self.assertTrue(fired)
+        self.assertEqual(code, 5, err)
+        self.assertEqual([n["code"] for n in sr.notes(env, "refusal")], ["pilot_reserve_too_early"])
+        self.assertEqual(json.loads(out)["signal"], "SIGINT")
+        self.assertEqual(sr.admission_view(env)["admission"]["generation"], 1)
+        sr.typed_release(env, 1)
+        self.next_day_arm(env)
+
+    def test_a_signal_before_the_first_too_early_is_saved_owes_nothing(self):
+        """The first too-early is a retry, not an owed write: the same boundary there ends the run orderly, nothing
+        journaled, and it releases (the retry stays interruptible)."""
+        env = self.one_market()
+        trace, fired = fire_on_line(pilot_run.Run.place_once, 'ctx["result"] = result',
+                                    when=lambda frame: not frame.f_locals["ctx"]["retried"])
+        with self.early_twice():
+            code, out, err = self.traced(env, trace)
+        self.assertTrue(fired)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sr.notes(env, "refusal"), [])
+        self.released(env)
+
+    def test_a_signal_before_the_unarmed_report_is_saved(self):
+        for line in ('report = gateway.open_report()', 'ctx["report"] = report'):
+            with self.subTest(at=line):
+                env = self.one_market()
+                original_dynamic = gateway_module.dynamic_arming
+
+                def dynamic(*a, **kw):
+                    report = original_dynamic(*a, **kw)
+                    if kw.get("command") == "pilot-place":
+                        report = dict(report, armed=False,
+                                      failures=list(report["failures"]) + ["unresolved_or_foreign_orders"])
+                    return report
+
+                trace, fired = fire_on_line(pilot_run.Run.in_open, line)
+                with patch.object(gateway_module, "dynamic_arming", dynamic):
+                    code, out, err = self.traced(env, trace)
+                self.assertTrue(fired)
+                self.assertEqual(code, 5, err)
+                self.assertEqual([n["code"] for n in sr.notes(env, "refusal")], ["unresolved_or_foreign_orders"])
+                sr.typed_release(env, 1)
+                self.next_day_arm(env)
+
+
+class TransportRetryGuardTests(unittest.TestCase):
+    """P108-R2-2 (Astra's guard-transport-retry-probe): the real HttpTransport over scripted in-memory sockets. The
+    stop becomes true as the first connection answers EOF; the idempotent retry on a fresh connection asks the guard
+    first and sends nothing. Without a guard (every non-pilot caller) the retry is unchanged."""
+
+    def request(self, guarded):
+        from betangel_research.betfair import api, transport
+        from betangel_research.betfair.errors import ReadStopped
+        from betangel_research.betfair.secret import Secret
+        support.scripted_network_only(self)
+        state = {"stopped": False, "guard_calls": 0}
+
+        class StopThenDisconnect(support.ScriptedSocket):
+            def recv_into(self, buffer):
+                state["stopped"] = True
+                return super().recv_into(buffer)
+
+        first = StopThenDisconnect([b""])
+        second = support.ScriptedSocket([support.http_bytes(200, b'{"jsonrpc":"2.0","result":[],"id":1}')])
+        script = support.ConnectionScript(first, second)
+        inner = transport.HttpTransport(allowed_hosts={"api.betfair.com"}, clock=support.FakeClock(),
+                                        connection_factory=script, env={})
+        self.addCleanup(inner.close)
+
+        def guard():
+            state["guard_calls"] += 1
+            return "kill" if state["stopped"] else None
+
+        target = api.GuardedTransport(inner, guard) if guarded else inner
+        args = ("POST", "https://api.betfair.com/exchange/betting/json-rpc/v1",
+                {"X-Application": Secret("synthetic-delayed-key-0001"),
+                 "X-Authentication": Secret(support.PLANTED_SECRET), "Content-Type": "application/json"},
+                b'{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketCatalogue","params":{},"id":1}')
+        outcome = {}
+        try:
+            outcome["result"] = target.request(*args, deadline_s=10, idempotent=True)
+        except ReadStopped as exc:
+            outcome["stopped"] = exc.reason
+        return outcome, state, script, first, second
+
+    def test_the_retry_asks_the_guard_and_sends_nothing(self):
+        outcome, state, script, first, second = self.request(guarded=True)
+        self.assertEqual(outcome, {"stopped": "kill"})
+        self.assertGreater(len(first.sent), 0)                    # the first attempt went out before the stop
+        self.assertEqual(len(second.sent), 0)                     # nothing after the stop
+        self.assertEqual(state["guard_calls"], 3)                 # the outer check and both attempts
+
+    def test_without_a_guard_the_retry_is_unchanged(self):
+        outcome, state, script, first, second = self.request(guarded=False)
+        self.assertEqual(outcome["result"]["status"], 200)
+        self.assertEqual(len(script.calls), 2)
+        self.assertGreater(len(second.sent), 0)
+        self.assertEqual(state["guard_calls"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

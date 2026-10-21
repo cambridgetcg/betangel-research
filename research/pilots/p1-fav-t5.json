@@ -44,6 +44,7 @@
     "after_final": "later reads and corrections (C, L, CLOSED or BSP) are logged and never change a final record",
     "agreement": "exact: sizes and prices as written in the raw JSON, parsed with Decimal (never through float); they agree only if exactly equal, with no rounding; PT1 and PT4 cannot choose a tolerance",
     "canonical_observation": "the earliest qualifying observation by durable capture sequence in the journal, never by loading order; for C the earliest read showing EXECUTION_COMPLETE; for L the earliest logged row, usable from the PT receipt; later observations are logged as corrections and never replace it",
+    "capture_check": "run when a C read showing EXECUTION_COMPLETE is captured, not at finalization: its sizeMatched is at least the place report's, and its matched + cancelled + lapsed + voided sizes equal 200p exactly; a read that fails sets a review stop, is never used by the ledger, and makes the size unresolved",
     "consistency_check": "the final matched size is at least the place report's, and matched + cancelled + lapsed + voided size equals 200p, the four sizes from C when C is read; a failure makes the size unresolved and sets a review stop",
     "deadline_days_after_off": 7,
     "removal_first": "a bet already classed void or post_decision_removal is not price-compared",
@@ -105,10 +106,10 @@
       "the final execution record is resolved",
       "the CLOSED read shows one WINNER, our runner WINNER or LOSER, no void and no runner removed after the decision",
       "Betfair's per-bet profit is present and the commission check passed",
-      "the PT4 receipt exists"
+      "a PT4 receipt with at least one matched, settled bet exists"
     ],
     "S_winner": "gross = final matched size x (P - 1), P at full precision, floored to the penny; commission = commission_rate x the positive market gross, rounded up to the penny; net = gross - commission; the value is the lower of our net and Betfair's per-bet profit minus that commission",
-    "W": "minus the final matched stake if the final execution record gives it; before that record is final, minus the matched size of the canonical C read showing EXECUTION_COMPLETE, unless a consistency check has failed for that record; otherwise -200p. A bet that never matched counts 0p from its EXECUTION_COMPLETE read; a resolved zero match is 0p, including a record with no submit event or FAILED(transport_not_sent)",
+    "W": "minus the final matched stake if the final execution record gives it; before that record is final, minus the matched size of the canonical C read showing EXECUTION_COMPLETE, but only once that read has passed final_execution.capture_check; a sent order with no place report, or whose C read failed the capture check or a consistency check, stays at -200p until its final record; otherwise -200p. A bet that never matched counts 0p from its checked EXECUTION_COMPLETE read; a resolved zero match is 0p, including a record with no submit event or FAILED(transport_not_sent)",
     "always_w": [
       "a dead heat",
       "a void",
@@ -162,7 +163,7 @@
     "levels": "every multiple of -15000p: -15000p, -30000p, -45000p and so on; they never move",
     "new_place_counted_at_p": -200,
     "step_p": 15000,
-    "to_continue": "Yu looks, then types PILOT ACK naming the level; an ACK acknowledges that one level for the contract's whole life, and the next level stays armed; an acknowledged level never fires again"
+    "to_continue": "Yu looks, then types PILOT ACK naming the level; a pause is not a fault, so no written cause is needed, but the other conditions for resuming (journal reconciled, no unresolved order, no open ledger gap) must hold; an ACK acknowledges that one level for the contract's whole life, and the next level stays armed; an acknowledged level never fires again"
   },
   "placement_limits": {
     "counts": "PLACE records, not R6's submitted instructions; a PLACE takes its lifetime slot and day slot in its own append; a slot whose request was definitely not sent stays used",
@@ -268,7 +269,7 @@
     "zero_denominator": "there is no eligible bet: the gate is not evaluated, and the result is INCONCLUSIVE: insufficient_eligible_sample unless INVALID applies"
   },
   "verdict": {
-    "ending_before_n": "an ending at the lifetime cap, at the final date or by Yu in writing gives INCONCLUSIVE: insufficient_eligible_sample unless INVALID applies; an ending for a breach of RS-19 is a protocol violation and gives INVALID; never an early PASS or a smaller-N test; the cap is never raised to rescue completion",
+    "ending_before_n": "an ending for a breach of RS-19 is a protocol violation and gives INVALID; after any other ending (the lifetime cap, the final date, or Yu in writing), records placed before the ending may still complete N by the data lock (sample.late_completion), and then the inference test runs; if fewer than 400 eligible bets exist at the data lock, the result is INCONCLUSIVE: insufficient_eligible_sample unless INVALID applies; never an early PASS or a smaller-N test; the cap is never raised to rescue completion",
     "order": [
       "INVALID: a failed validity gate or a protocol violation",
       "INCONCLUSIVE: insufficient_eligible_sample, when fewer than 400 eligible bets exist at the data lock",

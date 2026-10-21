@@ -834,11 +834,16 @@ NOTE_FIELDS = {
     "gap_resolved": {"stop_id": _matches(STOP_ID_RE), "decision_seq": _opt(lambda v: _is_int(v, 1)),
                      "cause_written": _is_bool},
     # The durable finalization frontier of one PLACE record (Astra #7); journaled by P1-10.
+    # The durable frontier of one PLACE record's BSP decision: "bsp" with the actualSP text and the CLOSED read
+    # used, or "none"; journaled by P1-10.
+    "bsp_decided": {"decided_at_ns": _is_ns, "outcome": _one_of("bsp", "none"),
+                    "actual_sp": _opt(lambda v: isinstance(v, str) and DECIMAL_TEXT_RE.fullmatch(v) is not None),
+                    "read_seq": _opt(lambda v: _is_int(v, 1))},
     "finalized": {"final_at_ns": _is_ns, "row": lambda v: _is_int(v, 1) and v <= 5,
                   "class": _one_of(*CLASS_ORDER)},
 }
 MARKET_NOTES = ("reservation", "decision", "capture_book", "capture_commission")
-ORDER_NOTES = ("capture_c", "capture_l", "finalized")
+ORDER_NOTES = ("capture_c", "capture_l", "finalized", "bsp_decided")
 
 
 def validate_pilot_payload(payload):
@@ -2014,6 +2019,26 @@ class _Folder:
             self.invalid_note(seq)
             return
         self.resolved_gaps.setdefault(inner["stop_id"], seq)
+
+    def note_bsp_decided(self, inner, event, seq, ns):
+        """The BSP decision's durable frontier: from here the record's BSP is frozen as the reads journaled before
+        this note give it, and any later read is only logged. A note the evidence does not support (no decision yet,
+        or another outcome, actualSP or read) sets the review stop bsp_decided_mismatch; its value is never adopted."""
+        rec = self.by_ref.get(event["customer_order_ref"])
+        if (rec is None or inner["decided_at_ns"] > ns
+                or (inner["outcome"] == "bsp") != (inner["actual_sp"] is not None)):
+            self.invalid_note(seq)
+            return
+        if rec.bsp is None:
+            bsp = freeze_bsp(self.books.get(rec.market_id, []), selection_id=rec.selection_id, off_ns=rec.off_ns,
+                             now_ns=self.clock, cutoff_s=self.contract.bsp_cutoff_s)
+            if bsp["decided"]:
+                rec.bsp = bsp
+        claimed = None if inner["actual_sp"] is None else Decimal(inner["actual_sp"])
+        if (rec.bsp is None or rec.bsp["bsp"] != claimed or rec.bsp["read_seq"] != inner["read_seq"]
+                or (claimed is None) != (inner["outcome"] == "none")):
+            self.imply_review("bsp_decided_mismatch", seq)
+        return {rec.index}
 
     def note_finalized(self, inner, event, seq, ns):
         """The durable finalization frontier (Astra #7): from here the record's execution record and class are

@@ -608,6 +608,8 @@ class Boundaries(unittest.TestCase):
         journal_.note("violation", code="send_without_record", source_seq=1)
         journal_.note("gap_resolved", stop_id="cleared-figure-gap-9", decision_seq=9, cause_written=True)
         journal_.note("finalized", ref_col=placed.ref, final_at_ns=placed.off + DAY_NS, row=1, **{"class": "eligible"})
+        journal_.note("bsp_decided", ref_col=placed.ref, decided_at_ns=placed.off + 5 * MIN, outcome="bsp",
+                      actual_sp="3.10", read_seq=1)
         payloads = [e for e in journal_.events if e["kind"] == "note"]
         payloads.append({"payload": {"pilot": result["record"]}, "market_id": placed.market,
                          "customer_order_ref": None})
@@ -2544,6 +2546,84 @@ class AstraReview(unittest.TestCase):
         unknown = journal_.note("finalized", at=deadline + 3 * S, ref_col="ref-none", final_at_ns=deadline + 1, row=3,
                                 **{"class": "eligible"})
         self.assertIn(unknown, journal_.fold().invalid_records)
+
+
+class BspFrontier(unittest.TestCase):
+    """The BSP decision's durable frontier, a bsp_decided note written by P1-10 (Nuance, after Astra's analysis
+    probe: a CLOSED read stamped exactly at the 24 h cutoff but journaled after a later event)."""
+
+    def lifecycle(self):
+        journal_ = Pilot(pt4=True)
+        _, p, _ = journal_.classify(journal_.arm(0))
+        journal_.send(p)
+        journal_.c_read(p, price="3.44")
+        return journal_, p
+
+    def test_bsp_decided_note_is_the_durable_frontier(self):
+        """A fold at cutoff + 2 s decides no BSP (no CLOSED read by the cutoff). A CLOSED read stamped exactly at the
+        cutoff and journaled afterwards changes a fresh fold without the note; with the note it is only logged."""
+        for with_note in (False, True):
+            with self.subTest(bsp_decided_note=with_note):
+                journal_, p = self.lifecycle()
+                cutoff = p.off + DAY_NS
+                first = only(journal_.fold(now=cutoff + 2 * S))
+                self.assertEqual((first.bsp["decided"], first.bsp["bsp"]), (True, None))
+                if with_note:
+                    journal_.note("bsp_decided", at=cutoff + 2 * S, ref_col=p.ref,
+                                  decided_at_ns=first.bsp["decided_at_ns"], outcome="none", actual_sp=None,
+                                  read_seq=None)
+                journal_.closed(p, sp="3.10", at=cutoff)
+                journal_.l_row(p, price="3.44", at=cutoff + 3 * S)
+                state = journal_.fold()
+                rec = only(state)
+                expected = (None, "missing_bsp") if with_note else (Decimal("3.10"), "eligible")
+                self.assertEqual((rec.bsp["bsp"], rec.measurement["class"]), expected)
+                if with_note:
+                    self.assertEqual((state.invalid_records, state.due_stops), ((), ()))
+                    self.assertEqual(state, replayed(journal_))
+
+    def test_matching_note_then_a_correction(self):
+        journal_, p = self.lifecycle()
+        read = journal_.closed(p, sp="3.10")
+        journal_.note("bsp_decided", ref_col=p.ref, decided_at_ns=p.off + 5 * MIN, outcome="bsp", actual_sp="3.1",
+                      read_seq=read)
+        journal_.closed(p, sp="3.12", at=journal_.now + S)
+        state = journal_.fold()
+        self.assertEqual((only(state).bsp["bsp"], only(state).bsp["read_seq"], state.due_stops),
+                         (Decimal("3.10"), read, ()))
+
+    def test_a_note_the_evidence_does_not_support(self):
+        """The note's value is never adopted: the fold keeps what the reads before the note give."""
+        journal_, p = self.lifecycle()
+        cutoff = p.off + DAY_NS
+        seq = journal_.note("bsp_decided", at=cutoff + 2 * S, ref_col=p.ref, decided_at_ns=cutoff, outcome="bsp",
+                            actual_sp="3.10", read_seq=7)
+        state = journal_.fold()
+        self.assertEqual((only(state).bsp["bsp"], stop_ids(state.due_stops)),
+                         (None, [(f"bsp-decided-mismatch-{seq}", "review")]))
+        other, q = self.lifecycle()
+        other.closed(q, sp="3.10")
+        seq = other.note("bsp_decided", ref_col=q.ref, decided_at_ns=q.off + 5 * MIN, outcome="none", actual_sp=None,
+                         read_seq=None)
+        state = other.fold()
+        self.assertEqual((only(state).bsp["bsp"], stop_ids(state.due_stops)),
+                         (Decimal("3.10"), [(f"bsp-decided-mismatch-{seq}", "review")]))
+        early, r = self.lifecycle()                                    # no CLOSED read and the cutoff not yet passed
+        seq = early.note("bsp_decided", at=r.off + HOUR, ref_col=r.ref, decided_at_ns=r.off + HOUR, outcome="none",
+                         actual_sp=None, read_seq=None)
+        state = early.fold(now=r.off + 2 * HOUR)
+        self.assertEqual((only(state).bsp["decided"], stop_ids(state.due_stops)),
+                         (False, [(f"bsp-decided-mismatch-{seq}", "review")]))
+
+    def test_invalid_bsp_decided_notes(self):
+        journal_, p = self.lifecycle()
+        bad = [journal_.inner({"v": 1, "type": "bsp_decided", "contract_sha256": C.sha256, "decided_at_ns": p.off,
+                               "outcome": "bsp", "actual_sp": None, "read_seq": None}, customer_order_ref=p.ref),
+               journal_.note("bsp_decided", ref_col="ref-none", decided_at_ns=p.off, outcome="none", actual_sp=None,
+                             read_seq=None),
+               journal_.note("bsp_decided", at=p.off + HOUR, ref_col=p.ref, decided_at_ns=p.off + 2 * HOUR,
+                             outcome="none", actual_sp=None, read_seq=None)]
+        self.assertEqual(journal_.fold().invalid_records, tuple(bad))
 
 
 class Finalization(unittest.TestCase):

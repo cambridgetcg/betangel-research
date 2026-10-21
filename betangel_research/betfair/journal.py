@@ -600,16 +600,37 @@ class UnreadableJournal:
 READ_ONLY_BUSY_TIMEOUT_S = 2
 
 
+def _regular_file_identity(path):
+    """(st_dev, st_ino) of the regular file at path, from lstat; None only when the directory entry is definitely
+    absent (ENOENT). A symlink (dangling or not), any other non-regular entry, or a path lstat cannot inspect
+    (EACCES, ELOOP, ENOTDIR, ...) raises JournalError("journal_unreadable_read_only")."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise JournalError("journal_unreadable_read_only") from None
+    # os.path only (no stat module: paper's import closure stays as REUSE_FINDINGS records it). Not a link, and
+    # what the path names is a regular file: then the entry itself is one.
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise JournalError("journal_unreadable_read_only")
+    return info.st_dev, info.st_ino
+
+
 def read_only_fold(path, *, mode, now_ns, busy_timeout_s=READ_ONLY_BUSY_TIMEOUT_S):
-    """The fold of a journal file opened with SQLite's mode=ro, or None when no file exists.
+    """The fold of a journal file opened with SQLite's mode=ro, or None when no journal exists.
 
     For recording admission's release (admission.py): the connection can never write an event or take
-    the write lock, and nothing is created when the file is absent. Anything else fails closed with
-    JournalError("journal_unreadable_read_only"): a busy or locked file, one that is not a database, the
-    wrong schema or mode, an event that is not strict JSON, or a committed prefix that cannot be folded.
-    The schema checks are OrderJournal's, without the write transaction it takes for a new file."""
+    the write lock, and nothing is created when the file is absent. Only a definite absence of the
+    directory entry (lstat ENOENT) means no journal; a symlink (dangling or not), a non-regular entry or a
+    path that cannot be inspected fails closed, and so does an entry replaced while it was read. Anything
+    else fails closed too with JournalError("journal_unreadable_read_only"): a busy or locked file, one
+    that is not a database, the wrong schema or mode, an event that is not strict JSON, or a committed
+    prefix that cannot be folded. The schema checks are OrderJournal's, without the write transaction it
+    takes for a new file."""
     path = Path(path)
-    if not path.exists():
+    identity = _regular_file_identity(path)
+    if identity is None:
         return None
     db = None
     try:
@@ -630,6 +651,8 @@ def read_only_fold(path, *, mode, now_ns, busy_timeout_s=READ_ONLY_BUSY_TIMEOUT_
             event = dict(zip(EVENT_COLUMNS, row))
             event["payload"] = strict_json_loads(event.pop("payload_json"))
             events.append(event)
+        if _regular_file_identity(path) != identity:          # replaced (or swapped for a link) while read
+            raise JournalError("journal_replaced_while_read")
         return fold_events(events, mode=mode, now_ns=now_ns)
     except (sqlite3.Error, JournalError) + _FOLD_ERRORS:
         raise JournalError("journal_unreadable_read_only") from None

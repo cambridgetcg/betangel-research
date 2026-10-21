@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 from .config import allowed_http_hosts, hosts_for
 from .constants import APP_KEY_SLOTS, LOGIN_BAN_S, SSO_PATHS
 from .errors import (AuthError, BetfairError, ConfigError, CredentialError, LoginBanned, LoginBudgetExceeded,
-                     TransportError, classify_login, safe_code)
+                     LoginStopped, TransportError, classify_login, safe_code)
 from .paths import file_lock
 from .receipts import SYSTEM_CLOCK, append_jsonl, parse_utc_ns, strict_json_loads, utc_from_ns
 from .secret import Secret
@@ -393,6 +393,7 @@ class SessionManager:
         self._emergency = False
         self._coexistence_ack = coexistence_ack
         self._relogin_active = False
+        self._login_guard = None
 
     # -- properties and accessors --
 
@@ -437,6 +438,16 @@ class SessionManager:
                 "keepalive_interval_s": self._keepalive_interval_s}
 
     # -- login --
+
+    def guard_logins(self, guard):
+        """Install guard (None removes it): a callable checked at the start of every login, lazy logins and
+        every relogin included (stream session errors, the REST retry, keepAlive's NO_SESSION), before any
+        attempt is reserved or sent. A non-empty return refuses that login with LoginStopped(<return>).
+        The recorder installs one for its run (its stop flag and wall-clock end); logout, keepAlive itself
+        and every caller that installs none are unchanged."""
+        if guard is not None and not callable(guard):
+            raise TypeError("login guard must be callable or None")
+        self._login_guard = guard
 
     def _url(self, host_kind, path_name):
         return f"https://{self._hosts[host_kind]}{SSO_PATHS[path_name]}"
@@ -503,10 +514,15 @@ class SessionManager:
         """Log in once -> {"status", "method", "can_bet", "logged_in_at"}; never returns the token.
 
         Raises LoginBanned, LoginBudgetExceeded or AuthError (status codes only) when refused,
-        and TransportError when the request failed; a login is never resent.
+        LoginStopped when the login guard (guard_logins) refuses it before anything is reserved, and
+        TransportError when the request failed; a login is never resent.
         """
         if type(emergency) is not bool or type(coexistence_ack) is not bool:
             raise ValueError("emergency and coexistence_ack must be booleans")
+        if self._login_guard is not None:
+            reason = self._login_guard()
+            if reason:
+                raise LoginStopped(reason)
         self._coexistence_ack = coexistence_ack = self._coexistence_ack or coexistence_ack
         url, headers, body, tls_context = self._login_request()
         attempt_id = self._reserve(emergency=emergency, coexistence_ack=coexistence_ack)

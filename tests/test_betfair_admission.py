@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from betangel_research.betfair import admission
 from betangel_research.betfair.admission import (SYSTEM_PROCESSES, admission_status, admit, recorder_admission,
@@ -217,10 +218,10 @@ class LiveAdmissionTests(AdmissionTestCase):
     def test_admit_writes_inhibit_and_admission_then_release_clears_both(self):
         first = self.admit("arm-live:100")
         self.assertEqual(first, {"generation": 1, "owner": "arm-live:100", "purpose": "synthetic test",
-                                 "continued": False, "recorder": "none"})
+                                 "continued": False, "state": "admitted", "ledger_checked": True, "recorder": "none"})
         stored = json.loads(self.paths.admission_file.read_text())
-        self.assertEqual(set(stored), {"schema_version", "generation", "owner", "purpose", "created_at"})
-        self.assertEqual((stored["generation"], stored["owner"]), (1, "arm-live:100"))
+        self.assertEqual(set(stored), {"schema_version", "generation", "owner", "purpose", "created_at", "state"})
+        self.assertEqual((stored["generation"], stored["owner"], stored["state"]), (1, "arm-live:100", "admitted"))
         self.assertTrue(self.paths.inhibit_file.exists())
         for path in (self.paths.admission_file, self.paths.inhibit_file, self.paths.admission_generation_file):
             self.assertEqual(oct(path.stat().st_mode & 0o777), oct(0o600))
@@ -444,12 +445,81 @@ class LedgerStepEightTests(AdmissionTestCase):
         self.assertEqual(admission.ledger_problems(self.config, self.paths, clock=self.clock),
                          ["login_ledger_unreadable"])
 
-    def test_continuation_does_not_rerun_the_ledger_rule(self):
+    def test_only_an_admitted_generation_skips_step_8_and_only_for_cleanup(self):
+        """REC-1: an admitted generation continuing for cleanup skips a new ledger refusal (its own logins); the same
+        continuation without cleanup runs step 8 again and is refused, but its admission is kept."""
         n = self.admit("pilot-session:c")["generation"]
         ledger_rows(self.paths, self.attempt("own", 10), self.outcome("own", "auth_error", 9))
-        self.assertTrue(self.admit("pilot-session:c", generation=n)["continued"])
+        result = self.admit("pilot-session:c", generation=n, cleanup=True)
+        self.assertEqual((result["continued"], result["state"], result["ledger_checked"]), (True, "admitted", False))
+        self.refused("login_ledger_not_clean", self.admit, "pilot-session:c", generation=n)
+        self.assertEqual(json.loads(self.paths.admission_file.read_text())["state"], "admitted")    # kept
         refusal = self.refused("release_refused", self.release, n)         # but release needs the ledger clean
         self.assertIn("login_failure_after_barrier", refusal.problems)
+        with self.assertRaises(ValueError):
+            self.admit("pilot-session:c", generation=n, cleanup="yes")
+
+    def test_interrupted_admission_stays_pending_until_it_passes_step_8(self):
+        """REC-1 (Astra): the first admit() is interrupted after ADMISSION was written; its generation stays pending,
+        and continuing it, even for cleanup, must finish the drain and step 8 before it is admitted."""
+        ledger_rows(self.paths, self.attempt("lost", 1))
+        with patch.object(admission, "_drain", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.admit("pilot-session:interrupted")
+        saved = admission_status(self.paths)["admission"]
+        self.assertEqual(saved["state"], "pending")
+        refusal = self.refused("login_ledger_not_clean", self.admit, "pilot-session:interrupted",
+                               generation=saved["generation"], cleanup=True)
+        self.assertEqual(refusal.detail, "login_attempt_unresolved")
+        self.assertFalse(self.paths.admission_file.exists())                # the pending generation was taken back
+        self.assertTrue(self.paths.inhibit_file.exists())
+        # With the ledger clean, a pending continuation passes both checks and is admitted.
+        append_login_reset(self.paths, clock=self.clock)
+        with patch.object(admission, "_drain", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.admit("pilot-session:interrupted")
+        saved = admission_status(self.paths)["admission"]
+        result = self.admit("pilot-session:interrupted", generation=saved["generation"])
+        self.assertEqual((result["state"], result["ledger_checked"]), ("admitted", True))
+        self.assertEqual(json.loads(self.paths.admission_file.read_text())["state"], "admitted")
+
+    def test_death_after_the_admission_write_leaves_a_pending_generation(self):
+        """REC-1: the admitting process is SIGKILLed after writing ADMISSION (no Python cleanup runs). Its generation
+        is pending, never admitted, so continuing it runs step 8: refused while a login attempt is unresolved."""
+        child_code = (
+            "import os, signal, sys\n"
+            "from unittest.mock import patch\n"
+            "from betangel_research.betfair import admission\n"
+            "from betangel_research.betfair.config import validate_config\n"
+            "from betangel_research.betfair.paths import StatePaths\n"
+            "import test_betfair_support as support\n"
+            "paths = StatePaths(home=sys.argv[1], root_override=sys.argv[2], env={'%s': '1'})\n"
+            "config = validate_config(support.make_test_config(paths), paths=paths)\n"
+            "def die(*args, **kwargs):\n"
+            "    os.kill(os.getpid(), signal.SIGKILL)\n"
+            "with patch.object(admission, '_drain', die):\n"
+            "    admission.admit(paths, owner='pilot-session:dead', purpose='death test', config=config)\n"
+            % FORBID_NETWORK_ENV)
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(REPO), str(REPO / "tests")]),
+                   PYTHONDONTWRITEBYTECODE="1", **{FORBID_NETWORK_ENV: "1"})
+
+        def die_after_write():
+            child = subprocess.run([sys.executable, "-c", child_code, str(self.paths.home), str(self.paths.root)],
+                                   capture_output=True, text=True, env=env, timeout=60)
+            self.assertEqual(child.returncode, -9, child.stderr[-2000:])
+            return json.loads(self.paths.admission_file.read_text())
+
+        ledger_rows(self.paths, self.attempt("lost", 3600))
+        saved = die_after_write()
+        self.assertEqual((saved["owner"], saved["state"]), ("pilot-session:dead", "pending"))
+        self.refused("login_ledger_not_clean", self.admit, "pilot-session:dead", generation=saved["generation"],
+                     cleanup=True)
+        self.assertFalse(self.paths.admission_file.exists())
+        append_login_reset(self.paths, clock=self.clock)
+        saved = die_after_write()
+        self.assertEqual(saved["state"], "pending")
+        result = self.admit("pilot-session:dead", generation=saved["generation"])
+        self.assertEqual((result["generation"], result["state"]), (saved["generation"], "admitted"))
 
 
 class ReleaseCleanStateTests(AdmissionTestCase):
@@ -508,6 +578,47 @@ class ReleaseCleanStateTests(AdmissionTestCase):
             read_only_fold(path, mode="live", now_ns=self.clock.time_ns(), busy_timeout_s=0.2)
         holder.execute("COMMIT")
 
+    def test_journal_entry_that_is_not_a_plain_file_fails_closed(self):
+        """REC-2: only a definite absence of the journal's directory entry means no journal. A dangling symlink, a
+        symlink to a real journal, a loop, a directory or malformed SQLite are unreadable, so release refuses and
+        INHIBIT stays."""
+        n = self.admit("pilot-session:j")["generation"]
+        path = self.paths.journal_path("live")
+        elsewhere = self.paths.orders_dir / "elsewhere.sqlite"
+        journal = OrderJournal(elsewhere, mode="live", clock=self.clock)
+        journal.close()
+        loop = self.paths.orders_dir / "loop"
+        cases = [("dangling_symlink", lambda: path.symlink_to(self.paths.orders_dir / "missing.sqlite")),
+                 ("symlink_to_a_journal", lambda: path.symlink_to(elsewhere)),
+                 ("symlink_loop", lambda: (loop.symlink_to(path), path.symlink_to(loop))),
+                 ("directory", lambda: path.mkdir()),
+                 ("malformed_sqlite", lambda: path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 300))]
+        for name, make in cases:
+            with self.subTest(case=name):
+                make()
+                with self.assertRaisesRegex(JournalError, "journal_unreadable_read_only"):
+                    read_only_fold(path, mode="live", now_ns=self.clock.time_ns())
+                self.assertEqual(self.refused("release_refused", self.release, n).problems, ["live_journal_unreadable"])
+                self.assertTrue(self.paths.inhibit_file.exists())
+                if path.is_dir() and not path.is_symlink():
+                    path.rmdir()
+                else:
+                    path.unlink()
+                if loop.is_symlink():
+                    loop.unlink()
+        self.assertEqual(self.release(n)["released"], True)               # truly absent: no journal, no orders
+
+    def test_uninspectable_journal_path_fails_closed(self):
+        """REC-2: EACCES on the journal's directory is not absence."""
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses directory permissions")
+        self.assertEqual(admission.live_state_problems(self.paths, clock=self.clock), [])
+        os.chmod(self.paths.orders_dir, 0)
+        self.addCleanup(os.chmod, self.paths.orders_dir, 0o700)
+        self.assertEqual(admission.live_state_problems(self.paths, clock=self.clock), ["live_journal_unreadable"])
+        with self.assertRaisesRegex(JournalError, "journal_unreadable_read_only"):
+            read_only_fold(self.paths.journal_path("live"), mode="live", now_ns=self.clock.time_ns())
+
     def test_orphan_inhibit_released_by_the_typed_path_only_when_clean(self):
         with file_lock(self.paths.recorder_lock):
             self.refused("recorder_lock_held_without_pid", self.admit, "arm-live:5", drain_timeout_s=1)
@@ -541,6 +652,33 @@ class BoundaryTests(unittest.TestCase):
             with self.subTest(function=function.name):
                 for word in ("admission", "inhibit", "recorder_lock", "_record"):
                     self.assertNotIn(word, source.lower())
+
+    def test_ps_start_time_is_rendered_in_utc_whatever_the_system_zone(self):
+        """Workflow #1: lstart is printed in TZ (else /etc/localtime), so the identity pins TZ=UTC0 and LC_ALL=C; a
+        change of the Mac's zone between a recorder's start and an admission cannot make it a stranger."""
+        seen = []
+        real = subprocess.run
+
+        def spy(argv, *args, **kwargs):
+            seen.append(dict(kwargs.get("env") or {}))
+            return real(argv, *args, **kwargs)
+        with patch.object(admission.subprocess, "run", spy):
+            value = admission._ps_start(os.getpid())
+        self.assertEqual((seen[0].get("TZ"), seen[0].get("LC_ALL")), ("UTC0", "C"))
+        if sys.platform == "darwin":
+            utc = real(["/bin/ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True, text=True,
+                       env={"LC_ALL": "C", "TZ": "UTC0", "PATH": "/bin:/usr/bin"}).stdout
+            self.assertEqual(value, "ps-lstart:" + " ".join(utc.split()))
+            with patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+                self.assertEqual(admission._ps_start(os.getpid()), value)
+
+    def test_documented_release_rule_names_market_unresolved(self):
+        """Workflow #7: the release rule the code enforces beyond v4 section E is documented where it applies."""
+        integration = (REPO / "docs" / "betfair-integration.md").read_text(encoding="utf-8")
+        release_item = next(line for line in integration.splitlines() if line.startswith("5. **Release**"))
+        self.assertIn("`market_unresolved`", release_item)
+        self.assertIn("market_unresolved", admission.__doc__ + admission.live_state_problems.__doc__)
+        self.assertIn("halted or unresolved market", admission.__doc__)
 
     def test_record_traps_its_signals_as_its_first_statement(self):
         tree = ast.parse((BETFAIR / "cli.py").read_text(encoding="utf-8"))

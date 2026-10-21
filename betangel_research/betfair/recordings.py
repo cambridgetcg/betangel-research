@@ -11,8 +11,10 @@ conflated (about 180 s), so in-play and CLOSED times are conflated publish times
 
 Coverage (v4 section F). A market's window runs from its initial marketTime (the marketTime on its
 first observed change) minus 60 minutes to its first observed CLOSED, or, when no CLOSED was seen,
-to the end of the last session that observed it; a window that recording never reached is all late
-start. Within a segment a
+to the end of the last session that observed it. A market whose observing sessions all ended before
+its window began gets the hour before its marketTime as its window, all of it late start, and the flag
+never_in_window (plus dropped_explicit when an explicit segment during that hour left it out); one
+CLOSED before its window began gets closed_before_window and no coverage figures. Within a segment a
 market is covered from its own first line there (a late market never inherits the segment's start)
 to the segment's last line, except across a stall: two consecutive lines further apart than the
 stream's liveness timeout, which the client would have ended had its monotonic clock run (sleep).
@@ -28,8 +30,10 @@ COMPLETE. COMPLETE means coverage under this window and tolerance, not proof eve
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 from .errors import safe_code
 from .filters import MARKET_ID_RE
@@ -66,6 +70,8 @@ SESSION_FILES = frozenset({"events.jsonl", "receipt.json", "receipt.partial.json
 # What a crash during receipts.atomic_write_json can leave behind.
 CRASH_LEFTOVER_RE = re.compile(r"\.(receipt\.json|receipt\.partial\.json)\.tmp-[0-9]+-[0-9a-f]{8}")
 LEDGER_ROW_KEYS = frozenset({"created_at", "session_id", "receipt_path", "receipt_sha256", "segments", "status"})
+PRECOUNT_DECLARATION_KEYS = frozenset({"path", "rows", "sha256"})
+PRECOUNT_MARKET_KEYS = frozenset({"market_id", "market_start_time"})
 
 
 # --- small helpers -------------------------------------------------------------------------------------
@@ -171,6 +177,78 @@ def _last_recv_ns(path):
     return _ns(row.get("received_at")) if isinstance(row, dict) else None
 
 
+def _precount_row_ok(row, listed):
+    """True when one precount.jsonl row has the recorder's exact structure (C4) and names a listed segment."""
+    if not isinstance(row, dict) or set(row) != PRECOUNT_ROW_KEYS or not isinstance(row["markets"], list):
+        return False
+    if type(row["segment"]) is not int or row["segment"] not in listed or _ns(row["taken_at"]) is None:
+        return False
+    if (type(row["lookback_s"]) is not int or type(row["count"]) is not int or row["count"] != len(row["markets"])
+            or type(row["possibly_more"]) is not bool or row["subscription_mode"] not in ("coarse", "explicit")
+            or type(row["requested_count"]) is not int):
+        return False
+    for market in row["markets"]:
+        if not isinstance(market, dict) or set(market) != PRECOUNT_MARKET_KEYS:
+            return False
+        if not isinstance(market["market_id"], str) or not MARKET_ID_RE.fullmatch(market["market_id"]):
+            return False
+        if market["market_start_time"] is not None and _ns(market["market_start_time"]) is None:
+            return False
+    return True
+
+
+def precount_problems(directory, receipt, *, final):
+    """Check codes for the session's declared pre-count snapshot (C4); [] when it matches.
+
+    A receipt without a "precount" entry predates C4: it is fine only while no precount.jsonl exists. A
+    declared snapshot must be a regular file (lstat: no symlink; a path that cannot be inspected fails)
+    whose first `rows` lines hash to the declared sha256 and each have the recorder's exact row structure
+    for a segment the receipt lists. A final receipt's file holds exactly those rows; a crashed session's
+    receipt.partial.json may lag its file by the rows written after its last rewrite. A declared file that
+    is missing, truncated or altered is damaged inventory, never the legacy no-inventory case."""
+    path = directory / PRECOUNT_NAME
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        info = None
+    except OSError:
+        return ["precount_uninspectable"]
+    if "precount" not in receipt:
+        return [] if info is None else ["precount_undeclared"]
+    declared = receipt["precount"]
+    if not (isinstance(declared, dict) and set(declared) == PRECOUNT_DECLARATION_KEYS
+            and declared["path"] == PRECOUNT_NAME and type(declared["rows"]) is int and declared["rows"] >= 0
+            and (declared["sha256"] is None if declared["rows"] == 0
+                 else isinstance(declared["sha256"], str) and SHA_RE.fullmatch(declared["sha256"]))):
+        return ["precount_declaration_invalid"]
+    rows = declared["rows"]
+    if info is None:
+        return ["precount_missing"] if rows else []
+    if not stat.S_ISREG(info.st_mode):
+        return ["precount_not_regular"]
+    try:
+        lines = path.read_bytes().splitlines(keepends=True)
+    except OSError:
+        return ["precount_uninspectable"]
+    if rows == 0:
+        return ["precount_rows_mismatch"] if final else []
+    if len(lines) < rows or hashlib.sha256(b"".join(lines[:rows])).hexdigest() != declared["sha256"]:
+        return ["precount_sha256_mismatch"]
+    if final and len(lines) != rows:
+        return ["precount_rows_mismatch"]
+    listed = {meta["index"] for meta in (_segment_meta(s) for s in receipt["segments"]) if meta is not None}
+    seen = []
+    for line in lines[:rows]:
+        try:
+            row = strict_json_loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return ["precount_row_invalid"]
+        if not _precount_row_ok(row, listed) or (seen and row["segment"] <= seen[-1]):
+            return ["precount_row_invalid"]
+        seen.append(row["segment"])
+    return []
+
+
 def _session(directory, start_ns):
     """Whitelisted facts of one session directory (no segment line is read here)."""
     kind, receipt, digest, problem = _load_receipt(directory)
@@ -200,7 +278,8 @@ def _session(directory, start_ns):
     else:
         status = "crashed"
     precount = receipt.get("precount") if isinstance(receipt.get("precount"), dict) else {}
-    return {"session_id": directory.name, "dir": directory, "start_ns": start_ns, "end_ns": max(ends),
+    damaged = precount_problems(directory, receipt, final=kind == "final") if kind and problem is None else []
+    return {"precount_problems": damaged, "session_id": directory.name, "dir": directory, "start_ns": start_ns, "end_ns": max(ends),
             "receipt_kind": kind, "receipt_sha256": digest, "receipt_problem": problem, "status": status,
             "segments": listed, "open_segments": open_segments, "names": names,
             "gaps": receipt.get("gaps") if isinstance(receipt.get("gaps"), list) else [],
@@ -350,9 +429,10 @@ def _segments(session):
 
 
 def _precount_inventory(session):
-    """{market_id: (catalogue start ns or None, verified)} from the session's precount.jsonl (C4)."""
+    """{market_id: (catalogue start ns or None, verified)} from the session's precount.jsonl (C4); {} when the
+    session has none or its declared snapshot is damaged (precount_problems: then counted, never used)."""
     path = session["dir"] / PRECOUNT_NAME
-    if path.is_symlink() or not path.is_file():
+    if session["precount_problems"] or path.is_symlink() or not path.is_file():
         return {}
     verified = session["status"] == "complete" and session["precount_sha256"] == file_sha256(path)
     inventory = {}
@@ -443,7 +523,12 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
         if any(value != anchor_ns for entry in entries for value in entry["market_times"]):
             flags.add("schedule_changed")
         window_from = anchor_ns - WINDOW_BEFORE_NS
-        window_to = max(closed["ns"] if closed else session_ends[observations[-1]["session_id"]], window_from)
+        if closed is not None:
+            window_to = closed["ns"]
+        else:
+            window_to = session_ends[observations[-1]["session_id"]]
+            if window_to <= window_from:            # recording ended before the window began: the hour before off
+                window_to = anchor_ns
         window = {"from": utc_from_ns(window_from), "to": utc_from_ns(window_to)}
         pieces = []
         for obs in observations:
@@ -458,9 +543,15 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
         inside = [piece for piece in pieces if piece["to"] >= window_from and piece["from"] <= window_to]
         relevant = [obs for obs in observations if any(piece["obs"] is obs for piece in inside)] or [first]
         first_seen = min((max(piece["from"], window_from) for piece in inside), default=None)
-        if first_seen is None:          # nothing observed inside the window at all
-            flags.add("late_start")
+        if window_to <= window_from:              # CLOSED before the window began: no coverage figures
+            flags.add("closed_before_window")
+        elif first_seen is None:                  # nothing observed inside the window at all
+            flags.update(("late_start", "never_in_window"))
             late_ns = window_to - window_from
+            if any(segment["mode"] == "explicit" and segment["first_ns"] is not None
+                   and segment["first_ns"] < window_to and segment["last_ns"] > window_from
+                   and market_id not in segment["markets"] for segment in segments):
+                flags.add("dropped_explicit")
         else:
             for start, end in _complement([(p["from"], p["to"]) for p in inside], window_from, window_to):
                 if first_seen is None or end <= first_seen:
@@ -535,7 +626,8 @@ def build_index(paths, *, root, day, clock):
                              "key_type": session["key_type"], "label": session["label"],
                              "segments": len(scanned), "verified_segments": sum(1 for s in scanned if s["verified"]),
                              "open_segments": len(session["open_segments"]),
-                             "precount": (session["dir"] / PRECOUNT_NAME).is_file()})
+                             "precount": "damaged" if session["precount_problems"] else
+                             "present" if (session["dir"] / PRECOUNT_NAME).is_file() else "none"})
     rows = []
     for market_id, found in observations.items():
         found.sort(key=lambda obs: (obs["entry"]["first_ns"], obs["segment"]))
@@ -557,6 +649,7 @@ def build_index(paths, *, root, day, clock):
     summary = {"status": INDEX_STATUS, "day": day, "sessions": len(sessions),
                "sessions_by_status": {status: sum(1 for s in sessions if s["status"] == status)
                                       for status in ("complete", "crashed", "receipt_invalid", "no_receipt")},
+               "inventory_damaged_sessions": sum(1 for s in sessions if s["precount_problems"]),
                "segments": len(segments), "segments_verified": sum(1 for s in segments if s["verified"]),
                "markets": len(rows), "classes": classes, "flags": flags,
                "gaps": sum(1 for row in rows for gap in row["gaps"] if not gap["tolerated"]),
@@ -605,7 +698,9 @@ def verify_day(paths, *, root, day):
 
     Checks: each closed session verifies (recorder.verify_recording); its receipt.json sha256 equals the
     one run-ledger row for it, whose receipt_path names it; events.jsonl is present; the receipt's gap list
-    equals the gaps its segment boundaries imply; no file but the recorder's own. A session that never
+    equals the gaps its segment boundaries imply; its declared pre-count snapshot matches
+    (precount_problems; damaged inventory fails, a receipt from before C4 without one passes); no file but
+    the recorder's own. A session that never
     closed (receipt.partial.json only, or no receipt) is classified, not failed: its listed segments are
     still hash-checked and its gaps compared, and a segment on disk that no receipt lists is counted as
     open. Leftovers of an interrupted atomic write are counted, not failed. A ledger row whose session
@@ -669,6 +764,8 @@ def verify_day(paths, *, root, day):
                         fail(sid, name, index)
             if sid in ledger:
                 fail(sid, "ledger_row_without_receipt")
+        for problem in session["precount_problems"]:
+            fail(sid, problem)
         if kind is not None and session["receipt_problem"] is None:
             receipt = strict_json_loads((directory / ("receipt.json" if kind == "final" else "receipt.partial.json"))
                                         .read_text(encoding="utf-8"))

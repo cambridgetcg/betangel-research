@@ -266,6 +266,37 @@ class AuthTests(unittest.TestCase):
         short.keep_alive()
         self.assertEqual(short.keepalive_interval_s, 60)
 
+    def test_login_guard_refuses_every_login_before_anything_is_reserved(self):
+        """REC-4: a guard (the recorder's stop and end checks) refuses lazy logins and relogins, the keepAlive
+        NO_SESSION relogin included, before any ledger row or request; logout still goes out; no guard, no change."""
+        from betangel_research.betfair.errors import LoginStopped
+        session, transport = self.session([cert_ok(), sso("FAIL", "NO_SESSION"), sso()])
+        state = {"reason": None}
+        session.guard_logins(lambda: state["reason"])
+        session.login()                                          # the guard has nothing against it yet
+        state["reason"] = "end_at_reached"
+        with self.assertRaises(LoginStopped) as caught:
+            session.keep_alive()                                 # NO_SESSION -> relogin -> refused by the guard
+        self.assertEqual((caught.exception.status, caught.exception.reason), ("login_stopped", "end_at_reached"))
+        self.assertIsNone(session.current_token())
+        with self.assertRaises(LoginStopped):
+            session.token()                                      # a lazy login is refused too
+        with self.assertRaises(LoginStopped):
+            session.invalidate_and_relogin()
+        self.assertEqual([r["url"] for r in transport.requests], [CERTLOGIN, KEEPALIVE])
+        self.assertEqual(len([row for row in self.ledger() if row["kind"] == "login_attempt"]), 1)
+        session.guard_logins(None)
+        other, other_transport = self.session([cert_ok(), sso()])
+        other.login()
+        self.assertEqual(other.close(), {"status": "SUCCESS", "error": None})      # logout is never guarded
+        guarded, guarded_transport = self.session([cert_ok(), sso()])
+        guarded.login()
+        guarded.guard_logins(lambda: "stop_requested")
+        self.assertEqual(guarded.close(), {"status": "SUCCESS", "error": None})
+        self.assertEqual([r["url"] for r in guarded_transport.requests], [CERTLOGIN, LOGOUT])
+        with self.assertRaises(TypeError):
+            guarded.guard_logins("not callable")
+
     def test_maybe_keep_alive_uses_current_interval(self):
         session, transport = self.session([cert_ok(), sso()])
         self.assertIsNone(session.maybe_keep_alive())

@@ -37,7 +37,10 @@ lock (amendment A3, D4), and neither a journal it cannot read nor an invalid --p
 engaging the KILL file; an unreadable journal does not stop its sweep either (config strategy ref).
 
 record traps SIGTERM, SIGINT and SIGHUP (a closed terminal) as its very first statement: each only asks
-the recorder to stop, so it closes the segment, writes the receipt and logs out, and record exits 0.
+the recorder to stop, so it closes the segment, writes the receipt and logs out, and record exits 0. A
+SIGHUP inherited as ignored (nohup, trap '' HUP) stays ignored, so such a run outlives its terminal.
+record's JSON lines are best effort: once a write to stdout fails (EIO after a hangup, a closed pipe),
+record stops writing them and still finishes the segment, the receipt, the run-ledger row and logout.
 Before it reads a credential, record takes recording admission (admission.py): INHIBIT or a live
 ADMISSION, another recorder holding .recorder.lock, or unreadable admission state refuses it with exit
 2 and "Betfair recording refused: <outcome>" (a JSON "refused" line on stdout names the outcome).
@@ -1103,7 +1106,9 @@ def cmd_account(args, ctx):
 
 class _RecordStop:
     """record's stop flag. SIGTERM, SIGINT and SIGHUP (a closed terminal, C1) only set it, so the recorder stops
-    at its next check, closes the segment, writes the receipt and logs out."""
+    at its next check, closes the segment, writes the receipt and logs out. A SIGHUP inherited as ignored
+    (nohup, trap '' HUP) stays ignored. recorder.StopSignals is the same rule for direct StreamRecorder.run
+    callers; it is not imported here so that this stays record's first statement."""
 
     SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
@@ -1116,6 +1121,8 @@ class _RecordStop:
         stop = cls()
         try:
             for sig in cls.SIGNALS:
+                if sig == signal.SIGHUP and signal.getsignal(sig) == signal.SIG_IGN:
+                    continue
                 stop.previous[sig] = signal.signal(sig, stop.handler)
         except ValueError:          # not the main thread: the process default stays
             stop.restore()
@@ -1168,9 +1175,19 @@ def _record(args, ctx, stop):
     stream = config["stream"]
     factory = ctx.stream_socket_factory or open_stream_socket
 
+    out_broken = []
+
     def emit(event):
-        ctx.out.write(json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str) + "\n")
-        ctx.out.flush()
+        """Best effort: after a hangup stdout raises EIO (or the pipe is gone); stop writing then, so the run
+        still closes the segment, writes the receipt and the ledger row, and logs out."""
+        if out_broken:
+            return
+        try:
+            ctx.out.write(json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
+                          + "\n")
+            ctx.out.flush()
+        except (OSError, ValueError) as exc:
+            out_broken.append(type(exc).__name__)
 
     try:
         with recorder_admission(paths, invocation_id=invocation_id, clock=ctx.clock) as ticket:
@@ -1191,7 +1208,7 @@ def _record(args, ctx, stop):
                                           market_lister=read.precount_markets, clock=ctx.clock, emit=emit,
                                           invocation_id=invocation_id, require_delayed_key=args.require_delayed_key)
                 receipt = recorder.run(stop_requested=lambda: stop.requested, max_seconds=args.max_seconds,
-                                       end_at_ns=end_at_ns, admission=ticket)
+                                       end_at_ns=end_at_ns, admission=ticket, handle_signals=False)
             finally:
                 session.close()
     except AdmissionRefused as exc:

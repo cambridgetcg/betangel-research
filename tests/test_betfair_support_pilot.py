@@ -205,7 +205,7 @@ class FakeGit:
 
 
 def build_pilot_gateway(test, *, overrides=None, start=None, contract_raw=CONTRACT_RAW, register=True, arm=True,
-                        pt4_done=False, until_ns=UNTIL, profile="default"):
+                        pt4_done=False, until_ns=UNTIL, profile="default", roundtrip=True):
     """A live gateway for the pilot profile, not yet opened, over PilotBetfair. env.state holds what the injected
     identity reads return (contract bytes, disk code hashes); change it to model drift after construction."""
     contract = pilot.contract_from_bytes(contract_raw)
@@ -222,7 +222,10 @@ def build_pilot_gateway(test, *, overrides=None, start=None, contract_raw=CONTRA
     read = ReadClient(rpc, paths=paths, clock=clock)
     journal = OrderJournal(paths.journal_path("live"), mode="live", clock=clock)
     test.addCleanup(journal.close)
-    journal.append("ref_roundtrip_verified", {"customer_order_ref_found": True})
+    if roundtrip:
+        journal.append("ref_roundtrip_verified", {"customer_order_ref_found": True})
+    else:
+        journal.append("note", {"reason": "harness_start_without_ref_roundtrip"})      # A19 then fails
     anchor_write(paths.profile, dict(journal.anchor(), updated_at=clock.utc_now()), runner=runner)
     guard = RiskGuard(config, mode="live", clock=clock, paths=paths)
     state = SimpleNamespace(contract_raw=contract_raw, disk_hashes=dict(CODE_HASHES), contract_reads=0)
@@ -568,3 +571,32 @@ def build_history(env, *, place_records=494, skips_per_place=1, min_events=20_00
     for index in range(max(0, fillers)):
         journal.append("funds_check" if index % 2 else "startup_reconcile", {"funds": funds} if index % 2 else startup)
     return journal.anchor()["seq"], day_ns
+
+
+def manual_place(env, market, *, price_h=300, matched=False):
+    """A live manual (cli_manual) BACK on a pilot fixture market through its own gateway, as the operator would type
+    it; matched=True fills it in full at its price. -> the place result."""
+    order = gw.instruction(selection_id=FAV, price_h=price_h)
+    gateway = new_gateway(env)
+    env.test.addCleanup(gateway.close)
+    gateway.preconfirm("place", market_id=market.market_id, instructions=[order])
+    confirm = expected_token(env.config, env.clock.time_ns())
+    gateway.open(command="place", confirm_token=confirm)
+    if matched:
+        accept = env.exchange.place
+
+        def filled(params):
+            env.exchange.place_handler = None
+            result = accept(params)
+            for row in result["instructionReports"]:
+                limit = row["instruction"]["limitOrder"]
+                env.exchange.orders[row["betId"]].update(status="EXECUTION_COMPLETE", sizeMatched=limit["size"],
+                                                         sizeRemaining=0.0, averagePriceMatched=limit["price"])
+                row.update(orderStatus="EXECUTION_COMPLETE", sizeMatched=limit["size"],
+                           averagePriceMatched=limit["price"])
+            return result
+
+        env.exchange.place_handler = filled
+    result = gateway.place(market.market_id, [order], source="cli_manual", confirm_token=confirm)
+    gateway.close()
+    return result

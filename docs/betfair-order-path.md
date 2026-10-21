@@ -146,7 +146,7 @@ Exit 5 嘅情況同訊息（JSON 照印，之後先 exit）：
 | `resume`（live） | A2、A11、A13；kill file 一定要已經唔存在 |
 | `pilot-register`（RS-19） | Yu 打 `REGISTER PILOT` 行，go-live 同意之後（[engineering note](betfair-pilot-engineering.md) §14）：A2、A11、A13；寫 registration receipt |
 | `PILOT ARM` 行（RS-19） | Yu 每個 racing day 最多打一次：A2、A11、A13；開一個 session（[engineering note](betfair-pilot-engineering.md) §3） |
-| `pilot-run --mode live`：決定同落單（RS-19） | executor，喺 arm 咗嘅 session，用 gateway 命令 `pilot-place`（冇逐張打嘅行，E1；A11 照查）：每次 placement open 都過 A1–A19、PA1–PA4、R1–R13、[engineering note](betfair-pilot-engineering.md) §4–§6 同 §5 嘅 first-byte gate；PA1–PA4 只管落單，cancel、kill、reconcile、settle-market 唔查 |
+| `pilot-run --mode live`：決定同落單（RS-19） | executor，喺 arm 咗嘅 session，用 gateway 命令 `pilot-place`（冇逐張打嘅行，E1；A11 照查）：每次 placement open 都過 A1–A19、PA1–PA4、R1–R13、[engineering note](betfair-pilot-engineering.md) §4–§6 同 §5 嘅 first-byte gate；PA1–PA4 只管落單，cancel、kill、reconcile、settle-market 唔查；session arm 住嗰陣發現我哋有手打單仲開住或者 match 咗未 settle，會 journal HALT（`manual_bet_open_during_session`），session 就此完結（[engineering note](betfair-pilot-engineering.md) §7） |
 | `pilot-run`：剩餘取消（RS-19） | executor：`cancel` 嗰套（A4、A5、A8、A10、A12–A15，只要 login）；HALT 同 KILL 期間照行；冇 PA gate；只可以整張取消自己嘅 pilot 單；KILL 期間跟 [engineering note](betfair-pilot-engineering.md) §8 |
 | `pilot-run` 入面嘅 `SETTLE MARKET`（RS-19） | Yu 喺 settle point 打：`settle-market` 嗰套，再加 [engineering note](betfair-pilot-engineering.md) §8 嘅 settle-point 規則 |
 | `pilot-capture`（RS-19，只讀） | session 入面由 executor 喺 placement open 之間跑；session 之後 Yu 打（[engineering note](betfair-pilot-engineering.md) §11）：唔使 arming 行、乜都唔送、唔郁單嘅狀態或者 exposure；有 session arm 住嗰陣 Yu 自己跑會被拒 |

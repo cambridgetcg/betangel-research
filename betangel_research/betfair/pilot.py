@@ -2024,6 +2024,11 @@ class _Folder:
         return {rec.index for rec in self.records}
 
     def note_pt_receipt(self, inner, event, seq, ns):
+        """A PT1 or PT4 receipt of a registration journaled before it; one naming any other registration is an
+        invalid note, adopted in no part (no PT4 receipt, L-field verdict or profit basis), as session_start."""
+        if inner["registration_receipt_sha256"] not in self.registrations:
+            self.invalid_note(seq)
+            return set()
         if inner["kind"] == "PT4" and inner["matched_settled_bets"] >= 1 and self.pt4_receipt is None:
             self.pt4_receipt = {"seq": seq, "registration_receipt_sha256": inner["registration_receipt_sha256"]}
         if inner["l_fields_verified"] is False:

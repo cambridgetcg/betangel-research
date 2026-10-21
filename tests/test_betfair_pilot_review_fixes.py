@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from betangel_research.betfair import admission, cli, gateway as gateway_module, journal as journal_module
 from betangel_research.betfair import pilot, pilot_run
-from betangel_research.betfair.errors import JournalError
+from betangel_research.betfair.errors import JournalError, LoginBudgetExceeded
 from betangel_research.betfair.gateway import OrderGateway
 from betangel_research.betfair.journal import OrderJournal
 from betangel_research.betfair.killswitch import engage
@@ -1496,6 +1496,251 @@ class TransportRetryGuardTests(unittest.TestCase):
         self.assertEqual(len(script.calls), 2)
         self.assertGreater(len(second.sent), 0)
         self.assertEqual(state["guard_calls"], 0)
+
+
+# --- the refute workflow on 0565a02 (fix-round-verify-wf_bcf9a98c) ------------------------------------------------
+
+
+class ThrownBeforeSubmitTests(RunCase):
+    """Owed write after an exception (P2): pilot_place raises before any submit (RuntimeError, LoginBudgetExceeded)
+    and SIGINT lands at the §3.7 handler's entry, or at Run.deferring's entry, before step 0. The open's handler now
+    keeps the exception and sets the deferral with plain stores first, so the note is written; at f110312 the
+    SignalStop replaced the exception, the run released and the next-day ARM passed with no ACK."""
+
+    def thrown(self, exc, *, at):
+        env = self.one_market()
+        state = {"fire": True}
+        original_after, original_deferring = pilot_run.Run.after_exception, pilot_run.Run.deferring
+
+        def pilot_place(gateway, *a, **kw):
+            raise exc
+
+        def after_exception(run, e, ctx, **kw):
+            if at == "handler" and state["fire"]:
+                state["fire"] = False
+                sr.fire(signal.SIGINT)
+            return original_after(run, e, ctx, **kw)
+
+        def deferring(run, value):
+            if at == "deferring" and state["fire"] and value:
+                state["fire"] = False
+                sr.fire(signal.SIGINT)
+            return original_deferring(run, value)
+
+        with patch.object(OrderGateway, "pilot_place", pilot_place), \
+                patch.object(pilot_run.Run, "after_exception", after_exception), \
+                patch.object(pilot_run.Run, "deferring", deferring):
+            code, out, err = sr.arm_run(env)
+        self.assertFalse(state["fire"])
+        return env, code, out, err
+
+    def test_each_exception_and_entry_point(self):
+        for exc, note in ((RuntimeError("probe_unexpected"), "executor_exception"),
+                          (LoginBudgetExceeded("login_budget"), "login_budget")):
+            for at in ("handler", "deferring"):
+                with self.subTest(exception=type(exc).__name__, signal_at=at):
+                    env, code, out, err = self.thrown(exc, at=at)
+                    self.assertEqual(code, 5, err)
+                    self.assertEqual([n["code"] for n in sr.notes(env, "refusal")], [note])
+                    self.assertEqual(sr.admission_view(env)["admission"]["generation"], 1)
+                    sr.typed_release(env, 1)
+                    self.next_day_arm(env)
+
+    def test_the_safety_net_when_the_handler_itself_is_cut_short(self):
+        """If SignalStop still replaced the exception before §3.7's handler began, finish_owed runs that handler on
+        the kept exception: the same note, written once."""
+        env = self.one_market()
+        state = {"cut": True}
+        original_after = pilot_run.Run.after_exception
+
+        def pilot_place(gateway, *a, **kw):
+            raise RuntimeError("probe_unexpected")
+
+        def after_exception(run, e, ctx, **kw):
+            if state["cut"]:
+                state["cut"] = False
+                raise cli.SignalStop("SIGINT")
+            return original_after(run, e, ctx, **kw)
+
+        with patch.object(OrderGateway, "pilot_place", pilot_place), \
+                patch.object(pilot_run.Run, "after_exception", after_exception):
+            code, out, err = sr.arm_run(env)
+        self.assertEqual(code, 5, err)
+        self.assertEqual([n["code"] for n in sr.notes(env, "refusal")], ["executor_exception"])
+
+
+class FiringReport(dict):
+    """An open report whose .get(key) fires SIGINT once, after the value is fetched (the post-call checkpoint)."""
+
+    fire_on = None
+
+    def get(self, key, default=None):
+        value = dict.get(self, key, default)
+        if key == FiringReport.fire_on:
+            FiringReport.fire_on = None
+            sr.fire(signal.SIGINT)
+        return value
+
+
+class UnarmedReportPinTests(RunCase):
+    """Pins (f110312 already closes it): SIGINT on in_open's report reads, between open_report() and ctx["report"]
+    (after .get("open_id") and after .get("armed") return), for an A17 report and a first-failure report: the
+    gateway-kept report reaches finish_owed and the owed note is journaled."""
+
+    def test_both_handler_points(self):
+        for key in ("open_id", "armed"):
+            for failures, note in ((["unresolved_or_foreign_orders"], "unresolved_or_foreign_orders"),
+                                   (["pilot_session_not_armed"], "pilot_session_not_armed")):
+                with self.subTest(after=key, failures=failures):
+                    env = self.one_market()
+                    original = OrderGateway.open_report
+                    served = []
+
+                    def open_report(gateway, failures=failures, key=key):
+                        report = FiringReport(original(gateway) or {})
+                        report.update(armed=False, failures=list(failures))
+                        if not served:
+                            served.append(True)
+                            FiringReport.fire_on = key
+                        return report
+
+                    with patch.object(OrderGateway, "open_report", open_report):
+                        code, out, err = sr.arm_run(env)
+                    self.assertIsNone(FiringReport.fire_on)
+                    self.assertEqual(code, 5, err)
+                    self.assertEqual([n["code"] for n in sr.notes(env, "refusal")], [note])
+                    self.assertTrue(sr.active_review(env))
+
+
+class BeginStopsAt(object):
+    """A connection stand-in: after the real statement `stop_after` runs once, raise `exc` (as a signal handler
+    raising SignalStop right after that call returns would)."""
+
+    def __init__(self, db, stop_after, exc):
+        self._db, self._stop_after, self._exc = db, stop_after, exc
+
+    def execute(self, sql, *a):
+        cursor = self._db.execute(sql, *a)
+        if sql == self._stop_after and self._exc is not None:
+            exc, self._exc = self._exc, None
+            raise exc
+        return cursor
+
+    @property
+    def in_transaction(self):
+        return self._db.in_transaction
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+class JournalTransactionTests(unittest.TestCase):
+    """The incremental fold's BEGIN and append's BEGIN IMMEDIATE (P3): an exception that lands right after either
+    returns leaves no transaction open, so the connection's next fold sees another connection's HALT and appends
+    still go through on both connections. At f110312 the BEGIN sat outside the protected block."""
+
+    class Stop(BaseException):
+        pass
+
+    def journals(self):
+        paths = support.temp_state_paths(self)
+        clock = support.FakeClock()
+        mine = OrderJournal(paths.journal_path("live"), mode="live", clock=clock)
+        other = OrderJournal(paths.journal_path("live"), mode="live", clock=clock, busy_timeout_s=0.2)
+        self.addCleanup(mine.close)
+        self.addCleanup(other.close)
+        for _ in range(3):
+            mine.append("note", {"reason": "n"})
+        mine.fold(now_ns=clock.time_ns())
+        return mine, other, clock
+
+    def interrupted(self, mine, statement, call):
+        real = mine._db
+        mine._db = BeginStopsAt(real, statement, self.Stop())
+        try:
+            with self.assertRaises(self.Stop):
+                call()
+        finally:
+            mine._db = real
+        return real
+
+    def test_a_stop_right_after_the_fold_begins(self):
+        mine, other, clock = self.journals()
+        other.append("note", {"reason": "catch_up"})
+        real = self.interrupted(mine, "BEGIN", lambda: mine.fold(now_ns=clock.time_ns()))
+        self.assertFalse(real.in_transaction)
+        other.append("halt", {"reason": "after_stop"})
+        state = mine.fold(now_ns=clock.time_ns())
+        self.assertTrue(state["halted"])
+        self.assertEqual(state, journal_module.fold_events(list(other.events()), mode="live", now_ns=clock.time_ns()))
+        mine.append("note", {"reason": "owed_write"})
+
+    def test_a_stop_right_after_append_begins(self):
+        mine, other, clock = self.journals()
+        real = self.interrupted(mine, "BEGIN IMMEDIATE", lambda: mine.append("note", {"reason": "cut"}))
+        self.assertFalse(real.in_transaction)
+        other.append("note", {"reason": "other_writer"})            # no write lock left behind
+        mine.append("note", {"reason": "owed_write"})
+        self.assertEqual([e["payload"]["reason"] for e in other.events()][-2:], ["other_writer", "owed_write"])
+
+    def test_a_leftover_transaction_is_ended_on_entry(self):
+        mine, other, clock = self.journals()
+        mine._db.execute("BEGIN")
+        mine._db.execute("SELECT count(*) FROM events").fetchone()     # a read snapshot from before
+        other.append("halt", {"reason": "while_left_open"})
+        self.assertTrue(mine.fold(now_ns=clock.time_ns())["halted"])
+        self.assertFalse(mine._db.in_transaction)
+        mine._db.execute("BEGIN")
+        mine.append("note", {"reason": "after_leftover"})
+
+
+class NonPilotSettleGuardTests(unittest.TestCase):
+    """Settle-guard non-pilot invariance (P3): with no orders.pilot and a journal that is not a database, settle-market
+    meets the gateway's own journal error as at 2d3b092 (exit 4, DatabaseError), not pilot_session_armed. Astra's C4
+    witness (the pilot owner lock held, an unreadable head) still refuses: SettleHeadTests."""
+
+    def test_a_garbage_journal_without_orders_pilot(self):
+        import io as io_module
+        import contextlib
+        env = gw.build_live_gateway(self)
+        env.journal.close()
+        self.assertNotIn("pilot", env.config["orders"])
+        env.paths.journal_path("live").write_bytes(b"this is not a database" * 40)
+        deps = {"keychain_runner": env.runner, "http_transport": env.transport, "clock": env.clock,
+                "confirmer": env.confirmer}
+        out, err = io_module.StringIO(), io_module.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["settle-market", "--market", "1.1", "--confirm-live", env.token], deps=deps)
+        self.assertEqual(code, 4, err.getvalue())
+        self.assertIn("Betfair stopped: DatabaseError", err.getvalue())
+        self.assertNotIn("pilot_session_armed", err.getvalue())
+
+
+class FlaggedRecordedLineTests(RunCase):
+    """ARM's refuse() prints the reconcile line with the coexistence flag (P3): an intent another process journals
+    while the credential loader runs leaves an order RECORDED, so step 6 refuses and release_own reports
+    order_recorded."""
+
+    def test_the_flag_reaches_the_line(self):
+        env = self.one_market(overrides={"coexistence": {"bet_angel": "unverified"}})
+
+        def recorded():
+            other = OrderJournal(env.paths.journal_path("live"), mode="live", clock=env.clock)
+            try:
+                other.append("intent", {"order": gw.instruction(selection_id=sp.FAV, price_h=300),
+                                        "customer_strategy_ref": "bar-manual", "is_probe": False, "parent_ref": None,
+                                        "provisional_child": False, "source": "cli_manual"},
+                             intent_id="int-other-1", customer_order_ref="other-ref-1", customer_ref="cref-o1",
+                             market_id=self.market.market_id, state_after="RECORDED")
+            finally:
+                other.close()
+
+        env.runner.on_credential = recorded
+        code, out, err = sr.arm_run(env, "2000", "--bet-angel-paused")
+        self.assertEqual(code, 2, err)
+        self.assertIn("then run reconcile --mode live --bet-angel-paused; its open refuses the order recorded", err)
+        self.assertNotIn("then run reconcile --mode live;", err)        # the release lines carry the flag too
+        self.assertIn("release refused", err)
 
 
 if __name__ == "__main__":

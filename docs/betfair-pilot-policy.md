@@ -61,7 +61,7 @@ Every bet is a £2 BACK and there is at most one bet per race, so the most the b
    - Any change to one of those needs this consent again.
 3. **Each session.**
    - Yu arms it.
-   - Until Yu has checked a matched, settled bet against the website, each session has at most 5 bets. Yu checks each of them: matched size, price, result and money. This tests our bookkeeping, not the strategy.
+   - Until Yu has checked a matched, settled bet against the website, each session has at most 5 bets. Yu checks each of them: matched size, price, result and money. This tests our bookkeeping, not the strategy, so these first checked bets are always kept apart from the test's sample (Yu, 2026-10-21).
 
 ## How it ends
 - Placing stops at the first of these:

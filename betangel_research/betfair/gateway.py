@@ -383,6 +383,13 @@ class OrderGateway:
                 raise ConfigError("live_gateway_read_must_wrap_the_same_rpc")
             if confirmer is None:
                 raise ConfigError("live_gateway_needs_confirmer")
+            if pilot is not None and not (
+                    isinstance(clock, pilot_gate.ObservedClock)
+                    and all(getattr(part, "clock", None) is clock
+                            for part in (journal, guard, rpc, read, getattr(rpc, "session", None)))):
+                # Every wall-clock read of a placement open is kept in its high-water mark (P106-R2-1): one observed
+                # clock, shared by the journal, the risk guard, the JSON-RPC and read clients and the session.
+                raise ConfigError("pilot_gateway_needs_one_observed_clock")
         self.config = config
         self.paths = paths
         self.mode = mode
@@ -428,6 +435,8 @@ class OrderGateway:
         # observed (every own event's recorded_at included, P106-1) and the bet id its remainder cancel may name.
         self._pilot = pilot
         self._reset_pilot_open()
+        if pilot is not None:
+            clock.set_observer(self._pilot_clock_read)
 
     # --- journal plumbing ----------------------------------------------------------------------
 
@@ -699,6 +708,8 @@ class OrderGateway:
             raise OrderRefused("live_replace_removed_v1")          # D2: before any check, read, lock or login
         if command in KILL_COMMANDS:
             return self._open_kill(command, confirm_token, bet_angel_paused)
+        if command == "pilot-place":
+            self._pilot_seen_ns = 0         # the open's high-water mark: every wall-clock read from here (P106-R2-1)
         now_ns = self.clock.time_ns()
         journal_state = self._fold_or_none()
         static = static_arming(self.config, command=command, paths=self.paths, cli_mode="live",
@@ -1009,7 +1020,9 @@ class OrderGateway:
                 return "book_stale_before_send"
             if pilot is None:
                 return None
-            return pilot_gate.first_byte_refusal(pilot, wall_ns=self.clock.time_ns(),
+            wall_ns = self.clock.time_ns()
+            seen_ns = max(pilot["seen_ns"], self._pilot_seen_ns or 0)          # every read so far, this one included
+            return pilot_gate.first_byte_refusal(dict(pilot, seen_ns=seen_ns), wall_ns=wall_ns,
                                                  mono_ns=self.clock.monotonic_ns(), head=head)
 
         return send_by, gate
@@ -1403,9 +1416,17 @@ class OrderGateway:
 
     def _pilot_now(self):
         """The wall clock raised to the largest time this pilot-place open has observed (note §5 check 4; P106-1,
-        P106-C2): every own event's recorded_at, every clock read of the open and both ends of both raw reads. It
-        never goes back within the open, so a session end the open has seen stays seen when the clock returns."""
+        P106-C2, P106-R2-1): every wall reading through the shared observed clock (the gateway's own, its journal's,
+        clients', session's and guard's, and its helpers'), every own event's recorded_at and both ends of both raw
+        reads. It never goes back within the open, so a session end the open has seen stays seen when the clock
+        returns; every authority check of the open uses it."""
         return self._pilot_observe(self.clock.time_ns())
+
+    def _pilot_clock_read(self, value):
+        """The shared observed clock's report of one wall reading (nanoseconds, or utc_now's text): kept while a
+        pilot-place open is in progress, and ignored, unparsed, outside one."""
+        if self._pilot_seen_ns is not None:
+            self._pilot_seen_ns = max(self._pilot_seen_ns, value if type(value) is int else parse_utc_ns(value))
 
     def _pilot_observe(self, *times_ns):
         for value in times_ns:

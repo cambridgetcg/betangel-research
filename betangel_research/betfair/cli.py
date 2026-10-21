@@ -142,7 +142,21 @@ HELP = {
             "Angel's orders",
     "resume": "Clear the HALT after the kill file was removed by hand; live needs --mode live --confirm-live TOKEN, "
               "then typing RESUME LIVE",
+    # RS-19's registered pilot executor (P1-08; docs/betfair-pilot-engineering.md): Yu's commands, at the Air.
+    "pilot-register": "Live only: Yu registers the frozen RS-19 pilot contract by typing REGISTER PILOT; writes the "
+                      "receipt and one note; sends no order; needs A2, A11 and A13",
+    "pilot-run": "Live only: one attended RS-19 pilot session after Yu types PILOT ARM; --until HHMM is required; "
+                 "pilot orders go through the gateway only; never unattended",
+    "pilot-end-session": "Live only: crash recovery after pilot-run died; restricts and prints only (no typed line, "
+                         "login, order or release)",
+    "pilot-ack": "Live only: Yu acknowledges one pilot review stop by typing PILOT ACK; a written cause for any stop "
+                 "but a pause; sends no order",
+    "pilot-gap-resolved": "Live only: Yu records one pilot ledger gap resolved, with a written cause, by typing PILOT "
+                          "GAP RESOLVED; never acknowledges; sends no order",
+    "pilot-capture": "Live only: Yu's read-only pilot capture (C, the CLOSED book, L) after a session; needs a "
+                     "terminal, never scheduled; --continue-admission N continues a retained admission",
 }
+PILOT_SETTLE_ADVICE = "wait until pilot-run has exited; after a crash run pilot-end-session first"
 
 
 class _Done(Exception):
@@ -413,6 +427,23 @@ def build_parser():
     resume = add("resume")
     resume.add_argument("--mode", choices=["paper", "live"], default="paper")
     resume.add_argument("--confirm-live", dest="confirm_live")
+    # P1-08 (live only: --mode keeps every parser's paper default, and _pilot_command refuses anything but live).
+    # Only pilot-capture accepts --continue-admission; the pilot-run parser has none (§4.3).
+    for name in ("pilot-register", "pilot-run", "pilot-ack", "pilot-gap-resolved", "pilot-capture",
+                 "pilot-end-session"):
+        sub = add(name)
+        sub.add_argument("--mode", choices=["paper", "live"], default="paper")
+        if name != "pilot-end-session":
+            sub.add_argument("--confirm-live", dest="confirm_live")
+        if name in ("pilot-run", "pilot-capture"):
+            sub.add_argument("--bet-angel-paused", action="store_true", dest="bet_angel_paused")
+        if name == "pilot-run":
+            sub.add_argument("--until", required=True, help="UTC HHMM: the session's end, typed in the ARM line too")
+        if name in ("pilot-ack", "pilot-gap-resolved"):
+            sub.add_argument("--stop-id", dest="stop_id", required=True)
+            sub.add_argument("--cause-file", dest="cause_file", required=name == "pilot-gap-resolved")
+        if name == "pilot-capture":
+            sub.add_argument("--continue-admission", dest="continue_admission", type=int)
     return parser
 
 
@@ -1399,10 +1430,32 @@ def _unresolved_line(item, flag=""):
     return f"{head}; run reconcile --mode live{flag} again later, and check the Betfair website or Bet Angel"
 
 
+def _settle_during_pilot_session(args, ctx):
+    """P1-08 §4.13, before the gateway: only when the live journal holds a pilot session_start, True when
+    pilot_run.pilot_session_live says a second process must not settle (no ownership here, ticket None)."""
+    from . import pilot_gate, pilot_run
+    paths = _paths(args, ctx)
+    path = paths.journal_path("live")
+    if not path.exists():
+        return False
+    read = pilot_run.pilot_events_after(path, 0)
+    if not read["readable"] or pilot_gate.latest_note(read["events"], "session_start") is None:
+        return False
+    config = _config(args, paths)
+    injected = ctx.deps.get("pilot_context")
+    return pilot_run.pilot_session_live(paths, config, read["events"], ctx.clock.time_ns(), ticket=None,
+                                        contract_reader=injected.read_contract if injected is not None else None,
+                                        clock=ctx.clock)
+
+
 def cmd_settle_market(args, ctx):
     """Live only: the operator settles one CLOSED market by hand (amendment A3, D3). The banner and the
     typed line SETTLE MARKET <M> come before the lock; a settle_market_* refusal prints its JSON and the
-    advice, exit 2, and nothing is settled."""
+    advice, exit 2, and nothing is settled. While an RS-19 pilot session is live (P1-08 §4.13) it refuses
+    pilot_session_armed, here before the gateway and again under its lock."""
+    if _settle_during_pilot_session(args, ctx):
+        raise _Done(2, f"Betfair order refused: pilot_session_armed; {PILOT_SETTLE_ADVICE}")
+
     def confirm(gateway):
         gateway.preconfirm("settle-market", market_id=args.market)
 
@@ -1410,6 +1463,8 @@ def cmd_settle_market(args, ctx):
         with _gateway(args, ctx, command="settle-market", mode="live", confirm=confirm) as (gateway, config, paths):
             result = gateway.settle_market(args.market, confirm_token=args.confirm_live)
     except OrderRefused as exc:
+        if exc.rule == "pilot_session_armed":
+            raise _Done(2, f"Betfair order refused: pilot_session_armed; {PILOT_SETTLE_ADVICE}") from None
         if not exc.rule.startswith("settle_market_"):
             raise
         ctx.print_json({"mode": "live", "status": "refused", "market_id": args.market, "rule": exc.rule,
@@ -1730,7 +1785,105 @@ def cmd_resume(args, ctx):
     return 0
 
 
+# --- RS-19 pilot executor commands (P1-08) ------------------------------------------------------------------------
+
+
+def _pilot_read_session(args, ctx, paths, config, credentials):
+    """(session, ReadClient) on preloaded read credentials (pilot_run's scheduler and capture reads); never
+    _read_client, which reloads credentials from the Keychain every time (C20b). The caller logs it out."""
+    from .api import JsonRpcClient, ReadClient
+    from .auth import SessionManager
+    session = SessionManager(config, credentials, paths=paths, transport=ctx.http_transport, clock=ctx.clock,
+                             coexistence_ack=bool(getattr(args, "bet_angel_paused", False)))
+    rpc = JsonRpcClient(config, session, clock=ctx.clock)
+    read = ReadClient(rpc, paths=paths, clock=ctx.clock,
+                      catalogue_cache_max_age_s=config["read"]["catalogue_cache_max_age_s"])
+    return session, read
+
+
+def _pilot_factory(args, ctx, pilot_context):
+    """pilot_run's gateway factory (P1-08 §3.5): every gateway it opens (pilot-place, and the in-run settle-market)
+    gets a fresh ObservedClock shared by all its parts, the session's preloaded live_orders credentials, the
+    PilotContext and stop_requested; in_session_settle is set here only."""
+    from .pilot_gate import ObservedClock
+
+    @contextlib.contextmanager
+    def factory(command, *, credentials, stop, in_session_settle=False, confirm=None):
+        clock = ObservedClock(ctx.clock)
+        with _gateway(args, ctx, command=command, mode="live", confirm=confirm, clock=clock,
+                      credentials=credentials["live_orders"], pilot=pilot_context,
+                      in_session_settle=in_session_settle, stop_requested=lambda: stop.requested) as (gateway, _, _):
+            yield gateway
+
+    return factory
+
+
+def _pilot_env(args, ctx, *, best_effort=False):
+    """What pilot_run needs, built here so pilot_run never imports the gateway. best_effort (pilot-run) puts every
+    terminal write of the command, the gateway path's included, behind one best-effort writer (§4.1)."""
+    from types import SimpleNamespace
+    from . import admission, pilot_gate, pilot_run
+    paths = _paths(args, ctx)
+    if args.command in ("pilot-register", "pilot-run", "pilot-capture") and paths.profile != pilot_run.RECORDER_PROFILE:
+        raise _Done(2, "Betfair order refused: pilot_profile_not_recorder_profile")
+    config = _config(args, paths)
+    ctx.paused_flag = _paused_flag(config)
+    terminal = pilot_run.Terminal(ctx.out, ctx.err)
+    if best_effort:
+        ctx.out, ctx.err = terminal.stream("out"), terminal.stream("err")
+    pilot_context = ctx.deps.get("pilot_context") or pilot_gate.PilotContext(repo_root=pilot_gate.MODULE_ROOT)
+    env = SimpleNamespace(args=args, ctx=ctx, paths=paths, config=config, clock=ctx.clock, terminal=terminal,
+                          confirmer=ctx.live_confirmer(), keychain_runner=ctx.keychain_runner, environ=dict(ctx.env),
+                          pilot_context=pilot_context, paused_flag=ctx.paused_flag, signal_stop=SignalStop,
+                          processes=ctx.deps.get("processes") or admission.SYSTEM_PROCESSES)
+    env.gateway_factory = _pilot_factory(args, ctx, pilot_context)
+    env.read_session_factory = lambda credentials: _pilot_read_session(args, ctx, paths, config, credentials)
+    return env
+
+
+def _pilot_command(args, ctx, name, *, best_effort=False, logs_in=False):
+    from . import pilot_run
+    if args.mode != "live":                     # before any path, config, journal, Keychain or terminal use
+        raise _Done(2, "Betfair order refused: pilot_live_only (the pilot commands run with --mode live only)")
+    env = _pilot_env(args, ctx, best_effort=best_effort)
+    if logs_in:
+        _coexistence(env.config, args)
+    try:
+        return getattr(pilot_run, name)(env)
+    except pilot_run.Refused as exc:
+        env.terminal.lines(exc.lines)
+        raise _Done(2, f"Betfair order refused: {exc.code}") from None
+
+
+def cmd_pilot_register(args, ctx):
+    return _pilot_command(args, ctx, "register")
+
+
+def cmd_pilot_run(args, ctx):
+    """pilot-run: exit 0 after a clean end that released; 5 after any other end of an armed session (the lines say
+    what to do, handoffs first); 2 for a refusal before the session_start (nothing was sent)."""
+    return _pilot_command(args, ctx, "run", best_effort=True, logs_in=True)
+
+
+def cmd_pilot_end_session(args, ctx):
+    return _pilot_command(args, ctx, "end_session", best_effort=True)
+
+
+def cmd_pilot_ack(args, ctx):
+    return _pilot_command(args, ctx, "ack")
+
+
+def cmd_pilot_gap_resolved(args, ctx):
+    return _pilot_command(args, ctx, "gap_resolved")
+
+
+def cmd_pilot_capture(args, ctx):
+    return _pilot_command(args, ctx, "capture_command", logs_in=True)
+
+
 COMMANDS = {
+    "pilot-register": cmd_pilot_register, "pilot-run": cmd_pilot_run, "pilot-end-session": cmd_pilot_end_session,
+    "pilot-ack": cmd_pilot_ack, "pilot-gap-resolved": cmd_pilot_gap_resolved, "pilot-capture": cmd_pilot_capture,
     "init-config": cmd_init_config, "doctor": cmd_doctor, "keychain-setup": cmd_keychain_setup,
     "login-reset": cmd_login_reset, "event-types": cmd_event_types, "catalogue": cmd_catalogue, "book": cmd_book,
     "orders-current": cmd_orders_current, "orders-cleared": cmd_orders_cleared, "funds": cmd_funds,

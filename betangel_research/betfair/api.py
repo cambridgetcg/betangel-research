@@ -46,8 +46,12 @@ MARKET_PROJECTIONS = frozenset({"COMPETITION", "EVENT", "EVENT_TYPE", "MARKET_ST
 SNAPSHOT_PROJECTIONS = ("MARKET_DESCRIPTION", "RUNNER_DESCRIPTION", "EVENT_TYPE", "MARKET_START_TIME")
 # The pilot decision's catalogue row (engineering note §4 step 2): EVENT carries event.countryCode; weight 1.
 PILOT_ROW_PROJECTIONS = ("EVENT", "EVENT_TYPE", "MARKET_DESCRIPTION", "MARKET_START_TIME")
-# The only methods call_raw sends: the pilot's one catalogue row and one decision book (P1-06 §5.1).
-RAW_METHODS = (CATALOGUE_METHOD, BOOK_METHOD)
+# The only methods call_raw sends: the pilot's one catalogue row and one decision book (P1-06 §5.1), on the live key;
+# and, for the pilot's capture reads (P1-08 §4.7, Q7: C, the CLOSED SP_TRADED book and L), the raw listMarketBook,
+# listCurrentOrders and listClearedOrders on the read session's key. Reads only: no order method is ever raw.
+RAW_METHODS = (CATALOGUE_METHOD, BOOK_METHOD, CURRENT_ORDERS_METHOD, CLEARED_ORDERS_METHOD)
+DECISION_RAW_METHODS = (CATALOGUE_METHOD, BOOK_METHOD)
+CAPTURE_RAW_METHODS = (BOOK_METHOD, CURRENT_ORDERS_METHOD, CLEARED_ORDERS_METHOD)
 MATCH_PROJECTIONS = frozenset({"NO_ROLLUP", "ROLLED_UP_BY_PRICE", "ROLLED_UP_BY_AVG_PRICE"})
 MAX_BEST_PRICES_DEPTH = 10
 FUNDS_KEYS = ("availableToBetBalance", "exposure", "retainedCommission", "exposureLimit", "discountRate",
@@ -366,18 +370,20 @@ class JsonRpcClient:
                     raise
             self.clock.sleep(self._backoff[attempts - 1])
 
-    def call_raw(self, method, params, *, deadline_s):
+    def call_raw(self, method, params, *, deadline_s, capture=False):
         """One raw read for the pilot decision (P1-06 §5.1): exactly one transport attempt (idempotent False), no
         retry, no relogin and no decoding. Returns {"method", "params", "status", "body", "error",
         "sent_wall_ns", "sent_monotonic_ns", "received_wall_ns", "received_monotonic_ns"}: body is the
         transport's response bytes unchanged (a non-200 status or an error envelope included), or None with
         error the TransportError's code. Both clocks are read after the throttle and the session token, right
-        before the request, and again when it returns (Q10). The live app key only."""
-        if method not in RAW_METHODS:
-            raise ValueError("call_raw() sends the pilot's catalogue row and decision book only")
+        before the request, and again when it returns (Q10). A decision read uses the live app key only.
+        capture (P1-08 §4.7, Q7): one of the pilot's capture reads (a book, current orders, cleared orders), on
+        whatever key the read session holds (read.app_key_slot, delayed by default); it is never decision evidence."""
+        if method not in RAW_METHODS or method not in (CAPTURE_RAW_METHODS if capture else DECISION_RAW_METHODS):
+            raise ValueError("call_raw() sends the pilot's catalogue row, decision book and capture reads only")
         if not isinstance(params, dict):
             raise ValueError("params must be an object")
-        if self.app_key_slot != "live":
+        if not capture and self.app_key_slot != "live":
             raise OrderRefused("pilot_read_requires_live_app_key")
         url, _ = self._endpoint(method)
         self._throttle(method, params)
@@ -712,6 +718,36 @@ class ReadClient:
             raise ValueError("market_id must look like 1.<digits>")
         params = {"marketIds": [market_id], "priceProjection": {"priceData": ["EX_BEST_OFFERS"]}}
         return self.rpc.call_raw(BOOK_METHOD, params, deadline_s=deadline_s)
+
+    def raw_current_order(self, bet_id, *, deadline_s):
+        """The pilot's C capture read (P1-08 §4.7) as call_raw returns it: listCurrentOrders for one betId, every
+        order projection, one page. Raw bytes for pilot.extract_current_row; nothing is scrubbed or cached."""
+        if not isinstance(bet_id, str) or not _BET_ID_RE.fullmatch(bet_id):
+            raise ValueError("bet_id must be 1 to 20 digits")
+        params = {"betIds": [bet_id], "orderProjection": "ALL", "orderBy": "BY_PLACE_TIME",
+                  "sortDir": "EARLIEST_TO_LATEST", "fromRecord": 0, "recordCount": 1000}
+        return self.rpc.call_raw(CURRENT_ORDERS_METHOD, params, deadline_s=deadline_s, capture=True)
+
+    def raw_cleared_order(self, bet_id, *, settled_from_utc, bet_status="SETTLED", deadline_s):
+        """The pilot's L capture read (P1-08 §4.7) as call_raw returns it: listClearedOrders for one betId, settled
+        from settled_from_utc, groupBy BET for SETTLED. Raw bytes for pilot.extract_cleared_row."""
+        if not isinstance(bet_id, str) or not _BET_ID_RE.fullmatch(bet_id):
+            raise ValueError("bet_id must be 1 to 20 digits")
+        _choice(bet_status, BET_STATUSES, "bet_status")
+        params = {"betStatus": bet_status, "settledDateRange": {"from": _wire_time(settled_from_utc,
+                                                                                    "settled_from_utc")},
+                  "betIds": [bet_id], "fromRecord": 0, "recordCount": 1000}
+        if bet_status == "SETTLED":
+            params["groupBy"] = "BET"
+        return self.rpc.call_raw(CLEARED_ORDERS_METHOD, params, deadline_s=deadline_s, capture=True)
+
+    def raw_closed_book(self, market_id, *, deadline_s):
+        """The pilot's CLOSED book read (P1-08 §4.7; note §11): raw listMarketBook with SP_TRADED for one market, for
+        pilot.extract_closed_book (the normalised snapshot drops sp)."""
+        if not isinstance(market_id, str) or not _MARKET_ID.fullmatch(market_id):
+            raise ValueError("market_id must look like 1.<digits>")
+        params = {"marketIds": [market_id], "priceProjection": {"priceData": ["SP_TRADED"]}}
+        return self.rpc.call_raw(BOOK_METHOD, params, deadline_s=deadline_s, capture=True)
 
     def store_catalogue_row(self, market_id, row):
         """Refresh the catalogue cache from a row the caller fetched (P1-06 Q9: the pilot's fresh row, so the send

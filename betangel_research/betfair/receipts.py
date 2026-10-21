@@ -146,6 +146,26 @@ def git_state(repo_root, *, runner=subprocess.run):
     return state
 
 
+def git_identity(repo_root, *, runner=subprocess.run):
+    """{"commit", "tree", "dirty"} for the pilot's PA2 (P1-06): `git rev-parse HEAD HEAD^{tree}` in one call, then
+    `git status --porcelain --untracked-files=normal` (an untracked file is dirty). None for any value git cannot
+    give; the caller refuses an unknown identity."""
+    state = {"commit": None, "tree": None, "dirty": None}
+    try:
+        parsed = runner(["git", "rev-parse", "HEAD", "HEAD^{tree}"], cwd=str(repo_root), capture_output=True,
+                        text=True, timeout=10, env=_git_env())
+        lines = parsed.stdout.split() if parsed.returncode == 0 and isinstance(parsed.stdout, str) else []
+        if len(lines) == 2:
+            state["commit"], state["tree"] = lines
+        dirty = runner(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=str(repo_root),
+                       capture_output=True, text=True, timeout=10, env=_git_env())
+        if dirty.returncode == 0 and isinstance(dirty.stdout, str):
+            state["dirty"] = bool(dirty.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return state
+
+
 def full_fsync(fd):
     """F_FULLFSYNC where available (macOS), else fsync. Filesystems that refuse it fall back to fsync."""
     if hasattr(fcntl, "F_FULLFSYNC"):
@@ -182,6 +202,34 @@ def atomic_write_json(path, value, *, mode=0o600):
     path = Path(path)
     refuse_forbidden(value, where=path.name)
     data = (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+    assert_clean(data, where=path.name)
+    tmp = path.parent / f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        try:
+            os.fchmod(fd, mode)
+            _write_all(fd, data)
+            full_fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(path.parent)
+    return hashlib.sha256(data).hexdigest()
+
+
+def atomic_write_bytes(path, data, *, mode=0o600):
+    """Write exact bytes atomically and durably (the pilot's raw evidence, P1-06 §5.3); returns their sha256.
+    The bytes are checked for registered secrets (assert_clean) and never scrubbed: scrubbing would change the
+    digest the journal binds."""
+    path = Path(path)
+    if not isinstance(data, bytes):
+        raise TypeError("atomic_write_bytes needs bytes")
     assert_clean(data, where=path.name)
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)

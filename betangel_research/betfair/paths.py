@@ -94,6 +94,8 @@ class StatePaths:
         self.admission_generation_file = self.recordings_dir / "admission-generation.json"
         self.recorder_pid_file = self.recordings_dir / "recorder.pid"
         self.recordings_index_dir = self.recordings_dir / "index"
+        # RS-19 pilot evidence and registration receipts; made lazily (0700) by their writers, never by ensure().
+        self.pilot_dir = self.profile_dir / "pilot"
 
     def journal_path(self, mode):
         if mode not in JOURNAL_MODES:

@@ -94,7 +94,8 @@ CLOCK_REGRESSION_NS = 5_000_000_000
 DAY_NS = 86_400_000_000_000
 INTENT_PAYLOAD_KEYS = frozenset({"order", "customer_strategy_ref", "is_probe", "parent_ref", "provisional_child",
                                  "source"})
-INTENT_SOURCES = ("cli_manual", "api", "paper_replay")
+# "pilot": the registered pilot executor's orders (RS-19, engineering note §2 E3), live journals only (append).
+INTENT_SOURCES = ("cli_manual", "api", "paper_replay", "pilot")
 EVENT_COLUMNS = ("seq", "event_id", "recorded_at", "monotonic_ns", "kind", "mode", "intent_id",
                  "customer_order_ref", "customer_ref", "bet_id", "market_id", "state_after", "payload_json",
                  "prev_sha256", "event_sha256")
@@ -441,6 +442,18 @@ class OrderJournal:
             return {}
         return {"genesis_sha256": first[0], "seq": last[0], "last_sha256": last[1]}
 
+    def head_fresh(self):
+        """{"seq", "last_sha256"} of the committed head ({} when empty), read on a separate short-lived
+        read-only connection (P1-06 Q3): this object's own connection can return a stale head while one of its
+        events() generators is still open. Every read error propagates; the first-byte gate refuses on it."""
+        db = sqlite3.connect(self.path.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None,
+                             timeout=self._busy_timeout_ms / 1000)
+        try:
+            row = db.execute("SELECT seq, event_sha256 FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+        finally:
+            db.close()
+        return {} if row is None else {"seq": row[0], "last_sha256": row[1]}
+
     def fold(self, *, now_ns, submitting_as_unknown=True):
         return fold_events(list(self.events()), mode=self.mode, now_ns=now_ns,
                            submitting_as_unknown=submitting_as_unknown)
@@ -481,14 +494,19 @@ class OrderJournal:
         return folder
 
     def append(self, kind, payload, *, intent_id=None, customer_order_ref=None, customer_ref=None, bet_id=None,
-               market_id=None, state_after=None, expect_head=None):
+               market_id=None, state_after=None, expect_head=None, before_ns=None):
         """Commit one event durably and return it (with seq and event_sha256).
 
         The event is first applied to a copy of the committed fold; if that raises, nothing is
         written and the JournalError propagates (see the module docstring). expect_head (an
         anchor() dict, {} for an empty journal) makes the append conditional: JournalError
         journal_head_moved unless the head inside the write transaction is exactly that.
+        before_ns (the pilot's authority boundary, P1-06 P106-2) makes it conditional on time as well:
+        JournalError journal_append_too_late unless the event's own recorded_at, and the wall clock read
+        again inside the write transaction, are both before it. Without it nothing changes.
         """
+        if before_ns is not None and type(before_ns) is not int:
+            raise JournalError("before_ns_invalid")
         expected = None
         if expect_head is not None:
             if not isinstance(expect_head, dict):
@@ -507,6 +525,8 @@ class OrderJournal:
                                                        market_id=market_id, state_after=state_after)
         if "paper_state" in payload and self.mode != "paper":
             raise JournalError("paper_state_in_live_journal")
+        if kind == "intent" and payload.get("source") == "pilot" and self.mode != "live":
+            raise JournalError("pilot_intent_in_paper_journal")
         recorded_at = self.clock.utc_now()
         monotonic_ns = self.clock.monotonic_ns()
         db = self._db
@@ -516,6 +536,9 @@ class OrderJournal:
             head = db.execute("SELECT seq, event_sha256 FROM events ORDER BY seq DESC LIMIT 1").fetchone()
             if expected is not None and (tuple(head) if head else (0, GENESIS_PREV)) != expected:
                 raise JournalError("journal_head_moved")
+            if before_ns is not None and (parse_utc_ns(recorded_at) >= before_ns
+                                          or self.clock.time_ns() >= before_ns):
+                raise JournalError("journal_append_too_late")
             seq, previous = (head[0] + 1, head[1]) if head else (1, GENESIS_PREV)
             event = {"seq": seq, "event_id": "ev-" + secrets.token_hex(16), "recorded_at": recorded_at,
                      "monotonic_ns": monotonic_ns, "kind": kind, "mode": self.mode, **columns,

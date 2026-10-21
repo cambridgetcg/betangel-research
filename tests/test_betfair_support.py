@@ -213,6 +213,26 @@ class FakeKeychainRunner:
         return done(1, err=PLANTED_SECRET.encode())
 
 
+class Raw(str):
+    """Number text written into a JSON body exactly as given (3.444, 10.000000000000002, NaN)."""
+
+
+def dumps(value):
+    """JSON text with every Raw value written as given, so a body can carry exact Betfair number text."""
+    if isinstance(value, Raw):
+        return str(value)
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(k) + ":" + dumps(v) for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(dumps(v) for v in value) + "]"
+    return json.dumps(value)
+
+
+def rpc(*items, rpc_id=1):
+    """The exact bytes of one JSON-RPC result envelope listing items."""
+    return dumps({"jsonrpc": "2.0", "result": list(items), "id": rpc_id}).encode()
+
+
 def json_body(value):
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
 

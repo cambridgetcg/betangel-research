@@ -26,7 +26,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 from .capability import _mint
-from .config import money_pence
+from .config import money_pence, order_strategy_ref, pilot_enabled
 from .constants import (ABSOLUTE_CEILINGS, BETTING_METHOD_PREFIX, CEILING_PATHS, CUSTOMER_ORDER_REF_PATTERN,
                         CUSTOMER_REF_PATTERN)
 from .errors import ConfigError, OrderRefused
@@ -431,7 +431,7 @@ class RiskGuard:
         return detail
 
     def _decide(self, action, market_id, failures, *, inputs, worst_case, now_ns, detail, instructions,
-                market_version=None, customer_ref=None, customer_order_refs=None, probe=False):
+                market_version=None, customer_ref=None, customer_order_refs=None, probe=False, extra=None):
         order = {name: rank for rank, name in enumerate(RULE_ORDER)}
         failures = sorted(failures, key=lambda f: order[f["rule"].split(":", 1)[0]])
         decision = {
@@ -443,6 +443,7 @@ class RiskGuard:
             "instructions": instructions, "market_version": market_version, "customer_ref": customer_ref,
             "customer_order_refs": customer_order_refs, "probe": probe,
             "evaluated_monotonic_ns": inputs.get("now_monotonic_ns")}
+        decision.update(extra or {})
         decision = copy.deepcopy(decision)
         if decision["approved"]:
             self._approved[decision["decision_id"]] = canonical_sha256(decision)
@@ -461,13 +462,34 @@ class RiskGuard:
 
     def evaluate_place(self, market_id, instructions, *, book, state, arming, funds=None, now_ns, probe=False,
                        now_monotonic_ns=None, kill_engaged=None, customer_ref=None, customer_order_refs=None,
-                       funds_checked_at=None):
+                       funds_checked_at=None, source=None, pilot_binding=None):
+        """R1-R12 and V0-V14/V9b for one place request -> the decision.
+
+        source and pilot_binding (P1-06): under a pilot-enabled config (orders.pilot) the decision binds the
+        customerStrategyRef its source carries (config.order_strategy_ref: the pilot's for source "pilot", the
+        fixed manual ref otherwise) into its decision_id and its body check (_params_match). pilot_binding,
+        for source "pilot" only, is {"record_sha256", "contract_sha256"}: the PLACE record's digest and the
+        contract's, bound into decision_id and carried as the decision's pilot_record_sha256 (note §4,
+        "Binding"); a malformed one is a programming error (ValueError). Without either, decisions and their
+        decision_id are exactly as before."""
         if type(now_ns) is not int:
             raise ValueError("now_ns must be an integer")
+        if (source == "pilot") != (pilot_binding is not None):
+            raise ValueError("pilot_binding is required for source pilot and only for it")
+        if pilot_binding is not None and (
+                not isinstance(pilot_binding, dict) or set(pilot_binding) != {"record_sha256", "contract_sha256"}
+                or not all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in pilot_binding.values())):
+            raise ValueError("pilot_binding must be {record_sha256, contract_sha256} as sha256 hex")
         inputs = {"market_id": market_id, "instructions": instructions, "book": book, "state": state,
                   "arming": arming, "funds": funds, "now_ns": now_ns, "probe": probe,
                   "now_monotonic_ns": now_monotonic_ns, "kill_engaged": kill_engaged, "customer_ref": customer_ref,
                   "customer_order_refs": customer_order_refs, "funds_checked_at": funds_checked_at}
+        extra = {}
+        if pilot_enabled(self.config):
+            extra["customer_strategy_ref"] = inputs["customer_strategy_ref"] = order_strategy_ref(self.config, source)
+        if pilot_binding is not None:
+            inputs["pilot_binding"] = dict(pilot_binding)
+            extra["pilot_record_sha256"] = pilot_binding["record_sha256"]
         if now_monotonic_ns is None and self.mode == "live":
             now_monotonic_ns = self.clock.monotonic_ns()
             inputs["now_monotonic_ns"] = now_monotonic_ns
@@ -501,7 +523,27 @@ class RiskGuard:
                             detail=detail, instructions=copy.deepcopy([ins for _, ins in new]),
                             market_version=version, customer_ref=customer_ref,
                             customer_order_refs=list(customer_order_refs) if customer_order_refs is not None else None,
-                            probe=bool(probe))
+                            probe=bool(probe), extra=extra)
+
+    def evaluate_pilot_reservation(self, market_id, *, state, now_ns, size_p, kill_engaged=None):
+        """P1-06 critique 1: the rules the journal already predicts, checked before a pilot reservation takes a
+        market (and, through its PLACE record, a lifetime slot): R1 (halted, KILL, clock regression), R3 (an
+        unresolved order anywhere), R6 (the minute, hour and day windows), R8 and R9 (market and total worst case)
+        and R10 (the daily loss budget), for one more size_p BACK counted at its full worst case. The guard's own
+        rule functions; [] or the failures in RULE_ORDER. evaluate_place still runs every rule at the decision."""
+        if type(now_ns) is not int or type(size_p) is not int or size_p <= 0:
+            raise ValueError("now_ns and size_p must be integers")
+        failures = []
+        self._r1(failures, state, kill_engaged)
+        self._r3(failures, state, market_id)
+        self._r6_r7(failures, state, now_ns, 1)
+        # A BACK loses its whole stake in every outcome but its own, whatever its price.
+        back = {"selection_id": 1, "handicap": 0, "side": "BACK", "price_h": 101, "size_p": size_p,
+                "persistence_type": "LAPSE"}
+        self._exposure_rules(failures, state, market_id, None, [([_pseudo_order(market_id, back, "pilot-new")], ())])
+        order = {name: rank for rank, name in enumerate(RULE_ORDER)}
+        kept = [f for f in failures if f["rule"] != "transactions_hour"]
+        return sorted(kept, key=lambda f: order[f["rule"]])
 
     def evaluate_replace(self, market_id, replaces, *, book, state, arming, funds=None, now_ns,
                          now_monotonic_ns=None, kill_engaged=None, customer_ref=None, funds_checked_at=None):
@@ -698,7 +740,9 @@ def _params_match(decision, params, config):
     if action == "place":
         if set(params) != {"marketId", "customerRef", "customerStrategyRef", "marketVersion", "instructions"}:
             return False
-        if params["customerStrategyRef"] != config["orders"]["customer_strategy_ref"]:
+        # The ref the decision bound for its source (P1-06 critique 13), else the config's as before.
+        if params["customerStrategyRef"] != decision.get("customer_strategy_ref",
+                                                          config["orders"]["customer_strategy_ref"]):
             return False
         refs = decision["customer_order_refs"]
         for index, (wire, approved) in enumerate(zip(sent, instructions)):

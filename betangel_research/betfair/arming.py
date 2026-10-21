@@ -50,6 +50,8 @@ _OPERATOR_TYPED = tuple(sorted(set(_LOGIN_ONLY) | {"A1", "A2", "A11"}, key=CHECK
 # no A7, so it runs while halted or killed (it sends no order).
 COMMAND_CHECKS = {
     "place": CHECK_IDS,
+    # RS-19's registered pilot executor: placement only (engineering note §8); its cancels use the cancel set.
+    "pilot-place": CHECK_IDS,
     "replace": CHECK_IDS,
     "live-probe": CHECK_IDS[:18],
     "cancel": _LOGIN_ONLY,

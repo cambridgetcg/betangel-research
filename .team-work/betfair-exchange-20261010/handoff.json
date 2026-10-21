@@ -189,7 +189,8 @@
         "- [Betfair 落單路徑：paper 預設、live 閘門、對數同 kill switch](docs/betfair-order-path.md)",
         "- [Betfair 事實登記：每條依賴嘅 API 事實、證據等級同來源](docs/betfair-facts.md)",
         "- [Betfair client setup report：離線測試、限制同 merge gate](reports/betfair-setup-2026-10-10.md)",
-        "- [Betfair RS-19 pilot policy（proposed）：attended pilot executor 嘅例外、閘門同批准次序](docs/betfair-pilot-policy.md)",
+        "- [Betfair RS-19（proposed）：一頁原則、Yu 嘅錢數同三次同意](docs/betfair-pilot-policy.md)",
+        "- [Betfair RS-19 engineering note（proposed）：pilot executor 點樣守住 RS-19](docs/betfair-pilot-engineering.md)",
         "- [Betfair Pilot 1 plan（proposed）：P1-FAV-T5、樣本同判決、工作同時間表](docs/betfair-pilot-1-plan.md)"
       ],
       "local_verification_heading": "## Local verification",

@@ -2027,8 +2027,8 @@ class LiveGatewayTests(unittest.TestCase):
         self.assertFalse(env3.journal.fold(now_ns=env3.clock.time_ns())["ref_roundtrip_verified"])
 
     def test_probe_looks_up_by_ref_before_the_cancel(self):
-        """Regression (first live probe, 2026-10-21): Betfair drops a fully cancelled bet with nothing matched from
-        listCurrentOrders at once, so the ref lookup must come before the cancel or A19 can never be set."""
+        """Regression (first live probe, 2026-10-21): the fully unmatched probe bet, once cancelled, was absent from
+        later listCurrentOrders reads, so the ref lookup comes before the cancel; modelled by the fake."""
         env = gw.build_live_gateway(self, roundtrip=False)
         env.exchange.hide_cancelled_unmatched = True
         gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
@@ -2059,7 +2059,12 @@ class LiveGatewayTests(unittest.TestCase):
         self.assertFalse(result["ref_roundtrip_verified"])
         self.assertEqual(result["cancel"]["orders"][0]["state"], "EXECUTION_COMPLETE")
         names = [name for name, _ in env.exchange.timeline]
-        self.assertLess(names.index("placeOrders"), names.index("cancelOrders"))
+        ref = result["place"]["orders"][0]["customer_order_ref"]
+        by_ref = [i for i, (name, keys) in enumerate(env.exchange.timeline)
+                  if name == "listCurrentOrders" and keys == (ref,)]
+        # The failed lookup attempts all come before the cancel.
+        self.assertTrue(by_ref and by_ref[0] < names.index("cancelOrders"))
+        self.assertLess(names.index("placeOrders"), by_ref[0])
         self.assertNotIn("ref_roundtrip_verified", kinds(env.journal))
         probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
         self.assertIsNotNone(probe_result["current_read_error"])
@@ -2068,16 +2073,93 @@ class LiveGatewayTests(unittest.TestCase):
         gw.open_live(self, env2, "live-probe", selection_id=gw.SELECTION)
         original = env2.exchange.current
 
+        calls = []
+
         def exploding(**kw):
             if kw.get("customer_order_refs"):
-                raise RuntimeError("lookup exploded")
+                calls.append(len(env2.exchange.timeline))
+                if len(calls) == 1:
+                    raise RuntimeError("lookup exploded")
             return original(**kw)
         env2.exchange.current = exploding
         with self.assertRaises(RuntimeError):
             env2.gateway.probe("1.1", gw.SELECTION, confirm_token=env2.token)
-        self.assertIn("cancelOrders", [name for name, _ in env2.exchange.timeline])
+        names2 = [name for name, _ in env2.exchange.timeline]
+        # Only the first (pre-cancel) lookup raised, and the cancel still followed it.
+        self.assertEqual(len(calls), 1)
+        self.assertIn("cancelOrders", names2)
+        self.assertLessEqual(calls[0], names2.index("cancelOrders"))
         orders_state = env2.journal.fold(now_ns=env2.clock.time_ns())["orders"]
         self.assertTrue(all(o["state"] != "EXECUTABLE" for o in orders_state.values()))
+
+    def test_probe_sets_a19_only_from_the_lookup_before_the_cancel(self):
+        # The lookup before the cancel misses; the read after the cancel would find the ref. No marker.
+        env = gw.build_live_gateway(self, roundtrip=False)
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        original = env.exchange.current
+        seen = []
+
+        def first_ref_read_empty(**kw):
+            if kw.get("customer_order_refs"):
+                seen.append(1)
+                if len(seen) == 1:
+                    return []
+            return original(**kw)
+        env.exchange.current = first_ref_read_empty
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        self.assertFalse(result["found_by_ref"])
+        self.assertFalse(result["ref_roundtrip_verified"])
+        self.assertNotIn("ref_roundtrip_verified", kinds(env.journal))
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertEqual((probe_result["current_count"], probe_result["current_after_cancel_count"]), (0, 1))
+        self.assertFalse(env.journal.fold(now_ns=env.clock.time_ns())["ref_roundtrip_verified"])
+
+    def test_probe_keeps_a_good_lookup_when_the_read_after_the_cancel_raises(self):
+        env = gw.build_live_gateway(self, roundtrip=False)
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        original = env.exchange.current
+        seen = []
+
+        def second_ref_read_explodes(**kw):
+            if kw.get("customer_order_refs"):
+                seen.append(1)
+                if len(seen) == 2:
+                    raise RuntimeError("after-cancel read exploded")
+            return original(**kw)
+        env.exchange.current = second_ref_read_explodes
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        self.assertTrue(result["ref_roundtrip_verified"])
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertEqual(probe_result["current_after_cancel_read_error"], "RuntimeError")
+        self.assertEqual(kinds(env.journal)[-2:], ["probe_result", "ref_roundtrip_verified"])
+
+    def test_probe_still_cancels_under_a_kill_engaged_during_the_lookup(self):
+        # A kill during the lookup whose sweep got there first: the probe's own cancel still goes out (it only
+        # reduces risk; a file-only KILL sweeps nothing), comes back UNKNOWN, and no further reads are made.
+        env = gw.build_live_gateway(self, roundtrip=False)
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        original = env.exchange.current
+
+        def kill_during_lookup(**kw):
+            items = original(**kw)
+            if kw.get("customer_order_refs"):
+                engage(env.paths, "operator kill", clock=env.clock)
+                for bet_id, order in list(env.exchange.orders.items()):
+                    if order["status"] == "EXECUTABLE":
+                        env.exchange._cancel_one(bet_id)       # the kill's sweep
+            return items
+        env.exchange.current = kill_during_lookup
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        names = [name for name, _ in env.exchange.timeline]
+        self.assertEqual(names.count("cancelOrders"), 1)
+        self.assertEqual(result["cancel"]["orders"][0]["state"], "UNKNOWN")
+        ref = result["place"]["orders"][0]["customer_order_ref"]
+        self.assertEqual(sum(1 for name, keys in env.exchange.timeline
+                             if name == "listCurrentOrders" and keys == (ref,)), 1)
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertTrue(probe_result["kill_engaged"])
+        self.assertEqual(probe_result["current_after_cancel_read_error"], "skipped_kill")
+        self.assertTrue(result["found_by_ref"])     # the lookup itself did round-trip the ref
 
     def test_env_none_reads_the_process_environment(self):
         env = self.env

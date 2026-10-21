@@ -95,8 +95,8 @@ class SimExchange:
         self.replace_handler = None
         self.read_failures = {}           # method name -> list of exceptions raised by the next calls
         self.calls = []
-        # Betfair drops a fully cancelled bet with nothing matched from listCurrentOrders at once (first live
-        # probe, 2026-10-21). Off by default, so older tests keep their model.
+        # Models the case seen in the first live probe (2026-10-21): a fully unmatched bet, once cancelled, was
+        # absent from later listCurrentOrders reads. Off by default, so older tests keep their model.
         self.hide_cancelled_unmatched = False
         self.timeline = []                # (operation, betIds or refs) in call order, reads and orders alike
 

@@ -150,7 +150,7 @@ Every test needs Yu's explicit consent, with Yu present at the terminal (facts.m
 
 ## Decided
 - Yu, 2026-10-21: the money numbers on RS-19, all as recommended: £2 a bet; at most 25 bets a day (5 until the first check); at most 495 in total; at most £20 open at once; a pause at −£150 and at each further −£150; a Betfair website loss limit of £50 a day. Yu kept the daily count for Pilot 1 because the test needs at least 15 different days.
-- Yu, 2026-10-21: the pause counts from £0, not from the best point reached, and there is no other loss stop; the 495 total bounds the worst case at −£990; as Yu put it, the most that can be lost is what Yu put in.
+- Yu, 2026-10-21: the pause counts from £0, not from the best point reached, and there is no other running-total loss threshold (the £50 daily code stop and the website limit remain); the 495 total bounds the worst case at −£990; as Yu put it, the most that can be lost is what Yu put in.
 - Yu, 2026-10-21: after a PASS, one replication at £2 a bet comes before any scaling up, and it may place more than 25 bets a day.
 - Chosen by the principles (the reasons for their numbers are in "Values and why"):
   1. Consents: the three on RS-19 (build, go live, each session).

@@ -108,7 +108,8 @@ HELP = {
                "a login; allowed while halted or killed; live cancels are full cancels (no --size-reduction); sent "
                "at once with no typed confirmation"),
     "replace": "Paper only: replace own paper bets at a new price; live replace was removed in v1",
-    "live-probe": "Live only: LAY 1.00 @ 1.01 cancelled at once (max loss 0.01) to verify order refs; needs every "
+    "live-probe": "Live only: LAY 1.00 @ 1.01, looked up by ref then cancelled at once (max loss 0.01), to verify "
+                  "order refs; needs every "
                   "arming condition except A19 and typing at a terminal; the replace step was removed with live "
                   "replace in v1",
     "paper-step": "Paper only: advance paper orders on a new book; never sends anything",

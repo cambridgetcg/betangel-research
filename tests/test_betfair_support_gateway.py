@@ -95,6 +95,10 @@ class SimExchange:
         self.replace_handler = None
         self.read_failures = {}           # method name -> list of exceptions raised by the next calls
         self.calls = []
+        # Betfair drops a fully cancelled bet with nothing matched from listCurrentOrders at once (first live
+        # probe, 2026-10-21). Off by default, so older tests keep their model.
+        self.hide_cancelled_unmatched = False
+        self.timeline = []                # (operation, betIds or refs) in call order, reads and orders alike
 
     # --- order book of our bets --------------------------------------------------------------
 
@@ -130,9 +134,13 @@ class SimExchange:
 
     def current(self, **kw):
         self.calls.append(("listCurrentOrders", copy.deepcopy(kw)))
+        self.timeline.append(("listCurrentOrders", tuple(kw.get("customer_order_refs") or ())))
         self._fail("listCurrentOrders")
         items = []
         for order in sorted(self.orders.values(), key=lambda o: o["betId"]):
+            if (self.hide_cancelled_unmatched and order["status"] == "EXECUTION_COMPLETE"
+                    and order["sizeMatched"] == 0 and order["sizeCancelled"] > 0):
+                continue
             if kw.get("bet_ids") is not None and order["betId"] not in kw["bet_ids"]:
                 continue
             if kw.get("market_ids") is not None and order["marketId"] not in kw["market_ids"]:
@@ -177,6 +185,7 @@ class SimExchange:
     # --- order operations --------------------------------------------------------------------
 
     def place(self, params):
+        self.timeline.append(("placeOrders", tuple(i.get("customerOrderRef") for i in params.get("instructions", []))))
         if self.place_handler is not None:
             return self.place_handler(params)
         reports = []
@@ -205,6 +214,7 @@ class SimExchange:
                 "sizeCancelled": amount, "cancelledDate": utc_ms_from_ns(self.clock.time_ns())}
 
     def cancel(self, params):
+        self.timeline.append(("cancelOrders", tuple(i.get("betId") for i in params.get("instructions", []))))
         if self.cancel_handler is not None:
             return self.cancel_handler(params)
         if "instructions" not in params:

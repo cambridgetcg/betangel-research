@@ -823,6 +823,10 @@ class OrderGateway:
         """The id of the pilot-place open in progress (P1-08 §3.5), or None outside one."""
         return self._open_id
 
+    def open_report(self):
+        """A copy of the report open() returned (armed, failures, and for pilot-place its open_id), or None."""
+        return None if self._report is None else dict(self._report)
+
     def _open_kill(self, command, confirm_token, bet_angel_paused):
         """open() for kill and kill-account (amendment A3, D4). .gateway.lock is never taken, so nothing
         waits for a holder. Static arming is A4 (kill-account adds A11) and the state-root part of A13.

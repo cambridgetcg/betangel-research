@@ -129,6 +129,8 @@ FORBIDDEN_BETFAIR = {
     "paths": "resolves the per-Mac state root (profiles, live journal, KILL) from the password database; runs git",
     "pilot_gate": ("the RS-19 pilot gateway adapter: runs git, reads the contract, receipt and state root, writes raw "
                    "evidence; the gateway's first-byte predicate and latch table"),
+    "pilot_run": ("the RS-19 pilot executor: typed lines, the live journal, the recording admission, Keychain reads "
+                  "and capture reads through the read sessions and gateways the CLI hands it"),
     "presence": "operator presence on the controlling terminal before each live action",
     "reconcile": "reconciles live order state against the exchange through a ReadClient",
     "recorder": "live stream recorder: esa.StreamClient, the profile's recordings dir and recorder lock",

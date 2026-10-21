@@ -63,6 +63,8 @@ interpreter.
 Readiness uses the same transitive import rule from its separate betfair.readiness entry point, including
 shadowing, dynamic imports and package-object bindings. Its closure gets the same live-state/home text checks;
 it does not enlarge the certificate's backtest-only source descriptor or become a trading CLI subcommand.
+The pure pilot module (betfair.pilot, P1-05) is held to the same rule (pilot_violations), and its closure gets the
+same text checks; tests/test_betfair_pilot.py runs them and pins its exact imports.
 
 Classification of every module directly in betangel_research/betfair is in FORBIDDEN_BETFAIR and ALLOWED_BETFAIR
 with one reason each. The original modules were read in full or by their imports and docstrings at 8b0da84,
@@ -106,6 +108,7 @@ TOP = "betangel_research"
 BETFAIR = f"{TOP}.betfair"
 BACKTEST = f"{BETFAIR}.backtest"
 READINESS = f"{BETFAIR}.readiness"
+PILOT = f"{BETFAIR}.pilot"
 
 # Forbidden to the backtester: account, credential, session, network, order-path or live-state modules.
 FORBIDDEN_BETFAIR = {
@@ -137,6 +140,8 @@ ALLOWED_BETFAIR = {
     "filters": "market filter validation and REST/stream mapping",
     "lifecycle": "order state machine and report classification",
     "paper": "paper fill model and offline replay over paths its caller names; holds no transport",
+    "pilot": ("pure P1 predicates, decision record, measurement classes, NCLV, ledger fold with the pause, CR1 "
+              "analysis; no clock, file or network; its closure obeys the offline rule"),
     "pnl": "own P&L and commission arithmetic in pence",
     "readiness": "read-only draft and index inventory over explicit paths; its closure obeys the offline rule",
     "receipts": "clocks, timestamp parsing, canonical hashing, durable local writes; git_state runs git",
@@ -567,6 +572,17 @@ def readiness_violations(graph, *, betfair, forbidden):
     return found + stdlib_shadow_violations(graph, starts)
 
 
+def pilot_violations(graph, *, betfair, forbidden):
+    """Apply the unchanged backtest import rules to the pure pilot module and every module it transitively reaches."""
+    starts = [f"{betfair}.pilot"]
+    backtest = f"{betfair}.backtest"
+    found = graph.violations(starts, *backtest_rules(betfair, forbidden, shadowing_names(graph, starts)))
+    for module in sorted(graph.closure(starts)):
+        found += [(module, site, "binds an internal package object outside the backtest package")
+                  for site in graph.packages[module] if not under(site.partition(": ")[2], backtest)]
+    return found + stdlib_shadow_violations(graph, starts)
+
+
 def root_violations(graph, *, betfair):
     """The root rule: nothing outside <betfair> reaches <betfair>, directly or transitively, or imports a module
     the scan cannot follow (a repository file or directory that answers the name, beside the package or beside a
@@ -968,8 +984,9 @@ class ResolverSelfTests(unittest.TestCase):
 
 class BacktestBoundaryTests(unittest.TestCase):
     def closure_modules(self):
-        """Both offline closures; certificate coverage remains the separate backtest closure below."""
-        return sorted(REAL.closure([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]))
+        """The offline closures (backtest, readiness, pilot); certificate coverage remains the separate backtest
+        closure below."""
+        return sorted(REAL.closure([m for m in REAL.files if under(m, BACKTEST)] + [READINESS, PILOT]))
 
     def test_every_betfair_module_is_classified(self):
         direct = {path.stem for path in (REPO / TOP / "betfair").glob("*.py")}

@@ -117,6 +117,7 @@
       "an unknown result, price or size",
       "any settlement that cannot be verified"
     ],
+    "contradiction": "if any later execution evidence (a later C read, an L row, a place, cancel or reconcile report, or startup reconciliation) shows a larger matched size than the one W used, or otherwise contradicts it, W returns to -200p at once and a review stop is set; this also applies after the measurement record is final and never rewrites the final analytical record",
     "equity": "the sum of one value per PLACE record, each in exactly one part: W (worst case, the default) or S (settled and verified)",
     "gap_tolerance_p": 1,
     "over_tolerance": "the bet stays in W and a review stop is set, from the first bet, PT4 included"

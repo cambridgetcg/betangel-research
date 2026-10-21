@@ -263,7 +263,8 @@ class GuardedTransport:
     """The transport of an RS-19 pilot read session (P1-08, P108-C3): guard() is asked before every request it sends,
     each retry included and the first read after a login, and a non-empty answer raises ReadStopped with nothing
     sent. Logins are left to the session's own login guard (checked before an attempt is reserved, so the ledger never
-    holds a stopped attempt), and logout always goes through. Only pilot-run's sessions use it."""
+    holds a stopped attempt), and logout always goes through. An HttpTransport also gets the guard as attempt_guard,
+    so its own retry on a fresh connection is asked too (P108-R2-2). Only pilot-run's sessions use it."""
 
     _UNGUARDED = ("/api/login", "/api/certlogin", "/api/logout")
 
@@ -275,6 +276,8 @@ class GuardedTransport:
             reason = self._guard()
             if reason:
                 raise ReadStopped(reason)
+            if getattr(self._inner, "accepts_attempt_guard", False):
+                kw = dict(kw, attempt_guard=self._guard)
         return self._inner.request(method, url, headers, body, **kw)
 
     def __getattr__(self, name):

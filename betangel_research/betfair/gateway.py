@@ -416,6 +416,7 @@ class OrderGateway:
         self._command = None
         self._static = None
         self._report = None
+        self._pilot_last_result = None
         self._account_details = None
         self._startup = None
         self._paper_books = {}
@@ -1505,6 +1506,22 @@ class OrderGateway:
                 self._pilot_seen_ns = value if self._pilot_seen_ns is None else max(self._pilot_seen_ns, value)
         return self._pilot_seen_ns
 
+    @property
+    def last_pilot_result(self):
+        """What this open's latest pilot_place returned, kept on the gateway before it returns (P108-R2-1), so a signal
+        that lands after the return and before the caller saved it cannot lose an owed write; None while a call is
+        in progress, before any, or after forget_pilot_result()."""
+        return self._pilot_last_result
+
+    def forget_pilot_result(self):
+        """The caller consumed the latest result and owes nothing for it (the first pilot_reserve_too_early)."""
+        self._pilot_last_result = None
+
+    def _kept(self, result):
+        """Keep pilot_place's result on the gateway, then return it (last_pilot_result)."""
+        self._pilot_last_result = result
+        return result
+
     def pilot_place(self, market_id, *, scheduler_off_ns, confirm_token):
         """One RS-19 pilot placement in this pilot-place open (engineering note §4-§6, §9; P1-06 §2.5): reserve the
         market by compare-and-append, fetch one fresh live-key catalogue row and one decision book as raw bytes,
@@ -1516,6 +1533,7 @@ class OrderGateway:
         any append (pilot_reserve_too_early, say) may be retried. -> _result(...) plus "pilot": {reservation_seq,
         decision_seq, record_sha256, customer_order_ref, outcome, code, submit_seq, state, bet_id,
         size_remaining_p, unknown, latch}; a SKIP is decision "skipped". Nothing is ever retried or resent."""
+        self._pilot_last_result = None               # P108-R2-1: none until this call returns one (_kept)
         self._check_source("pilot", pilot_path=True)
         self._require_open("pilot-place")
         if self._reserved is not None:
@@ -1538,11 +1556,11 @@ class OrderGateway:
                 self._pilot_refusal_note(RESOLVED_AT_OPEN_RULE, None)
                 self._open_refusal_noted = True             # only once written: a failed append is retried
             info["latch"] = "review"
-            return dict(self._resolved_refusal(), pilot=info)
+            return self._kept(dict(self._resolved_refusal(), pilot=info))
         decided = self._pilot_decide(market_id, scheduler_off_ns, info)
         if decided is None or decided.get("refusal") is not None or decided["decision"] == "skipped":
-            return decided
-        return self._pilot_send(market_id, decided, info)
+            return self._kept(decided)
+        return self._kept(self._pilot_send(market_id, decided, info))
 
     def _pilot_result(self, info, rule, *, decision="refused", latch=None, detail=None):
         if latch is not None:

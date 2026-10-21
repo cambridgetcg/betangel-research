@@ -32,7 +32,7 @@ from .capability import take_consumed
 from .constants import (ACCOUNT_METHOD_PREFIX, ACCOUNT_RPC_PATH, ALLOWED_PATHS, API_HOSTS, BETTING_METHOD_PREFIX,
                         BETTING_RPC_PATH, HTTP_HOSTS, PATH_HOST_KIND, READ_METHODS, SSO_CERT_HOSTS, SSO_HOSTS,
                         SSO_PATHS, STREAM_HOSTS, STREAM_PORT)
-from .errors import ConfigError, CredentialError, TransportError, safe_code
+from .errors import ConfigError, CredentialError, ReadStopped, TransportError, safe_code
 from .paths import network_forbidden
 from .receipts import SYSTEM_CLOCK, bytes_sha256, strict_json_loads
 from .secret import Secret
@@ -456,12 +456,17 @@ class HttpTransport:
             self._connections[key] = entry
         return key, entry
 
+    accepts_attempt_guard = True             # api.GuardedTransport (P1-08 pilot reads) passes attempt_guard
+
     def request(self, method, url, headers, body, *, deadline_s, idempotent, tls_context=None, order_digest=None,
-                send_by_monotonic_ns=None, send_gate=None):
+                send_by_monotonic_ns=None, send_gate=None, attempt_guard=None):
         """One request -> {"status", "headers" (lowercase, no set-cookie), "body" (decoded bytes)}.
 
         last_bytes_written is this request's request bytes, summed over its attempts (0 after any refusal).
         send_by_monotonic_ns and send_gate (non-idempotent requests only): see the module docstring.
+        attempt_guard (an RS-19 pilot read only, P108-R2-2; None keeps today's behaviour): asked before every attempt,
+        the idempotent retry on a fresh connection included; a non-empty answer raises ReadStopped and that attempt
+        writes no byte.
         """
         self.last_bytes_written = 0
         host, path = preflight(method, url, headers, body, allowed_hosts=self.allowed_hosts, idempotent=idempotent,
@@ -481,6 +486,10 @@ class HttpTransport:
             final_headers["Content-Length"] = str(len(payload or b""))
         attempts = 2 if idempotent else 1
         for attempt in range(attempts):
+            if attempt_guard is not None:
+                reason = attempt_guard()
+                if reason:
+                    raise ReadStopped(reason)
             try:
                 outcome = self._attempt(host, path, method, final_headers, payload, context, deadline_ns,
                                         retry_allowed=idempotent and attempt + 1 < attempts,

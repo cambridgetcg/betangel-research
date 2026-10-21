@@ -710,6 +710,7 @@ class OrderGateway:
             return self._open_kill(command, confirm_token, bet_angel_paused)
         if command == "pilot-place":
             self._pilot_seen_ns = 0         # the open's high-water mark: every wall-clock read from here (P106-R2-1)
+            self._open_refusal_noted = False                   # at most one refusal note per open (R2-N3)
         now_ns = self.clock.time_ns()
         journal_state = self._fold_or_none()
         static = static_arming(self.config, command=command, paths=self.paths, cli_mode="live",
@@ -890,6 +891,7 @@ class OrderGateway:
         self._reserved = None
         self._pilot_seen_ns = None
         self._pilot_bet_id = None
+        self._open_refusal_noted = False
 
     def _release(self):
         self._reset_pilot_open()
@@ -995,12 +997,12 @@ class OrderGateway:
         pilot (an RS-19 pilot order, engineering note §5): the gate context of pilot_gate.first_byte_refusal.
         send_by is also capped at the decision book's monotonic time plus the window left to end_ns. The gate
         first reads the journal head fresh, on its own read-only connection (it does I/O, so it comes before
-        every check that reads a clock or the KILL file, P106-C1; an unreadable head refuses), then runs checks
-        1 and 2 and §5 checks 3-6 on that head; the transport checks its absolute send-by bound again after the
-        gate. Check 3 holds only because nothing is appended between our submit and the first byte: the KILL
-        branch after the submit returns without sending, and _send appends nothing before the request (pinned
-        by a test). A stop committed after this head read cannot be seen (the residual race of note §5, pinned
-        by a test)."""
+        every check that reads a clock or the KILL file, P106-C1), then runs check 1 (a KILL file wins over an
+        unreadable head, so it still ends the session, R2-N2), refuses an unreadable head, and runs check 2 and
+        §5 checks 3-6 on that head; the transport checks its absolute send-by bound again after the gate. Check 3
+        holds only because nothing is appended between our submit and the first byte: the KILL branch after the
+        submit returns without sending, and _send appends nothing before the request (pinned by a test). A stop
+        committed after this head read cannot be seen (the residual race of note §5, pinned by a test)."""
         taken = book.get("monotonic_ns") if isinstance(book, dict) else None
         limit = int(self.config["orders"]["caps"]["max_book_age_s"] * _NS_PER_S)
         send_by = taken + limit if type(taken) is int else self.clock.monotonic_ns()
@@ -1008,14 +1010,16 @@ class OrderGateway:
             send_by = min(send_by, pilot["dbm"] + (pilot["end_ns"] - pilot["dbw"]))
 
         def gate():
-            head = None
+            head, unreadable = None, False
             if pilot is not None:
                 try:
                     head = self.journal.head_fresh()
                 except Exception:
-                    return "pilot_gate_head_unreadable"
+                    unreadable = True                   # acted on after the KILL check (R2-N2)
             if kill_engaged(self.paths):
                 return "kill_engaged_before_send"
+            if unreadable:
+                return "pilot_gate_head_unreadable"
             if not self._book_age_ok(book):
                 return "book_stale_before_send"
             if pilot is None:
@@ -1399,7 +1403,10 @@ class OrderGateway:
         """NotArmed at a pilot-place open (note §9): one refusal note, a review stop, under the contract the
         journal's pilot records name, when the journal holds a session for it; nothing before any registration or
         session. Read from the journal alone, so it holds without orders.pilot, a PilotContext or a readable
-        contract file (P106-C4, workflow #1)."""
+        contract file (P106-C4, workflow #1). An open journals at most one such note, for the first failure it
+        reaches (R2-N3): a PA failure, then a dynamic one, sets one stop, not two."""
+        if self._open_refusal_noted:
+            return
         try:
             events = list(self.journal.events()) if events is None else events
         except _JOURNAL_READ_ERRORS:
@@ -1410,6 +1417,7 @@ class OrderGateway:
             return
         if self._open_id is None:
             self._open_id = "open-" + secrets.token_hex(8)
+        self._open_refusal_noted = True
         self._append("note", pilot_rules.pilot_note(
             "refusal", registered, session_id=session["session_id"], open_id=self._open_id, reservation_seq=None,
             code=pilot_gate.refusal_code(code), row_sha256=None, book_sha256=None))
@@ -1440,7 +1448,9 @@ class OrderGateway:
         classify once with capacity in the same append, then for a PLACE the send path: the authority fold and R13
         before the funds read, the send book, R1-R12 and V-rules, the intent and submit on the authority head, and
         the note §5 first-byte gate. There is no book, catalogue, country or instruction parameter: everything comes
-        from the gateway's own reads. One reservation per open. -> _result(...) plus "pilot": {reservation_seq,
+        from the gateway's own reads. One reservation attempt per open: once a reservation append has been tried
+        (written, refused as too late, or its head moved), the open makes no further placement; a refusal before
+        any append (pilot_reserve_too_early, say) may be retried. -> _result(...) plus "pilot": {reservation_seq,
         decision_seq, record_sha256, customer_order_ref, outcome, code, submit_seq, state, bet_id,
         size_remaining_p, unknown, latch}; a SKIP is decision "skipped". Nothing is ever retried or resent."""
         self._check_source("pilot", pilot_path=True)
@@ -1629,7 +1639,9 @@ class OrderGateway:
                             latches.append(code)
                             self._pilot_session_stop(code, None)
                 return self._pilot_result(info, failures[0]["rule"], latch="session" if latches else None)
-            # B. Reserve before fetching: a compare-and-append on the head folded, stamped before the boundary.
+            # B. Reserve before fetching: a compare-and-append on the head folded, stamped before the boundary. From
+            # the first attempt on, whatever its outcome, this open places nothing else (P106-R2 item 2, case D).
+            self._reserved = market_id
             note = pilot_rules.pilot_note("reservation", C.sha256, session_id=session_id, open_id=open_id)
             event, problem = self._pilot_append(note, head=head, before_ns=self._pilot_boundary(state),
                                                 market_id=market_id)
@@ -1642,7 +1654,6 @@ class OrderGateway:
                 continue
             reserved = event
             known = set(core["orders"]) | {rec.ref for rec in state.place_records}
-        self._reserved = market_id
         reservation_seq = info["reservation_seq"] = reserved["seq"]
         # C. Fetch once: one raw catalogue row, then one decision book, each written durably before classification.
         reads = {"row": self.read.raw_catalogue_row(market_id, deadline_s=deadline_s)}
@@ -1918,7 +1929,7 @@ class OrderGateway:
         before = self.journal.fold(now_ns=self.clock.time_ns(), submitting_as_unknown=False)
         submitting = before["orders"]
         sent = [{"customer_order_ref": ref, "side": record["side"]} for ref, record in zip(refs, records)]
-        extra = {}
+        extra, reported = {}, {}
 
         def journal_report(result, exc):
             if exc is not None:
@@ -1931,7 +1942,7 @@ class OrderGateway:
                 else:
                     reason = "transport_not_sent" if verdict == "FAILED_NOT_SENT" else "rejected_before_processing"
                     moves = {ref: ("FAILED", {"error_code": reason}) for ref in refs}
-                halts = self._report_halts(None, exc, moves, before["consecutive_unknown"])
+                halts = reported["halts"] = self._report_halts(None, exc, moves, before["consecutive_unknown"])
                 self._append_moves("report", _with_halts({"action": "place", "report": None,
                                                           "exception": _exception_payload(exc), "outcome": verdict},
                                                          halts),
@@ -1946,7 +1957,8 @@ class OrderGateway:
             else:
                 moves = classify_place_report(normalised, sent_refs=refs,
                                               orders={ref: submitting[ref] for ref in refs if ref in submitting})
-            halts = self._report_halts(normalised, None, moves, before["consecutive_unknown"])
+            halts = reported["halts"] = self._report_halts(normalised, None, moves, before["consecutive_unknown"])
+            reported["failure"] = pilot_gate.place_report_failure(normalised)
             self._append_moves("report", _with_halts({"action": "place", "report": normalised, "outcome": "reported"},
                                                      halts),
                                moves, reason="place_report", market_id=market_id, intent_id=intent_id)
@@ -1956,17 +1968,34 @@ class OrderGateway:
             send_by, gate = self._send_bounds(book, pilot=None if pilot is None else gate_ctx)
             normalised, moves = self._send(prepared, journal_report, capability=capability,
                                            send_by_monotonic_ns=send_by, send_gate=gate)
-            if pilot is not None and extra.get("send_exception", {}).get("outcome") == "FAILED_NOT_SENT":
-                # After the report: a KILL file seen ends the session (critique 2); a §5 first-byte refusal
-                # (deadline, freshness, head) ends that market only (note §9); any other failure before the
-                # first byte keeps its own latch, a refused capability a review stop (Q11; P106-C3).
+            outcome = extra.get("send_exception", {}).get("outcome")
+            if pilot is not None and outcome == "FAILED_NOT_SENT":
+                # After the report: a KILL file seen, by the gate or now, whatever the code, ends the session
+                # (critique 2; R2-N2); a §5 first-byte refusal (deadline, freshness, head) ends that market only
+                # (note §9); any other failure before the first byte keeps its own latch: a refused capability,
+                # a connect, TLS or preflight failure, a fault inside the gate, a review stop (Q11; P106-C3).
                 code = extra["send_exception"]["code"]
-                if code == "kill_engaged_before_send":
+                if code == "kill_engaged_before_send" or kill_engaged(self.paths):
                     self._pilot_latch(pilot, "halted", reason="kill_engaged")
                 elif code in pilot_gate.FIRST_BYTE_CODES:
                     pilot["latch"] = "market"
                 else:
                     self._pilot_latch(pilot, code)
+            elif pilot is not None and outcome == "FAILED_REJECTED":
+                # Betfair refused the call (an ApiError: session, rate limit and the rest). A HALT journaled with
+                # the report already ends the session; any other code is not named in note §9: a review stop (Q11).
+                if reported.get("halts"):
+                    pilot["latch"] = "none"
+                else:
+                    self._pilot_latch(pilot, extra["send_exception"]["code"])
+            elif pilot is not None and outcome is None:
+                # A report: a HALT it journaled ends the session; a refused instruction with no HALT is never left
+                # unlatched: MARKET_NOT_OPEN_FOR_BETTING or MARKET_SUSPENDED end that market (the post-send V9),
+                # every other code is a review stop (Q11; Nuance's ruling).
+                if reported.get("halts"):
+                    pilot["latch"] = "none"
+                elif reported.get("failure") is not None:
+                    self._pilot_latch(pilot, reported["failure"])
             # No cancel of our own here after a kill (spec step 16 was deleted, amendment A3 D4): the kill's
             # re-sweeps cover this bet, and a duplicate cancel only left an UNKNOWN behind.
             self._reconcile_refs([ref for ref, (state, _) in moves.items() if state == "UNKNOWN"])

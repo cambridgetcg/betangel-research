@@ -2818,6 +2818,8 @@ class AstraReviewR2(unittest.TestCase):
         self.assertIn("sent_after_ending", codes(journal_.fold()))
 
     def unsent(self, failed):
+        """FAILED(transport_not_sent), or no submit with its open ended where the journal shows it: another open
+        reserves (Nuance R3-1: the fold's live_open_id never supports an earlier frontier note)."""
         journal_ = Pilot(pt4=True)
         session = journal_.arm(0)
         _, p, _ = journal_.classify(session)
@@ -2826,6 +2828,8 @@ class AstraReviewR2(unittest.TestCase):
             journal_.submit(p)
             journal_.failed(p)
         journal_.closed(p, sp="3.10")
+        if not failed:
+            journal_.reserve("1.299999", journal_.now + 300 * S, session=session, open_id="open-later")
         return journal_, p
 
     def test_r2_3_unsent_frontier_round_trips(self):
@@ -2835,7 +2839,7 @@ class AstraReviewR2(unittest.TestCase):
         for failed in (True, False):
             with self.subTest(failed_not_sent=failed):
                 journal_, p = self.unsent(failed)
-                first = only(journal_.fold())
+                first = only(journal_.fold(live_open_id="open-later"))
                 self.assertEqual((first.measurement["class"], first.measurement["final"], first.execution["row"]),
                                  ("definitely_unsent", True, None))
                 self.assertLess(first.measurement["final_at_ns"], p.off + 7 * DAY_NS)
@@ -2891,6 +2895,223 @@ class AstraReviewR2(unittest.TestCase):
                 self.assertEqual((only(state).bsp["decided_at_ns"], only(state).measurement), (
                     derived.bsp["decided_at_ns"], final))
                 self.assertEqual(state.invalid_records, ())
+
+
+C_CAP2 = dataclasses.replace(C, lifetime_place_records=2)  # the lifetime cap at the second PLACE record
+
+
+class AstraReviewR3(unittest.TestCase):
+    """Regression tests for Astra's third review of 7c083b6 (astra-review-p1-05-r3.md, R3-1 and R3-2), on the inputs
+    of her probes (p1-05/astra-r3-analysis-probes: deferred_frontier_probe; astra-r3-root-probes: authority_probe).
+    Each fails on 7c083b6, except two pins that already held there: bsp_decided checked at its position, and
+    FAILED(transport_not_sent) after an evidence-driven N."""
+
+    @staticmethod
+    def c_only():
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        p = journal_.place(session)
+        journal_.send(p)
+        journal_.c_read(p, price="3.44")
+        journal_.closed(p, sp="3.10")
+        return journal_, p, session
+
+    def assert_stopped_at(self, state, seq, reason="finalized_mismatch"):
+        self.assertEqual([(s["stop_id"], s["source_seq"]) for s in state.due_stops],
+                         [(f"{'-'.join(reason.split('_'))}-{seq}", seq)])
+        self.assertEqual((state.sessions[0]["ended_seq"], state.sessions[0]["ended_reason"]), (seq, reason))
+
+    # -- R3-1: each frontier note is checked at its own position --------------------------------------------------
+
+    def test_r3_1_a_premature_deadline_note_keeps_its_stop(self):
+        """A row-3 eligible note at off + 6 min claiming deadline + 1 ns: not final there, so the stop is set at the
+        note and stays once the deadline passes and the record is final as claimed (premature_deadline_note)."""
+        journal_, p, _ = self.c_only()
+        deadline = p.off + 7 * DAY_NS
+        note = journal_.note("finalized", at=p.off + 6 * MIN, ref_col=p.ref, final_at_ns=deadline + 1, row=3,
+                             **{"class": "eligible"})
+        self.assert_stopped_at(journal_.fold(), note)
+        late = journal_.fold(now=deadline + 2 * S)
+        self.assertEqual(only(late).measurement, {"class": "eligible", "final": True, "final_at_ns": deadline + 1})
+        self.assert_stopped_at(late, note)
+        self.assertEqual(late, replayed(journal_, now=deadline + 2 * S))
+
+    def test_r3_1_a_premature_row1_note_keeps_its_stop(self):
+        """A row-1 note at off + 6 min, before the L it predicts arrives at off + 15 min (premature_row1_note)."""
+        journal_, p, _ = self.c_only()
+        note = journal_.note("finalized", at=p.off + 6 * MIN, ref_col=p.ref, final_at_ns=p.off + 15 * MIN, row=1,
+                             **{"class": "eligible"})
+        self.assert_stopped_at(journal_.fold(), note)
+        journal_.l_row(p, price="3.44", at=p.off + 15 * MIN)
+        state = journal_.fold()
+        self.assertEqual((only(state).execution["row"], only(state).measurement),
+                         (1, {"class": "eligible", "final": True, "final_at_ns": p.off + 15 * MIN}))
+        self.assert_stopped_at(state, note)
+
+    def test_r3_1_a_mismatch_ends_its_session_before_a_later_place(self):
+        """A wrong-class note at seq 13, then PLACE 15 and its send by 18: the session ends at 13, so the PLACE and
+        its send are violations; a next day's session and send never move that end (same_session_mismatch,
+        next_session_mismatch)."""
+        journal_, p, session = self.c_only()
+        journal_.l_row(p, price="3.44")
+        actual = only(journal_.fold()).measurement["final_at_ns"]
+        bad = journal_.note("finalized", at=p.off + 16 * MIN, ref_col=p.ref, final_at_ns=actual, row=1,
+                            **{"class": "missing_bsp"})
+        q = journal_.place(session)
+        journal_.send(q)
+        self.assertEqual((bad, q.seq, journal_.events[-1]["seq"]), (13, 15, 18))
+        state = journal_.fold()
+        self.assert_stopped_at(state, bad)
+        later = state.place_records[1]
+        self.assertEqual(later.measurement["class"], "protocol_violation")
+        self.assertTrue({"session_stopped", "place_while_stopped", "submit_after_session_end"} <= set(later.violations))
+        self.assertEqual(state.ending["reason"], "breach")
+        self.assertEqual(state.place_records[0].measurement["class"], "eligible")    # the note's class not adopted
+        nxt = copy.deepcopy(journal_)
+        r = nxt.place(nxt.arm(1))
+        nxt.send(r)
+        following = nxt.fold()
+        self.assertEqual([(s["session_id"], s["ended_seq"]) for s in following.sessions], [("s0", bad), ("s1", None)])
+        self.assertIn("place_while_stopped", following.place_records[2].violations)
+        self.assertEqual(following, replayed(nxt))
+
+    def test_r3_1_an_open_end_counts_where_the_journal_shows_it(self):
+        """No submit and a CLOSED book: the fold (no live open) finds the record definitely unsent, but a row-None
+        note journaled before anything shows its open ended is premature, and the open's later end, journaled by
+        another open's reservation, never removes that stop. After that reservation a note round-trips."""
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        _, p, _ = journal_.classify(session)
+        journal_.closed(p, sp="3.10")
+        derived = only(journal_.fold()).measurement
+        self.assertEqual((derived["class"], derived["final"]), ("definitely_unsent", True))
+        early = journal_.note("finalized", at=journal_.now + S, ref_col=p.ref, final_at_ns=derived["final_at_ns"],
+                              row=None, **{"class": "definitely_unsent"})
+        self.assert_stopped_at(journal_.fold(), early)
+        journal_.reserve("1.299999", journal_.now + 300 * S, session=session, open_id="open-later")
+        later = journal_.note("finalized", at=journal_.now + S, ref_col=p.ref, final_at_ns=derived["final_at_ns"],
+                              row=None, **{"class": "definitely_unsent"})
+        for state in (journal_.fold(), journal_.fold(live_open_id="open-later"), replayed(journal_)):
+            self.assertEqual(only(state).measurement, derived)
+            self.assertEqual([s["stop_id"] for s in state.due_stops], [f"finalized-mismatch-{early}"])
+            self.assertNotIn(later, [s["source_seq"] for s in state.due_stops])
+
+    def test_r3_1_bsp_decided_is_checked_where_it_is(self):
+        """A bsp_decided note claiming 3.12 while the CLOSED read so far says 3.10; a later read of 3.12 never
+        removes the stop (bsp_mismatch_stays: already positional at 7c083b6, pinned here)."""
+        journal_, p, _ = self.c_only()
+        read = only(journal_.fold()).bsp["read_seq"]
+        note = journal_.note("bsp_decided", at=p.off + 6 * MIN, ref_col=p.ref, decided_at_ns=p.off + 5 * MIN,
+                             outcome="bsp", actual_sp="3.12", read_seq=read)
+        journal_.closed(p, sp="3.12", at=p.off + 7 * MIN)
+        self.assert_stopped_at(journal_.fold(), note, "bsp_decided_mismatch")
+
+    # -- R3-2: a derived ending's boundary --------------------------------------------------------------------------
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bases = {n: cls.base(n) for n in (1, 400)}
+
+    @staticmethod
+    def base(n):
+        """Astra's base(n): n - 1 eligible winners, then record n with C only (awaiting L), and slot n + 1 placed
+        validly on the next session's day."""
+        journal_ = Pilot(pt4=True)
+        for i in range(n):
+            if i % 25 == 0:
+                session = journal_.arm(i // 25)
+            a = journal_.place(session)
+            if i < n - 1:
+                journal_.win(a)
+            else:
+                journal_.send(a)
+                journal_.c_read(a, price="3.44")
+                journal_.closed(a)
+                journal_.settle(a)
+        result, b, _ = journal_.classify(journal_.arm((n - 1) // 25 + 1))
+        assert result["record"]["outcome"] == "PLACE"
+        return journal_, a, b
+
+    def n_case(self, n, steps):
+        journal_, a, b = copy.deepcopy(self.bases[n])
+        steps(journal_, a, b)
+        contract = C_ONE if n == 1 else C
+        state = journal_.fold(contract=contract)
+        self.assertEqual(state, replayed(journal_, contract=contract))
+        return state
+
+    def test_r3_2_the_submit_position_decides_against_an_evidence_driven_n(self):
+        """N completed by an L: a submit before it in seq, at the same timestamp, is no send after the ending, nor
+        after a later C read; a submit after it in seq is one, even with its clock stepped back a second
+        (authority_probe: n_by_evidence)."""
+        def submit_before(j, a, b):                      # submit 4022, completing L 4023 at one timestamp
+            j.intent(b)
+            j.submit(b)
+            j.l_row(a, price="3.44", at=b.off - 292 * S)
+            j.report(b)
+
+        def report_before_then_c(j, a, b):               # SUCCESS report before the completing L, later C read
+            j.intent(b)
+            j.submit(b)
+            j.report(b, at=b.off - 292 * S)
+            j.l_row(a, price="3.44", at=b.off - 292 * S)
+            j.c_read(b)
+
+        def submit_after_regressed(j, a, b):             # completing L 4022, submit 4023 one second earlier
+            j.intent(b)
+            j.l_row(a, price="3.44", at=b.off - 292 * S)
+            j.submit(b, at=b.off - 293 * S)
+            j.report(b)
+
+        def submit_after_monotonic(j, a, b):
+            j.intent(b)
+            j.l_row(a, price="3.44", at=b.off - 292 * S)
+            j.submit(b, at=b.off - 291 * S)
+            j.report(b, at=b.off - 290 * S)
+
+        for n in (1, 400):
+            for steps, flagged in ((submit_before, False), (report_before_then_c, False),
+                                   (submit_after_regressed, True), (submit_after_monotonic, True)):
+                with self.subTest(n=n, case=steps.__name__):
+                    state = self.n_case(n, steps)
+                    self.assertTrue(pilot.n_status(state, now_ns=state.now_ns)["reached"])
+                    self.assertEqual(codes(state), ["sent_after_ending"] if flagged else [])
+                    self.assertEqual(state.ending["reason"], "breach" if flagged else "n_reached")
+                    self.assertEqual(state.place_records[-1].violations, ("sent_after_ending",) if flagged else ())
+
+    def test_r3_2_not_sent_after_an_evidence_driven_n(self):
+        """A submit after the completing L that the first-byte gate turned into FAILED(transport_not_sent) is no
+        send: no violation."""
+        def failed_after(j, a, b):
+            j.intent(b)
+            j.l_row(a, price="3.44", at=b.off - 292 * S)
+            j.submit(b, at=b.off - 291 * S)
+            j.failed(b, at=b.off - 290 * S)
+        state = self.n_case(1, failed_after)
+        self.assertEqual((codes(state), state.place_records[-1].measurement["class"]), ([], "definitely_unsent"))
+
+    def test_r3_2_the_lifetime_cap_by_journal_order(self):
+        """Two markets with one off and a cap of two: the first record's submit, appended before the cap record at
+        the cap's own timestamp, is no send after the ending (its C read comes later); appended after the cap
+        record, it is one even with its clock stepped back. The cap record's own send is never one."""
+        for after_cap in (False, True):
+            with self.subTest(submit_after_cap=after_cap):
+                journal_ = Pilot(pt4=True)
+                session = journal_.arm(0)
+                off = journal_.next_off(session)
+                first = journal_.place(session, off=off)
+                journal_.intent(first)
+                if not after_cap:
+                    journal_.submit(first)                                  # off - 292 s
+                cap = journal_.place(session, off=off)                      # its decision at off - 294 s
+                if after_cap:
+                    journal_.submit(first, at=off - 295 * S)                # one second before the cap's decision
+                journal_.c_read(first)
+                journal_.send(cap)
+                state = journal_.fold(contract=C_CAP2)
+                self.assertEqual(state.ending["reason"], "breach" if after_cap else "lifetime_cap")
+                self.assertEqual("sent_after_ending" in state.place_records[0].violations, after_cap)
+                self.assertNotIn("sent_after_ending", state.place_records[1].violations)
 
 
 class Finalization(unittest.TestCase):

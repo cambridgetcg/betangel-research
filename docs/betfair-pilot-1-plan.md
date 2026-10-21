@@ -76,7 +76,7 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against b
   - the stake-weighted mean, Σ s_i·x_i / Σ s_i over the primary bets (s_i = final matched size), and the count of every class (attrition);
   - the decision-price series: NCLV at the decision price for every PLACE record in the same decision range, sent or not, filled or not, with its own exclusions (void, post-decision removal, missing BSP). It shows fill selection; it does not remove it from the primary;
   - surplus bets; raw CLV by price band and country; BSP calibration by band; profit after commission and the running total, as plain tables.
-- Afterwards: scaling up (a bigger stake, or staking in proportion to the bankroll) comes once a strategy has shown an edge, in a later pilot with its own consents (RS-19, Money). Nuance recommends that a PASS first leads to one replication contract at the same flat stake, with no Kelly yet, because one pass at α = 0.025 can still be luck; whether that is needed is Yu's decision. A FAIL ends this rule. Either way, the measured SD sets N for Pilot 2.
+- Afterwards: a PASS leads first to one replication contract at the same £2 flat stake, with no Kelly yet, because one pass at α = 0.025 can still be luck (Yu, 2026-10-21). Yu allows it more than 25 bets a day; its own contract then sets its total, its days and its minimum-cluster check, so the day-clustered test still has enough days. Scaling up (a bigger stake, or staking in proportion to the bankroll) comes only after that, with its own consents (RS-19, Money). A FAIL ends this rule. Either way, the measured SD sets N for Pilot 2.
 
 ## Values and why
 Money numbers are Yu's (RS-19, Money): the first four rows are those and the £ caps that follow from them, and only Yu changes them. Every other number was chosen by the principles before the freeze, with Astra's review; this is its reason. After the freeze, a value in contract p1 changes only through a replacement contract with the build and go-live consents again (note §6, §14); a config value only through a new registration receipt, Astra's acceptance and the go-live consent again (note §7); a value held only in the note with Astra's review, plus Yu's yes if it weakens a protection (RS-19, Where the rest lives).
@@ -149,7 +149,9 @@ Every test needs Yu's explicit consent, with Yu present at the terminal (facts.m
 | P1-15 | Yu runs sessions; Nuance supports; Astra recomputes | Run to N = 400 or an ending; data lock; terminal analysis; verdict | go-live and the PT4 receipt | see Timeline |
 
 ## Decided
-- Yu, 2026-10-21: the money numbers on RS-19, all as recommended: £2 a bet; at most 25 bets a day (5 until the first check); at most 495 in total; at most £20 open at once; a pause at −£150 and at each further −£150; a Betfair website loss limit of £50 a day. Yu kept the daily count for Pilot 1 because the test needs at least 15 different days; scaling up waits until a strategy has shown an edge.
+- Yu, 2026-10-21: the money numbers on RS-19, all as recommended: £2 a bet; at most 25 bets a day (5 until the first check); at most 495 in total; at most £20 open at once; a pause at −£150 and at each further −£150; a Betfair website loss limit of £50 a day. Yu kept the daily count for Pilot 1 because the test needs at least 15 different days.
+- Yu, 2026-10-21: the pause counts from £0, not from the best point reached, and there is no other loss stop; the 495 total bounds the worst case at −£990; as Yu put it, the most that can be lost is what Yu put in.
+- Yu, 2026-10-21: after a PASS, one replication at £2 a bet comes before any scaling up, and it may place more than 25 bets a day.
 - Chosen by the principles (the reasons for their numbers are in "Values and why"):
   1. Consents: the three on RS-19 (build, go live, each session).
   2. First rule: P1-FAV-T5, the simplest rule with one plain question. Considered instead: the small-race variant, or a T−2 version (deeper book, smaller SD).

@@ -3,6 +3,8 @@
 fake Betfair router; synthetic data only."""
 
 import contextlib
+import errno
+import io
 import json
 import os
 from pathlib import Path
@@ -49,12 +51,29 @@ def read_jsonl(path):
     return [json.loads(text) for text in Path(path).read_text().splitlines()]
 
 
-def run_main(argv, deps=None):
-    import io
-    out, err = io.StringIO(), io.StringIO()
+def run_main(argv, deps=None, out=None):
+    out, err = out if out is not None else io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = main(argv, deps=deps)
     return code, out.getvalue(), err.getvalue()
+
+
+class HungUpTerminal(io.StringIO):
+    """stdout as a real terminal behaves once it hangs up: every write and flush raises EIO."""
+
+    def __init__(self):
+        super().__init__()
+        self.hung = False
+
+    def write(self, text):
+        if self.hung:
+            raise OSError(errno.EIO, "Input/output error")
+        return super().write(text)
+
+    def flush(self):
+        if self.hung:
+            raise OSError(errno.EIO, "Input/output error")
+        return super().flush()
 
 
 class RecorderControlTests(unittest.TestCase):
@@ -236,6 +255,57 @@ class RecorderControlTests(unittest.TestCase):
         self.assertEqual(state._precount(), (None, "end_at_reached"))
         self.assertEqual(self.lister.calls, [])
 
+    def test_stop_flag_checked_before_relogin_and_login(self):
+        """Workflow #2: a stop requested as a session error arrives (admission's SIGTERM during a drain) never leads
+        to a relogin; one requested as the connection opens never reaches authenticate's login."""
+        stop = {"now": False}
+        flag = lambda: stop.__setitem__("now", True)                                        # noqa: E731
+        no_session = after(fx.reply("authentication", status_code="FAILURE", errorCode="NO_SESSION",
+                                    connectionClosed=True), flag)
+        receipt = self.run_recorder([[fx.connection_line(), no_session], fx.handshake()], stop=lambda: stop["now"])
+        self.assertEqual(receipt["stop_reason"], "stop_requested")
+        self.assertNotIn("invalidate_and_relogin", self.session.calls)
+        self.clock.advance(5)
+        stop["now"] = False
+        session = fx.FakeSession()
+        receipt = self.run_recorder([[after(fx.connection_line(), flag), fx.auth_ok()]], session=session,
+                                    stop=lambda: stop["now"], seed=31)
+        self.assertEqual(receipt["stop_reason"], "stop_requested")
+        self.assertNotIn("token", session.calls)
+
+    def test_direct_run_stops_cleanly_on_signals(self):
+        """REC-5: StreamRecorder.run called directly installs the same stop handlers as record (its first
+        statement), so SIGTERM, SIGINT or SIGHUP end it with a receipt and a logout, and restores them after."""
+        for seed, signum in enumerate((signal.SIGTERM, signal.SIGINT, signal.SIGHUP), 40):
+            with self.subTest(signal=signum.name):
+                safety = self.safe_signals(signum)
+                script = fx.handshake() + [image_at(-300), after(heartbeat_at(-295),
+                                                                 lambda s=signum: os.kill(os.getpid(), s)),
+                                           fx.wait(30), heartbeat_at(-265), fx.wait(30), heartbeat_at(-235)]
+                receipt = self.run_recorder([script], stop=lambda: False, seed=seed,
+                                            run_kwargs={"max_seconds": 600})
+                self.assertEqual((receipt["stop_reason"], receipt["complete"]), ("stop_requested", True))
+                self.assertIs(signal.getsignal(signum), safety)
+                self.assertEqual(self.session.calls[-1], "logout")
+                self.clock.advance(5)
+
+    def test_direct_run_keeps_an_inherited_ignored_sighup(self):
+        """Workflow #4 for direct callers: under nohup SIGHUP stays ignored."""
+        self.addCleanup(signal.signal, signal.SIGHUP, signal.signal(signal.SIGHUP, signal.SIG_IGN))
+        script = fx.handshake() + [image_at(-300), after(heartbeat_at(-295),
+                                                         lambda: os.kill(os.getpid(), signal.SIGHUP)),
+                                   fx.wait(30), heartbeat_at(-265)]
+        receipt = self.run_recorder([script], stop=lambda: False, run_kwargs={"max_seconds": 120})
+        self.assertEqual(receipt["stop_reason"], "max_seconds_reached")
+        self.assertEqual(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+
+    def safe_signals(self, *signums):
+        def safety(signum, frame):
+            pass
+        for signum in signums:
+            self.addCleanup(signal.signal, signum, signal.signal(signum, safety))
+        return safety
+
     def test_non_positive_window_refused(self):
         recorder = self.recorder([fx.handshake()])
         for end_at in (self.clock.time_ns(), self.clock.time_ns() - 1, float(self.clock.time_ns() + HOUR_NS)):
@@ -279,21 +349,110 @@ class RecordCliControlTests(unittest.TestCase):
     def lines(self, out):
         return [json.loads(line) for line in out.splitlines()]
 
-    def test_sighup_stops_record_cleanly(self):
-        """C1: a closed terminal (SIGHUP) stops record like SIGTERM: segment closed, receipt written, logout,
-        exit 0, and the handler in place before record ran is restored."""
+    def test_sighup_stops_record_cleanly_even_when_the_terminal_is_gone(self):
+        """C1 with workflow #3: a closed terminal sends SIGHUP and then every stdout write fails with EIO. record
+        stops writing its JSON lines and still closes the segment, writes the receipt and the run-ledger row,
+        logs out and exits 0; the handler in place before record ran is restored. SIGTERM the same way."""
         for signum in (signal.SIGHUP, signal.SIGTERM):
             with self.subTest(signal=signum.name):
                 safety = self.safe_signals(signum)
-                script = fx.handshake() + [image_at(-300), after(heartbeat_at(-295),
-                                                                 lambda s=signum: os.kill(os.getpid(), s)),
-                                           fx.wait(30), heartbeat_at(-265)]
-                code, out, err = self.record(script)
-                self.assertEqual(code, 0, err)
-                summary = self.lines(out)[-1]["summary"]
-                self.assertEqual((summary["stop_reason"], summary["complete"]), ("stop_requested", True))
+                terminal = HungUpTerminal()
+
+                def hang_up(s=signum):
+                    terminal.hung = True
+                    os.kill(os.getpid(), s)
+                script = fx.handshake() + [image_at(-300), after(heartbeat_at(-295), hang_up), fx.wait(30),
+                                           heartbeat_at(-265)]
+                server = fx.FakeStreamServer([script], self.clock)
+                before = len(self.transport.requests)
+                code, out, err = run_main(["record", "--max-seconds", "600", "--bet-angel-paused", "--invocation-id",
+                                           f"hup-{signum.name}"], dict(self.deps, stream_socket_factory=server.factory),
+                                          out=terminal)
+                self.assertEqual((code, err), (0, ""))
+                directory = max(self.paths.recordings_dir.glob("rec-*"))
+                receipt = strict_json_loads((directory / "receipt.json").read_text())
+                self.assertEqual((receipt["stop_reason"], receipt["complete"], receipt["invocation_id"]),
+                                 ("stop_requested", True, f"hup-{signum.name}"))
+                rows = read_jsonl(self.paths.recordings_dir / "run-ledger.jsonl")
+                self.assertEqual(rows[-1]["receipt_sha256"], file_sha256(directory / "receipt.json"))
+                self.assertTrue(any(r["url"].endswith("/api/logout") for r in self.transport.requests[before:]))
+                self.assertNotIn('"summary"', out)                   # nothing more was written after the hangup
                 self.assertIs(signal.getsignal(signum), safety)
                 self.clock.advance(5)
+
+    def test_nohup_keeps_sighup_ignored(self):
+        """Workflow #4: a record started under nohup (SIGHUP inherited as ignored) outlives its terminal."""
+        self.addCleanup(signal.signal, signal.SIGHUP, signal.signal(signal.SIGHUP, signal.SIG_IGN))
+        script = fx.handshake() + [image_at(-300), after(heartbeat_at(-295), lambda: os.kill(os.getpid(), signal.SIGHUP)),
+                                   fx.wait(30), heartbeat_at(-265)]
+        server = fx.FakeStreamServer([script], self.clock)
+        code, out, err = run_main(["record", "--max-seconds", "120", "--bet-angel-paused"],
+                                  dict(self.deps, stream_socket_factory=server.factory))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.lines(out)[-1]["summary"]["stop_reason"], "max_seconds_reached")
+        self.assertEqual(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+
+    def login_times(self):
+        """Wrap the fake Betfair: (list of wall-clock ns of every login request, the router)."""
+        logins, base = [], self.router
+
+        def router(record):
+            if record["url"].endswith("/api/login") or record["url"].endswith("/api/certlogin"):
+                logins.append(self.clock.time_ns())
+            return base(record)
+        self.transport.router = router
+        return logins
+
+    def attempts_at(self):
+        rows = read_jsonl(self.paths.login_ledger) if self.paths.login_ledger.exists() else []
+        return [parse_utc_ns(row["at"]) for row in rows if row["kind"] == "login_attempt"]
+
+    def test_no_relogin_after_the_end_instant_crossed_during_a_rest_response(self):
+        """REC-4 (Astra's witness): the pre-count's catalogue response crosses --end-at and answers
+        INVALID_SESSION_INFORMATION. The REST retry's relogin is refused at the login boundary (the recorder's
+        login guard), so no login goes out after the end instant, and the run stops end_at_reached."""
+        from test_betfair_api import aping_error
+        end_at = self.clock.time_ns() + 10**9
+        logins = self.login_times()
+
+        def expired_catalogue(record):
+            self.clock.step_wall(2)
+            return aping_error("INVALID_SESSION_INFORMATION")
+        self.router.next_response["listMarketCatalogue"] = [expired_catalogue]
+        code, out, err = self.record(fx.handshake(), "--end-at", utc_from_ns(end_at))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.lines(out)[-1]["summary"]["stop_reason"], "end_at_reached")
+        self.assertEqual(len(logins), 1)
+        self.assertTrue(all(at < end_at for at in logins + self.attempts_at()))
+
+    def test_no_relogin_after_the_end_instant_crossed_during_a_keepalive(self):
+        """REC-4: keepAlive's NO_SESSION answer arrives after --end-at; its relogin is refused at the login
+        boundary and the run stops end_at_reached with only the first login sent."""
+        support.write_test_config(self.paths, {"credentials": {"login_method": "interactive", "cert_path": None,
+                                                               "key_path": None},
+                                               "session": {"keepalive_interval_s": 60}})
+        end_at = self.clock.time_ns() + 3600 * 10**9
+        logins = self.login_times()
+        inner = self.transport.router
+
+        def router(record):
+            if record["url"].endswith("/api/keepAlive"):
+                self.clock.step_wall(2 * 3600)
+                return support.http_response({"token": "", "product": "synthetic", "status": "FAIL",
+                                              "error": "NO_SESSION"})
+            return inner(record)
+        self.transport.router = router
+        beats = []
+        for i in range(16):
+            beats += [fx.wait(5), heartbeat_at(-295 + 5 * i)]
+        code, out, err = self.record(fx.handshake() + [image_at(-300)] + beats, "--end-at", utc_from_ns(end_at))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.lines(out)[-1]["summary"]["stop_reason"], "end_at_reached")
+        self.assertEqual(len(logins), 1)
+        self.assertTrue(all(at < end_at for at in logins + self.attempts_at()))
+        (directory,) = self.paths.recordings_dir.glob("rec-*")
+        failed = [row for row in read_jsonl(directory / "events.jsonl") if row["event"] == "keepalive_failed"]
+        self.assertEqual([row["code"] for row in failed], ["login_stopped"])
 
     def test_signal_before_any_credential_read_records_nothing(self):
         real = admission_module.recorder_admission

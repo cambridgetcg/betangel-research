@@ -16,9 +16,13 @@ features finer than 180 s.
 
 Every run goes through recording admission (admission.recorder_admission) before it connects:
 INHIBIT or a live ADMISSION refuses it, it holds recordings/.recorder.lock for the whole run and
-writes recorder.pid. It never takes .gateway.lock. end_at_ns bounds the run on the wall clock
-(time_ns), checked with every stop check and again before every pre-count, login and relogin,
-because the monotonic clock stops while the Mac sleeps. Each segment's pre-count, the catalogue's
+writes recorder.pid. It never takes .gateway.lock. StreamRecorder.run installs StopSignals as its
+first statement (SIGTERM, SIGINT and SIGHUP stop it cleanly), as record does. end_at_ns bounds the
+run on the wall clock (time_ns), because the monotonic clock stops while the Mac sleeps. Every stop
+condition, the end instant included, is checked before each pre-count, connection login and relogin,
+and the run puts a login guard on its session (SessionManager.guard_logins), so no login starts
+after a stop or the end instant, wherever it comes from: the REST retry's relogin, keepAlive's
+NO_SESSION relogin, or a lazy login. Each segment's pre-count, the catalogue's
 (marketId, marketStartTime) pairs, is kept beside the session in precount.jsonl as structural data.
 """
 
@@ -30,6 +34,7 @@ from pathlib import Path
 import platform
 import random
 import re
+import signal
 
 from .. import stream as _stream
 from .admission import check_invocation_id, recorder_admission
@@ -318,6 +323,39 @@ class _SegmentWriter:
         self.closed = True
 
 
+class StopSignals:
+    """A run's stop flag: SIGTERM, SIGINT and SIGHUP (a closed terminal) only set requested, so the recorder
+    stops at its next check, closes the segment, writes the receipt and logs out. A SIGHUP that the process
+    inherited as ignored (nohup, trap '' HUP) stays ignored: the operator asked for the run to outlive the
+    terminal. Outside the main thread nothing is installed. restore() puts back what was there before."""
+
+    SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+    def __init__(self):
+        self.requested = False
+        self.previous = {}
+
+    @classmethod
+    def install(cls):
+        stop = cls()
+        try:
+            for sig in cls.SIGNALS:
+                if sig == signal.SIGHUP and signal.getsignal(sig) == signal.SIG_IGN:
+                    continue
+                stop.previous[sig] = signal.signal(sig, stop.handler)
+        except ValueError:          # not the main thread: the process default stays
+            stop.restore()
+        return stop
+
+    def handler(self, signum, frame):
+        self.requested = True
+
+    def restore(self):
+        previous, self.previous = self.previous, {}
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 class StreamRecorder:
     """Records the market stream for config["recorder"].market_filter into one session directory per run.
 
@@ -363,8 +401,13 @@ class StreamRecorder:
         self.market_filter = copy.deepcopy(recorder["market_filter"])
         self.market_data_filter = copy.deepcopy(recorder["market_data_filter"])
 
-    def run(self, stop_requested=lambda: False, *, max_seconds=None, end_at_ns=None, admission=None):
+    def run(self, stop_requested=lambda: False, *, max_seconds=None, end_at_ns=None, admission=None,
+            handle_signals=True):
         """Record until a stop condition; returns the final receipt (also written as receipt.json).
+
+        With handle_signals (the default) the first statement installs StopSignals for the run, so a
+        direct caller gets the same clean stop on SIGTERM, SIGINT or SIGHUP as record; record, which
+        installs its own as its first statement, passes False. The previous handlers come back on return.
 
         Stops on stop_requested(), recorder.max_duration_s, max_seconds, end_at_ns (a UTC instant in
         nanoseconds, compared with clock.time_ns(), never at or before now), recorder.max_bytes (nothing is
@@ -374,6 +417,14 @@ class StreamRecorder:
         before reading credentials; without one, run takes its own (admission.recorder_admission), so
         INHIBIT, a live ADMISSION or another recorder refuses before anything connects.
         """
+        signals = StopSignals.install() if handle_signals else None      # the very first statement (v4 A)
+        try:
+            return self._run(stop_requested, signals, max_seconds, end_at_ns, admission)
+        finally:
+            if signals is not None:
+                signals.restore()
+
+    def _run(self, stop_requested, signals, max_seconds, end_at_ns, admission):
         if max_seconds is not None and (isinstance(max_seconds, bool) or not isinstance(max_seconds, (int, float))
                                         or not max_seconds > 0):
             raise ValueError("max_seconds must be a positive number")
@@ -381,6 +432,11 @@ class StreamRecorder:
             raise ValueError("end_at must be a UTC instant after now")
         if not callable(stop_requested):
             raise TypeError("stop_requested must be a callable")
+        if signals is not None:
+            caller_stop = stop_requested
+
+            def stop_requested():
+                return signals.requested or caller_stop()
         root = require_outside_worktrees(self.root, what="recordings_root")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if admission is not None:
@@ -431,6 +487,18 @@ class _Session:
     # --- top level ----------------------------------------------------------------------------
 
     def run(self):
+        """The run, with a login guard on the session for its whole length (SessionManager.guard_logins):
+        once any stop condition holds, no login or relogin starts, whoever asks for it."""
+        guard = getattr(self.r.session, "guard_logins", None)
+        if callable(guard):
+            guard(self._stop_reason)
+        try:
+            return self._run()
+        finally:
+            if callable(guard):
+                guard(None)
+
+    def _run(self):
         try:
             self.dir.mkdir(mode=0o700)
         except FileExistsError:
@@ -512,7 +580,7 @@ class _Session:
                 return self._stream_outcome(exc, client)
             connection_id = info.get("connection_id")
             self._event("connected", connection_id=connection_id)
-            reason = self._end_at_reason()          # authenticate() may log in
+            reason = self._stop_reason()            # authenticate() may log in
             if reason:
                 self._event("disconnected", reason=reason)
                 return "stop", reason
@@ -523,9 +591,9 @@ class _Session:
             except TransportError as exc:          # a lazy login inside session.token()
                 self._event("disconnected", reason=f"login:{exc.code}")
                 return self._transport_outcome(exc)
-            except BetfairError as exc:            # login refused, banned or over budget
+            except BetfairError as exc:            # login refused, banned, over budget or stopped by the guard
                 self._event("disconnected", reason=f"login:{_code(exc)}")
-                return "stop", f"session_unavailable:{_code(exc)}"
+                return "stop", self._stop_reason() or f"session_unavailable:{_code(exc)}"
             self._event("auth_status", status_code=auth.get("status_code"),
                         connections_available=auth.get("connections_available"))
             while True:
@@ -555,8 +623,10 @@ class _Session:
     # --- market selection and subscription ----------------------------------------------------
 
     def _precount(self):
-        """Market ids for the next subscription, or (None, stop reason) when the lister fails or end_at passed."""
-        reason = self._end_at_reason()
+        """Market ids for the next subscription, or (None, stop reason) when the lister fails or a stop condition
+        holds (checked before the lister, and again after it fails: its REST retry may have been refused a
+        relogin by the login guard)."""
+        reason = self._stop_reason()
         if reason:
             return None, reason
         try:
@@ -565,7 +635,7 @@ class _Session:
             rest_filter = to_rest_market_filter(self.r.market_filter, start_from_utc=start_from)
             rows = _clean_precount(self.r.market_lister(rest_filter))
         except (BetfairError, ValueError) as exc:
-            return None, f"market_lister_failed:{_code(exc)}"
+            return None, self._stop_reason() or f"market_lister_failed:{_code(exc)}"
         self.precount = {"taken_at": utc_from_ns(taken_ns), "rows": rows}
         return [market_id for market_id, _ in rows], None
 
@@ -628,7 +698,7 @@ class _Session:
                 if failure is None:
                     self._close_segment("scheduled_refresh")
                     return "refresh", ids
-                if failure == END_AT_REACHED:
+                if not failure.startswith("market_lister_failed:"):        # a stop condition
                     self._close_segment(failure)
                     return "stop", failure
                 # Keep the current subscription (it was within limits) and try again next interval.
@@ -745,13 +815,13 @@ class _Session:
         if category == "stream_subscription_limit":
             return "stop", "subscription_limit_exceeded"       # never retry the same set
         if category == "session":
-            reason = self._end_at_reason()          # never a relogin after the end instant
+            reason = self._stop_reason()            # never a relogin once the run must stop
             if reason:
                 return "stop", reason
             try:
                 self.r.session.invalidate_and_relogin()
             except BetfairError as relogin_error:
-                return "stop", f"relogin_failed:{_code(relogin_error)}"
+                return "stop", self._stop_reason() or f"relogin_failed:{_code(relogin_error)}"
             return "reconnect", "session"
         if category in ("stream_reconnect", "stream_clock", "stream_backoff"):
             return "reconnect", category
@@ -873,7 +943,7 @@ class _Session:
         now = self.clock.monotonic_ns()
         if self.keepalive_retry_ns is not None and now < self.keepalive_retry_ns:
             return
-        if self._end_at_reason():
+        if self._stop_reason():
             return                              # a keepAlive can relogin (NO_SESSION); the loop stops next
         try:
             result = self.r.session.maybe_keep_alive()

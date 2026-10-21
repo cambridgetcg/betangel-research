@@ -134,6 +134,15 @@ class LoginBudgetExceeded(AuthError):
         super().__init__(status, error_code=error_code)
 
 
+class LoginStopped(AuthError):
+    """The session's login guard refused a login before any attempt was reserved (a recorder that must stop or
+    whose end instant passed); nothing was sent and the login ledger is unchanged."""
+
+    def __init__(self, reason):
+        super().__init__("login_stopped", error_code=reason)
+        self.reason = self.error_code
+
+
 class StreamError(BetfairError):
     def __init__(self, code, *, connection_closed=True):
         if type(connection_closed) is not bool:

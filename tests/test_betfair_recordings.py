@@ -205,7 +205,30 @@ class IndexTests(unittest.TestCase):
         lines = [image(t("08:00:00"), ("1.150", definition("20:00:00")))] + beats(t("08:00:00"), t("09:00:00"))
         self.writer.session(t("08:00:00"), [seg(lines)])
         row = self.index()[1]["1.150"]
-        self.assertEqual((row["class"], set(row["flags"])), ("LATE_START", {"late_start", "no_close"}))
+        self.assertEqual((row["class"], set(row["flags"])), ("LATE_START", {"late_start", "no_close", "never_in_window"}))
+        self.assertEqual((row["window"], row["late_start_s"]),
+                         ({"from": "2026-10-21T19:00:00.000000Z", "to": "2026-10-21T20:00:00.000000Z"}, 3600.0))
+
+    def test_market_whose_sessions_ended_before_its_window_is_never_hidden(self):
+        """Workflow #6: seen only 09:00-10:00, off 16:00; a later explicit session 14:00-18:00 left it out. The
+        window is the hour before the off, all of it late start, flagged never_in_window, and the explicit
+        segment that left it out ranks it DROPPED_EXPLICIT (it used to be a zero-length 15:00-15:00 window)."""
+        morning = [image(t("09:00:00"), ("1.160", definition("16:00:00")))] + beats(t("09:00:00"), t("10:00:00"))
+        self.writer.session(t("09:00:00"), [seg(morning)])
+        afternoon = [image(t("14:00:00"), ("1.161", definition("17:00:00")))] + beats(t("14:00:00"), t("18:00:00"))
+        self.writer.session(t("14:00:00"), [seg(afternoon, mode="explicit")])
+        row = self.index()[1]["1.160"]
+        self.assertEqual(row["window"], {"from": "2026-10-21T15:00:00.000000Z", "to": "2026-10-21T16:00:00.000000Z"})
+        self.assertEqual((row["class"], row["late_start_s"]), ("DROPPED_EXPLICIT", 3600.0))
+        self.assertEqual(set(row["flags"]), {"dropped_explicit", "late_start", "never_in_window", "no_close"})
+        # A market CLOSED before its window began gets no coverage figures, and is not called late.
+        self.writer = SessionWriter(self.paths)
+        early = ([image(t("06:00:00"), ("1.162", definition("16:00:00")))] + beats(t("06:00:00"), t("07:00:00"))
+                 + [change(t("06:30:00"), "1.162", status="CLOSED", market_time="16:00:00")])
+        self.writer.session(t("06:00:00"), [seg(early)])
+        row = self.index()[1]["1.162"]
+        self.assertEqual((row["class"], set(row["flags"])),
+                         ("CLOSED_WITHOUT_OBSERVED_INPLAY", {"closed_before_window", "closed_without_observed_inplay"}))
 
     def test_reconnect_gap_tolerated_refresh_and_a_late_market_in_a_segment(self):
         seg0 = [image(t("12:30:00"), ("1.101", definition("14:00:00")), ("1.107", definition("14:00:00")))] + \
@@ -375,7 +398,8 @@ class IndexTests(unittest.TestCase):
         for market_id in rows:
             self.assertNotIn(market_id, out)
         printed = json.loads(out)
-        self.assertEqual(set(printed), {"status", "day", "sessions", "sessions_by_status", "segments",
+        self.assertEqual(set(printed), {"status", "day", "sessions", "sessions_by_status", "inventory_damaged_sessions",
+                                        "segments",
                                         "segments_verified", "markets", "classes", "flags", "gaps",
                                         "tolerated_handovers", "index_sha256"})
         self.assertTrue(all(isinstance(v, int) for v in printed["classes"].values()))
@@ -456,6 +480,45 @@ class VerifyDayTests(unittest.TestCase):
         path = crashed_dir / "seg-000.jsonl"
         path.write_bytes(path.read_bytes().replace(b"HEARTBEAT", b"HEARTBEAt", 1))
         self.assertIn((crashed_dir.name, "segment_sha256"), self.failed())
+
+    def test_declared_precount_must_match(self):
+        """REC-3: a declared pre-count snapshot that is deleted, truncated or altered fails verify-day (and the
+        index stops using it, counting the session as damaged) instead of passing as a session from before C4."""
+        start = t("15:00:00")
+        lines = ([image(start, ("1.101", definition("16:00:00")))] + beats(start, t("16:20:00"))
+                 + [change(t("16:02:00"), "1.101", inPlay=True), change(t("16:06:00"), "1.101", status="CLOSED")])
+        directory = self.writer.session(start, [seg(lines, close="max_seconds_reached")],
+                                        precount=[(0, [("1.101", f"{DAY}T16:00:00.000Z"),
+                                                       ("1.199", f"{DAY}T16:00:00.000Z")])])
+        inventory = directory / PRECOUNT_NAME
+        original = inventory.read_bytes()
+        self.assertEqual(self.verify()["status"], "verified")
+        clock = support.FakeClock(start=f"{DAY}T23:00:00.000000Z")
+        summary = build_index(self.paths, root=self.paths.recordings_dir, day=DAY, clock=clock)
+        self.assertEqual((summary["classes"]["NOT_OBSERVED"], summary["inventory_damaged_sessions"]), (1, 0))
+        damage = [("deleted", lambda: inventory.unlink(), "precount_missing"),
+                  ("emptied", lambda: inventory.write_bytes(b""), "precount_sha256_mismatch"),
+                  ("truncated", lambda: inventory.write_bytes(original[:len(original) // 2]), "precount_sha256_mismatch"),
+                  ("altered", lambda: inventory.write_bytes(original.replace(b"1.199", b"1.198")),
+                   "precount_sha256_mismatch"),
+                  ("extra_row", lambda: inventory.write_bytes(original + original), "precount_rows_mismatch"),
+                  ("symlink", lambda: (inventory.unlink(), inventory.symlink_to(directory / "events.jsonl")),
+                   "precount_not_regular")]
+        for name, make, check in damage:
+            with self.subTest(damage=name):
+                make()
+                self.assertEqual(self.failed(), {(directory.name, check)})
+                summary = build_index(self.paths, root=self.paths.recordings_dir, day=DAY, clock=clock)
+                self.assertEqual((summary["classes"]["NOT_OBSERVED"], summary["inventory_damaged_sessions"]), (0, 1))
+                if inventory.is_symlink() or inventory.exists():
+                    inventory.unlink()
+                inventory.write_bytes(original)
+        self.assertEqual(self.verify()["status"], "verified")
+        # A receipt from before C4 (no precount entry) passes without a file, but a file it never declared fails.
+        self.assertEqual(recordings.precount_problems(self.closed, json.loads((self.closed / "receipt.json").read_text()),
+                                                      final=True), [])
+        (self.closed / PRECOUNT_NAME).write_bytes(original)
+        self.assertEqual(self.failed(), {(self.closed.name, "precount_undeclared")})
 
     def test_ledger_row_without_its_session(self):
         import shutil

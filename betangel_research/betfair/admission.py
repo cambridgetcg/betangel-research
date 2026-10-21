@@ -7,8 +7,11 @@ profile sees the same state:
 - admission.lock: an flock held only for the few milliseconds of each transition here.
 - INHIBIT: present means no recorder may start. Only release() removes it; any directory entry of
   that name counts, as for the KILL file.
-- ADMISSION: {schema_version, generation, owner, purpose, created_at}, written atomically under the
-  lock. At most one live owner at a time, and INHIBIT is present whenever ADMISSION is.
+- ADMISSION: {schema_version, generation, owner, purpose, created_at, state}, written atomically under
+  the lock. At most one live owner at a time, and INHIBIT is present whenever ADMISSION is. state is
+  "pending" from the write until the drain and the step 8 check have passed, then "admitted"; a
+  generation whose admit() died or was interrupted in between stays pending, and only a pending
+  continuation that finishes both checks is admitted.
 - admission-generation.json: the last generation issued, so generations only ever grow.
 - recorder.pid: {schema_version, pid, start_time, invocation_id, started_at} of the running recorder,
   written under the lock and removed by that recorder before it lets go of .recorder.lock.
@@ -22,17 +25,19 @@ StreamRecorder.run enters it when not handed one): under admission.lock, refuse 
 admission.lock. This holds however the recorder is started.
 
 Live admission (admit): under the lock, refuse an ADMISSION held by a different owner ("admission
-held by <owner>, generation N"); else create INHIBIT and write ADMISSION N+1, or let the same owner
-continue its generation N. Then, outside the lock, drain any recorder: try .recorder.lock without
+held by <owner>, generation N"); else create INHIBIT and write ADMISSION N+1 as pending, or let the same
+owner continue its generation N. Then, outside the lock, drain any recorder: try .recorder.lock without
 waiting; if it is held, check the pid in recorder.pid against that process's start time (pid reuse or
 a mismatch refuses, never signalling a stranger), send it SIGTERM and wait, bounded, until the lock
-is free. Then the step 8 login-ledger rule (auth.ledger_review). Only then is the generation returned.
-A refused new admission takes its own ADMISSION back and leaves INHIBIT set.
+is free. Then the step 8 login-ledger rule (auth.ledger_review), and ADMISSION becomes admitted under
+the lock. Only then is the generation returned. Only an admitted generation's cleanup continuation
+skips step 8. A refused pending generation takes its own ADMISSION back and leaves INHIBIT set.
 
 Release: under the lock, only for the generation in force, and only when the live state is clean (the
 live journal folded read-only: every order terminal or EXECUTION_COMPLETE with size_remaining_p 0, no
-active HALT, no KILL file) and the step 8 rule passes; then ADMISSION and INHIBIT are removed. An
-older generation can never release a newer admission.
+active HALT, no halted or unresolved market (stricter than design v4 section E), no KILL file; a
+journal that is a symlink, not a regular file or cannot be inspected fails closed) and the step 8 rule
+passes; then ADMISSION and INHIBIT are removed. An older generation can never release a newer one.
 
 The emergency kill never calls anything here, and nothing here takes .gateway.lock.
 """
@@ -61,7 +66,8 @@ DRAIN_POLL_S = 0.5
 OWNER_RE = re.compile(r"[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9._-]{0,63}")   # pilot-session:<id>, arm-live:<pid>
 PURPOSE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.:,()/-]{0,119}")
 INVOCATION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
-ADMISSION_KEYS = frozenset({"schema_version", "generation", "owner", "purpose", "created_at"})
+ADMISSION_KEYS = frozenset({"schema_version", "generation", "owner", "purpose", "created_at", "state"})
+ADMISSION_STATES = ("pending", "admitted")
 GENERATION_KEYS = frozenset({"schema_version", "generation", "updated_at"})
 PID_KEYS = frozenset({"schema_version", "pid", "start_time", "invocation_id", "started_at"})
 PS_BIN = "/bin/ps"
@@ -97,8 +103,10 @@ def _proc_stat_start(pid):
 
 def _ps_start(pid):
     try:
+        # lstart is printed in the zone of TZ (else /etc/localtime): pin UTC, so a change of the Mac's zone
+        # between the recorder's start and an admission never turns the same process into a "stranger".
         result = subprocess.run([PS_BIN, "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
-                                timeout=5, env={"LC_ALL": "C", "PATH": "/bin:/usr/bin"})
+                                timeout=5, env={"LC_ALL": "C", "TZ": "UTC0", "PATH": "/bin:/usr/bin"})
     except (OSError, subprocess.SubprocessError):
         return None
     text = " ".join((result.stdout or "").split())
@@ -161,6 +169,8 @@ def _check_admission(value):
         raise ValueError("owner")
     if not isinstance(value["purpose"], str) or not PURPOSE_RE.fullmatch(value["purpose"]):
         raise ValueError("purpose")
+    if value["state"] not in ADMISSION_STATES:
+        raise ValueError("state")
     parse_utc_ns(value["created_at"])
 
 
@@ -375,7 +385,9 @@ def live_state_problems(paths, *, clock=SYSTEM_CLOCK):
     one fails closed. Every order must be terminal, or EXECUTION_COMPLETE with size_remaining_p 0 (so no
     SUBMITTING, UNKNOWN, ABSENT_UNCONFIRMED, CANCEL_PENDING or other open order); no folded HALT may be
     active (a kill row a resume has since cleared does not count) and no market may be halted or
-    unresolved; and there must be no KILL file. An absent live journal has no orders."""
+    unresolved (market_unresolved: a market-scope halt or an unresolved order there; stricter than v4
+    section E); and there must be no KILL file. Only a definite absence of the journal's directory entry
+    means no orders: a symlink, a non-regular file or a path that cannot be inspected is unreadable."""
     problems = ["kill_file_engaged"] if kill_engaged(paths) else []
     try:
         state = read_only_fold(paths.journal_path("live"), mode="live", now_ns=clock.time_ns())
@@ -395,8 +407,8 @@ def live_state_problems(paths, *, clock=SYSTEM_CLOCK):
 
 
 def _withdraw(paths, record, clock):
-    """Take back a refused new admission's own ADMISSION (INHIBIT stays). Best effort: if this fails the
-    ADMISSION stays, which only keeps recording off until an explicit release."""
+    """Take back a refused pending generation's own ADMISSION (INHIBIT stays). Best effort: if this fails the
+    ADMISSION stays pending, which only keeps recording off until a continuation or an explicit release."""
     try:
         with _admission_lock(paths, clock):
             if _state(paths)["admission"] == record:
@@ -406,26 +418,41 @@ def _withdraw(paths, record, clock):
         pass
 
 
-def admit(paths, *, owner, purpose, config, generation=None, clock=SYSTEM_CLOCK, processes=None,
+def _grant(paths, record, clock):
+    """Under the lock, turn this pending ADMISSION into admitted; AdmissionRefused(admission_changed) if it is no
+    longer the one this call wrote or continued (released or replaced meanwhile)."""
+    with _admission_lock(paths, clock):
+        if _state(paths)["admission"] != record:
+            raise AdmissionRefused("admission_changed")
+        granted = dict(record, state="admitted")
+        atomic_write_json(paths.admission_file, granted)
+    return granted
+
+
+def admit(paths, *, owner, purpose, config, generation=None, cleanup=False, clock=SYSTEM_CLOCK, processes=None,
           drain_timeout_s=DRAIN_TIMEOUT_S):
-    """Admit one live owner before it logs in; returns {"generation", "owner", "purpose", "continued",
-    "recorder"}. The caller keeps the generation for the whole live command or session and its cleanup,
-    and gives it to release() at its orderly end.
+    """Admit one live owner before it logs in; returns {"generation", "owner", "purpose", "continued", "state",
+    "ledger_checked", "recorder"}. The caller keeps the generation for the whole live command or session and its
+    cleanup, and gives it to release() at its orderly end.
 
     owner is "<kind>:<id>" (pilot-session:<id>, arm-live:<pid>, manual:<pid>); purpose is a short safe
     text. With generation None this is a new admission: refused (admission_held) while any ADMISSION
-    exists, whoever owns it; otherwise INHIBIT and ADMISSION N+1 are written under the lock, any
-    recorder is drained, and the step 8 ledger rule must pass. With generation N the same owner
-    continues its own admission (continued True): a different owner is refused (admission_held), and
-    so is any generation but the one in force (admission_generation_mismatch, or admission_not_held
-    once it was released); INHIBIT is
-    restored if missing and any recorder drained, but the ledger rule is not run again, so a
-    continuation into cleanup is never blocked by the owner's own logins. A refused new admission
-    removes its ADMISSION and leaves INHIBIT set; a refused continuation changes nothing.
+    exists, whoever owns it; otherwise INHIBIT and a pending ADMISSION N+1 are written under the lock,
+    any recorder is drained, the step 8 ledger rule must pass, and only then is ADMISSION marked
+    admitted. With generation N the same owner continues its own admission (continued True): a
+    different owner is refused (admission_held), and so is any generation but the one in force
+    (admission_generation_mismatch, or admission_not_held once it was released); INHIBIT is restored if
+    missing and any recorder drained. A pending generation (its first admit died or was interrupted
+    after the write) must pass step 8 like a new one before it is admitted. Only an admitted
+    generation continuing with cleanup=True skips step 8, so its cleanup is never blocked by the
+    owner's own logins; without cleanup step 8 runs again. A refused pending generation removes its
+    ADMISSION and leaves INHIBIT set; a refused admitted one changes nothing.
     """
     _check_owner(owner, purpose)
     if generation is not None and (type(generation) is not int or generation < 1):
         raise ValueError("admission_generation_invalid")
+    if type(cleanup) is not bool:
+        raise ValueError("admission_cleanup_must_be_boolean")
     processes = processes if processes is not None else SYSTEM_PROCESSES
     paths.ensure()
     with _admission_lock(paths, clock):
@@ -449,21 +476,25 @@ def admit(paths, *, owner, purpose, config, generation=None, clock=SYSTEM_CLOCK,
             if not state["inhibit"]:
                 _write_inhibit(paths, set_by=owner, generation=number, clock=clock)
             record = {"schema_version": SCHEMA_VERSION, "generation": number, "owner": owner, "purpose": purpose,
-                      "created_at": clock.utc_now()}
+                      "created_at": clock.utc_now(), "state": "pending"}
             atomic_write_json(paths.admission_file, record)
             continued = False
+    pending = record["state"] == "pending"
+    check_ledger = pending or not cleanup
     try:
         recorder = _drain(paths, clock=clock, processes=processes, timeout_s=drain_timeout_s)
-        if not continued:
+        if check_ledger:
             problems = ledger_problems(config, paths, clock=clock)
             if problems:
                 raise AdmissionRefused("login_ledger_not_clean", detail=problems[0], problems=problems)
+        if pending:
+            record = _grant(paths, record, clock)
     except AdmissionRefused:
-        if not continued:
+        if pending:
             _withdraw(paths, record, clock)
         raise
     return {"generation": record["generation"], "owner": owner, "purpose": record["purpose"], "continued": continued,
-            "recorder": recorder}
+            "state": record["state"], "ledger_checked": check_ledger, "recorder": recorder}
 
 
 def release(paths, *, config, generation, clock=SYSTEM_CLOCK, extra_checks=()):

@@ -62,9 +62,10 @@ import secrets
 import signal
 import sqlite3
 
+from . import pilot as pilot_rules, pilot_gate
 from .arming import (anchor_failures, checks_for, combine, dynamic_arming, register_account, static_arming,
                      token_matches)
-from .config import config_sha256, money_pence
+from .config import config_sha256, money_pence, order_strategy_ref, own_strategy_refs, pilot_enabled
 from .credentials import ANCHOR_PUBLISH_WAIT_S, anchor_read, publish_anchor
 from .errors import (ApiError, BetfairError, ConfigError, CredentialError, Halted, JournalError, NotArmed,
                      OrderRefused, SecretLeak, classify, safe_code)
@@ -90,7 +91,8 @@ from .validate import make_customer_order_ref, make_customer_ref
 
 PLACE_METHOD = "SportsAPING/v1.0/placeOrders"
 CANCEL_METHOD = "SportsAPING/v1.0/cancelOrders"
-SOURCES = ("cli_manual", "api")
+# "pilot": RS-19's registered executor, live only and only through pilot_place (engineering note §2, E3).
+SOURCES = ("cli_manual", "api", "pilot")
 LIVE_BANNER = "MODE=LIVE: this sends a real order to Betfair with real money."
 ACCOUNT_WIDE_BANNER = ("MODE=LIVE: this cancels every unmatched bet on the Betfair account, Bet Angel's included; "
                        "matched bets cannot be undone.")
@@ -107,16 +109,21 @@ EMERGENCY_COMMANDS = frozenset({"cancel", "reconcile", "reconcile-accept", "kill
 # Commands whose open() reads today's exchange orders (spec section 9.9). kill and kill-account skip it:
 # their sweep reads our bets itself and must not wait on anything else (a documented deviation).
 # settle-market skips it too: it books the worst case whatever the exchange shows (amendment A3, D3).
-STARTUP_RECONCILE_COMMANDS = frozenset({"place", "live-probe", "reconcile", "reconcile-accept", "cancel"})
+STARTUP_RECONCILE_COMMANDS = frozenset({"place", "live-probe", "reconcile", "reconcile-accept", "cancel",
+                                        "pilot-place"})
 # Commands whose open() also resolves pending UNKNOWNs before anything is sent (spec section 9.3 step 4). A
 # gateway open for one of them stops reconciling once a KILL file exists (A7 refused one at open, so any KILL
 # is new); the orders stay UNKNOWN at their worst case and the kill's sweep is not slowed (amendment A3, D4).
-RESOLVE_ON_OPEN_COMMANDS = frozenset({"place", "live-probe"})
+RESOLVE_ON_OPEN_COMMANDS = frozenset({"place", "live-probe", "pilot-place"})
 # Commands that can add risk or remove counted exposure: open() refuses unless the Keychain anchor was
 # written first (waiting up to credentials.ANCHOR_PUBLISH_WAIT_S for another publisher, _anchor_wait_s).
-RISK_COMMANDS = frozenset({"place", "live-probe", "reconcile-accept", "settle-market"})
-# Commands whose operator lines are typed before open() takes the global lock (preconfirm).
+RISK_COMMANDS = frozenset({"place", "live-probe", "reconcile-accept", "settle-market", "pilot-place"})
+# Commands whose operator lines are typed before open() takes the global lock (preconfirm). Not pilot-place: its
+# orders have no per-order echo (engineering note §2, E1); A11 still requires the operator's terminal.
 PRECONFIRM_COMMANDS = frozenset({"place", "live-probe", "reconcile-accept", "settle-market"})
+# Manual live orders, refused while an RS-19 pilot session is armed (Yu 2026-10-21, P1-06 critique 13).
+MANUAL_ORDER_COMMANDS = frozenset({"place", "live-probe"})
+MANUAL_DURING_SESSION = "manual_order_during_pilot_session"
 # kill and kill-account open without .gateway.lock (amendment A3, D4).
 KILL_COMMANDS = ("kill", "kill-account")
 UNTRUSTED_SWEEP_NOTE = "journal_untrusted_sweep_uses_config_strategy_ref"
@@ -310,9 +317,12 @@ def _exception_payload(exc):
 
 
 def _decision_payload(decision):
-    return {"decision_id": decision["decision_id"], "approved": decision["approved"], "rule": decision["rule"],
-            "action": decision.get("action"), "detail": decision["detail"], "worst_case": decision["worst_case"],
-            "evaluated_at": decision["evaluated_at"]}
+    payload = {"decision_id": decision["decision_id"], "approved": decision["approved"], "rule": decision["rule"],
+               "action": decision.get("action"), "detail": decision["detail"], "worst_case": decision["worst_case"],
+               "evaluated_at": decision["evaluated_at"]}
+    if "pilot_record_sha256" in decision:          # an RS-19 pilot decision binds its PLACE record (note §4)
+        payload["pilot_record_sha256"] = decision["pilot_record_sha256"]
+    return payload
 
 
 def _order_view(order):
@@ -352,7 +362,7 @@ class OrderGateway:
     """The only order path. See the module docstring; spec section 2.17 for the interface."""
 
     def __init__(self, config, *, paths, mode, journal, guard, paper=None, rpc=None, read=None, confirmer=None,
-                 clock=SYSTEM_CLOCK, env=None, keychain_runner=None, on_send=None):
+                 clock=SYSTEM_CLOCK, env=None, keychain_runner=None, on_send=None, pilot=None):
         if mode not in ("paper", "live"):
             raise ConfigError("gateway_mode_invalid")
         if getattr(journal, "mode", None) != mode or getattr(guard, "mode", None) != mode:
@@ -360,6 +370,8 @@ class OrderGateway:
         if mode == "paper":
             if rpc is not None:
                 raise ConfigError("paper_gateway_must_not_hold_rpc")
+            if pilot is not None:
+                raise ConfigError("paper_gateway_must_not_hold_pilot")
             if read is not None and getattr(read, "app_key_slot", None) != "delayed":
                 raise ConfigError("paper_gateway_read_must_use_delayed_key")
         else:
@@ -411,6 +423,11 @@ class OrderGateway:
         self._resolved_at_open = []       # place/live-probe: earlier UNKNOWN orders this open() found live
         self._lock = None                 # the HeldLock of the gateway (live) or paper lock while open
         self._last_event = None           # the last event this object appended
+        # RS-19 pilot (P1-06): the context the identity is read from (live only), and per pilot-place open: its id,
+        # the contract, session and receipt PA1-PA3 accepted, the one market it reserved, the largest time it has
+        # observed (every own event's recorded_at included, P106-1) and the bet id its remainder cancel may name.
+        self._pilot = pilot
+        self._reset_pilot_open()
 
     # --- journal plumbing ----------------------------------------------------------------------
 
@@ -436,6 +453,8 @@ class OrderGateway:
             return None
         self._seqs.append(event["seq"])
         self._last_event = event
+        if self._pilot_seen_ns is not None:
+            self._pilot_seen_ns = max(self._pilot_seen_ns, parse_utc_ns(event["recorded_at"]))
         return event
 
     def _state(self):
@@ -606,7 +625,10 @@ class OrderGateway:
         if self._command is not None:
             raise OrderRefused("gateway_already_open")
         checks_for(command)
+        self._reset_pilot_open()
         if self.mode == "paper":
+            if command == "pilot-place":
+                raise OrderRefused("pilot_place_is_live_only")
             self._stack = contextlib.ExitStack()
             try:
                 self._lock = self._stack.enter_context(file_lock(self.paths.paper_lock, clock=self.clock))
@@ -695,6 +717,8 @@ class OrderGateway:
             self._lock = self._stack.enter_context(file_lock(self.paths.gateway_lock, timeout_s=deadline_s,
                                                              clock=self.clock))
             self._verify_journal()
+            if command in MANUAL_ORDER_COMMANDS:
+                self._refuse_manual_during_session()
             failures = self._keychain_anchor_ok()
             if failures:
                 raise NotArmed(failures[0], detail={"failures": failures})
@@ -720,6 +744,10 @@ class OrderGateway:
                     resolved = self._resolve_unknowns(budget_s=OPEN_RECONCILE_BUDGET_S, stop_on_kill=True)
                     self._resolved_at_open = [r["customer_order_ref"] for r in resolved
                                               if r["final_state"] not in UNRESOLVED_STATES]
+            if command == "pilot-place":
+                # PA1-PA4 under the lock, after the open-time reconcile and before the anchor, so every note
+                # they journal is covered by it; failures refuse like registry failures (critique 8b).
+                registry_failures.extend(self._pilot_open_checks())
             journal_state = self._state()
             dynamic = dynamic_arming(self.config, command=command, session=session,
                                      account_details=self._account_details, journal_state=journal_state,
@@ -807,7 +835,7 @@ class OrderGateway:
         now_ns = self.clock.time_ns()
         since = utc_from_ns(now_ns - now_ns % (86_400 * _NS_PER_S))
         state = self._state()
-        refs = sorted({self.strategy_ref} | set(state["strategy_refs_seen"]))
+        refs = sorted(set(own_strategy_refs(self.config)) | set(state["strategy_refs_seen"]))
         startup = startup_reconcile(self.read, state, strategy_refs=refs, live_app_key=self.rpc.session.app_key(),
                                     since_utc=since, clock=self.clock)
         self._append("startup_reconcile", {"exchange_orders_today": startup["exchange_orders_today"],
@@ -828,7 +856,15 @@ class OrderGateway:
         state.update(halted=True, halt_reasons=["kill"])
         return state
 
+    def _reset_pilot_open(self):
+        self._open_id = None
+        self._pilot_contract = self._pilot_session_id = self._pilot_receipt_sha256 = None
+        self._reserved = None
+        self._pilot_seen_ns = None
+        self._pilot_bet_id = None
+
     def _release(self):
+        self._reset_pilot_open()
         self._lock = None
         stack, self._stack = self._stack, None
         if stack is not None:
@@ -856,9 +892,16 @@ class OrderGateway:
 
     # --- shared checks -------------------------------------------------------------------------
 
-    def _check_source(self, source):
+    def _check_source(self, source, *, pilot_path=False):
         if source not in SOURCES:
             raise ValueError("source must be cli_manual or api")
+        if source == "pilot":
+            # E3: live only, and only on the pilot path (pilot_place, and its own remainder cancel).
+            if self.mode != "live":
+                raise OrderRefused("pilot_source_live_only")
+            if not pilot_path:
+                raise OrderRefused("pilot_source_needs_pilot_path")
+            return
         if self.mode == "live" and source != "cli_manual":
             raise OrderRefused("api_source_paper_only")
 
@@ -912,24 +955,41 @@ class OrderGateway:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def _send_bounds(self, book):
+    def _send_bounds(self, book, *, pilot=None):
         """(send_by_monotonic_ns, send_gate) for a live place request (amendment A3, C2 and D4).
 
         send_by is the book's monotonic time plus max_book_age_s (the API client caps it at the
         capability's expiry). The gate runs inside the transport right before the first request byte:
         kill_engaged_before_send once the KILL file exists (fail-closed), else book_stale_before_send
         when the book is too old on either clock (the monotonic clock stops while a Mac sleeps), else
-        nothing. A refusal there is FAILED(transport_not_sent): zero bytes were written."""
+        nothing. A refusal there is FAILED(transport_not_sent): zero bytes were written.
+
+        pilot (an RS-19 pilot order, engineering note §5): the gate context of pilot_gate.first_byte_refusal.
+        send_by is also capped at the decision book's monotonic time plus the window left to end_ns, and after
+        checks 1 and 2 the gate reads the journal head fresh, on its own read-only connection, and runs §5
+        checks 3-6 on it (an unreadable head refuses). Check 3 holds only because nothing is appended between our
+        submit and the first byte: the KILL branch after the submit returns without sending, and _send appends
+        nothing before the request (pinned by a test). A stop committed after this head read cannot be seen (the
+        residual race of note §5, pinned by a test)."""
         taken = book.get("monotonic_ns") if isinstance(book, dict) else None
         limit = int(self.config["orders"]["caps"]["max_book_age_s"] * _NS_PER_S)
         send_by = taken + limit if type(taken) is int else self.clock.monotonic_ns()
+        if pilot is not None:
+            send_by = min(send_by, pilot["dbm"] + (pilot["end_ns"] - pilot["dbw"]))
 
         def gate():
             if kill_engaged(self.paths):
                 return "kill_engaged_before_send"
             if not self._book_age_ok(book):
                 return "book_stale_before_send"
-            return None
+            if pilot is None:
+                return None
+            try:
+                head = self.journal.head_fresh()
+            except Exception:
+                return "pilot_gate_head_unreadable"
+            return pilot_gate.first_byte_refusal(pilot, wall_ns=self.clock.time_ns(),
+                                                 mono_ns=self.clock.monotonic_ns(), head=head)
 
         return send_by, gate
 
@@ -1101,15 +1161,21 @@ class OrderGateway:
             return {"seq": self._last_event["seq"], "last_sha256": self._last_event["event_sha256"]}
         return dict(basis)
 
-    def _append_submit(self, payload, *, basis, own_from, **columns):
+    def _append_submit(self, payload, *, basis, own_from, before_ns=None, **columns):
         """Journal a place or replace submit only if _submit_refusal passes, as a compare-and-append on
-        the expected head (so nothing can land between the check and the write). -> refusal code or None."""
+        the expected head (so nothing can land between the check and the write). -> refusal code or None.
+        before_ns (a pilot submit, P106-2): the submit is also refused (pilot_submit_too_late) unless it is
+        stamped, and committed, before the authority boundary."""
         refusal = self._submit_refusal(basis, own_from)
         if refusal is not None:
             return refusal
+        if before_ns is not None:
+            columns["before_ns"] = before_ns
         try:
             self._append("submit", payload, expect_head=self._own_head(basis, own_from), **columns)
         except JournalError as exc:
+            if before_ns is not None and "journal_append_too_late" in str(exc):
+                return "pilot_submit_too_late"
             if "journal_head_moved" not in str(exc):
                 raise
             return "journal_changed_since_decision"
@@ -1146,6 +1212,7 @@ class OrderGateway:
         if not token_matches(self.config, confirm_token, self.clock.time_ns()):
             raise NotArmed("confirm_token_mismatch")
         self._require_armed()
+        self._refuse_manual_during_session()
         if self._resolved_at_open:
             return self._resolved_refusal()
         if not isinstance(instructions, list) or not instructions or any(_instruction_echo(i) is None
@@ -1187,27 +1254,490 @@ class OrderGateway:
                              for ref in refs if ref in orders]}
         return self._result(None, refs, decision="refused", refusal={"rule": RESOLVED_AT_OPEN_RULE, "detail": detail})
 
+    # --- RS-19 pilot placement (P1-06; engineering note §2-§9) ---------------------------------------------------
+
+    def _refuse_manual_during_session(self):
+        """Live manual orders (place, live-probe) are refused while any RS-19 pilot session in the journal has not
+        reached its end (Yu 2026-10-21, P1-06 critique 13), read from the durable journal alone: it holds without
+        orders.pilot or a PilotContext. With no pilot session in the journal, nothing changes."""
+        if self.mode != "live":
+            return
+        try:
+            events = list(self.journal.events())
+        except _JOURNAL_READ_ERRORS:
+            return              # the open's own checks refuse an unreadable journal (A7 reads it as halted)
+        if pilot_gate.session_window_open(events, now_ns=self.clock.time_ns()):
+            raise OrderRefused(MANUAL_DURING_SESSION)
+
+    def _pilot_open_checks(self):
+        """PA1-PA4 at a pilot-place open, under the lock (note §2, §6, §7; P1-06 §2.4) -> failure codes, [] when
+        the open may place. One read of the journal feeds the pilot fold, whose due stops are journaled first.
+        PA1: the contract file parses, is frozen, and its sha256 equals orders.pilot's, the receipt's and the
+        journal's. PA2: pilot_gate.code_identity. PA3: the exact config sha256 of the receipt, the contract's values
+        in the config, and an armed, unended, unexpired session. PA4: no active stop, placing not ended. A failure
+        journals one refusal note (a review stop, note §9) for the first failure Q6 does not exempt, under the
+        journal's contract, when the journal holds a session for it; nothing before any registration. A fold that
+        raises is pilot_fold_failed with nothing journaled: placement fails closed, cleanup never folds."""
+        self._open_id = "open-" + secrets.token_hex(8)
+        ctx = self._pilot
+        if ctx is None or not pilot_enabled(self.config):
+            return ["pilot_not_configured"]
+        section = self.config["orders"]["pilot"]
+        now_ns = self.clock.time_ns()
+        try:
+            events = list(self.journal.events())
+        except _JOURNAL_READ_ERRORS:
+            return ["pilot_fold_failed"]
+        registered = pilot_gate.journal_contract_sha256(events)
+        failures, contract, caps, state = [], None, None, None
+        try:
+            raw = ctx.read_contract(section["contract_path"])
+        except OSError:
+            failures.append("pa1_contract_unreadable")
+        else:
+            try:
+                contract = pilot_rules.contract_from_bytes(raw)
+                caps = pilot_rules.decimal_loads(raw)["caps"]
+            except pilot_rules.PilotError:
+                contract = None
+                failures.append("pa1_contract_invalid")
+        if contract is not None and (contract.sha256 != section["contract_sha256"]
+                                     or registered not in (None, contract.sha256)):
+            failures.append("pa1_contract_differs")
+        if contract is not None and "pa1_contract_differs" not in failures:
+            try:
+                state = pilot_rules.fold(events, contract=contract, now_ns=now_ns, live_open_id=self._open_id)
+            except _JOURNAL_READ_ERRORS:
+                return ["pilot_fold_failed"]
+            for stop in state.due_stops:
+                self._append("note", {"pilot": stop})
+        if state is not None:
+            session = state.sessions[-1] if state.sessions else None
+        else:
+            session = pilot_gate.latest_note(events, "session_start", registered) if registered else None
+        source = session or (pilot_gate.latest_note(events, "registration", registered) if registered else None)
+        receipt_sha = source["registration_receipt_sha256"] if source else None
+        receipt = None
+        try:
+            receipt = pilot_gate.read_registration(self.paths, receipt_sha)
+        except pilot_gate.GateRefusal as exc:
+            failures.append(exc.code)
+        if receipt is not None:
+            if contract is not None and contract.sha256 != receipt["contract_sha256"]:
+                failures.append("pa1_contract_differs")
+            failures.extend(pilot_gate.code_identity(ctx, receipt))
+            if config_sha256(self.config) != receipt["config_sha256"]:
+                failures.append("pa3_config_differs")
+        if contract is not None and pilot_gate.config_holds_contract(self.config, contract, caps):
+            failures.append("pa3_config_not_contract")
+        if state is not None:
+            code = pilot_rules.placement_authority(state, phase="reserve", now_ns=now_ns)
+            if code is not None:
+                failures.append(pilot_gate.AUTHORITY_CODES[code])
+        failures = sorted(set(failures), key=failures.index)
+        if not failures:
+            self._pilot_contract, self._pilot_session_id = contract, session["session_id"]
+            self._pilot_receipt_sha256 = receipt_sha
+            return []
+        noted = [code for code in failures if code not in pilot_gate.NO_NEW_STOP_CODES]
+        if noted and registered is not None and session is not None:
+            self._append("note", pilot_rules.pilot_note(
+                "refusal", registered, session_id=session["session_id"], open_id=self._open_id, reservation_seq=None,
+                code=noted[0], row_sha256=None, book_sha256=None))
+        return failures
+
+    def pilot_place(self, market_id, *, scheduler_off_ns, confirm_token):
+        """One RS-19 pilot placement in this pilot-place open (engineering note §4-§6, §9; P1-06 §2.5): reserve the
+        market by compare-and-append, fetch one fresh live-key catalogue row and one decision book as raw bytes,
+        classify once with capacity in the same append, then for a PLACE the send path: the authority fold and R13
+        before the funds read, the send book, R1-R12 and V-rules, the intent and submit on the authority head, and
+        the note §5 first-byte gate. There is no book, catalogue, country or instruction parameter: everything comes
+        from the gateway's own reads. One reservation per open. -> _result(...) plus "pilot": {reservation_seq,
+        decision_seq, record_sha256, customer_order_ref, outcome, code, submit_seq, state, bet_id,
+        size_remaining_p, unknown, latch}; a SKIP is decision "skipped". Nothing is ever retried or resent."""
+        self._check_source("pilot", pilot_path=True)
+        self._require_open("pilot-place")
+        if self._reserved is not None:
+            raise OrderRefused("pilot_one_reservation_per_open")
+        if not isinstance(market_id, str) or not pilot_rules.MARKET_ID_RE.fullmatch(market_id):
+            raise OrderRefused("pilot_market_id_invalid")
+        if type(scheduler_off_ns) is not int:
+            raise OrderRefused("pilot_scheduler_off_invalid")
+        if not token_matches(self.config, confirm_token, self.clock.time_ns()):
+            raise NotArmed("confirm_token_mismatch")
+        self._require_armed()
+        self._seqs = []
+        self._pilot_seen_ns = 0
+        info = {"reservation_seq": None, "decision_seq": None, "record_sha256": None, "customer_order_ref": None,
+                "outcome": None, "code": None, "submit_seq": None, "state": None, "bet_id": None,
+                "size_remaining_p": None, "unknown": False, "latch": None}
+        if self._resolved_at_open:
+            info["latch"] = self._pilot_refusal_note(RESOLVED_AT_OPEN_RULE, None)
+            return dict(self._resolved_refusal(), pilot=info)
+        decided = self._pilot_decide(market_id, scheduler_off_ns, info)
+        if decided is None or decided.get("refusal") is not None or decided["decision"] == "skipped":
+            return decided
+        return self._pilot_send(market_id, decided, info)
+
+    def _pilot_result(self, info, rule, *, decision="refused", latch=None):
+        if latch is not None:
+            info["latch"] = latch
+        return self._result(None, [], decision=decision, refusal=None if rule is None else {"rule": rule, "detail": {}},
+                            extra={"pilot": dict(info)})
+
+    def _pilot_fold(self, events, now_ns):
+        """pilot.fold as the live open, or None when it raises (placement then refuses pilot_fold_failed)."""
+        try:
+            return pilot_rules.fold(events, contract=self._pilot_contract, now_ns=now_ns, live_open_id=self._open_id)
+        except _JOURNAL_READ_ERRORS:
+            return None
+
+    def _pilot_note(self, payload, **columns):
+        """A plain append of one validated pilot record of this contract (stops, refusals: idempotent ids)."""
+        kind = pilot_rules.validate_pilot_payload(payload)
+        if kind is None or payload["pilot"]["contract_sha256"] != self._pilot_contract.sha256:
+            raise OrderRefused("pilot_record_not_this_contract")
+        pilot_rules.validate_event_columns(kind, payload["pilot"], dict(columns, state_after=None))
+        return self._append("note", payload, **columns)
+
+    def _pilot_append(self, payload, *, head, before_ns, **columns):
+        """A pilot reservation or decision as a compare-and-append on the head it was folded at, refused unless it is
+        stamped and committed before before_ns (P106-2) -> (event, None) or (None, "moved" | "too_late")."""
+        kind = pilot_rules.validate_pilot_payload(payload)
+        if kind is None or payload["pilot"]["contract_sha256"] != self._pilot_contract.sha256:
+            raise OrderRefused("pilot_record_not_this_contract")
+        pilot_rules.validate_event_columns(kind, payload["pilot"], dict(columns, state_after=None))
+        try:
+            return self._append("note", payload, expect_head=head, before_ns=before_ns, **columns), None
+        except JournalError as exc:
+            if "journal_head_moved" in str(exc):
+                return None, "moved"
+            if "journal_append_too_late" in str(exc):
+                return None, "too_late"
+            raise
+
+    def _pilot_due_stops(self, state):
+        for stop in state.due_stops:
+            self._pilot_note({"pilot": stop})
+        return bool(state.due_stops)
+
+    def _pilot_refusal_note(self, code, reservation_seq):
+        """A refusal note, from which the fold derives the review stop '<code>-<res>-<note seq>' -> "review"."""
+        self._pilot_note(pilot_rules.pilot_note(
+            "refusal", self._pilot_contract.sha256, session_id=self._pilot_session_id, open_id=self._open_id,
+            reservation_seq=reservation_seq, code=pilot_gate.refusal_code(code), row_sha256=None, book_sha256=None))
+        return "review"
+
+    def _pilot_session_stop(self, code, reservation_seq):
+        """A session stop (note §9) -> "session"."""
+        stop_id = pilot_gate.session_stop_id(code, reservation_seq=reservation_seq, open_id=self._open_id)
+        self._pilot_note({"pilot": pilot_rules.stop_payload(self._pilot_contract, stop_id, "session",
+                                                            pilot_gate.refusal_code(code),
+                                                            source_seq=reservation_seq)})
+        return "session"
+
+    def _pilot_latch(self, pilot, rule, *, reason=None):
+        """Journal the note §9 latch of one refusal on the send path (pilot: the send context) -> the latch."""
+        latch = pilot_gate.latch_for(rule, reason)
+        if latch == "session":
+            code = "kill_file" if rule == "halted" else rule
+            latch = self._pilot_session_stop(code, pilot["reservation_seq"])
+        elif latch == "review":
+            latch = self._pilot_refusal_note(rule, pilot["reservation_seq"])
+        pilot["latch"] = latch
+        return latch
+
+    def _pilot_latch_decision(self, pilot, decision):
+        """A refusing risk decision's latches, every cause counted (mixed causes): a session stop per session-latched
+        rule and one refusal note for the first review-latched one; the result names the strongest."""
+        found, noted = [], False
+        for failure in decision["detail"].get("failures") or []:
+            latch = pilot_gate.latch_for(failure["rule"], failure.get("reason"))
+            if latch == "session":
+                code = "kill_file" if failure["rule"] == "halted" else failure["rule"]
+                if code not in found:
+                    found.append(code)
+                    self._pilot_session_stop(code, pilot["reservation_seq"])
+            elif latch == "review" and not noted:
+                noted = True
+                self._pilot_refusal_note(failure["rule"], pilot["reservation_seq"])
+        latches = [pilot_gate.latch_for(f["rule"], f.get("reason")) for f in decision["detail"].get("failures") or []]
+        pilot["latch"] = next((name for name in ("review", "session", "market", "none") if name in latches), None)
+
+    def _pilot_too_late(self, pilot):
+        """G9: refused unless the larger of the clock and every time this open has observed is at least the 30 s
+        margin before the authority boundary (critique 10; the submit's before_ns is the exact check)."""
+        latest = max(self.clock.time_ns(), self._pilot_seen_ns or 0)
+        return "pilot_submit_too_late" if latest + pilot_gate.DECISION_MARGIN_NS >= pilot["end_ns"] else None
+
+    def _pilot_boundary(self, state):
+        """The authority boundary of an append judged on state: the session's end, the final date and the next
+        record trigger, whichever is first (P106-2)."""
+        session = next(s for s in reversed(state.sessions) if s["session_id"] == self._pilot_session_id)
+        trigger = pilot_rules.next_trigger_ns(state)
+        bounds = [pilot_rules.session_end_ns(session), state.contract.final_date_ns]
+        return min(bounds + ([trigger] if trigger is not None else []))
+
+    def _pilot_decide(self, market_id, scheduler_off_ns, info):
+        """Steps A-D: fold and the checks the journal already predicts, the reservation, one fetch, one
+        classification. -> a result to return, or the PLACE context for _pilot_send."""
+        C, session_id, open_id = self._pilot_contract, self._pilot_session_id, self._open_id
+        deadline_s = self.config["orders"]["pilot"]["evidence_deadline_s"]
+        deadline_ns = int(deadline_s * _NS_PER_S)
+        attempts, waited, reserved = 0, False, None
+        while reserved is None:
+            # A. One read feeds both folds; the expected head is that read's last event, never a separate anchor().
+            events = list(self.journal.events())
+            head = {"seq": events[-1]["seq"], "last_sha256": events[-1]["event_sha256"]}
+            t0 = self.clock.time_ns()
+            state = self._pilot_fold(events, t0)
+            if state is None:
+                return self._pilot_result(info, "pilot_fold_failed")
+            if self._pilot_due_stops(state):
+                return self._pilot_result(info, "pa4_pilot_stop")
+            if kill_engaged(self.paths):                                        # critique 2
+                return self._pilot_result(info, "kill_engaged", latch=self._pilot_session_stop("kill_file", None))
+            try:
+                core = fold_events(events, mode="live", now_ns=t0)
+            except _JOURNAL_READ_ERRORS:
+                return self._pilot_result(info, "pilot_fold_failed")
+            if core["halted"]:
+                return self._pilot_result(info, "halted")
+            code = pilot_rules.placement_authority(state, phase="reserve", now_ns=t0, session_id=session_id)
+            if code is not None:
+                return self._pilot_result(info, pilot_gate.AUTHORITY_CODES[code])
+            if market_id in state.reservations:
+                return self._pilot_result(info, "pilot_market_already_reserved")
+            if t0 < scheduler_off_ns + C.window_from_offset_s * _NS_PER_S:
+                return self._pilot_result(info, "pilot_reserve_too_early")
+            session_end = pilot_rules.session_end_ns(next(s for s in reversed(state.sessions)
+                                                          if s["session_id"] == session_id))
+            if t0 + pilot_gate.END_MARGIN_NS >= session_end:
+                return self._pilot_result(info, "pilot_reserve_end_margin")
+            trigger = pilot_rules.next_trigger_ns(state)
+            horizon = (t0 + (C.send_deadline_offset_s - C.window_from_offset_s) * _NS_PER_S + deadline_ns
+                       + pilot_gate.TRIGGER_HORIZON_SLACK_NS)
+            if trigger is not None and trigger <= horizon:
+                if waited or trigger - t0 > pilot_gate.TRIGGER_WAIT_NS:
+                    return self._pilot_result(info, "pilot_trigger_before_deadline")
+                waited = True
+                self.clock.sleep((trigger - t0 + 1_000_000) / _NS_PER_S)
+                continue
+            # Critique 1: the rules the journal already predicts, before a reservation can use a slot.
+            failures = self.guard.evaluate_pilot_reservation(market_id, state=core, now_ns=t0, size_p=C.size_p,
+                                                             kill_engaged=kill_engaged(self.paths))
+            if failures:
+                latches = []
+                for failure in failures:
+                    if pilot_gate.latch_for(failure["rule"], failure["reason"]) == "session":
+                        code = "kill_file" if failure["rule"] == "halted" else failure["rule"]
+                        if code not in latches:
+                            latches.append(code)
+                            self._pilot_session_stop(code, None)
+                return self._pilot_result(info, failures[0]["rule"], latch="session" if latches else None)
+            # B. Reserve before fetching: a compare-and-append on the head folded, stamped before the boundary.
+            note = pilot_rules.pilot_note("reservation", C.sha256, session_id=session_id, open_id=open_id)
+            event, problem = self._pilot_append(note, head=head, before_ns=self._pilot_boundary(state),
+                                                market_id=market_id)
+            if problem == "too_late":
+                return self._pilot_result(info, "pilot_reserve_too_late")
+            if problem == "moved":
+                attempts += 1
+                if attempts >= pilot_gate.RESERVE_ATTEMPTS:
+                    return self._pilot_result(info, "pilot_reserve_head_unstable")
+                continue
+            reserved = event
+            known = set(core["orders"]) | {rec.ref for rec in state.place_records}
+        self._reserved = market_id
+        reservation_seq = info["reservation_seq"] = reserved["seq"]
+        # C. Fetch once: one raw catalogue row, then one decision book, each written durably before classification.
+        reads = {"row": self.read.raw_catalogue_row(market_id, deadline_s=deadline_s),
+                 "book": self.read.raw_decision_book(market_id, deadline_s=deadline_s)}
+        bodies, failure = {}, None
+        for name in ("row", "book"):
+            bodies[name] = reads[name]["body"] if isinstance(reads[name]["body"], bytes) else b""
+            code = pilot_gate.read_failure(reads[name], deadline_ns=deadline_ns)
+            failure = failure or (code and f"{name}_{code}")
+        try:
+            for name in ("row", "book"):
+                pilot_gate.store_evidence(self.paths, C.sha256, reservation_seq, name, reads[name], bodies[name],
+                                          failure)
+        except (OSError, SecretLeak):
+            return self._pilot_result(info, "pilot_evidence_not_stored")     # SKIP(interrupted) once the open ends
+        observed_wall, observed_mono = reads["book"]["sent_wall_ns"], reads["book"]["sent_monotonic_ns"]
+        ref = make_customer_order_ref(self.clock.time_ns())
+        while ref in known:
+            ref = make_customer_order_ref(self.clock.time_ns())
+        # D. Classify once on a head folded after the observation, capacity in the same compare-and-append; a moved
+        # head re-folds and re-classifies with the same bytes and stamps, never a second fetch.
+        for _ in range(pilot_gate.CLASSIFY_ATTEMPTS):
+            events = list(self.journal.events())
+            head = {"seq": events[-1]["seq"], "last_sha256": events[-1]["event_sha256"]}
+            state = self._pilot_fold(events, self.clock.time_ns())
+            if state is None:
+                return self._pilot_result(info, "pilot_fold_failed")
+            result = pilot_rules.classify(
+                C, state, reservation_seq=reservation_seq, open_id=open_id, session_id=session_id,
+                registration_receipt_sha256=self._pilot_receipt_sha256, customer_order_ref=ref,
+                row_body=bodies["row"], book_body=bodies["book"], observed_wall_ns=observed_wall,
+                observed_monotonic_ns=observed_mono, read_failure=failure)
+            if result["refusal"] is not None:
+                # Plainly appended (critique 12): the fold derives its review stop and SKIP(interrupted).
+                self._pilot_note({"pilot": result["refusal_record"]})
+                return self._pilot_result(info, result["refusal"], latch="review")
+            record = result["record"]
+            boundary = self._pilot_boundary(state)
+            if max(self.clock.time_ns(), state.now_ns) + pilot_gate.DECISION_MARGIN_NS >= boundary:
+                return self._pilot_result(info, "pilot_decision_too_late")
+            event, problem = self._pilot_append({"pilot": record}, head=head, before_ns=boundary,
+                                                market_id=market_id)
+            if problem == "too_late":
+                return self._pilot_result(info, "pilot_decision_too_late")
+            if problem is None:
+                break
+        else:
+            return self._pilot_result(info, "pilot_decision_not_journaled")
+        for stop in result["stops"]:
+            self._pilot_note({"pilot": stop})
+        record = event["payload"]["pilot"]
+        digest = pilot_rules.record_sha256(record)
+        info.update(decision_seq=event["seq"], record_sha256=digest, outcome=record["outcome"], code=record["code"],
+                    customer_order_ref=record["customer_order_ref"])
+        if record["outcome"] != "PLACE":
+            scopes = {stop["scope"] for stop in result["stops"]}
+            info["latch"] = "review" if "review" in scopes else "session" if scopes else "market"
+            return self._result(None, [], decision="skipped", extra={"pilot": dict(info)})
+        try:
+            # Q9: the send book's market_time is read from this fresh row, not a cached one.
+            row = strict_json_loads(bodies["row"].decode("utf-8"))["result"][0]
+            self.read.store_catalogue_row(market_id, row)
+        except (OSError, SecretLeak, ValueError, TypeError, KeyError, IndexError, UnicodeDecodeError):
+            pass                                  # the send book's off check still refuses a stale off
+        return {"decision": "place", "refusal": None, "decision_seq": event["seq"], "digest": digest,
+                "ref": record["customer_order_ref"], "instruction": pilot_rules.expected_instruction(record)}
+
+    def _pilot_send(self, market_id, ctx, info):
+        """Steps E-I for a PLACE record: the authority fold before the funds read (critique 3), PA4 and the session
+        (phase "send", P106-3) and R13 before any intent, then the send book, the off check and _place_core."""
+        C, session_id, open_id = self._pilot_contract, self._pilot_session_id, self._open_id
+        events = list(self.journal.events())
+        basis = {"genesis_sha256": events[0]["event_sha256"], "seq": events[-1]["seq"],
+                 "last_sha256": events[-1]["event_sha256"]}
+        own_from = len(self._seqs)
+        now_ns = self.clock.time_ns()
+        state = self._pilot_fold(events, now_ns)
+        if state is None:
+            return self._pilot_result(info, "pilot_fold_failed")
+        self._pilot_seen_ns = max(self._pilot_seen_ns, state.now_ns)
+        if self._pilot_due_stops(state):
+            return self._pilot_result(info, "pa4_pilot_stop")
+        code = pilot_rules.placement_authority(state, phase="send", now_ns=now_ns, session_id=session_id,
+                                               decision_seq=ctx["decision_seq"])
+        if code is not None:
+            # No new stop for an active stop, an ending or a session gone (Q6); a record that is no longer this
+            # reservation's live, unsent decision is a review stop (Q11's default).
+            code = pilot_gate.AUTHORITY_CODES[code]
+            latch = (None if code in pilot_gate.NO_NEW_STOP_CODES
+                     else self._pilot_refusal_note(code, info["reservation_seq"]))
+            return self._pilot_result(info, code, latch=latch)
+        rec = next(r for r in state.place_records if r.decision_seq == ctx["decision_seq"]).record
+        r13 = pilot_rules.check_binding(rec, contract=C, market_id=market_id, instruction=ctx["instruction"],
+                                        customer_order_ref=ctx["ref"],
+                                        customer_strategy_ref=order_strategy_ref(self.config, "pilot"),
+                                        open_id=open_id, session_id=session_id, record_digest=ctx["digest"])
+        if r13 is not None:                       # no intent: a pilot intent that fails R13 is a breach
+            return self._pilot_result(info, r13, latch=self._pilot_refusal_note(r13, info["reservation_seq"]))
+        try:
+            core = fold_events(events, mode="live", now_ns=now_ns)
+        except _JOURNAL_READ_ERRORS:
+            return self._pilot_result(info, "pilot_fold_failed")
+        if ctx["ref"] in core["orders"]:
+            return self._pilot_result(info, "pilot_ref_reused",
+                                      latch=self._pilot_refusal_note("pilot_ref_reused", info["reservation_seq"]))
+        end_ns = min(rec["send_deadline_ns"], self._pilot_boundary(state))
+        funds, checked_at = self._funds()
+        try:
+            book = self._self_fetch(market_id)
+            if not self._book_age_ok(book):
+                book = self._self_fetch(market_id)
+        except OrderRefused as exc:
+            return self._pilot_result(info, exc.rule, latch=pilot_gate.latch_for(exc.rule))
+        arming = self._live_arming("pilot-place", book)
+        try:
+            book_off = parse_utc_ns(book.get("market_time"))
+        except (TypeError, ValueError):
+            book_off = None
+        if book_off != rec["off_ns"]:             # compared as instants, never as text (Q9: that market only)
+            return self._pilot_result(info, "pilot_send_book_off_differs", latch="market")
+        pilot = {"record": rec, "digest": ctx["digest"], "decision_seq": ctx["decision_seq"], "contract": C,
+                 "basis": basis, "own_from": own_from, "end_ns": end_ns, "reservation_seq": info["reservation_seq"],
+                 "latch": None, "submit_seq": None}
+        result = self._place_core(market_id, [ctx["instruction"]], book=book, source="pilot", intent_id=_intent_id(),
+                                  arming=arming, probe=False, funds=funds, funds_checked_at=checked_at, pilot=pilot)
+        order = result["orders"][0] if result["orders"] else None
+        if order is not None and order["bet_id"] is not None:
+            self._pilot_bet_id = order["bet_id"]
+        sent_state = self._state()["orders"].get(ctx["ref"]) if order is not None else None
+        info.update(submit_seq=pilot["submit_seq"], latch=pilot["latch"],
+                    state=sent_state["state"] if sent_state else None,
+                    bet_id=sent_state["bet_id"] if sent_state else None,
+                    size_remaining_p=sent_state["size_remaining_p"] if sent_state else None,
+                    unknown=bool(sent_state and sent_state["state"] in UNRESOLVED_STATES))
+        if info["latch"] is None and (result.get("send_exception") or {}).get("outcome") == "FAILED_NOT_SENT":
+            info["latch"] = "market"                # FAILED(transport_not_sent): that market only
+        return dict(result, pilot=info)
+
     def _place_core(self, market_id, instructions, *, book, source, intent_id, arming, probe, funds=None,
-                    funds_checked_at=None):
+                    funds_checked_at=None, pilot=None):
+        """The decision, intent, risk decision, submit and send of one place request.
+
+        pilot (pilot_place's send step, P1-06 §2.5 G): the PLACE record's context. Its basis is the head of the
+        authority fold taken before the funds read (critique 3), and only this request's own events may follow it:
+        the lock and own-sequence check runs before the intent too, which is compare-and-appended on the expected
+        own head (P106-4), so no pilot intent is written once anything else landed. The record's own order ref
+        replaces the random one; the decision binds the record's digest (note §4, "Binding"); the submit is refused
+        unless it is stamped and committed before the authority boundary, with the 30 s margin first (G9, P106-2);
+        the first-byte gate runs note §5 checks 3-6. Every refusal on this path journals its note §9 latch."""
         now_ns = self.clock.time_ns()
         listed = instructions if isinstance(instructions, list) else []
-        basis, own_from = self.journal.anchor(), len(self._seqs)        # the head the decision is taken at
-        cref, refs = self._new_refs(len(listed), now_ns)
+        if pilot is None:
+            basis, own_from = self.journal.anchor(), len(self._seqs)        # the head the decision is taken at
+            cref, refs = self._new_refs(len(listed), now_ns)
+            binding = {"source": source}
+        else:
+            basis, own_from = pilot["basis"], pilot["own_from"]
+            cref, refs = make_customer_ref(now_ns), [pilot["record"]["customer_order_ref"]]
+            binding = {"source": source, "pilot_binding": {"record_sha256": pilot["digest"],
+                                                           "contract_sha256": pilot["contract"].sha256}}
+        strategy_ref = order_strategy_ref(self.config, source)
         decision = self.guard.evaluate_place(
             market_id, instructions, book=book, state=self._state(), arming=arming, funds=funds, now_ns=now_ns,
             probe=probe, now_monotonic_ns=self.clock.monotonic_ns(), kill_engaged=kill_engaged(self.paths),
-            customer_ref=cref, customer_order_refs=refs, funds_checked_at=funds_checked_at)
+            customer_ref=cref, customer_order_refs=refs, funds_checked_at=funds_checked_at, **binding)
         journaled = []
         for ref, instruction in zip(refs, listed):
             if _instruction_echo(instruction) is None or not isinstance(market_id, str):
                 continue
-            try:
-                self._append("intent", {"order": instruction, "customer_strategy_ref": self.strategy_ref,
-                                        "is_probe": bool(probe), "parent_ref": None, "provisional_child": False,
-                                        "source": source}, intent_id=intent_id, customer_order_ref=ref,
-                             customer_ref=cref, market_id=market_id, state_after="RECORDED")
-            except JournalError:
-                continue
+            intent = {"order": instruction, "customer_strategy_ref": strategy_ref, "is_probe": bool(probe),
+                      "parent_ref": None, "provisional_child": False, "source": source}
+            columns = dict(intent_id=intent_id, customer_order_ref=ref, customer_ref=cref, market_id=market_id,
+                           state_after="RECORDED")
+            if pilot is None:
+                try:
+                    self._append("intent", intent, **columns)
+                except JournalError:
+                    continue
+            else:
+                refusal = self._submit_refusal(basis, own_from)
+                if refusal is None:
+                    try:
+                        self._append("intent", intent, expect_head=self._own_head(basis, own_from), **columns)
+                    except JournalError as exc:
+                        refusal = ("journal_changed_since_decision" if "journal_head_moved" in str(exc)
+                                   else "pilot_intent_not_journaled")
+                if refusal is not None:
+                    self._pilot_latch(pilot, refusal)
+                    return self._result(intent_id, [], decision="refused", refusal={"rule": refusal, "detail": {}})
             journaled.append(ref)
         payload = _decision_payload(decision)
         if not decision["approved"]:
@@ -1215,6 +1745,8 @@ class OrderGateway:
             # A risk halt (R12) rides in the refusing risk_decision itself (R3#13).
             self._refuse_refs(_with_halts(payload, [halt] if halt else []), journaled, "risk_refused",
                               intent_id=intent_id, customer_ref=cref)
+            if pilot is not None:
+                self._pilot_latch_decision(pilot, decision)
             return self._result(intent_id, journaled, decision="refused",
                                 refusal={"rule": decision["rule"], "detail": decision["detail"]})
         self._append("risk_decision", payload, intent_id=intent_id, customer_ref=cref)
@@ -1223,7 +1755,7 @@ class OrderGateway:
                    for ref, ins in zip(refs, listed)]
         prepared = capability = params = None
         if self.mode == "live":
-            params = {"marketId": market_id, "customerRef": cref, "customerStrategyRef": self.strategy_ref,
+            params = {"marketId": market_id, "customerRef": cref, "customerStrategyRef": strategy_ref,
                       "marketVersion": {"version": decision["market_version"]},
                       "instructions": [{"orderType": "LIMIT", "selectionId": ins["selection_id"], "handicap": 0,
                                         "side": ins["side"], "customerOrderRef": ref,
@@ -1237,23 +1769,44 @@ class OrderGateway:
             except OrderRefused as exc:
                 self._refuse_refs({"decision_id": decision["decision_id"], "approved": False, "rule": exc.rule},
                                   refs, exc.rule, intent_id=intent_id)
+                if pilot is not None:
+                    self._pilot_latch(pilot, exc.rule)
                 return self._result(intent_id, refs, decision="refused", refusal={"rule": exc.rule, "detail": {}})
-        refusal = self._append_submit(
-            {"action": "place", "instruction_count": len(refs),
-             "body_sha256": prepared["body_sha256"] if prepared else None, "decision_id": decision["decision_id"],
-             "probe": bool(probe), "params": params,
-             "transitions": [{"customer_order_ref": ref, "state": "SUBMITTING"} for ref in refs]},
-            basis=basis, own_from=own_from, intent_id=intent_id, customer_ref=cref, market_id=market_id)
+        submit = {"action": "place", "instruction_count": len(refs),
+                  "body_sha256": prepared["body_sha256"] if prepared else None, "decision_id": decision["decision_id"],
+                  "probe": bool(probe), "params": params,
+                  "transitions": [{"customer_order_ref": ref, "state": "SUBMITTING"} for ref in refs]}
+        if pilot is None:
+            refusal = self._append_submit(submit, basis=basis, own_from=own_from, intent_id=intent_id,
+                                          customer_ref=cref, market_id=market_id)
+        else:
+            submit["pilot_record_sha256"] = pilot["digest"]
+            refusal = self._pilot_too_late(pilot) or self._append_submit(
+                submit, basis=basis, own_from=own_from, before_ns=pilot["end_ns"], intent_id=intent_id,
+                customer_ref=cref, market_id=market_id)
         if refusal is not None:
             lost = ["gateway_lock_lost"] if self.mode == "live" and refusal == "gateway_lock_lost" else []
             self._refuse_refs(_with_halts({"decision_id": decision["decision_id"], "approved": False, "rule": refusal},
                                           lost), journaled, refusal, intent_id=intent_id)
+            if pilot is not None:
+                self._pilot_latch(pilot, refusal)
             return self._result(intent_id, journaled, decision="refused", refusal={"rule": refusal, "detail": {}})
+        if pilot is not None:
+            submitted = self._last_event
+            pilot["submit_seq"] = submitted["seq"]
+            gate_ctx = {"submit_head": (submitted["seq"], submitted["event_sha256"]),
+                        "submit_ns": parse_utc_ns(submitted["recorded_at"]), "seen_ns": self._pilot_seen_ns,
+                        "dbw": pilot["record"]["decision_book_wall_ns"],
+                        "dbm": pilot["record"]["decision_book_monotonic_ns"], "end_ns": pilot["end_ns"]}
+        # Nothing may be appended from the submit to the first byte but in this branch, which returns unsent: the
+        # pilot gate's check 3 requires the journal head to be our submit.
         if kill_engaged(self.paths):
             self._append_moves("report", _with_halts({"action": "place", "outcome": "not_sent_kill_engaged"},
                                                      ["kill_engaged_after_submit_journal"]),
                                {ref: ("REFUSED", {"error_code": "kill_engaged_after_submit_journal"}) for ref in refs},
                                reason="kill_engaged_after_submit_journal", market_id=market_id, intent_id=intent_id)
+            if pilot is not None:
+                self._pilot_latch(pilot, "halted", reason="kill_engaged")
             return self._result(intent_id, refs, decision="refused",
                                 refusal={"rule": "halted", "detail": {"reason": "kill_engaged_after_submit_journal"}})
         before = self.journal.fold(now_ns=self.clock.time_ns(), submitting_as_unknown=False)
@@ -1294,9 +1847,11 @@ class OrderGateway:
             return normalised, moves
 
         if self.mode == "live":
-            send_by, gate = self._send_bounds(book)
+            send_by, gate = self._send_bounds(book, pilot=None if pilot is None else gate_ctx)
             normalised, moves = self._send(prepared, journal_report, capability=capability,
                                            send_by_monotonic_ns=send_by, send_gate=gate)
+            if pilot is not None and extra.get("send_exception", {}).get("code") == "kill_engaged_before_send":
+                self._pilot_latch(pilot, "halted", reason="kill_engaged")      # critique 2, after the report
             # No cancel of our own here after a kill (spec step 16 was deleted, amendment A3 D4): the kill's
             # re-sweeps cover this bet, and a duplicate cancel only left an UNKNOWN behind.
             self._reconcile_refs([ref for ref, (state, _) in moves.items() if state == "UNKNOWN"])
@@ -1328,7 +1883,7 @@ class OrderGateway:
 
     def _reconcile_one(self, order, state, *, accept=False):
         known = sorted({o["bet_id"] for o in state["orders"].values() if o["bet_id"] is not None})
-        refs = sorted({self.strategy_ref} | set(state["strategy_refs_seen"]))
+        refs = sorted(set(own_strategy_refs(self.config)) | set(state["strategy_refs_seen"]))
         live_key = self.rpc.session.app_key() if self.mode == "live" and self.rpc is not None else None
         result = reconcile_unknown(self.read, order, cfg=self.config, clock=self.clock, strategy_refs=refs,
                                    known_bet_ids=known, live_app_key=live_key)
@@ -1371,8 +1926,12 @@ class OrderGateway:
     def cancel(self, market_id, bet_ids, *, source, size_reductions=None):
         """Cancel our own bets by betId (allowed while halted or killed). Live cancels are full cancels in
         v1 (amendment A3): a size reduction is refused before anything is checked, read or journaled. A paper
-        gateway that lost its paper lock refuses before anything is journaled (_require_paper_lock)."""
-        self._check_source(source)
+        gateway that lost its paper lock refuses before anything is journaled (_require_paper_lock). Source "pilot"
+        is the pilot's remainder cancel (engineering note §8): only in the pilot-place open that sent the order and
+        only for that one bet id; no PA gate."""
+        own_pilot_bet = (self._command == "pilot-place" and self._pilot_bet_id is not None
+                         and isinstance(bet_ids, (list, tuple)) and list(bet_ids) == [self._pilot_bet_id])
+        self._check_source(source, pilot_path=own_pilot_bet)
         if self.mode == "live" and size_reductions is not None and any(r is not None for r in size_reductions):
             raise OrderRefused("live_partial_cancel_removed_v1")
         self._seqs = []
@@ -1529,7 +2088,8 @@ class OrderGateway:
             child_ref = self._new_refs(1, now_ns)[1][0]
             child = {"selection_id": parent["selection_id"], "handicap": 0, "side": parent["side"],
                      "price_h": item["new_price_h"], "size_p": parent["size_remaining_p"], "persistence_type": "LAPSE"}
-            self._append("intent", {"order": child, "customer_strategy_ref": self.strategy_ref, "is_probe": False,
+            self._append("intent", {"order": child, "customer_strategy_ref": order_strategy_ref(self.config, source),
+                                    "is_probe": False,
                                     "parent_ref": parent["customer_order_ref"], "provisional_child": True,
                                     "source": source},
                          intent_id=intent_id, customer_order_ref=child_ref, customer_ref=cref, market_id=market_id,
@@ -2101,7 +2661,7 @@ class OrderGateway:
         """P3: none of our bets current in the market, read by our strategy refs in the market and by the
         journal's betIds (both legs, batched); a read error or any item refuses. Premise, inferred (F77):
         listCurrentOrders stops listing a bet once its market is settled."""
-        refs = sorted({self.strategy_ref} | set(state["strategy_refs_seen"]))
+        refs = sorted(set(own_strategy_refs(self.config)) | set(state["strategy_refs_seen"]))
         bets = sorted({o["bet_id"] for o in ours if o["bet_id"] is not None})
         items = []
         try:
@@ -2229,7 +2789,9 @@ class OrderGateway:
             self._journal_untrusted = True
             state = self._no_orders_state()              # no strategy_refs_seen and no betIds: config ref only
             self._append("note", {"reason": UNTRUSTED_SWEEP_NOTE})     # best effort: never stops the sweep
-        refs = sorted({self.strategy_ref} | set(state["strategy_refs_seen"]))
+        # Under a pilot-enabled config both of our refs, from the config alone, whatever the journal, the receipt or
+        # the contract file says (Astra's ruling on critique 13): the pilot's and the fixed manual ref.
+        refs = sorted(set(own_strategy_refs(self.config)) | set(state["strategy_refs_seen"]))
         standin = self._no_orders_state()
 
         def cancel_fn(market_id, bet_ids, kill_targets):

@@ -23,7 +23,7 @@ live 安全靠以下七樣嘢，冇一樣係靠 app key 類型：
 | 點樣揀 | 唔使做嘢 | 每個命令都要 `--mode live`，而且 `orders.live.armed: true`；config 自己揀唔到 live |
 | Gateway | 用 `rpc=None` 起，結構上去唔到任何落單 endpoint | `rpc.app_key_slot == "live"`，`read` 包同一個 rpc |
 | Book 來源 | snapshot 檔、recording，或者 delayed key 讀取（只有讀 call） | gateway 自己用 live key 攞；`--book` 會被拒 |
-| 落單來源 | `cli_manual` 或者程式 API `source="api"` | 只限 `cli_manual`；`api` 會 `OrderRefused("api_source_paper_only")`。RS-19 例外：`pilot` 只喺 PA1–PA4 同 R13 全部過先收（E3），`api` 照舊只限 paper；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊 |
+| 落單來源 | `cli_manual` 或者程式 API `source="api"` | 只限 `cli_manual`；`api` 會 `OrderRefused("api_source_paper_only")`。RS-19 例外：`pilot` 只喺 PA1–PA4 同 R13 全部過先收（E3），而且只經 gateway 嘅 `pilot_place`（同埋同一個 open 入面佢自己嗰張單嘅剩餘取消）；`place()` 用 `pilot` 會 `OrderRefused("pilot_source_needs_pilot_path")`，paper 會 `pilot_source_live_only`；`api` 照舊只限 paper。有 `orders.pilot` 嘅 config 之下，手打單一律帶固定 strategy ref `bar-manual`（綁入 risk decision 同 body），只有 pilot 單帶 config 嘅 `p1-fav-t5`；journal 入面有 pilot session 未到佢嘅完結時間，live `place` 同 `live-probe` 會 `OrderRefused("manual_order_during_pilot_session")`，config 有冇 `orders.pilot` 都一樣（[engineering note](betfair-pilot-engineering.md) §7）。只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊 |
 | Journal | `orders/journal-paper.sqlite` | `orders/journal-live.sqlite` |
 | 提示 | | 每個提示之前喺 stderr 印 `MODE=LIVE` |
 
@@ -141,12 +141,12 @@ Exit 5 嘅情況同訊息（JSON 照印，之後先 exit）：
 | `cancel` | A4、A5、A8、A10、A12、A13；然後 A14（只要 login，唔使 `can_bet`）同 A15。halt 或者 kill 咗都照准；只可以整張取消，冇打句子，即刻送 |
 | `reconcile` | 同 `cancel`；`--accept` 加 A1、A2、A11 |
 | `settle-market`（只限 live） | 同 `reconcile --accept`：A1、A2、A4、A5、A8、A10、A11、A12、A13，然後 A14（只要 login）同 A15。唔要 A7：halt 或者 kill 咗都准，因為佢唔送單。`coexistence.bet_angel` 係 `unverified` 嘅時候（T3 之前）一定要 `--bet-angel-paused` |
-| `kill`（own scope） | 只要 A4 同 A13 嘅 state-root 部分；**唔攞、唔等 `.gateway.lock`**。kill file 同 journal HALT 喺任何檢查之前已經寫好；login 係 emergency login |
+| `kill`（own scope） | 只要 A4 同 A13 嘅 state-root 部分；**唔攞、唔等 `.gateway.lock`**。kill file 同 journal HALT 喺任何檢查之前已經寫好；login 係 emergency login。RS-19：有 `orders.pilot` 嘅 profile，sweep 單憑 config 用兩個 strategy ref（`p1-fav-t5` 同 `bar-manual`），journal、registration receipt 或者 contract 讀唔到都照掃（[engineering note](betfair-pilot-engineering.md) §7） |
 | `kill --scope account` | 再加 A11 同打一句確認（§9） |
 | `resume`（live） | A2、A11、A13；kill file 一定要已經唔存在 |
 | `pilot-register`（RS-19） | Yu 打 `REGISTER PILOT` 行，go-live 同意之後（[engineering note](betfair-pilot-engineering.md) §14）：A2、A11、A13；寫 registration receipt |
 | `PILOT ARM` 行（RS-19） | Yu 每個 racing day 最多打一次：A2、A11、A13；開一個 session（[engineering note](betfair-pilot-engineering.md) §3） |
-| `pilot-run --mode live`：決定同落單（RS-19） | executor，喺 arm 咗嘅 session：每次 placement open 都過 A1–A19、PA1–PA4、R1–R13、[engineering note](betfair-pilot-engineering.md) §4–§6 同 §5 嘅 first-byte gate |
+| `pilot-run --mode live`：決定同落單（RS-19） | executor，喺 arm 咗嘅 session，用 gateway 命令 `pilot-place`（冇逐張打嘅行，E1；A11 照查）：每次 placement open 都過 A1–A19、PA1–PA4、R1–R13、[engineering note](betfair-pilot-engineering.md) §4–§6 同 §5 嘅 first-byte gate；PA1–PA4 只管落單，cancel、kill、reconcile、settle-market 唔查 |
 | `pilot-run`：剩餘取消（RS-19） | executor：`cancel` 嗰套（A4、A5、A8、A10、A12–A15，只要 login）；HALT 同 KILL 期間照行；冇 PA gate；只可以整張取消自己嘅 pilot 單；KILL 期間跟 [engineering note](betfair-pilot-engineering.md) §8 |
 | `pilot-run` 入面嘅 `SETTLE MARKET`（RS-19） | Yu 喺 settle point 打：`settle-market` 嗰套，再加 [engineering note](betfair-pilot-engineering.md) §8 嘅 settle-point 規則 |
 | `pilot-capture`（RS-19，只讀） | session 入面由 executor 喺 placement open 之間跑；session 之後 Yu 打（[engineering note](betfair-pilot-engineering.md) §11）：唔使 arming 行、乜都唔送、唔郁單嘅狀態或者 exposure；有 session arm 住嗰陣 Yu 自己跑會被拒 |

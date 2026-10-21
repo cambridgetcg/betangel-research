@@ -182,7 +182,8 @@ class ArmingTests(unittest.TestCase):
 
     def test_command_condition_matrix(self):
         expected = {
-            "place": list(CHECK_IDS), "replace": list(CHECK_IDS), "live-probe": list(CHECK_IDS[:18]),
+            "place": list(CHECK_IDS), "pilot-place": list(CHECK_IDS), "replace": list(CHECK_IDS),
+            "live-probe": list(CHECK_IDS[:18]),
             "cancel": ["A4", "A5", "A8", "A10", "A12", "A13", "A14", "A15"],
             "reconcile": ["A4", "A5", "A8", "A10", "A12", "A13", "A14", "A15"],
             "reconcile-accept": ["A1", "A2", "A4", "A5", "A8", "A10", "A11", "A12", "A13", "A14", "A15"],

@@ -33,6 +33,7 @@ from betangel_research.betfair.pilot import NS, DAY_NS, PilotError
 
 import test_betfair_backtest_boundaries as backtest_boundaries
 import test_betfair_boundaries as boundaries
+from test_betfair_support import Raw, dumps, rpc
 
 REPO = Path(__file__).resolve().parent.parent
 # The one place the frozen contract is named; Nuance repoints these two lines when contract p1 is re-frozen.
@@ -60,24 +61,6 @@ FAV = 11
 
 def sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
-
-
-class Raw(str):
-    """Number text written into a JSON body exactly as given (3.444, 10.000000000000002, NaN)."""
-
-
-def dumps(value):
-    if isinstance(value, Raw):
-        return str(value)
-    if isinstance(value, dict):
-        return "{" + ",".join(json.dumps(k) + ":" + dumps(v) for k, v in value.items()) + "}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ",".join(dumps(v) for v in value) + "]"
-    return json.dumps(value)
-
-
-def rpc(*items):
-    return dumps({"jsonrpc": "2.0", "result": list(items), "id": 1}).encode()
 
 
 def levels(pairs):

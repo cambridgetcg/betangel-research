@@ -127,6 +127,8 @@ FORBIDDEN_BETFAIR = {
     "journal": "order journal writer the gateway folds at open; mode='live' appends live order state",
     "killswitch": "engages STATE_ROOT/KILL and cancels our unmatched bets through the exchange",
     "paths": "resolves the per-Mac state root (profiles, live journal, KILL) from the password database; runs git",
+    "pilot_gate": ("the RS-19 pilot gateway adapter: runs git, reads the contract, receipt and state root, writes raw "
+                   "evidence; the gateway's first-byte predicate and latch table"),
     "presence": "operator presence on the controlling terminal before each live action",
     "reconcile": "reconciles live order state against the exchange through a ReadClient",
     "recorder": "live stream recorder: esa.StreamClient, the profile's recordings dir and recorder lock",

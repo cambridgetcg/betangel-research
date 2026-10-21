@@ -828,9 +828,12 @@ NOTE_FIELDS = {
                    "profit_basis": _opt(_one_of("gross", "net"))},
     "ending": {"reason": _one_of("yu_written", "breach"), "code": _matches(CODE_RE)},
     "violation": {"code": _matches(CODE_RE), "source_seq": _opt(lambda v: _is_int(v, 1))},
-    # A classify refusal as journaled by the gateway: the fold derives its review stop from it (Astra #2).
+    # A classify refusal as journaled by the gateway: the fold derives its review stop from it (Astra #2). A
+    # classify refusal carries the digests of the evidence bytes it was given (P1-06 Q8); the gateway's own
+    # refusals (PA1-PA4, R13, a latch) carry None where it read no evidence.
     "refusal": {"session_id": _opt(_matches(ID_RE)), "open_id": _opt(_matches(ID_RE)),
-                "reservation_seq": _opt(lambda v: _is_int(v, 1)), "code": _matches(CODE_RE)},
+                "reservation_seq": _opt(lambda v: _is_int(v, 1)), "code": _matches(CODE_RE),
+                "row_sha256": _opt(_is_sha), "book_sha256": _opt(_is_sha)},
     # A ledger gap's resolution, separate from its stop (Astra #6); journaled by P1-08/P1-10.
     "gap_resolved": {"stop_id": _matches(STOP_ID_RE), "decision_seq": _opt(lambda v: _is_int(v, 1)),
                      "cause_written": _is_bool},
@@ -883,7 +886,10 @@ def pilot_note(record_type, contract_sha256, /, **fields):
     return payload
 
 
-def _validate_event_columns(kind, inner, event):
+def validate_event_columns(kind, inner, event):
+    """The journal columns a pilot record of this type needs (P1-06 Q1): no state_after; market_id for
+    MARKET_NOTES, equal to a decision's own market_id; customer_order_ref for ORDER_NOTES. event is the journal
+    event, or the columns the caller is about to journal. Raises PilotError("pilot_record_invalid")."""
     if event.get("state_after") is not None:
         raise PilotError("pilot_record_invalid")
     if kind in MARKET_NOTES and not (isinstance(event.get("market_id"), str)
@@ -1350,8 +1356,13 @@ def decision_record(contract, *, outcome, code, registration_receipt_sha256, ses
 
 
 def classify(contract, state, *, reservation_seq, open_id, session_id, registration_receipt_sha256,
-             customer_order_ref, row_body, book_body, observed_wall_ns, observed_monotonic_ns):
+             customer_order_ref, row_body, book_body, observed_wall_ns, observed_monotonic_ns, read_failure=None):
     """One classification of one reservation on one fetch (note §4 steps 3-4).
+
+    read_failure (P1-06 Q8, Q10): None, or the code of a raw read that failed or broke its bound (no body, a
+    transport error, a non-200 status, an elapsed time or clock drift out of bounds); the evidence is then
+    unusable and the record is SKIP(evidence_invalid), still carrying the digests of the exact bytes received
+    (b"" when none). It can only turn a decision into that SKIP, never into a PLACE.
 
     Two times stay apart (Astra #4). The decision book's observed_wall_ns governs the predicates, the window, the
     day slot, the CR1 cluster and the send deadline. Placement authority (capacity, stops, the session's end or
@@ -1370,7 +1381,9 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
         record = {"v": 1, "type": "refusal", "contract_sha256": contract.sha256,
                   "session_id": session_id if isinstance(session_id, str) and ID_RE.fullmatch(session_id) else None,
                   "open_id": open_id if isinstance(open_id, str) and ID_RE.fullmatch(open_id) else None,
-                  "reservation_seq": source, "code": code}
+                  "reservation_seq": source, "code": code,
+                  "row_sha256": bytes_sha256(row_body) if isinstance(row_body, bytes) else None,
+                  "book_sha256": bytes_sha256(book_body) if isinstance(book_body, bytes) else None}
         return {"refusal": code, "record": None, "stops": [], "refusal_record": record}
 
     def decided(record, stops=()):
@@ -1380,7 +1393,8 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
             and isinstance(open_id, str) and ID_RE.fullmatch(open_id)
             and isinstance(session_id, str) and ID_RE.fullmatch(session_id) and _is_sha(registration_receipt_sha256)
             and isinstance(customer_order_ref, str) and REF_RE.fullmatch(customer_order_ref)
-            and isinstance(row_body, bytes) and isinstance(book_body, bytes)):
+            and isinstance(row_body, bytes) and isinstance(book_body, bytes)
+            and (read_failure is None or (isinstance(read_failure, str) and CODE_RE.fullmatch(read_failure)))):
         return refuse("caller_input_invalid")
     if state.contract != contract:
         return refuse("contract_mismatch")
@@ -1412,7 +1426,7 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
         return refuse("stop_active")
     market_id = reservation["market_id"]
     try:
-        ev = decision_evidence(row_body, book_body, market_id=market_id)
+        ev = None if read_failure is not None else decision_evidence(row_body, book_body, market_id=market_id)
     except EvidenceError:
         ev = None
     day = utc_day(observed_wall_ns)
@@ -1738,7 +1752,7 @@ class _Folder:
         payload = event["payload"]
         try:
             kind = validate_pilot_payload(payload)
-            _validate_event_columns(kind, payload["pilot"], event)
+            validate_event_columns(kind, payload["pilot"], event)
         except PilotError:
             self.invalid_note(seq)
             return set()
@@ -2763,14 +2777,12 @@ def n_status(state, *, now_ns):
     return _n_walk(state.place_records, state.contract.n_eligible, now_ns)
 
 
-def placing_ending(state, *, now_ns):
-    """The ending in force at now_ns (note §15), or None: a breach (any protocol violation, including a breach
-    ending note) ends placing at once; otherwise the earliest of Yu ending it in writing, the lifetime cap, the
-    final date (placing only before 2027-06-30T00:00:00Z, decision Q16) and N reached."""
+def _endings(state, *, now_ns):
+    """Every ending in force at now_ns: a breach alone when there is one, else each of the others that holds."""
     contract = state.contract
     if state.violations:
         first = min(state.violations, key=lambda v: v["seq"])
-        return {"reason": "breach", "seq": first["seq"], "at_ns": first["ns"]}
+        return [{"reason": "breach", "seq": first["seq"], "at_ns": first["ns"]}]
     found = [{"reason": "yu_written", "seq": note["seq"], "at_ns": note["ns"]} for note in state.ending_notes]
     if state.lifetime_used >= contract.lifetime_place_records:
         last = sorted(state.place_records, key=lambda rec: rec.decision_seq)[contract.lifetime_place_records - 1]
@@ -2780,7 +2792,69 @@ def placing_ending(state, *, now_ns):
     status = n_status(state, now_ns=now_ns)
     if status["reached"]:
         found.append({"reason": "n_reached", "seq": None, "at_ns": status["at_ns"]})
+    return found
+
+
+def placing_ending(state, *, now_ns):
+    """The ending in force at now_ns (note §15), or None: a breach (any protocol violation, including a breach
+    ending note) ends placing at once; otherwise the earliest of Yu ending it in writing, the lifetime cap, the
+    final date (placing only before 2027-06-30T00:00:00Z, decision Q16) and N reached."""
+    found = _endings(state, now_ns=now_ns)
     return min(found, key=lambda e: (e["at_ns"], e["reason"])) if found else None
+
+
+def next_trigger_ns(state):
+    """The earliest record time trigger (a BSP cutoff, off + bsp_cutoff_s + 1 ns, or a 7-day deadline,
+    deadline + 1 ns) after state.now_ns, or None (P1-06 Q1, Q12). The fold evaluates a trigger before any event
+    stamped at or after it, so an append that must be judged on this state has to be stamped before it."""
+    contract = state.contract
+    found = [t for rec in state.place_records for t in (rec.off_ns + contract.bsp_cutoff_s * NS + 1,
+                                                        rec.deadline_ns + 1) if t > state.now_ns]
+    return min(found) if found else None
+
+
+AUTHORITY_PHASES = ("reserve", "send")
+
+
+def placement_authority(state, *, phase, now_ns, session_id=None, decision_seq=None):
+    """None, or why the state gives no placement authority at max(now_ns, state.now_ns) (P1-06 Q1, P106-3).
+
+    phase "reserve" (a placement open and the step before a reservation): placing has not ended, the latest
+    session (or session_id's) is armed, not ended and not expired, its L fields were not refuted, and no stop is
+    active. phase "send" (the risk decision of the PLACE record journaled at decision_seq) adds that record: it
+    exists, is still its reservation's decision, its open has not ended and it has no submit; and the lifetime
+    cap's ending does not refuse the one record that took the last slot, as the fold lets that record's own send
+    through (submitted_after_derived_ending). Every other ending, stop and deadline still refuses. Codes:
+    placing_ended, session_not_armed, session_ended, session_expired, stop_active, record_unknown,
+    record_not_decision, record_open_ended, record_submitted."""
+    if phase not in AUTHORITY_PHASES or not _is_ns(now_ns) or (phase == "send") != _is_int(decision_seq, 1):
+        raise PilotError("authority_input_invalid")
+    now = max(now_ns, state.now_ns)
+    endings = [e for e in _endings(state, now_ns=now)
+               if not (phase == "send" and e["reason"] == "lifetime_cap" and e["seq"] == decision_seq)]
+    if endings:
+        return "placing_ended"
+    session = _session_of(state, session_id)
+    if session is None or state.l_fields_refuted:
+        return "session_not_armed"
+    if session["ended_seq"] is not None:
+        return "session_ended"
+    if now >= session_end_ns(session):
+        return "session_expired"
+    if state.active_stops:
+        return "stop_active"
+    if phase == "send":
+        rec = next((r for r in state.place_records if r.decision_seq == decision_seq), None)
+        if rec is None:
+            return "record_unknown"
+        reservation = state.reservations.get(rec.market_id)
+        if reservation is None or reservation["decision_seq"] != decision_seq:
+            return "record_not_decision"
+        if rec.unsent:
+            return "record_open_ended"
+        if rec.submit_seq is not None:
+            return "record_submitted"
+    return None
 
 
 def analysis_population(state, *, now_ns):

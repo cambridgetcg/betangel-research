@@ -26,7 +26,7 @@ from .constants import (ACCOUNT_METHOD_PREFIX, ACCOUNT_RPC_PATH, BET_STATUSES, B
                         GROUP_BY_VALUES, MARKET_SORTS, MAX_IDS_PER_REQUEST, ORDER_BY_VALUES, ORDER_PROJECTIONS,
                         PAGE_SIZE_MAX, PRICE_DATA, READ_METHODS, REQUEST_WEIGHT_LIMIT, REST_MARKET_FILTER_KEYS,
                         SORT_DIRS)
-from .errors import ApiError, OrderRefused, TransportError
+from .errors import ApiError, OrderRefused, TransportError, safe_code
 from .filters import MARKET_ID_RE
 from .receipts import (SYSTEM_CLOCK, atomic_write_json, bytes_sha256, canonical_json, parse_utc_ns,
                        strict_json_loads, utc_from_ns, utc_ms_from_ns)
@@ -44,6 +44,10 @@ DETAILS_METHOD = "AccountAPING/v1.0/getAccountDetails"
 MARKET_PROJECTIONS = frozenset({"COMPETITION", "EVENT", "EVENT_TYPE", "MARKET_START_TIME", "MARKET_DESCRIPTION",
                                 "RUNNER_DESCRIPTION", "RUNNER_METADATA"})
 SNAPSHOT_PROJECTIONS = ("MARKET_DESCRIPTION", "RUNNER_DESCRIPTION", "EVENT_TYPE", "MARKET_START_TIME")
+# The pilot decision's catalogue row (engineering note §4 step 2): EVENT carries event.countryCode; weight 1.
+PILOT_ROW_PROJECTIONS = ("EVENT", "EVENT_TYPE", "MARKET_DESCRIPTION", "MARKET_START_TIME")
+# The only methods call_raw sends: the pilot's one catalogue row and one decision book (P1-06 §5.1).
+RAW_METHODS = (CATALOGUE_METHOD, BOOK_METHOD)
 MATCH_PROJECTIONS = frozenset({"NO_ROLLUP", "ROLLED_UP_BY_PRICE", "ROLLED_UP_BY_AVG_PRICE"})
 MAX_BEST_PRICES_DEPTH = 10
 FUNDS_KEYS = ("availableToBetBalance", "exposure", "retainedCommission", "exposureLimit", "discountRate",
@@ -362,6 +366,41 @@ class JsonRpcClient:
                     raise
             self.clock.sleep(self._backoff[attempts - 1])
 
+    def call_raw(self, method, params, *, deadline_s):
+        """One raw read for the pilot decision (P1-06 §5.1): exactly one transport attempt (idempotent False), no
+        retry, no relogin and no decoding. Returns {"method", "params", "status", "body", "error",
+        "sent_wall_ns", "sent_monotonic_ns", "received_wall_ns", "received_monotonic_ns"}: body is the
+        transport's response bytes unchanged (a non-200 status or an error envelope included), or None with
+        error the TransportError's code. Both clocks are read after the throttle and the session token, right
+        before the request, and again when it returns (Q10). The live app key only."""
+        if method not in RAW_METHODS:
+            raise ValueError("call_raw() sends the pilot's catalogue row and decision book only")
+        if not isinstance(params, dict):
+            raise ValueError("params must be an object")
+        if self.app_key_slot != "live":
+            raise OrderRefused("pilot_read_requires_live_app_key")
+        url, _ = self._endpoint(method)
+        self._throttle(method, params)
+        _, body = self._envelope(method, params)
+        headers = self._headers(self.session.token())
+        out = {"method": method, "params": params, "status": None, "body": None, "error": None,
+               "sent_wall_ns": self.clock.time_ns(), "sent_monotonic_ns": self.clock.monotonic_ns()}
+        try:
+            response = self.transport.request("POST", url, headers, body, deadline_s=deadline_s, idempotent=False)
+        except TransportError as exc:
+            out["error"] = safe_code(exc.code)
+        else:
+            status = response.get("status") if isinstance(response, dict) else None
+            raw = response.get("body") if isinstance(response, dict) else None
+            out["status"] = status if type(status) is int else None
+            if isinstance(raw, bytes):
+                out["body"] = raw
+            else:
+                out["error"] = "response_body_not_bytes"
+        out["received_wall_ns"] = self.clock.time_ns()
+        out["received_monotonic_ns"] = self.clock.monotonic_ns()
+        return out
+
     def prepare_order(self, method, params):
         """{"method", "body", "body_sha256", "rpc_id"} for one order call on the live key; nothing is sent."""
         if self.app_key_slot != "live":
@@ -657,6 +696,34 @@ class ReadClient:
         atomic_write_json(self._cache_path(market_id), {"schema_version": 1, "market_id": market_id,
                                                         "cached_at": utc_from_ns(now_ns), "row": row})
         return row
+
+    def raw_catalogue_row(self, market_id, *, deadline_s):
+        """The pilot decision's one uncached catalogue row (note §4 step 2) as call_raw returns it: one market, the
+        four PILOT_ROW_PROJECTIONS, maxResults 1. The cache, catalogue_row and its scrub are never used."""
+        if not isinstance(market_id, str) or not _MARKET_ID.fullmatch(market_id):
+            raise ValueError("market_id must look like 1.<digits>")
+        params = {"filter": _rest_filter({"marketIds": [market_id]}), "marketProjection": list(PILOT_ROW_PROJECTIONS),
+                  "maxResults": 1}
+        return self.rpc.call_raw(CATALOGUE_METHOD, params, deadline_s=deadline_s)
+
+    def raw_decision_book(self, market_id, *, deadline_s):
+        """The pilot decision's one book (note §4 step 2) as call_raw returns it: listMarketBook, EX_BEST_OFFERS."""
+        if not isinstance(market_id, str) or not _MARKET_ID.fullmatch(market_id):
+            raise ValueError("market_id must look like 1.<digits>")
+        params = {"marketIds": [market_id], "priceProjection": {"priceData": ["EX_BEST_OFFERS"]}}
+        return self.rpc.call_raw(BOOK_METHOD, params, deadline_s=deadline_s)
+
+    def store_catalogue_row(self, market_id, row):
+        """Refresh the catalogue cache from a row the caller fetched (P1-06 Q9: the pilot's fresh row, so the send
+        book's market_time is read from it), scrubbed and stamped now, as catalogue_row writes it."""
+        if not isinstance(market_id, str) or not _MARKET_ID.fullmatch(market_id):
+            raise ValueError("market_id must look like 1.<digits>")
+        if not isinstance(row, dict) or row.get("marketId") != market_id:
+            raise ValueError("catalogue row is for a different market")
+        self.paths.ensure()
+        atomic_write_json(self._cache_path(market_id), {"schema_version": 1, "market_id": market_id,
+                                                        "cached_at": utc_from_ns(self.clock.time_ns()),
+                                                        "row": scrub(row)})
 
     def market_snapshot(self, market_id, *, price_data=("EX_BEST_OFFERS", "EX_TRADED"), fetched_by):
         """Catalogue row joined with a fresh listMarketBook, as a validated book snapshot (spec section 3).

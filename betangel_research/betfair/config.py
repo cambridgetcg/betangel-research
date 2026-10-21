@@ -73,6 +73,17 @@ DEFAULTS = {
 
 # Present in a loaded file but not in DEFAULTS (required, no default).
 _REQUIRED_WITHOUT_DEFAULT = {("orders", "paper"): ("commission_rate", "commission_source")}
+# Optional sections with no default (P1-06): a config without one keeps its config_sha256. orders.pilot is the
+# registered pilot executor's section (RS-19); its keys are PILOT_KEYS, every one required when it is present.
+_OPTIONAL_WITHOUT_DEFAULT = {("orders",): ("pilot",)}
+PILOT_KEYS = ("contract_path", "contract_sha256", "evidence_deadline_s")
+# A contract file in the repository's research/pilots directory, resolved against the repository root (never
+# _local_path, which refuses any path inside a worktree).
+PILOT_CONTRACT_PATH_RE = re.compile(r"research/pilots/[a-z0-9-]{1,40}\.json")
+PILOT_EVIDENCE_DEADLINE_MAX_S = 5
+# The fixed customerStrategyRef of every order that is not the pilot's under a pilot-enabled config (Astra's ruling
+# on P1-06 critique 13): the config's own ref stays the pilot's (p1-fav-t5) through settlement.
+MANUAL_STRATEGY_REF = "bar-manual"
 # Values replaced wholesale instead of merged key by key.
 _LEAF_OBJECTS = {("recorder", "market_filter"), ("recorder", "market_data_filter")}
 _MONEY_CAPS = ("max_stake_per_order", "max_liability_per_order", "max_market_exposure", "max_total_exposure",
@@ -105,7 +116,7 @@ def _finite(value):
 def _merge(defaults, loaded, path=()):
     if not isinstance(loaded, dict):
         raise ConfigError(f"config_object_expected:{_dotted(path) or 'root'}")
-    allowed_extra = _REQUIRED_WITHOUT_DEFAULT.get(path, ())
+    allowed_extra = _REQUIRED_WITHOUT_DEFAULT.get(path, ()) + _OPTIONAL_WITHOUT_DEFAULT.get(path, ())
     merged = copy.deepcopy(defaults)
     for key, value in loaded.items():
         if key not in defaults and key not in allowed_extra:
@@ -344,7 +355,9 @@ def validate_config(config, *, paths):
         raise ConfigError("stream_live_key_needs_recorder_allow_live_key")
 
     orders = c["orders"]
-    _keys(orders, DEFAULTS["orders"], "orders")
+    _keys(orders, set(DEFAULTS["orders"]) | ({"pilot"} if "pilot" in orders else set()), "orders")
+    if "pilot" in orders:
+        _pilot_section(orders["pilot"])
     if not isinstance(orders["customer_strategy_ref"], str) or not re.fullmatch(CUSTOMER_STRATEGY_REF_PATTERN,
                                                                                 orders["customer_strategy_ref"]):
         raise ConfigError("orders.customer_strategy_ref_invalid")
@@ -403,6 +416,37 @@ def validate_config(config, *, paths):
     for key in ABSOLUTE_CEILINGS:
         _ceiling(c, key)
     return c
+
+
+def _pilot_section(pilot):
+    _keys(pilot, PILOT_KEYS, "orders.pilot")
+    if not isinstance(pilot["contract_path"], str) or not PILOT_CONTRACT_PATH_RE.fullmatch(pilot["contract_path"]):
+        raise ConfigError("orders.pilot.contract_path_invalid")
+    if not isinstance(pilot["contract_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", pilot["contract_sha256"]):
+        raise ConfigError("orders.pilot.contract_sha256_invalid")
+    _number(pilot["evidence_deadline_s"], "orders.pilot.evidence_deadline_s", 0, PILOT_EVIDENCE_DEADLINE_MAX_S,
+            low_open=True)
+
+
+def pilot_enabled(config):
+    """Whether the config has an orders.pilot section (RS-19's registered executor may run on it)."""
+    return "pilot" in config["orders"]
+
+
+def order_strategy_ref(config, source):
+    """The customerStrategyRef an order of this source carries: the config's own ref, except that under a
+    pilot-enabled config only source "pilot" carries it and every other source the fixed MANUAL_STRATEGY_REF."""
+    if pilot_enabled(config) and source != "pilot":
+        return MANUAL_STRATEGY_REF
+    return config["orders"]["customer_strategy_ref"]
+
+
+def own_strategy_refs(config):
+    """Every customerStrategyRef our own orders can carry under this config (sweeps, startup reconcile)."""
+    refs = {config["orders"]["customer_strategy_ref"]}
+    if pilot_enabled(config):
+        refs.add(MANUAL_STRATEGY_REF)
+    return sorted(refs)
 
 
 def config_sha256(config):

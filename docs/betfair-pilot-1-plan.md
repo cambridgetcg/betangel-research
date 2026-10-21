@@ -50,8 +50,8 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against b
 - Primary sample: the first 400 eligible bets in decision order. A bet counts only once every earlier PLACE record has its final class. Placing stops there (note §15).
 - Late completion: a PLACE record made before placing ended may still complete N if it is final by the data lock (note §12). Its decision came before any outcome was known, and its place in the order is fixed. So an ending at the cap with 395 eligible and ten pending can still reach 400.
 - Surplus: PLACE records after the 400th eligible one, in decision order. They are finalised, counted and reported, but stay outside the primary and the validity gates.
-- Analysis population for the gates: if N is reached, the PLACE records up to and including the 400th eligible one; otherwise every PLACE record. PT4 records reported apart (below) are in neither.
-- PT4 (note §14): its PLACE records (from every PT4 session, if PT4 repeats) belong to the sample if the first session after the PT4 receipt runs under PT4's registration receipt. Otherwise they are reported apart, still use their slots, and the sample starts after them. A contract change after PT4 means a replacement contract with carryover (note §6). This rule is frozen before PT4's first bet.
+- Analysis population for the gates: if N is reached, the PLACE records up to and including the 400th eligible one; otherwise every PLACE record. PT4 records (below) are in neither.
+- PT4 (note §14): its PLACE records (from every PT4 session, if PT4 repeats) are always reported apart (Yu, 2026-10-21). They never join the primary sample or the analysis population, so no outcome Yu checks in PT4 can decide what enters the sample. They still use their slots, count in the money ledger and the pause, and count as earlier PLACE records for N; the sample starts after them. A contract change after PT4 means a replacement contract with carryover (note §6).
 - Primary estimand: the mean NCLV over eligible bets: matched, in markets that were not void, with no post-decision removal, a resolved measurement and a frozen BSP. It is conditional on filling.
   - NCLV = (1 + (P − 1) × (1 − c)) / BSP − 1. P is the final execution record's price (note §11: L's priceMatched when C and L agree exactly, else that of the one source used), BSP the frozen value (note §11), and c the one commission rate contract p1 freezes for the ledger too (note §10): 2%, so 1 − c = 0.98.
   - Partial fills are eligible and unweighted. NCLV depends on the price, not the size.
@@ -65,10 +65,10 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against b
 - Clustered SE. Cluster = the UTC date of the decision time. G = the number of dates with at least one sample bet; days with attempts can be more. Mean m = Σx_i / N. CR1: SE² = G/(G−1) × Σ_g [Σ_{i in g} (x_i − m)]² / N².
 - Critical value: t = the 97.5% point of Student's t with G − 1 degrees of freedom (one-sided α = 0.025). That is about 2.131 at G = 16, 2.120 at G = 17 and 2.021 at G = 41.
 - PASS if m ≥ t × SE. FAIL if m + t × SE < 0. Anything else is INCONCLUSIVE.
-- If G < 15, the result is INCONCLUSIVE: too_few_clusters. With Yu's day limit of 25, 400 eligible bets span at least 16 dates. That holds even when more days have attempts: if all five PT4 bets are excluded and sixteen days then give 25 eligible bets each, G = 16 over 17 attempt-days. So the guard only catches errors. If SE is zero or undefined, the result is INCONCLUSIVE: se_undefined.
-- CR1 with t(G−1) is a common minimum correction. It does not give exact coverage with few clusters (Cameron and Miller 2015, §VI).
+- If G < 15, the result is INCONCLUSIVE: too_few_clusters. With Yu's day limit of 25, 400 eligible bets span at least 16 dates. That holds even when more days have attempts: PT4's bets are always apart, so if sixteen days after PT4 give 25 eligible bets each, G = 16 over 17 attempt-days. So the guard only catches errors. If SE is zero or undefined, the result is INCONCLUSIVE: se_undefined.
+- CR1 with t(G−1) is a common minimum correction. It does not give exact coverage with few clusters: [A. C. Cameron and D. L. Miller (2015), "A Practitioner's Guide to Cluster-Robust Inference", *Journal of Human Resources* 50(2): 317–372, doi:10.3368/jhr.50.2.317](https://doi.org/10.3368/jhr.50.2.317), §VI, which treats "few" as anywhere from fewer than 20 to fewer than 50 balanced clusters. Pilot 1's G of about 16–41 is in that range. Read 2026-10-21 from the authors' February 2015 manuscript (https://cameron.econ.ucdavis.edu/research/Cameron_Miller_JHR_2015_February.pdf, introduction and §VI's scope); the journal's full text is paywalled. Peer-reviewed methods guide, no commercial interest found; it covers regression with clustered errors in general, not betting data.
 - Fewer than N eligible bets at the data lock gives INCONCLUSIVE: insufficient_eligible_sample, unless INVALID applies. That covers an ending at the lifetime cap, Yu ending the pilot in writing, or the final date 2027-06-30. An ending for a breach of RS-19 is a protocol violation, so INVALID. There is never an early PASS or a smaller-N test, and the cap is never raised to rescue completion.
-- 400 eligible bets from 495 PLACE records need at least 80.8% eligible yield. An 80% fill rate alone gives only 396, so a weak fill rate ends INCONCLUSIVE by design. The historical 49.5% share of markets with any non-runner (from the P-003 review, which is not in this repository) does not estimate post-decision removals; Pilot 1 measures them.
+- PT4's records are apart, so 400 eligible bets come from at most 490 PLACE records (fewer if PT4 repeats): at least 81.6% eligible yield. An 80% fill rate alone gives only 392, so a weak fill rate ends INCONCLUSIVE by design. The historical 49.5% share of markets with any non-runner (from the P-003 review, which is not in this repository) does not estimate post-decision removals; Pilot 1 measures them.
 - Power, as an IID illustration only: with t ≈ 2 and 80% power, the smallest detectable mean is (2 + 0.84) × SD / √400. That is about 0.71% at SD 0.05, 1.42% at 0.10 and 2.84% at 0.20.
   - The SD is an assumption, not a measurement (Nuance's staking research of 2026-10-19, which is not in this repository). Bets on the same day may move together, which widens these figures.
   - N = 400 is a pilot choice. It cannot promise to detect a small edge. A 2% raw CLV is only +0.63% net at BSP 3 (*Inference*: the same arithmetic).
@@ -111,7 +111,7 @@ Money numbers are Yu's (RS-19, Money): the first four rows are those and the £ 
 | BSP cutoff | off + 24 h | BSP is known minutes after the off; a day allows for a late CLOSED read |
 | First pilot-capture after a session | the same evening | current-order rows leave once markets settle (F77) |
 | Final date | 2027-06-30 | time for 400 bets at a realistic pace (Timeline), with a firm end |
-| PT4's bets join the sample | if the first session after the PT4 receipt runs under PT4's registration receipt | then the same code and config placed them, so they belong to the same experiment |
+| PT4's bets | always reported apart (Yu, 2026-10-21) | PT4 checks our bookkeeping bet by bet; keeping its bets apart means no outcome seen there can decide what enters the sample |
 
 ## Architecture (the Air only)
 - Everything runs on the Air from a clean checkout matching the registration receipt. The live key and credentials stay in Keychain. The journal, raw responses, ledger and terminal artifact stay in the state root, outside Git. Nothing goes to the lab.
@@ -152,6 +152,7 @@ Every test needs Yu's explicit consent, with Yu present at the terminal (facts.m
 - Yu, 2026-10-21: the money numbers on RS-19, all as recommended: £2 a bet; at most 25 bets a day (5 until the first check); at most 495 in total; at most £20 open at once; a pause at −£150 and at each further −£150; a Betfair website loss limit of £50 a day. Yu kept the daily count for Pilot 1 because the test needs at least 15 different days.
 - Yu, 2026-10-21: the pause counts from £0, not from the best point reached, and there is no other running-total loss threshold (the £50 daily code stop and the website limit remain); the 495 total bounds the worst case at −£990; as Yu put it, the most that can be lost is what Yu put in.
 - Yu, 2026-10-21: after a PASS, one replication at £2 a bet comes before any scaling up, and it may place more than 25 bets a day.
+- Yu, 2026-10-21: PT4's bets are always reported apart from the sample. This answers the Codex review of PR #29: the earlier rule let a session after PT4, chosen with PT4's outcomes already seen, decide whether they joined.
 - Chosen by the principles (the reasons for their numbers are in "Values and why"):
   1. Consents: the three on RS-19 (build, go live, each session).
   2. First rule: P1-FAV-T5, the simplest rule with one plain question. Considered instead: the small-race variant, or a T−2 version (deeper book, smaller SD).
@@ -159,7 +160,7 @@ Every test needs Yu's explicit consent, with Yu present at the terminal (facts.m
   4. Sample: N = 400 eligible bets within 495 PLACE records, final date 2027-06-30; a shortfall is INCONCLUSIVE.
   5. Settlement: typed SETTLE MARKET inside pilot-run at settle points (note §8).
   6. Capture: pilot-capture the same evening, then daily (note §11).
-  7. PT4: its bets join the sample if the first session after the PT4 receipt runs under PT4's registration receipt.
+  7. PT4: its bets are always reported apart (Yu's decision, above).
   8. Accounting: dead heats, voids, removals and unknowns stay at worst case for all of Pilot 1; a cleared-figure gap above 1p is a review stop from the first bet (note §10).
   9. Funds: an R11 refusal ends the session with a review stop (note §9).
   10. Sessions: at most one arming line a racing day, ending at UNTIL and before 00:00Z, with no new reservation in the last 6 min and Yu present throughout.
@@ -178,10 +179,10 @@ Every test needs Yu's explicit consent, with Yu present at the terminal (facts.m
 
 | Assumptions | Sessions or days with PLACE records |
 |---|---|
-| Five PLACE records on day 1, then up to 25 a day; every one eligible | 1 + ceil((400 − 5)/25) = 17 |
-| Five on day 1, then ten fully matched £2 bets a day, settled before midnight; every bet eligible | 1 + ceil((400 − 5)/10) = 41 |
-| Same caps, an assumed 85% eligible yield (*Estimate*) | about 20 / 48, from 1 + ceil((400/0.85 − 5)/cap) |
-| Four sessions a week, at 20-48 sessions | about 5-12 weeks |
+| Five PT4 records on day 1 (apart), then up to 25 a day; every one eligible | 1 + ceil(400/25) = 17 |
+| Five PT4 records on day 1 (apart), then ten fully matched £2 bets a day, settled before midnight; every bet eligible | 1 + ceil(400/10) = 41 |
+| Same caps, an assumed 85% eligible yield (*Estimate*) | about 20 / 49, from 1 + ceil((400/0.85)/cap) |
+| Four sessions a week, at 20-49 sessions | about 5-12 weeks |
 
 - Ten a day is the fully matched £2 scenario, not a bound. £20 of total exposure holds ten fully matched £2 bets, but a partial fill whose remainder is cancelled holds less, so more markets can be open (lifecycle.py:277-285; risk.py:68-74, :107-112). R10 may allow fewer. The settlement day and token rules are in the note §8.
 - R10, scarce qualifying markets, partial fills, failed attempts, missing observations and Yu's attendance all change the rate. Qualifying bets per session are not measured. In 2025 there were about 36.5 GB/IE WIN markets a day (P-003 RS-21 counts, not in this repository). An attended session sees only part of the card, and the share that passes the filters is unknown.

@@ -238,15 +238,14 @@
     }
   },
   "sample": {
-    "analysis_population": "if N is reached, the PLACE records up to and including the 400th eligible one; otherwise every PLACE record; PT4 records reported apart are in neither",
+    "analysis_population": "if N is reached, the PLACE records up to and including the 400th eligible one; otherwise every PLACE record; PT4 records are in neither",
     "decision_order": "the journal sequence of each PLACE record's reservation; it never changes",
     "late_completion": "a PLACE record made before placing ended may still complete N if it is final by the data lock",
     "n_eligible": 400,
     "primary": "the first 400 eligible bets in decision order; a bet counts only once every earlier PLACE record has its final class; placing stops there",
     "pt4": {
       "covers": "the PLACE records of every PT4 session, if PT4 repeats",
-      "joins_sample_if": "the first session after the PT4 receipt runs under PT4's registration receipt",
-      "otherwise": "reported apart; they still use their slots, and the sample starts after them"
+      "membership": "always reported apart: they never join the primary sample or the analysis population; they still use their slots and count in the money ledger, and the sample starts after them"
     },
     "surplus": "PLACE records after the 400th eligible one, in decision order: finalised, counted and reported, outside the primary and the validity gates"
   },

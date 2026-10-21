@@ -112,12 +112,13 @@ class ScopeTableTests(unittest.TestCase):
         self.assertEqual(pilot.scope_of(None), pilot.Scope("end", "review", "refused"))
 
     def test_decision_skips(self):
-        self.assertEqual(pilot.decision_skip_scope("pause"), pilot.Scope("end", "review", "pause"))
-        self.assertEqual(pilot.decision_skip_scope("cap"), pilot.Scope("end", "session", "cap"))
-        for code in ("window", "country_not_allowed", "evidence_invalid", "interrupted"):
-            with self.subTest(code=code):
-                self.assertEqual((pilot.decision_skip_scope(code).action, pilot.decision_skip_scope(code).durable),
-                                 ("skip_market", "market"))
+        """A SKIP's latch is the gateway's, derived from the stops the classifier returned (pause: review; the day
+        limit's cap: session; any other SKIP: market); there is no second copy here (SCOPE-3; pinned end to end in
+        test_betfair_pilot_review_fixes.SkipLatchTests)."""
+        self.assertFalse(hasattr(pilot, "decision_skip_scope"))
+        for code in ("operator_echo_mismatch", "operator_echo_timeout", "settle_point_closed",
+                     "operator_confirmation_missing", "settle_market_not_closed"):
+            self.assertEqual(pilot.scope_of(code).action, "skip_offer")
         self.assertEqual(pilot.strongest_scope(["market", "session", "review"]), "review")
         self.assertEqual(pilot.strongest_scope(["none", "market"]), "market")
         self.assertIsNone(pilot.strongest_scope([]))

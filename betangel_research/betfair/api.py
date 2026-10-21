@@ -26,7 +26,7 @@ from .constants import (ACCOUNT_METHOD_PREFIX, ACCOUNT_RPC_PATH, BET_STATUSES, B
                         GROUP_BY_VALUES, MARKET_SORTS, MAX_IDS_PER_REQUEST, ORDER_BY_VALUES, ORDER_PROJECTIONS,
                         PAGE_SIZE_MAX, PRICE_DATA, READ_METHODS, REQUEST_WEIGHT_LIMIT, REST_MARKET_FILTER_KEYS,
                         SORT_DIRS)
-from .errors import ApiError, OrderRefused, TransportError, safe_code
+from .errors import ApiError, OrderRefused, ReadStopped, TransportError, safe_code
 from .filters import MARKET_ID_RE
 from .receipts import (SYSTEM_CLOCK, atomic_write_json, bytes_sha256, canonical_json, parse_utc_ns,
                        strict_json_loads, utc_from_ns, utc_ms_from_ns)
@@ -257,6 +257,28 @@ def _burn(capability):
         capability.consume(method=None, body_sha256=None, now_monotonic_ns=0)
     except OrderRefused:
         pass
+
+
+class GuardedTransport:
+    """The transport of an RS-19 pilot read session (P1-08, P108-C3): guard() is asked before every request it sends,
+    each retry included and the first read after a login, and a non-empty answer raises ReadStopped with nothing
+    sent. Logins are left to the session's own login guard (checked before an attempt is reserved, so the ledger never
+    holds a stopped attempt), and logout always goes through. Only pilot-run's sessions use it."""
+
+    _UNGUARDED = ("/api/login", "/api/certlogin", "/api/logout")
+
+    def __init__(self, inner, guard):
+        self._inner, self._guard = inner, guard
+
+    def request(self, method, url, headers, body, **kw):
+        if not any(str(url).endswith(path) for path in self._UNGUARDED):
+            reason = self._guard()
+            if reason:
+                raise ReadStopped(reason)
+        return self._inner.request(method, url, headers, body, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 
 
 class JsonRpcClient:

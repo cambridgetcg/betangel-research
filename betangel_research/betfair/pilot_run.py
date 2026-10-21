@@ -34,7 +34,7 @@ from .auth import ledger_status
 from .config import config_sha256, pilot_enabled
 from .credentials import keychain_read, load_credentials, publish_anchor
 from .errors import (AdmissionRefused, AuthError, BetfairError, CredentialError, JournalError, LockBusy,
-                     LoginBudgetExceeded, NotArmed, OrderRefused, safe_code)
+                     LoginBudgetExceeded, LoginStopped, NotArmed, OrderRefused, ReadStopped, safe_code)
 from .journal import EVENT_COLUMNS, OrderJournal, fold_events
 from .paths import file_lock, kill_engaged
 from .receipts import (atomic_write_bytes, atomic_write_json, bytes_sha256, git_identity, strict_json_loads,
@@ -54,6 +54,8 @@ PROMPT_TIMEOUT_NS = 120 * NS         # presence.ANSWER_TIMEOUT_S
 SETTLE_OVERHEAD_NS = 30 * NS
 SLICE_S = 1.0                        # every wait outside an open: at most 1 s between flag checks (§3.6)
 GAP_INTERVAL_NS = 300 * NS           # a long wait between opens is cut into gaps for capture and settle points
+CAPTURE_LOGIN_NS = 15 * NS           # SCHED-4: a capture batch's login allowance, beside one read's http.timeout_s
+PENDING_CAPTURE_LINE = "run pilot-capture now, before these markets settle (F77)"
 ARMED_SCHEMA = "betangel.pilot-armed-session/v1"
 ARMED_KEYS = frozenset({"schema", "session_id", "contract_sha256", "registration_receipt_sha256", "utc_day",
                         "until_ns", "session_end_ns", "admission_owner", "admission_generation", "pid",
@@ -61,6 +63,8 @@ ARMED_KEYS = frozenset({"schema", "session_id", "contract_sha256", "registration
 UNTIL_RE = re.compile(r"([01][0-9]|2[0-3])([0-5][0-9])")
 STATIC_CODES = frozenset(code for check in STATIC_CHECKS for code in FAILURE_CODES[check])
 LOGIN_RESET_LINE = "a login attempt has no outcome or failed; Yu decides on login-reset (note:125)"
+RECORDED_LINE = ("then run reconcile --mode live{flag}; its open refuses the order recorded before its submit "
+                 "(crash_before_submit)")
 LEDGER_LINE = ("login ledger: a login attempt from this run has no outcome (stopped mid-login). From 30 s after it, it "
                "counts as a failed or unknown login, and one more stops every caller, kill included. Release and the next "
                "PILOT ARM refuse until a later successful login or Yu's typed login-reset; Yu decides (note:125).")
@@ -475,20 +479,29 @@ def read_contract(env):
 
 
 def pilot_session_live(paths, config, events, now_ns, *, ticket=None, contract_reader=None, clock=None):
-    """§4.13: True when a second process must not settle: the fold (a local read-only contract that parses and matches
-    both orders.pilot and the journal's registered contract) shows a session armed, or any load or fold fails. With
-    ticket None (no ownership) also when the owner lock is held or unknown while ADMISSION names a pilot-session owner
-    or cannot be read; with a ticket the lock term is dropped entirely (no probe, no holds(), no ADMISSION read: holding
-    the owner lock already shuts out pilot-run)."""
+    """§4.13: True when a second process must not settle. Armed is the fold's answer when orders.pilot is configured
+    and its local read-only contract parses and matches both orders.pilot and the journal's registered contract;
+    otherwise (no orders.pilot, an unreadable or different contract, a fold that raises) it is the gateway's own
+    fallback, the journal-only UNTIL window (pilot_gate.session_window_open), so the refusal ends at UNTIL (NP-1).
+    With ticket None (no ownership) also True when the owner lock is held or unknown while ADMISSION names a
+    pilot-session owner or cannot be read; with a ticket the lock term is dropped entirely (no probe, no holds(), no
+    ADMISSION read: holding the owner lock already shuts out pilot-run)."""
+    armed = None
     try:
-        section = config["orders"]["pilot"]
-        reader = contract_reader or pilot_gate.PilotContext(repo_root=pilot_gate.MODULE_ROOT).read_contract
-        contract = pilot.contract_from_bytes(reader(section["contract_path"]))
-        if not contract.sha256 == section["contract_sha256"] == pilot_gate.journal_contract_sha256(events):
-            return True
-        if pilot.session_armed(pilot.fold(events, contract=contract, now_ns=now_ns), now_ns=now_ns):
-            return True
+        if pilot_enabled(config):
+            section = config["orders"]["pilot"]
+            reader = contract_reader or pilot_gate.PilotContext(repo_root=pilot_gate.MODULE_ROOT).read_contract
+            contract = pilot.contract_from_bytes(reader(section["contract_path"]))
+            if contract.sha256 == section["contract_sha256"] == pilot_gate.journal_contract_sha256(events):
+                armed = pilot.session_armed(pilot.fold(events, contract=contract, now_ns=now_ns), now_ns=now_ns)
     except (OSError, KeyError, TypeError, ValueError, ArithmeticError, AttributeError, BetfairError):
+        armed = None
+    if armed is None:
+        try:
+            armed = pilot_gate.session_window_open(events, now_ns=now_ns)
+        except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError, BetfairError):
+            armed = True
+    if armed:
         return True
     if ticket is not None:
         return False
@@ -520,6 +533,8 @@ def before_release_lines(paths, *, handoffs, generation=None, armed_file_kept=Fa
                          f"it closes")
     extra = {"clock": clock} if clock is not None else {}
     problems = admission.live_state_problems(paths, **extra)
+    if "order_recorded" in problems:                     # SIG-4: an intent with no submit blocks release until then
+        lines.append(RECORDED_LINE.format(flag=flag))
     if "kill_file_engaged" in problems or "halt_active" in problems:
         lines.append("then resume once the kill has been dealt with")
     if login_reset:
@@ -540,7 +555,7 @@ def before_release_lines(paths, *, handoffs, generation=None, armed_file_kept=Fa
     return lines
 
 
-def release_lines(result):
+def release_lines(result, flag=""):
     """The lines for release_own's result: released, or every problem (the login-reset line first for a login_* code),
     the owner and generation N, and that recording stays off until Yu's typed recording-release (P108-R2-3)."""
     if result["released"]:
@@ -554,6 +569,8 @@ def release_lines(result):
         lines.append(LOGIN_RESET_LINE)
     lines.append(f"release refused: {result['outcome']} ({', '.join(result['problems'])}); owner {result['owner']}, "
                  f"generation {result['generation']}")
+    if "order_recorded" in result["problems"]:
+        lines.append(RECORDED_LINE.format(flag=flag))
     lines.append(f"recording stays off until Yu's typed recording-release (generation {result['generation']})")
     return lines
 
@@ -852,7 +869,8 @@ def _arm_checks(env, *, now_ns, day, until_ns, absence):
         raise Refused("pilot_arm_login_ledger")
     problems = admission.live_state_problems(paths, clock=clock) + admission.ledger_problems(config, paths, clock=clock)
     if problems:
-        raise Refused("pilot_arm_release_would_refuse:" + ",".join(problems))
+        raise Refused("pilot_arm_release_would_refuse:" + ",".join(problems),
+                      [RECORDED_LINE.format(flag=env.paused_flag)] if "order_recorded" in problems else [])
     if absence:
         try:
             status = admission.admission_status(paths)
@@ -970,49 +988,59 @@ def _arm_under_ownership(env, journal, view, stop, ticket, *, session_id, day, u
 
     if ticket.inhibit_preexisting:                                                     # the step 2 race
         refuse("pilot_arm_release_would_refuse:inhibit_preexisting")
-    record = {"schema": ARMED_SCHEMA, "session_id": session_id, "contract_sha256": contract.sha256,
-              "registration_receipt_sha256": view["receipt_sha256"], "utc_day": day, "until_ns": until_ns,
-              "session_end_ns": session_end, "admission_owner": ticket.owner, "admission_generation": generation,
-              "pid": os.getpid(), "process_start_time": env.processes.start_time(os.getpid()) or "unknown",
-              "armed_at": clock.utc_now()}
-    try:
-        armed_sha = write_armed_session(paths, record)                                 # step 3
-    except (OSError, ValueError, BetfairError):
-        refuse("pilot_arm_session_file_unwritten")
-    try:
-        current = admission.admission_status(paths)["admission"]
-    except AdmissionRefused:
-        refuse("admission_state_unknown")
-    if current is None or (current["owner"], current["generation"], current["state"]) != (ticket.owner, generation,
-                                                                                         "admitted"):
-        refuse("pilot_arm_ownership_changed")
-    if stop.requested:                                                                  # step 4
-        refuse("pilot_arm_stopped")
-    try:
-        credentials = load_session_credentials(config, paths, runner=env.keychain_runner, stop=stop)     # step 5
-    except _ArmStopped:
-        refuse("pilot_arm_stopped")
-    except CredentialError:
-        refuse("pilot_arm_credentials_unavailable")
-    try:
-        lock = file_lock(paths.gateway_lock, timeout_s=config["http"]["order_deadline_s"] + 5, clock=clock)
-        held = lock.__enter__()
-    except LockBusy:
-        refuse("lock_busy")
-    try:
-        event = _arm_locked(env, journal, view, stop, ticket, held, session_id=session_id, day=day, until_ns=until_ns,
-                            armed_sha=armed_sha)
-    except Refused as exc:
-        lock.__exit__(None, None, None)
-        refuse(exc.code, exc.lines)
-    except BaseException:
-        lock.__exit__(None, None, None)
+    try:                                  # OWN-4: once the ticket exists, every unexpected end names N and the way out
+        record = {"schema": ARMED_SCHEMA, "session_id": session_id, "contract_sha256": contract.sha256,
+                  "registration_receipt_sha256": view["receipt_sha256"], "utc_day": day, "until_ns": until_ns,
+                  "session_end_ns": session_end, "admission_owner": ticket.owner, "admission_generation": generation,
+                  "pid": os.getpid(), "process_start_time": env.processes.start_time(os.getpid()) or "unknown",
+                  "armed_at": clock.utc_now()}
+        try:
+            armed_sha = write_armed_session(paths, record)                                 # step 3
+        except (OSError, ValueError, BetfairError):
+            refuse("pilot_arm_session_file_unwritten")
+        try:
+            current = admission.admission_status(paths)["admission"]
+        except AdmissionRefused:
+            refuse("admission_state_unknown")
+        if current is None or (current["owner"], current["generation"], current["state"]) != (ticket.owner, generation,
+                                                                                             "admitted"):
+            refuse("pilot_arm_ownership_changed")
+        if stop.requested:                                                                  # step 4
+            refuse("pilot_arm_stopped")
+        try:
+            credentials = load_session_credentials(config, paths, runner=env.keychain_runner, stop=stop)     # step 5
+        except _ArmStopped:
+            refuse("pilot_arm_stopped")
+        except CredentialError:
+            refuse("pilot_arm_credentials_unavailable")
+        try:
+            lock = file_lock(paths.gateway_lock, timeout_s=config["http"]["order_deadline_s"] + 5, clock=clock)
+            held = lock.__enter__()
+        except LockBusy:
+            refuse("lock_busy")
+        try:
+            event = _arm_locked(env, journal, view, stop, ticket, held, session_id=session_id, day=day, until_ns=until_ns,
+                                armed_sha=armed_sha)
+        except Refused as exc:
+            lock.__exit__(None, None, None)
+            refuse(exc.code, exc.lines)
+        except BaseException:
+            lock.__exit__(None, None, None)
+            raise
+        lock.__exit__(None, None, None)                                                     # step 8
+        session = {"session_id": session_id, "seq": event["seq"], "until_ns": until_ns, "utc_day": day,
+                   "session_end_ns": session_end}
+        run = Run(env, journal=journal, contract=contract, ticket=ticket, stop=stop, session=session,
+                  credentials=credentials, armed_sha=armed_sha, receipt_sha256=view["receipt_sha256"])
+    except Refused:
         raise
-    lock.__exit__(None, None, None)                                                     # step 8
-    session = {"session_id": session_id, "seq": event["seq"], "until_ns": until_ns, "utc_day": day,
-               "session_end_ns": session_end}
-    run = Run(env, journal=journal, contract=contract, ticket=ticket, stop=stop, session=session,
-              credentials=credentials, armed_sha=armed_sha, receipt_sha256=view["receipt_sha256"])
+    except BaseException as exc:
+        kept = bool(armed_session_check(paths))
+        w.line(f"ARM did not finish ({safe_code(str(exc) or type(exc).__name__)}): owner {ticket.owner}, generation "
+               f"{generation}; " + (f"armed-session file kept at {armed_session_path(paths)}; run pilot-end-session "
+                                    f"--mode live, then " if kept else "recording stays off until ")
+               + f"Yu's typed recording-release (generation {generation})")
+        raise
     return run.go()
 
 
@@ -1134,7 +1162,17 @@ class Run:
                 self.stop.take_pending(signals)
 
     def stop_note(self, code, anchor, *, source_seq=None):
+        """A session stop, once: an id already journaled in this session is not appended again (a helper completing
+        an owed write after a signal may meet the stop the first attempt wrote)."""
+        if self.journaled(pilot.session_stop_id(code, anchor)):
+            return None
         return self.owe(session_stop(self.contract, code, anchor, source_seq=source_seq))
+
+    def journaled(self, stop_id):
+        """True when a stop note with stop_id is in the journal from this session's start (unreadable: False)."""
+        read = self.read(max(0, self.session["seq"] - 1))
+        return any(e["kind"] == "note" and (e["payload"].get("pilot") or {}).get("stop_id") == stop_id
+                   for e in read["events"])
 
     def refusal(self, code, *, open_id=None, reservation_seq=None):
         return self.owe(refusal_note(self.contract, session_id=self.session["session_id"], open_id=open_id,
@@ -1196,6 +1234,10 @@ class Run:
     def login_family(self, exc, *, reservation_seq=None):
         """Classify by exception type, LoginBudgetExceeded first (it subclasses AuthError), then by a ledger rise.
         -> True when it was a login-family failure (journaled), else False."""
+        if isinstance(exc, (LoginStopped, ReadStopped)):        # a pilot read guard: no login was attempted
+            if getattr(exc, "reason", None) in ("kill", "skipped_kill") or "kill" in str(exc):
+                self.mark_abnormal("kill")
+            return True
         if isinstance(exc, LoginBudgetExceeded):
             self.refusal("login_budget", reservation_seq=reservation_seq)
             self.login_budget = True
@@ -1226,7 +1268,7 @@ class Run:
     def read_client(self):
         """The scheduler's read session (credentials read), built once and logged out at the end."""
         if self.scheduler is None:
-            self.scheduler = self.env.read_session_factory(self.credentials["read"])
+            self.scheduler = self.env.read_session_factory(self.credentials["read"], guard=self.read_guard)
             self.read_sessions.append(self.scheduler)
         return self.scheduler[1]
 
@@ -1239,6 +1281,15 @@ class Run:
             return "kill"
         if not self.intact():
             return "admission"
+        return None
+
+    def read_guard(self):
+        """The guard of every pilot read session, asked at each login and each read attempt (P108-C3): "stop" once
+        the flag is set, "kill" once a KILL file or a kill since the session start is seen (§3.9), else None."""
+        if self.stop.requested:
+            return "stop"
+        if self.kill_seen():
+            return "kill"
         return None
 
     def candidates(self):
@@ -1314,7 +1365,20 @@ class Run:
         except (self.env.signal_stop, KeyboardInterrupt):     # outside any open: Yu's stop
             self.stop.requested = True
             self.ledger_check_after_signal()             # a SignalStop out of a read session's login (§9.6)
-        return self.end()
+        try:
+            return self.end()
+        except Exception as exc:                         # SIG-3: the end block still prints; never a release
+            self.mark_abnormal("end_failed")
+            w = self.w
+            w.line(f"end: {safe_code(type(exc).__name__)}")
+            after = self.fold()
+            if after is None:
+                w.lines(case_one_handoff([], seen_seq=0, market_id=None))
+            w.lines(before_release_lines(self.paths, handoffs=after["handoffs"] if after is not None else [],
+                                         generation=self.ticket.generation,
+                                         armed_file_kept=bool(armed_session_check(self.paths)),
+                                         flag=self.env.paused_flag, login_reset=self.login_failed, clock=self.clock))
+            return 5
 
     def loop(self):
         candidates = None
@@ -1345,6 +1409,7 @@ class Run:
                                                 session_id=self.session["session_id"])
             if capacity["code"] == "cap":                  # Q16: end at the day limit, never a doomed reservation
                 self.end_code = "day_limit"
+                self.final_capture()
                 return
             if candidates is None:
                 candidates = self.candidates()
@@ -1353,6 +1418,8 @@ class Run:
             target = self.plan(state, candidates)
             if target is None:
                 self.end_code = self.end_code or "no_plannable_market"
+                if self.end_code == "no_plannable_market":
+                    self.final_capture()
                 return
             market_id, off = target
             open_at = off + self.contract.window_from_offset_s * NS - OPEN_LEAD_NS
@@ -1399,7 +1466,7 @@ class Run:
         """Between opens: one capture batch (C first), then settle points when the next open is far enough away. ->
         False when the run must end."""
         if capture_entries(projection, queue=self.c_queue, session_id=self.session["session_id"], now_ns=self.now()):
-            if self.capture_batch(in_session=True) == "end":    # C first, then the CLOSED book and L (§4.7)
+            if self.capture_batch(open_at=open_at) == "end":     # C first, then the CLOSED book and L (§4.7)
                 return False
         if self.flag_seen() or self.abnormal:
             return False
@@ -1437,6 +1504,7 @@ class Run:
                     raise signal_stop("outer_stop")
                 outcome = self.in_open(gateway, ctx, market_id, off)
         except signal_stop:                                  # before yield, or no submit: Yu's stop, orderly
+            self.finish_owed(ctx)
             self.ledger_check_after_signal()
             self.stop.requested = True
             outcome = "end"
@@ -1463,7 +1531,10 @@ class Run:
         report = gateway.open_report() or {}
         ctx["open_id"] = report.get("open_id") or gateway.open_id
         if not report.get("armed"):
+            ctx["report"] = report
+            self.deferring(True)                             # §3.6 (P108-C1): before the lookup that decides the note
             self.not_armed_at_open(report, ctx)
+            self.stop.take_pending(getattr(self.env.ctx, "signals", None))
             return "end"
         try:
             result = self.place_once(gateway, ctx, market_id, off)
@@ -1481,11 +1552,17 @@ class Run:
         while True:
             self.sleep_until(t0, outside_open=False)
             result = gateway.pilot_place(market_id, scheduler_off_ns=off, confirm_token=self.env.args.confirm_live)
+            ctx["result"] = result                           # SIG-1: what the open owes is decided from this
+            # §3.6 (P108-C1): deferral starts as soon as pilot_place returns, before any lookup that decides a write
+            # this open owes, and lasts through that write (after_place); a signal meanwhile is only recorded.
+            self.deferring(True)
             if result.get("pilot", {}).get("submit_seq") is not None:
                 ctx["submit"] = True
             refusal = result.get("refusal") or {}
             if (result["pilot"]["latch"] is None and refusal.get("rule") == "pilot_reserve_too_early"
                     and not ctx["retried"]):
+                ctx["result"] = None
+                self.deferring(False)                        # the retry stays interruptible (nothing is owed)
                 pending = getattr(self.env.ctx, "signals", None)
                 if pending is not None and pending.pending:
                     self.stop.take_pending(pending)
@@ -1510,28 +1587,65 @@ class Run:
             return "end"
         if refusal:
             rule = refusal.get("rule")
-            scope = pilot.scope_of(rule, (refusal.get("detail") or {}).get("reason"))
-            if scope.action == "retry":                    # a second too-early in the same open
-                scope = pilot.Scope("end", "review", rule)
-            if scope.durable == "review":
-                self.refusal(scope.code, open_id=ctx["open_id"], reservation_seq=res)
-            elif scope.durable == "session":
-                self.stop_note(scope.code, res if res is not None else self.session["seq"],
-                               source_seq=res if res is not None else self.session["seq"])
+            scope = self.write_owed(ctx, result)
             if rule == pilot.MANUAL_BET_OPEN:
                 self.manual_bet = True
             self.end_code = rule
             return "continue" if scope.action in ("skip_market",) else "end"
         if p["state"] == "FAILED":
-            key = self.failed_key(ctx, p)
-            report = key[1]
-            if key[0] is not None and pilot.scope_of(key[0]).durable == "review" and report is not None:
-                stop_id = pilot.carried_review_stop_id(key[0], res, report)
-                self.owe({"pilot": pilot.stop_payload(self.contract, stop_id, "review", pilot.refusal_code(key[0]),
-                                                      source_seq=res)})
-            self.end_code = key[0] or "failed"
+            self.write_owed(ctx, result)
+            self.end_code = self.failed_key(ctx, p)[0] or "failed"
             return "end"
         return self.remainder(gateway, ctx, market_id, p)
+
+    def write_owed(self, ctx, result):
+        """The write a latch-None result owes (§4.5 step 5), idempotently -> its scope: a refusal through the scope
+        table (a second too-early in the open is review; the first is a retry and owes nothing), a review note unless
+        the open is covered, a session stop unless journaled; a FAILED result its carried review stop unless
+        journaled. Called by after_place and, after a signal, by finish_owed (SIG-1 d)."""
+        p, refusal = result["pilot"], result.get("refusal") or {}
+        res = p["reservation_seq"]
+        if refusal:
+            rule = refusal.get("rule")
+            scope = pilot.scope_of(rule, (refusal.get("detail") or {}).get("reason"))
+            if scope.action == "retry":
+                if not ctx.get("retried"):
+                    return scope
+                scope = pilot.Scope("end", "review", rule)          # a second too-early in the same open
+            if scope.durable == "review" and not self.covered(ctx):
+                self.refusal(scope.code, open_id=ctx["open_id"], reservation_seq=res)
+            elif scope.durable == "session":
+                anchor = res if res is not None else self.session["seq"]
+                self.stop_note(scope.code, anchor, source_seq=anchor)
+            return scope
+        if p["state"] == "FAILED":
+            key = self.failed_key(ctx, p)
+            if key[0] is not None and pilot.scope_of(key[0]).durable == "review" and key[1] is not None:
+                stop_id = pilot.carried_review_stop_id(key[0], res, key[1])
+                if not self.journaled(stop_id):
+                    self.owe({"pilot": pilot.stop_payload(self.contract, stop_id, "review",
+                                                          pilot.refusal_code(key[0]), source_seq=res)})
+        return None
+
+    def finish_owed(self, ctx):
+        """§3.6: the orderly path first completes any executor write this open already owes (SIG-1 d): from a
+        pilot_place result with latch None, or from an armed-False open report. Best effort; a failure marks the run
+        abnormal, so it never ends clean."""
+        if not ctx:
+            return
+        before = getattr(getattr(self.env.ctx, "signals", None), "deferring", None)
+        self.deferring(True)
+        try:
+            result, report = ctx.get("result"), ctx.get("report")
+            if result is not None and result.get("pilot", {}).get("latch") is None:
+                self.write_owed(ctx, result)
+            elif report is not None:
+                self.not_armed_at_open(report, ctx)
+        except Exception:
+            self.mark_abnormal("owed_write_failed")
+        finally:
+            if before is not None:
+                self.deferring(before)
 
     def failed_key(self, ctx, p):
         """(code, report seq) of the §3.1 FAILED key for this open's place report (FAILED_NOT_SENT and FAILED_REJECTED:
@@ -1653,7 +1767,7 @@ class Run:
         if exc.rule not in STATIC_CODES and "halted" not in failures:
             self.refusal(exc.rule, open_id=ctx["open_id"])
             return
-        review = any(code != "halted" for code in failures)
+        review, kill = any(code != "halted" for code in failures), False
         if "halted" in failures:
             read = self.read(0)
             try:
@@ -1662,18 +1776,20 @@ class Run:
                 state = None
             causes = a7_causes(self.paths, state if state is not None else {"halted": True})
             if causes["kill"] is not False:
-                session_seq = self.session["seq"]
-                stop_id = pilot.session_stop_id("kill_file", session_seq)
-                if not any(e["kind"] == "note" and (e["payload"].get("pilot") or {}).get("stop_id") == stop_id
-                           for e in read["events"]):
-                    self.stop_note("kill_file", session_seq, source_seq=session_seq)
+                stop_id = pilot.session_stop_id("kill_file", self.session["seq"])
+                kill = not any(e["kind"] == "note" and (e["payload"].get("pilot") or {}).get("stop_id") == stop_id
+                               for e in read["events"])
             if causes["clock_regression"] or causes["unfoldable"]:
                 review = True
             if not any(causes[key] for key in ("kill", "halt", "clock_regression", "unfoldable")) \
                     and causes["kill"] is not None:
                 review = True                              # halted with no cause found: fail closed
+        # Review before KILL (P108-C2): every cause is chosen before any append, and the review occurrence (its own
+        # carrier) is journaled first, so a death between the two appends never leaves the session stop alone.
         if review:
             self.refusal("not_armed_before_lock", open_id=ctx["open_id"])
+        if kill:
+            self.stop_note("kill_file", self.session["seq"], source_seq=self.session["seq"])
 
     def not_armed_at_open(self, report, ctx):
         """Step 3: armed False. A17 gets its own review occurrence when no HALT holds and nothing else noted the open;
@@ -1687,7 +1803,9 @@ class Run:
                 core = fold_events(read["events"], mode="live", now_ns=self.now()) if read["readable"] else None
             except (JournalError, KeyError, TypeError, ValueError):
                 core = None
-            if core is not None and not core["halted"] and not covered:
+            if core is None:                     # SCOPE-1: the HALT state is unknown; an extra review stop is safe
+                self.mark_abnormal("journal_unreadable")
+            if (core is None or not core["halted"]) and not covered:
                 self.refusal("unresolved_or_foreign_orders", open_id=ctx["open_id"])
             return
         if covered:
@@ -1724,13 +1842,17 @@ class Run:
         if read["readable"] and submit is None:              # "No submit": nothing of this open can be live
             ctx["submit"] = False
             if isinstance(exc, signal_stop):
+                self.finish_owed(ctx)                        # SIG-1 d: the write the open owed, before the end
                 self.ledger_check_after_signal()
                 return
             if not self.login_family(exc):
                 self.no_submit_exception(ctx)
             return
         ctx["submit"] = True
-        self.mark_abnormal("executor_exception")
+        # SIG-5: the cause by the same classification as step 3(a), set before any write so the end fails closed.
+        self.mark_abnormal("signal_after_submit" if isinstance(exc, signal_stop)
+                           else "login_budget" if isinstance(exc, LoginBudgetExceeded)
+                           else "login_failed" if isinstance(exc, AuthError) else "executor_exception")
         order_state, item = None, None
         try:
             if not read["readable"]:
@@ -1778,13 +1900,10 @@ class Run:
         """Offer each eligible market once in this gap: a pilot order EXECUTION_COMPLETE in a market a capture read
         showed CLOSED, with no pilot order EXECUTABLE with a remainder or unresolved. -> None or "end"."""
         projection = self.fold()
-        if projection is None:
+        if not self.settle_orders_clear(projection):
             return None
         pilot_refs = {rec.ref for rec in projection["state"].place_records}
         orders = projection["core"]["orders"]
-        if any(ref in orders and (orders[ref]["state"] in UNRESOLVED_STATES or (
-                orders[ref]["state"] == "EXECUTABLE" and orders[ref]["size_remaining_p"] > 0)) for ref in pilot_refs):
-            return None
         closed = closed_markets(self.read(0)["events"])
         markets = sorted({orders[ref]["market_id"] for ref in pilot_refs if ref in orders
                           and orders[ref]["state"] == "EXECUTION_COMPLETE" and orders[ref]["market_id"] in closed})
@@ -1799,7 +1918,20 @@ class Run:
                 return "end"
         return None
 
+    @staticmethod
+    def settle_orders_clear(projection):
+        """The settle point's order condition (§4.6): a projection, and no pilot order unresolved or EXECUTABLE with
+        a remainder."""
+        if projection is None:
+            return False
+        orders = projection["core"]["orders"]
+        return not any(ref in orders and (orders[ref]["state"] in UNRESOLVED_STATES or (
+            orders[ref]["state"] == "EXECUTABLE" and (orders[ref]["size_remaining_p"] or 0) > 0))
+            for ref in {rec.ref for rec in projection["state"].place_records})
+
     def settle_allowed(self, open_at):
+        """The settle point's run conditions, in placement()'s order: the flag, HUP, an abnormal cause, the 3-min lead,
+        the kill (§3.9), admission_intact (§3.10), then the login-budget pre-check (§3.8, SCHED-1)."""
         if self.stop.requested or self.stop.hup or self.abnormal:
             return False
         if open_at - self.now() <= SETTLE_LEAD_NS + PROMPT_TIMEOUT_NS + SETTLE_OVERHEAD_NS:
@@ -1807,16 +1939,36 @@ class Run:
         if self.kill_seen():
             self.mark_abnormal("kill")
             return False
-        return self.intact()
+        if not self.intact():
+            return False
+        return not self.budget_blocks()
+
+    @staticmethod
+    def settle_skip(rule):
+        """A settle refusal that only skips the offer (the scope table's skip_offer row: settle_market_*, the closed
+        point, a missing, mismatched or timed-out typed line; SCOPE-3)."""
+        return pilot.scope_of(rule).action == "skip_offer"
 
     def settle_one(self, market_id, open_at):
         signal_stop = self.env.signal_stop
-        skip = ("settle_point_closed", "operator_confirmation_missing", "operator_echo_mismatch",
-                "operator_echo_timeout")
 
         def confirm(gateway):
             gateway.preconfirm("settle-market", market_id=market_id)
-            if not self.settle_allowed(open_at):           # Q13: every condition and the flag again, after the line
+            # Q13 after the typed line, under deferral (SIG-1 c): every run condition and the order condition again
+            # (SCHED-2), then any signal that arrived; a stop raises before the open can log in.
+            signals = getattr(self.env.ctx, "signals", None)
+            before = signals.deferring if signals is not None else None
+            if signals is not None:
+                signals.deferring = True
+            try:
+                allowed = self.settle_allowed(open_at) and self.settle_orders_clear(self.fold())
+            finally:
+                if signals is not None:
+                    signals.deferring = before
+                    self.stop.take_pending(signals)
+            if self.stop.requested:
+                raise signal_stop("outer_stop")
+            if not allowed:
                 raise OrderRefused("settle_point_closed")
 
         ctx = {"seen_seq": 0, "market_id": market_id, "open_id": None}
@@ -1824,17 +1976,19 @@ class Run:
         ctx["seen_seq"] = head["events"][-1]["seq"] if head["readable"] and head["events"] else 0
         try:
             with self.env.gateway_factory("settle-market", credentials=self.credentials, stop=self.stop,
-                                          in_session_settle=True, confirm=confirm) as gateway:
+                                          in_session_settle=True, confirm=confirm,
+                                          read_guard=self.read_guard) as gateway:
                 if self.stop.requested:
                     raise signal_stop("outer_stop")
                 try:
                     gateway.settle_market(market_id, confirm_token=self.env.args.confirm_live)
                 except OrderRefused as exc:
-                    if exc.rule.startswith("settle_market_") or exc.rule in skip:
+                    if self.settle_skip(exc.rule):
                         self.w.line(f"settle {market_id}: {exc.rule}; the order stays at worst case; settle later")
                         return None
                     raise
         except signal_stop:
+            self.finish_owed(ctx)
             self.ledger_check_after_signal()
             self.stop.requested = True
             return "end"
@@ -1846,7 +2000,7 @@ class Run:
             self.stop_note("lock_busy", self.session["seq"], source_seq=self.session["seq"])
             return "end"
         except OrderRefused as exc:
-            if exc.rule.startswith("settle_market_") or exc.rule in skip:
+            if self.settle_skip(exc.rule):
                 self.w.line(f"settle {market_id}: {exc.rule}; the order stays at worst case; settle later")
                 return None
             if not self.login_family(exc):
@@ -1863,23 +2017,36 @@ class Run:
 
     # -- in-session capture (§4.7) --------------------------------------------------------------------------------
 
-    def capture_batch(self, *, in_session):
-        """One capture batch between opens -> None or "end"."""
+    def capture_bound_ns(self):
+        """SCHED-4: how long one capture read can take with its login and the note's lock wait; a batch never starts,
+        and never starts another read, within this of the next planned open."""
+        http = self.config["http"]
+        return int(http["timeout_s"] * NS) + CAPTURE_LOGIN_NS + int((http["order_deadline_s"] + 5) * NS)
+
+    def final_capture(self):
+        """SCHED-3: at an orderly end with the session still armed (the day limit, no plannable market), one C-only
+        batch for the orders whose C read is still queued, under the same checks as any batch."""
+        if self.c_queue and not (self.stop.requested or self.abnormal):
+            self.capture_batch(kinds=("c",))
+
+    def capture_batch(self, *, open_at=None, kinds=None):
+        """One capture batch between opens (or the final C batch) -> None or "end". It reads on the scheduler's read
+        session (SCHED-5: no new login per batch) and stops before the next open's bound (SCHED-4)."""
         projection = self.fold()
         if projection is None:
             return None
         entries = capture_entries(projection, queue=self.c_queue, session_id=self.session["session_id"],
                                   now_ns=self.now())
+        if kinds is not None:
+            entries = [entry for entry in entries if entry[0] in kinds]
         if not entries:
             return None
-        session = None
+        deadline = None if open_at is None else open_at - self.capture_bound_ns()
+        if deadline is not None and self.now() > deadline:
+            return None                                    # too close to the open: the entries stay queued
 
         def client():
-            nonlocal session
-            if session is None:
-                session = self.env.read_session_factory(self.credentials["read"])
-                self.read_sessions.append(session)
-            return session[1]
+            return self.read_client()
 
         def before():
             found = self.before_read()
@@ -1887,7 +2054,7 @@ class Run:
 
         try:
             outcome = capture(self.env, entries, read_client=client, journal=self.journal, contract=self.contract,
-                              before_read=before, budget_blocks=self.budget_blocks)
+                              before_read=before, budget_blocks=self.budget_blocks, deadline_ns=deadline)
         except LockBusy:
             self.stop_note("lock_busy", self.session["seq"], source_seq=self.session["seq"])
             return "end"
@@ -1937,7 +2104,7 @@ class Run:
                                           source_seq=self.session["seq"]))
                     appended_end = True
                 projection = self.fold() or projection
-            except (LockBusy, JournalError, OSError) as exc:
+            except Exception as exc:                       # SIG-3: any failure here only ends abnormally
                 self.mark_abnormal("end_append_failed")
                 w.line(f"end: {safe_code(type(exc).__name__)}")
         self.summary(projection)                           # step 4
@@ -1947,10 +2114,15 @@ class Run:
         clean = (not self.handoff_due and self.abnormal is None and step2 and not problems and projection is not None)
         if clean:                                          # step 6
             deleted = delete_armed_session_if(paths, self.armed_sha)
-            if deleted not in ("deleted", "missing"):
+            if deleted not in ("deleted", "missing"):      # OWN-5: the file goes before release, or no release
                 w.line(f"armed-session file {deleted}; left at {armed_session_path(paths)}")
+                self.mark_abnormal("armed_file_not_deleted")
+                clean = False
+        if clean:
+            if projection is not None and capture_entries(projection):
+                w.line(self.pending_line(capture_entries(projection)))
             result = admission.release_own(self.ticket, paths, config=config, clock=self.clock, extra_checks=[check])
-            w.lines(release_lines(result))
+            w.lines(release_lines(result, self.env.paused_flag))
             if self.manual_bet:
                 w.line("placing needs the manual bet cancelled or settled, then RESUME LIVE, then a new PILOT ARM on a "
                        "later UTC day")
@@ -1965,11 +2137,7 @@ class Run:
             w.lines(case_one_handoff([], seen_seq=0, market_id=None))
         pending = capture_entries(after) if after is not None else []       # C, the CLOSED book and L (§3.9)
         if pending:
-            bets = sorted({item["bet_id"] for _, item in pending})
-            reads = ", ".join(f"{kind} {item['bet_id'] if kind != 'book' else item['market_id']}"
-                              for kind, item in pending)
-            w.line(f"pending captures for bets {', '.join(bets)}: {reads}"
-                   + (f"; {KILL_CAPTURE_LINE}" if self.abnormal == "kill" else "; run pilot-capture after the session"))
+            w.line(self.pending_line(pending))
         w.lines(before_release_lines(paths, handoffs=handoffs, generation=self.ticket.generation,
                                      armed_file_kept=kept, flag=self.env.paused_flag, login_reset=self.login_failed,
                                      clock=self.clock))
@@ -1977,6 +2145,13 @@ class Run:
             w.line("placing needs the manual bet cancelled or settled, then RESUME LIVE, then a new PILOT ARM on a later "
                    "UTC day")
         return 5
+
+    def pending_line(self, pending):
+        """The pending-captures line: every bet and read still owed, and when to run pilot-capture."""
+        bets = sorted({item["bet_id"] for _, item in pending})
+        reads = ", ".join(f"{kind} {item['bet_id'] if kind != 'book' else item['market_id']}" for kind, item in pending)
+        return (f"pending captures for bets {', '.join(bets)}: {reads}; "
+                + (KILL_CAPTURE_LINE if self.abnormal == "kill" else PENDING_CAPTURE_LINE))
 
     def summary(self, projection):
         """Counts and codes only (note:182): this session's reservations, records, SKIPs by code, sends, refusals by
@@ -2098,7 +2273,7 @@ def capture_entries(projection, *, queue=None, session_id=None, now_ns=None):
     return entries + books + ls
 
 
-def capture(env, entries, *, read_client, journal, contract, before_read, budget_blocks):
+def capture(env, entries, *, read_client, journal, contract, before_read, budget_blocks, deadline_ns=None):
     """One capture batch over entries, C before L and the CLOSED book (F77): before each read the caller's checks, then
     the budget pre-check (a deferred read stops the batch: login_budget_deferred); one raw read; the exact bytes to
     pilot_dir/raw/<sha256> (0600, local); the pure extractor; a note only when ref, market and selection match the record,
@@ -2120,14 +2295,24 @@ def capture(env, entries, *, read_client, journal, contract, before_read, budget
             out["stopped"] = "login_budget_deferred"
             code("login_budget_deferred")
             break
-        client = read_client()
-        if kind == "c":
-            read = client.raw_current_order(item["bet_id"], deadline_s=deadline_s)
-        elif kind == "book":
-            read = client.raw_closed_book(item["market_id"], deadline_s=deadline_s)
-        else:
-            settled_from = utc_from_ns(max(0, (item.get("off_ns") or clock.time_ns()) - 86400 * NS))
-            read = client.raw_cleared_order(item["bet_id"], settled_from_utc=settled_from, deadline_s=deadline_s)
+        if deadline_ns is not None and clock.time_ns() > deadline_ns:     # SCHED-4: the next open comes first
+            out["stopped"] = "capture_deferred_open"
+            code("capture_deferred_open")
+            break
+        try:
+            client = read_client()
+            if kind == "c":
+                read = client.raw_current_order(item["bet_id"], deadline_s=deadline_s)
+            elif kind == "book":
+                read = client.raw_closed_book(item["market_id"], deadline_s=deadline_s)
+            else:
+                settled_from = utc_from_ns(max(0, (item.get("off_ns") or clock.time_ns()) - 86400 * NS))
+                read = client.raw_cleared_order(item["bet_id"], settled_from_utc=settled_from, deadline_s=deadline_s)
+        except (LoginStopped, ReadStopped) as exc:       # the read session's guard refused a login or a read
+            reason = getattr(exc, "reason", None) or ("kill" if "kill" in str(exc) else "stop")
+            out["stopped"] = "skipped_kill" if reason in ("kill", "skipped_kill") else reason
+            code(out["stopped"])
+            break
         body = read.get("body")
         if read.get("error") is not None or not isinstance(body, bytes) or read.get("status") != 200:
             out["stopped"] = "read_failed"
@@ -2416,8 +2601,17 @@ def capture_command(env):
             raise Refused("kill_in_progress", [f"a kill may still be running; rerun pilot-capture once the kill has "
                                                f"exited, at least 90 s after it began (not before {later})"]) from None
         if exc.code == "admission_held":
-            raise Refused("admission_held", [f"admission held by {exc.owner}, generation {exc.generation}; rerun with "
-                                             f"--continue-admission {exc.generation}"]) from None
+            if exc.state == "admitted":
+                raise Refused("admission_held", [f"admission held by {exc.owner}, generation {exc.generation}, state "
+                                                 f"admitted; rerun with --continue-admission {exc.generation}"]) from None
+            raise Refused("admission_held", [                    # OWN-3: a pending generation is never continued
+                f"admission held by {exc.owner}, generation {exc.generation}, state {exc.state or 'unknown'} (its "
+                f"admit never finished; nothing logged in under it); recording stays off until Yu's typed "
+                f"recording-release (generation {exc.generation})"]) from None
+        if exc.code == "continuation_needs_admitted_generation":
+            raise Refused(exc.code, [f"admission {exc.owner} generation {exc.generation} state {exc.state}; recording "
+                                     f"stays off until Yu's typed recording-release (generation {exc.generation})"]
+                          ) from None
         if exc.code in ("owner_live", "owner_state_unknown"):
             raise Refused(exc.code) from None
         raise Refused(exc.code, [f"admission {exc.owner} generation {exc.generation} state {exc.state}"]
@@ -2447,7 +2641,25 @@ def _capture_owned(env, ticket, contract, start):
     if ticket.inhibit_preexisting and ticket.kind == "fresh":
         w.line(f"INHIBIT predates this capture; recording stays off after it until Yu's typed recording-release "
                f"(generation {ticket.generation})")
-    credentials = load_session_credentials(config, paths, runner=env.keychain_runner, purposes=("read",))
+    try:
+        credentials = load_session_credentials(config, paths, runner=env.keychain_runner, purposes=("read",))
+    except CredentialError as exc:                           # OWN-2: nothing read or logged in; an orderly end
+        w.line(f"credentials unavailable ({safe_code(str(exc))}); nothing was read or logged in")
+        if ticket.kind == "fresh" and not ticket.inhibit_preexisting:
+            w.lines(release_lines(admission.release_own(ticket, paths, config=config, clock=clock), env.paused_flag))
+        elif ticket.kind == "fresh":
+            w.line(f"recording stays off until Yu's typed recording-release (generation {ticket.generation})")
+        return 5
+    try:
+        return _capture_body(env, ticket, contract, start, credentials)
+    except BaseException:                                    # OWN-2: an abnormal end still names generation N
+        if ticket.kind == "fresh":
+            w.line(f"recording stays off until Yu's typed recording-release (generation {ticket.generation})")
+        raise
+
+
+def _capture_body(env, ticket, contract, start, credentials):
+    paths, config, clock, w = env.paths, env.config, env.clock, env.terminal
     journal = OrderJournal(paths.journal_path("live"), mode="live", clock=clock)
     sessions = []
     outcome = {"stopped": None, "written": 0, "codes": {}}
@@ -2459,7 +2671,7 @@ def _capture_owned(env, ticket, contract, start):
 
         def client():
             if not sessions:
-                sessions.append(env.read_session_factory(credentials["read"]))
+                sessions.append(env.read_session_factory(credentials["read"], guard=lambda: kill_rule()))
             return sessions[0][1]
 
         def kill_rule():
@@ -2503,7 +2715,7 @@ def _capture_owned(env, ticket, contract, start):
     clean = failure is None and outcome["stopped"] != "skipped_kill"
     if ticket.kind == "fresh" and clean and not ticket.inhibit_preexisting:
         result = admission.release_own(ticket, paths, config=config, clock=clock)
-        w.lines(release_lines(result))
+        w.lines(release_lines(result, env.paused_flag))
         return 0 if result["released"] else 5
     if ticket.kind == "fresh":
         w.line(f"recording stays off until Yu's typed recording-release (generation {ticket.generation})")

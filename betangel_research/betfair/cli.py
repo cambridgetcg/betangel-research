@@ -508,7 +508,7 @@ def _anchor_warning(code):
 
 @contextlib.contextmanager
 def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=None, pilot=None,
-             in_session_settle=False, stop_requested=None):
+             in_session_settle=False, stop_requested=None, read_guard=None):
     """An opened OrderGateway for one command; closes it (anchor, lock), logs out and closes the journal.
 
     confirm(gateway), live only, runs after static arming and before open(): the operator types the
@@ -522,7 +522,8 @@ def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=
     hands a fresh ObservedClock per open); credentials skips the Keychain read (pilot-run's preloaded live_orders);
     pilot is the gateway's PilotContext; in_session_settle marks pilot-run's own settle point; stop_requested() is
     checked first inside the try, so a stop that landed during setup raises SignalStop before any credential use,
-    login or lock, and the finally still restores the outer handler.
+    login or lock, and the finally still restores the outer handler. read_guard (pilot-run's settle opens, P108-C3)
+    is asked at every login and every JSON-RPC attempt of this gateway's session.
     """
     from .gateway import OrderGateway
     from .journal import OrderJournal
@@ -550,7 +551,7 @@ def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=
         else:
             _live_gateway(args, ctx, paths, config, guard, command=command, confirm=confirm, held=held,
                           on_send=signals.order_sent, clock=clock, credentials=credentials, pilot=pilot,
-                          in_session_settle=in_session_settle)
+                          in_session_settle=in_session_settle, read_guard=read_guard)
         yield held["gateway"], config, paths
     finally:
         signals.deferring = True
@@ -590,7 +591,7 @@ def _journal_view(journal, now_ns):
 
 
 def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on_send=None, clock=None,
-                  credentials=None, pilot=None, in_session_settle=False):
+                  credentials=None, pilot=None, in_session_settle=False, read_guard=None):
     """Static arming first (no secret is read, and no live journal created, before it passes), then
     credentials, the operator's typed lines (no lock held), login and open. Fills held as it goes.
     on_send goes to the gateway, except for the kill (it never defers a signal, amendment A3 A16).
@@ -637,7 +638,12 @@ def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on
     held["session"] = session = SessionManager(config, credentials, paths=paths, transport=ctx.http_transport,
                                                clock=clock,
                                                coexistence_ack=bool(getattr(args, "bet_angel_paused", False)))
-    rpc = JsonRpcClient(config, session, clock=clock)
+    if read_guard is not None:                         # pilot-run's settle opens only (P108-C3)
+        from .api import GuardedTransport
+        session.guard_logins(read_guard)
+        rpc = JsonRpcClient(config, session, clock=clock, transport=GuardedTransport(session.transport, read_guard))
+    else:
+        rpc = JsonRpcClient(config, session, clock=clock)
     read = ReadClient(rpc, paths=paths, clock=clock,
                       catalogue_cache_max_age_s=config["read"]["catalogue_cache_max_age_s"])
     injected = ctx.deps.get("pilot_context")          # tests: the settle guard's contract reader (P1-08 §4.13)
@@ -1432,14 +1438,18 @@ def _unresolved_line(item, flag=""):
 
 def _settle_during_pilot_session(args, ctx):
     """P1-08 §4.13, before the gateway: only when the live journal holds a pilot session_start, True when
-    pilot_run.pilot_session_live says a second process must not settle (no ownership here, ticket None)."""
+    pilot_run.pilot_session_live says a second process must not settle (no ownership here, ticket None). A journal
+    that exists but cannot be read is True too (P108-C4, OWN-1): whether it holds a session_start is then unknown, and
+    the under-lock check cannot recover the ownership term skipped here."""
     from . import pilot_gate, pilot_run
     paths = _paths(args, ctx)
     path = paths.journal_path("live")
     if not path.exists():
         return False
     read = pilot_run.pilot_events_after(path, 0)
-    if not read["readable"] or pilot_gate.latest_note(read["events"], "session_start") is None:
+    if not read["readable"]:
+        return True
+    if pilot_gate.latest_note(read["events"], "session_start") is None:
         return False
     config = _config(args, paths)
     injected = ctx.deps.get("pilot_context")
@@ -1788,14 +1798,19 @@ def cmd_resume(args, ctx):
 # --- RS-19 pilot executor commands (P1-08) ------------------------------------------------------------------------
 
 
-def _pilot_read_session(args, ctx, paths, config, credentials):
+def _pilot_read_session(args, ctx, paths, config, credentials, guard=None):
     """(session, ReadClient) on preloaded read credentials (pilot_run's scheduler and capture reads); never
-    _read_client, which reloads credentials from the Keychain every time (C20b). The caller logs it out."""
-    from .api import JsonRpcClient, ReadClient
+    _read_client, which reloads credentials from the Keychain every time (C20b). The caller logs it out. guard
+    (P108-C3) is asked at every login and relogin (before an attempt is reserved) and before every read attempt,
+    each retry included; logout is never guarded."""
+    from .api import GuardedTransport, JsonRpcClient, ReadClient
     from .auth import SessionManager
     session = SessionManager(config, credentials, paths=paths, transport=ctx.http_transport, clock=ctx.clock,
                              coexistence_ack=bool(getattr(args, "bet_angel_paused", False)))
-    rpc = JsonRpcClient(config, session, clock=ctx.clock)
+    if guard is not None:
+        session.guard_logins(guard)
+    rpc = JsonRpcClient(config, session, clock=ctx.clock,
+                        transport=None if guard is None else GuardedTransport(session.transport, guard))
     read = ReadClient(rpc, paths=paths, clock=ctx.clock,
                       catalogue_cache_max_age_s=config["read"]["catalogue_cache_max_age_s"])
     return session, read
@@ -1808,11 +1823,12 @@ def _pilot_factory(args, ctx, pilot_context):
     from .pilot_gate import ObservedClock
 
     @contextlib.contextmanager
-    def factory(command, *, credentials, stop, in_session_settle=False, confirm=None):
+    def factory(command, *, credentials, stop, in_session_settle=False, confirm=None, read_guard=None):
         clock = ObservedClock(ctx.clock)
         with _gateway(args, ctx, command=command, mode="live", confirm=confirm, clock=clock,
                       credentials=credentials["live_orders"], pilot=pilot_context,
-                      in_session_settle=in_session_settle, stop_requested=lambda: stop.requested) as (gateway, _, _):
+                      in_session_settle=in_session_settle, stop_requested=lambda: stop.requested,
+                      read_guard=read_guard) as (gateway, _, _):
             yield gateway
 
     return factory
@@ -1837,7 +1853,8 @@ def _pilot_env(args, ctx, *, best_effort=False):
                           pilot_context=pilot_context, paused_flag=ctx.paused_flag, signal_stop=SignalStop,
                           processes=ctx.deps.get("processes") or admission.SYSTEM_PROCESSES)
     env.gateway_factory = _pilot_factory(args, ctx, pilot_context)
-    env.read_session_factory = lambda credentials: _pilot_read_session(args, ctx, paths, config, credentials)
+    env.read_session_factory = lambda credentials, guard=None: _pilot_read_session(args, ctx, paths, config,
+                                                                                    credentials, guard)
     return env
 
 
@@ -1916,26 +1933,29 @@ def main(argv=None, *, deps=None):
         return 2
     ctx = _Context(deps, out, err)
     ctx.command = args.command
+    # Every line below goes to ctx.err: sys.stderr itself, except where a pilot command put its one best-effort
+    # terminal writer there (P1-08 §4.1), so a dead terminal never turns a decided exit into a traceback.
     try:
         return COMMANDS[args.command](args, ctx)
     except _Done as done:
-        err.write(done.message + "\n")
+        ctx.err.write(done.message + "\n")
         return done.code
     except (KeyboardInterrupt, SignalStop, Exception) as exc:          # never a traceback or raw text
         if ctx.order_sent():
             # An order request went out before this stopped the command: never the "nothing sent" codes 2 or 4.
-            err.write(_stopped_line(type(exc).__name__, ctx.command, ctx.paused_flag, result_printed=False) + "\n")
+            ctx.err.write(_stopped_line(type(exc).__name__, ctx.command, ctx.paused_flag, result_printed=False)
+                          + "\n")
             return EXIT_SENT_NOT_AS_REQUESTED
         if isinstance(exc, OrderRefused):
-            err.write(f"Betfair order refused: {exc.rule}\n")
+            ctx.err.write(f"Betfair order refused: {exc.rule}\n")
             return 2
         if isinstance(exc, (BetfairError, ValueError)):
-            err.write(f"Betfair input error: {_safe_text(exc)}\n")
+            ctx.err.write(f"Betfair input error: {_safe_text(exc)}\n")
             return 2
-        err.write(f"Betfair stopped: {type(exc).__name__}; inspect local configuration/state\n")
+        ctx.err.write(f"Betfair stopped: {type(exc).__name__}; inspect local configuration/state\n")
         return 4
     finally:
         # Warnings never change the exit code: the command's own result (an order may have been sent)
         # is what the operator acts on, and a non-zero code there could invite a resend.
         for warning in ctx.warnings:
-            err.write(f"Betfair warning: {warning}\n")
+            ctx.err.write(f"Betfair warning: {warning}\n")

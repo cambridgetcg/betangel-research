@@ -188,7 +188,10 @@ class ArmingTests(unittest.TestCase):
             "reconcile": ["A4", "A5", "A8", "A10", "A12", "A13", "A14", "A15"],
             "reconcile-accept": ["A1", "A2", "A4", "A5", "A8", "A10", "A11", "A12", "A13", "A14", "A15"],
             "settle-market": ["A1", "A2", "A4", "A5", "A8", "A10", "A11", "A12", "A13", "A14", "A15"],
-            "kill": ["A4", "A13"], "kill-account": ["A4", "A11", "A13"], "resume": ["A2", "A11", "A13"]}
+            "kill": ["A4", "A13"], "kill-account": ["A4", "A11", "A13"], "resume": ["A2", "A11", "A13"],
+            "pilot-register": ["A2", "A11", "A13"], "pilot-arm": ["A2", "A11", "A13"],
+            "pilot-ack": ["A2", "A11", "A13"], "pilot-gap-resolved": ["A2", "A11", "A13"],
+            "pilot-capture": ["A2", "A11", "A13"]}
         self.assertEqual({k: list(v) for k, v in COMMAND_CHECKS.items()}, expected)
         with self.assertRaises(ValueError):
             checks_for("updates")

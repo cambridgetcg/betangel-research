@@ -1,11 +1,13 @@
 """The gateway adapter for RS-19's registered pilot executor (P1-06): identity reads, the registration receipt,
-the raw-evidence store, the note §5 first-byte predicate, refusal codes and the note §9 latch table.
+the raw-evidence store, the note §5 first-byte predicate and the trigger-collision rule the gateway and the P1-08
+scheduler share.
 
 docs/betfair-pilot-policy.md (RS-19) is the policy and docs/betfair-pilot-engineering.md (the note) the detail.
 Every placement rule (the fold, classification, authority, time triggers, record columns, R13) lives in the pure
-pilot.py and is called from here or from the gateway, never copied. What pilot.py may not do lives here: reading
-the contract file, git and the state root, writing evidence, and the code tables the gateway journals by. pilot
-never imports this module. Not offline: it runs git and reads and writes the state root.
+pilot.py and is called from here or from the gateway, never copied; so do the note §9 code tables, the outcome/scope
+table, refusal codes, stop ids and the place-report extractor (P1-08 §3.1, §3.2), which this module re-exports under
+their P1-06 names. What pilot.py may not do lives here: reading the contract file, git and the state root, and
+writing evidence. pilot never imports this module. Not offline: it runs git and reads and writes the state root.
 
 Process identity (PA2, Astra's ruling on critique 14): the code hashes are pinned once, when this module is first
 imported (with the gateway), from the module root the running package was imported from, and reused by every
@@ -15,7 +17,7 @@ changed between its import and this pin, or a stale bytecode cache, is not seen;
 process start and the disk check catches drift after it.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 import os
 from pathlib import Path
@@ -49,42 +51,20 @@ REGISTRATION_KEYS = frozenset({"schema", "contract_sha256", "code_commit", "code
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 _GIT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
-# placement_authority's codes as the gateway's PA codes (note §2, §6, §7).
-AUTHORITY_CODES = {"placing_ended": "pa4_placing_ended", "stop_active": "pa4_pilot_stop",
-                   "session_not_armed": "pa3_session_not_armed", "session_ended": "pa3_session_ended",
-                   "session_expired": "pa3_session_expired", "record_unknown": "pilot_record_unknown",
-                   "record_not_decision": "pilot_record_not_decision", "record_open_ended": "pilot_record_open_ended",
-                   "record_submitted": "pilot_record_submitted"}
-# PA refusals that journal no new refusal note (note §9 as narrowed by Q6, Yu 2026-10-21): an already-active stop,
-# a genuine ending, no armed or unexpired session. Placement is still refused; any other PA1-PA4 failure, config
-# or R13 failure in the same open is still journaled.
-NO_NEW_STOP_CODES = frozenset({"pa4_pilot_stop", "pa4_placing_ended", "pa3_session_not_armed", "pa3_session_ended",
-                               "pa3_session_expired"})
-
-# The note §9 latch table, with Q11 (Yu 2026-10-21) for the codes §9 does not name and critique 2 for the KILL file.
-# "market": that market only, nothing more journaled (its reservation already uses it up). "session": a session stop.
-# "review": a refusal note, from which the fold derives a review stop. "none": the HALT already ends the session.
-# MARKET_NOT_OPEN_FOR_BETTING and MARKET_SUSPENDED in a place report are the post-send forms of V9 market_not_open
-# (a market not open for betting, or suspended, which need not be in play; Nuance's ruling, 2026-10-21).
-MARKET_LATCH = frozenset({"validation:V13", "validation:V9b", "rate_minute", "rate_hour", "pilot_send_book_off_differs",
-                          "journal_changed_since_decision", "book_fetch_failed", "market_exposure", "total_exposure",
-                          "MARKET_NOT_OPEN_FOR_BETTING", "MARKET_SUSPENDED"})
-MARKET_V9_REASONS = frozenset({"market_not_open", "market_inplay"})
-SESSION_LATCH = frozenset({"rate_day", "daily_loss", "unresolved_orders", "lock_busy", "kill_file"})
-# RS-19: "No manual or Bet Angel bet is open on the account during a session. If the code finds one, it halts."
-MANUAL_BET_OPEN = "manual_bet_open_during_session"
-NO_NOTE_LATCH = frozenset({"halted", "unexplained_account_exposure", MANUAL_BET_OPEN})
-KILL_REASONS = frozenset({"kill_engaged", "kill_state_unknown"})
-# The note §5 first-byte refusals (send-by, freshness, head, deadline, window, drift), FAILED(transport_not_sent) and
-# market only (note §9) unless their cause ends more (a KILL file: a session stop). Any other failure before the first
-# byte keeps its own latch, a review stop by Q11's default: a refused capability (P106-C3), a connect, TLS or
-# preflight failure, and send_gate_failed, a fault inside the gate itself.
-FIRST_BYTE_CODES = frozenset({"send_window_expired", "book_stale_before_send", "pilot_gate_head_moved",
-                              "pilot_gate_head_unreadable", "pilot_gate_deadline", "pilot_gate_window",
-                              "pilot_gate_clock_drift"})
-# Dynamic arming codes at a pilot-place open that journal no refusal note: A17's foreign or contradicting bets
-# HALT through the startup pass, and its unresolved orders stop placing until reconciled (note §9).
-HALT_IMPLYING_OPEN_CODES = frozenset({"unresolved_or_foreign_orders"})
+# The note §9 code tables live in pilot.py with the outcome/scope table (P1-08 §3.1); these names are kept so P1-06
+# code and tests read them as before. One definition each: these are the same objects.
+AUTHORITY_CODES = pilot.AUTHORITY_CODES
+NO_NEW_STOP_CODES = pilot.NO_NEW_STOP_CODES
+MARKET_LATCH = pilot.MARKET_LATCH
+MARKET_V9_REASONS = pilot.MARKET_V9_REASONS
+SESSION_LATCH = pilot.SESSION_LATCH
+MANUAL_BET_OPEN = pilot.MANUAL_BET_OPEN
+NO_NOTE_LATCH = pilot.NO_NOTE_LATCH
+KILL_REASONS = pilot.KILL_REASONS
+FIRST_BYTE_CODES = pilot.FIRST_BYTE_CODES
+HALT_IMPLYING_OPEN_CODES = pilot.HALT_IMPLYING_OPEN_CODES
+refusal_code = pilot.refusal_code
+place_report_failure = pilot.place_report_failure
 
 
 def _pin_code_hashes():
@@ -354,27 +334,6 @@ def open_manual_refs(events, orders):
     return sorted(ref for ref, order in orders.items() if ref not in pilot_refs and open_or_unsettled(order))
 
 
-def place_report_failure(report):
-    """The code of a normalised place report in which Betfair refused the pilot's one instruction (the report's or
-    the instruction's status FAILURE), else None. Each level may carry only a marker that points at the other: the
-    instruction's ERROR_IN_ORDER (it failed because the whole request did) and the report's BET_ACTION_ERROR (an
-    instruction failed; errors.py's "partial"). Of the codes left, the stronger: one that is not market only (a
-    review stop) wins, so the result is market only when every code left is a market code. Markers alone, or no
-    code at all, give the marker itself or "place_report_failure" (a review stop)."""
-    if not isinstance(report, dict):
-        return None
-    items = report.get("instructions") or []
-    item = items[0] if items and isinstance(items[0], dict) else {}
-    if report.get("status") != "FAILURE" and item.get("status") != "FAILURE":
-        return None
-    instruction, whole = item.get("error_code"), report.get("error_code")
-    codes = [code for code in (None if instruction == "ERROR_IN_ORDER" else instruction,
-                               None if whole == "BET_ACTION_ERROR" else whole) if code is not None]
-    if not codes:
-        return instruction or whole or "place_report_failure"
-    return next((code for code in codes if latch_for(code) != "market"), codes[0])
-
-
 def session_window_open(events, *, now_ns):
     """Whether any pilot session_start in the journal, for any contract, has not reached its end at now_ns
     (pilot.session_end_ns: UNTIL or 23:59:59Z). The manual-order guard (critique 13, Yu 2026-10-21) reads it from the
@@ -385,13 +344,6 @@ def session_window_open(events, *, now_ns):
 
 
 # --- codes and latches ----------------------------------------------------------------------------------------
-
-
-def refusal_code(rule):
-    """A rule or code as a refusal-note code: lower case, ':' as '_', only [a-z0-9_], at most 60 characters, so the
-    derived stop id '<code with hyphens>-<res>-<note seq>' fits pilot.STOP_ID_RE (validation:V13 -> validation_v13)."""
-    text = re.sub(r"[^a-z0-9_]", "", str(rule).lower().replace(":", "_"))[:60]
-    return text or "refused"
 
 
 def latch_for(rule, reason=None):
@@ -410,10 +362,36 @@ def latch_for(rule, reason=None):
 
 
 def session_stop_id(code, *, reservation_seq, open_id):
-    """'<code>-<res>-session', or '<code>-<open hex>-session' before any reservation (STOP_ID_RE)."""
-    head = "-".join(refusal_code(code).split("_"))
-    tail = str(reservation_seq) if reservation_seq is not None else open_id.split("-", 1)[-1].lower()
-    return f"{head}-{tail}-session"
+    """'<code>-<res>-session', or '<code>-<open hex>-session' before any reservation (STOP_ID_RE): pilot's one
+    builder, anchored at the reservation seq, else the open id's hex."""
+    anchor = reservation_seq if reservation_seq is not None else open_id.split("-", 1)[-1].lower()
+    return pilot.session_stop_id(code, anchor)
+
+
+def trigger_blocks(state, *, t0_ns, evidence_deadline_ns, waited=False, look_ahead=True):
+    """None, "wait" or "refuse": the reservation trigger rule (Q12; critique 9) for a reservation at t0_ns, the one
+    rule the gateway's step A and the P1-08 scheduler's pre-check share. A record time trigger at or before the horizon
+    t0 + (send deadline offset - window offset) + evidence deadline + slack collides with this placement: it is waited
+    out once when it falls within TRIGGER_WAIT_NS of t0 ("wait", once only; waited says the open already waited), else
+    refused. With look_ahead (the scheduler, which has not invoked the gateway yet), every trigger counts: a second one
+    inside the horizon after the wait refuses at once, as the gateway would on its next pass. The gateway passes
+    look_ahead False and re-reads its clock after the wait instead. Built on next_trigger_ns at max(t0, the state's
+    time), so the gateway's own state (folded at t0) is read exactly as before."""
+    contract = state.contract
+    span = (contract.send_deadline_offset_s - contract.window_from_offset_s) * NS + evidence_deadline_ns \
+        + TRIGGER_HORIZON_SLACK_NS
+    at = max(t0_ns, state.now_ns)
+    trigger = pilot.next_trigger_ns(replace(state, now_ns=at))
+    if trigger is None or trigger > t0_ns + span:
+        return None
+    if waited or trigger - t0_ns > TRIGGER_WAIT_NS:
+        return "refuse"
+    if look_ahead:
+        after = trigger + 1_000_000
+        second = pilot.next_trigger_ns(replace(state, now_ns=max(after, state.now_ns)))
+        if second is not None and second <= after + span:
+            return "refuse"
+    return "wait"
 
 
 # --- raw reads and the evidence store (note §4 step 2; Q8, Q10) ---------------------------------------------------
@@ -441,8 +419,9 @@ def read_failure(read, *, deadline_ns):
     return None
 
 
-def _private_dir(path, top):
-    """mkdir 0700 for path and each missing level below top (critique 13: made by the writer, never by ensure)."""
+def private_dir(path, top):
+    """mkdir 0700 for path and each missing level below top (critique 13: made by the writer, never by ensure).
+    Public for P1-08's writers (the receipt, the armed-session file, cause copies and raw captures)."""
     missing = []
     current = Path(path)
     while current != top and not current.exists():
@@ -451,6 +430,9 @@ def _private_dir(path, top):
     for directory in reversed(missing):
         directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
+
+
+_private_dir = private_dir
 
 
 def evidence_dir(paths, contract_sha256):

@@ -29,6 +29,7 @@ import json
 import math
 import re
 
+from .constants import CLASSIC_MAX_PRICE_H, CLASSIC_MIN_PRICE_H
 from .ticks import is_on_ladder, tick_index
 
 NS = 1_000_000_000
@@ -59,6 +60,9 @@ _NUMBER_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?(?:[eE]([+-]?[0-9]+))?")
 _STRUCTURE_RE = re.compile(r'[\[\]{}"\\]')
 MAX_JSON_DEPTH = 64
 MAX_NS = 2 ** 62                      # every ns field and argument: 0 <= ns < 2**62 (to the year 2116)
+# A matched price must lie within the CLASSIC bounds, 1.01 to 1000 inclusive; a decimal average such as 3.444 is
+# kept exactly (no ladder membership, no rounding). Anything else leaves the price unresolved (Astra #5).
+_MIN_PRICE, _MAX_PRICE = Fraction(CLASSIC_MIN_PRICE_H, 100), Fraction(CLASSIC_MAX_PRICE_H, 100)
 
 CLASS_ORDER = ("protocol_violation", "definitely_unsent", "void", "post_decision_removal", "measurement_unresolved",
                "unmatched", "missing_bsp", "eligible")
@@ -72,6 +76,7 @@ SKIP_CODES = ("evidence_invalid", "book_delayed", "off_missing", "window", "coun
 R13_CODES = ("r13_not_place", "r13_other_open", "r13_other_session", "r13_other_contract", "r13_digest_mismatch",
              "r13_market_differs", "r13_body_differs", "r13_ref_differs", "r13_strategy_ref_differs")
 REMOVED = ("REMOVED", "REMOVED_VACANT")
+LEDGER_GAP_REASONS = ("cleared_figure_gap", "commission_gap", "commission_mismatch", "ledger_contradiction")
 RESULTS = ("WINNER", "LOSER")
 # The 27 top-level keys of contract p1 (critique 4).
 CONTRACT_KEYS = frozenset({
@@ -822,9 +827,18 @@ NOTE_FIELDS = {
                    "profit_basis": _opt(_one_of("gross", "net"))},
     "ending": {"reason": _one_of("yu_written", "breach"), "code": _matches(CODE_RE)},
     "violation": {"code": _matches(CODE_RE), "source_seq": _opt(lambda v: _is_int(v, 1))},
+    # A classify refusal as journaled by the gateway: the fold derives its review stop from it (Astra #2).
+    "refusal": {"session_id": _opt(_matches(ID_RE)), "open_id": _opt(_matches(ID_RE)),
+                "reservation_seq": _opt(lambda v: _is_int(v, 1)), "code": _matches(CODE_RE)},
+    # A ledger gap's resolution, separate from its stop (Astra #6); journaled by P1-08/P1-10.
+    "gap_resolved": {"stop_id": _matches(STOP_ID_RE), "decision_seq": _opt(lambda v: _is_int(v, 1)),
+                     "cause_written": _is_bool},
+    # The durable finalization frontier of one PLACE record (Astra #7); journaled by P1-10.
+    "finalized": {"final_at_ns": _is_ns, "row": lambda v: _is_int(v, 1) and v <= 5,
+                  "class": _one_of(*CLASS_ORDER)},
 }
 MARKET_NOTES = ("reservation", "decision", "capture_book", "capture_commission")
-ORDER_NOTES = ("capture_c", "capture_l")
+ORDER_NOTES = ("capture_c", "capture_l", "finalized")
 
 
 def validate_pilot_payload(payload):
@@ -929,6 +943,8 @@ def extract_current_row(body, *, bet_id):
     row = _single_row(result.get("currentOrders") if isinstance(result, dict) else None, bet_id)
     selection = row.get("selectionId")
     found = {key: _row_number(row.get(key)) for key in CURRENT_ROW_NUMBERS}
+    if execution_price(found["averagePriceMatched"]) is None:
+        found["averagePriceMatched"] = None            # outside 1.01-1000: the price is unresolved
     found.update(status=_row_text(row.get("status")), marketId=_row_text(row.get("marketId")),
                  selectionId=selection if type(selection) is int and selection >= 1 else None,
                  customerOrderRef=_row_text(row.get("customerOrderRef")),
@@ -945,6 +961,8 @@ def extract_cleared_row(body, *, bet_id, bet_status="SETTLED"):
     row = _single_row(result.get("clearedOrders") if isinstance(result, dict) else None, bet_id)
     selection, reduced = row.get("selectionId"), row.get("priceReduced")
     found = {key: _row_number(row.get(key)) for key in CLEARED_ROW_NUMBERS}
+    if execution_price(found["priceMatched"]) is None:
+        found["priceMatched"] = None                   # outside 1.01-1000: the price is unresolved
     found.update(betStatus=bet_status, priceReduced=reduced if type(reduced) is bool else None,
                  betOutcome=_row_text(row.get("betOutcome")), marketId=_row_text(row.get("marketId")),
                  selectionId=selection if type(selection) is int and selection >= 1 else None,
@@ -980,14 +998,26 @@ def extract_closed_book(body, *, market_id):
             "runners": found}
 
 
+def execution_price(value):
+    """A matched price within the CLASSIC bounds as an exact Decimal, else None (unresolved)."""
+    price = _decimal_text_value(value) if isinstance(value, str) else value
+    if not isinstance(price, Decimal) or not price.is_finite() or not _MIN_PRICE <= Fraction(price) <= _MAX_PRICE:
+        return None
+    return price
+
+
 def parse_current_row(row):
-    """A capture_c row with its numbers as Decimal (None stays None)."""
-    return {key: (_decimal_text_value(value) if key in CURRENT_ROW_NUMBERS else value) for key, value in row.items()}
+    """A capture_c row with its numbers as Decimal (None stays None); a price outside 1.01-1000 is None."""
+    found = {key: (_decimal_text_value(value) if key in CURRENT_ROW_NUMBERS else value) for key, value in row.items()}
+    found["averagePriceMatched"] = execution_price(found.get("averagePriceMatched"))
+    return found
 
 
 def parse_cleared_row(row):
-    return {key: (_decimal_text_value(value) if key in ("sizeSettled", "priceMatched") else value)
-            for key, value in row.items()}
+    found = {key: (_decimal_text_value(value) if key in ("sizeSettled", "priceMatched") else value)
+             for key, value in row.items()}
+    found["priceMatched"] = execution_price(found.get("priceMatched"))
+    return found
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1074,6 +1104,7 @@ def finalize(c, l, *, c_ns, l_count_ns, deadline_ns, now_ns, removal_classed=Fal
     l_ok = l is not None and l_count_ns is not None and l_count_ns <= deadline_ns and l_count_ns <= now_ns
 
     def result(final, at, row, size=None, price=None):
+        price = execution_price(price) if price is not None else None
         unresolved = size is None or (size > 0 and price is None and not removal_classed)
         return {"final": final, "final_at_ns": at, "row": row, "size": size if final else None,
                 "P": price if final else None, "unresolved": unresolved if final else None}
@@ -1172,6 +1203,14 @@ def bf_profit_pence(text):
     if scaled.denominator != 1:
         raise PilotError("profit_not_exact_pence")
     return scaled.numerator
+
+
+def _pence_or_none(text):
+    """A Betfair money figure in exact pence, or None when absent or not exact to the penny."""
+    try:
+        return bf_profit_pence(text)
+    except PilotError:
+        return None
 
 
 def s_winner_value(final_size, P, bf_profit_p, *, c):
@@ -1307,18 +1346,28 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
              customer_order_ref, row_body, book_body, observed_wall_ns, observed_monotonic_ns):
     """One classification of one reservation on one fetch (note §4 steps 3-4).
 
-    state must be fold(..., now_ns=observed_wall_ns, live_open_id=open_id): classify judges the state at the
-    decision instant, and refuses (state_not_at_decision_time) a state folded to any other time.
-    Returns {"refusal": None | code, "record": decision payload | None, "stops": [stop payloads]}. A refusal
-    makes no record, so the reservation folds as SKIP(interrupted); every refusal but placing_ended sets a review
-    stop (N:117). There is no country, off, book or catalogue parameter: everything is read from the two bodies,
-    and nothing is fetched again. If the head moved, the gateway folds the new head at the same instant and calls
-    this again with the same bytes; it is deterministic in its inputs."""
+    Two times stay apart (Astra #4). The decision book's observed_wall_ns governs the predicates, the window, the
+    day slot, the CR1 cluster and the send deadline. Placement authority (capacity, stops, the session's end or
+    termination, every ending including a time-driven N, the final date and the lifetime cap) is judged at the
+    state's head and clock: state must be folded at or after observed_wall_ns, and a benign head change is
+    re-checked with the same bytes. If an ending, a stop or full capacity holds then, the result is never PLACE.
+    Returns {"refusal": None | code, "record": decision payload | None, "stops": [stop payloads],
+    "refusal_record": refusal payload | None}. A refusal makes no decision record, so the reservation folds as
+    SKIP(interrupted); every refusal but placing_ended sets a review stop (N:117), which the fold also derives from
+    the refusal record when that is journaled (Astra #2). There is no country, off, book or catalogue parameter:
+    everything is read from the two bodies, and nothing is fetched again. Deterministic in its inputs."""
     def refuse(code):
         source = reservation_seq if _is_int(reservation_seq, 1) else None
         stops = [] if code == "placing_ended" else [
             stop_payload(contract, stop_id_for(code, source), "review", code, source_seq=source)]
-        return {"refusal": code, "record": None, "stops": stops}
+        record = {"v": 1, "type": "refusal", "contract_sha256": contract.sha256,
+                  "session_id": session_id if isinstance(session_id, str) and ID_RE.fullmatch(session_id) else None,
+                  "open_id": open_id if isinstance(open_id, str) and ID_RE.fullmatch(open_id) else None,
+                  "reservation_seq": source, "code": code}
+        return {"refusal": code, "record": None, "stops": stops, "refusal_record": record}
+
+    def decided(record, stops=()):
+        return {"refusal": None, "record": record, "stops": list(stops), "refusal_record": None}
 
     if not (_is_int(reservation_seq, 1) and _is_ns(observed_wall_ns) and _is_ns(observed_monotonic_ns)
             and isinstance(open_id, str) and ID_RE.fullmatch(open_id)
@@ -1328,11 +1377,10 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
         return refuse("caller_input_invalid")
     if state.contract != contract:
         return refuse("contract_mismatch")
-    if state.now_ns != observed_wall_ns:
-        # The state must be folded to the decision instant, every time-driven finality and ending promoted to it;
-        # anything else is a guess (findings 3, 9).
-        return refuse("state_not_at_decision_time")
-    ending = placing_ending(state, now_ns=observed_wall_ns)
+    if state.now_ns < observed_wall_ns:
+        return refuse("state_before_observation")    # authority is judged at a head folded at or after the book
+    now = state.now_ns
+    ending = placing_ending(state, now_ns=now)
     if ending is not None and ending["reason"] != "lifetime_cap":
         return refuse("placing_ended")          # at the lifetime cap the record itself is SKIP(cap) (Q7)
     reservation = next((r for r in state.reservations.values() if r["seq"] == reservation_seq), None)
@@ -1349,7 +1397,9 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
         return refuse("session_not_armed")
     if session["registration_receipt_sha256"] != registration_receipt_sha256:
         return refuse("registration_mismatch")
-    if observed_wall_ns >= session_end_ns(session):
+    if session["ended_seq"] is not None:
+        return refuse("session_ended")                 # a KILL, HALT or stop ended it for good (Astra #1)
+    if now >= session_end_ns(session):
         return refuse("session_expired")
     if state.active_stops:
         return refuse("stop_active")
@@ -1365,23 +1415,19 @@ def classify(contract, state, *, reservation_seq, open_id, session_id, registrat
                   ev=ev, row_body=row_body, book_body=book_body, observed_wall_ns=observed_wall_ns,
                   observed_monotonic_ns=observed_monotonic_ns)
     if ev is None:
-        record = decision_record(contract, outcome="SKIP", code="evidence_invalid", predicates=None,
-                                 day_limit=day_limit, **common)
-        return {"refusal": None, "record": record, "stops": []}
+        return decided(decision_record(contract, outcome="SKIP", code="evidence_invalid", predicates=None,
+                                       day_limit=day_limit, **common))
     predicates = evaluate_predicates(contract, ev, observed_wall_ns=observed_wall_ns)
     if predicates["outcome"] == "SKIP":
-        record = decision_record(contract, outcome="SKIP", code=predicates["code"], predicates=predicates,
-                                 day_limit=day_limit, **common)
-        return {"refusal": None, "record": record, "stops": []}
+        return decided(decision_record(contract, outcome="SKIP", code=predicates["code"], predicates=predicates,
+                                       day_limit=day_limit, **common))
     capacity = capacity_and_pause(contract, state, utc_day=day, session_id=session_id, source_seq=reservation_seq)
     if capacity["code"] is not None:
-        record = decision_record(contract, outcome="SKIP", code=capacity["code"], predicates=predicates,
-                                 day_limit=capacity["day_limit"], **common)
-        return {"refusal": None, "record": record, "stops": capacity["stops"]}
-    record = decision_record(contract, outcome="PLACE", code=None, predicates=predicates,
-                             day_limit=capacity["day_limit"], lifetime_slot=capacity["lifetime_slot"],
-                             day_count=capacity["day_count"], **common)
-    return {"refusal": None, "record": record, "stops": []}
+        return decided(decision_record(contract, outcome="SKIP", code=capacity["code"], predicates=predicates,
+                                       day_limit=capacity["day_limit"], **common), capacity["stops"])
+    return decided(decision_record(contract, outcome="PLACE", code=None, predicates=predicates,
+                                   day_limit=capacity["day_limit"], lifetime_slot=capacity["lifetime_slot"],
+                                   day_count=capacity["day_count"], **common))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1443,6 +1489,7 @@ class PilotState:
     active_stops: tuple
     violations: tuple
     invalid_records: tuple
+    resolved_gaps: dict
     ending_notes: tuple
     ending: object
 
@@ -1520,6 +1567,8 @@ class _Folder:
         self.halts = []                      # (seq, market_id or None) of HALTs in force, as the core fold keeps them
         self.n_done = None                   # {"seq", "trigger_ns"}: where in the journal N was reached
         self.newly_final = False
+        self.resolved_gaps = {}              # gap stop id -> seq of its resolution (Astra #6)
+        self.at_seq = self.at_ns = None      # where in the journal the fold is: the event, or the trigger before it
         self.equity = 0
 
     # -- helpers -------------------------------------------------------------------------------------------------
@@ -1534,7 +1583,18 @@ class _Folder:
             self.violation(code, seq, ns, rec)
 
     def imply(self, stop):
-        self.implied.setdefault((stop["stop_id"], stop["scope"]), stop)
+        key = (stop["stop_id"], stop["scope"])
+        if key not in self.implied:
+            self.implied[key] = stop
+            self.terminate(self.at_seq, self.at_ns, stop["reason"])
+
+    def terminate(self, seq, ns, reason):
+        """The session in progress ends for good at its first KILL, HALT or stop, journaled or implied (note §3;
+        Astra #1); a later RESUME or ACK never re-opens it: placing needs a new ARM."""
+        session = self.sessions[-1] if self.sessions else None
+        if (session is not None and session["ended_seq"] is None and seq is not None and session["seq"] < seq
+                and ns is not None and ns < session_end_ns(session)):
+            session["ended_seq"], session["ended_reason"] = seq, reason
 
     def imply_review(self, reason, source_seq):
         self.imply(stop_payload(self.contract, stop_id_for(reason, source_seq), "review", reason,
@@ -1575,10 +1635,9 @@ class _Folder:
         return sorted(due, key=lambda s: (s["source_seq"] or 0, s["stop_id"], s["scope"]))
 
     def session_armed(self, ns):
-        """Whether a session is armed at ns: the latest session, before its end, with no session stop since."""
+        """Whether a session is armed at ns: the latest session, before its end and not terminated."""
         session = self.sessions[-1] if self.sessions else None
-        return (session is not None and ns < session_end_ns(session)
-                and not any(s["scope"] == "session" and s["seq"] > session["seq"] for s in self.stops))
+        return session is not None and ns < session_end_ns(session) and session["ended_seq"] is None
 
     def halted(self, market_id):
         return any(market is None or market == market_id for _, market in self.halts)
@@ -1601,6 +1660,7 @@ class _Folder:
         crossed it (findings 3, 7, 10)."""
         while self.next_trigger is not None and self.next_trigger <= until_ns:
             at, due = self.next_trigger, set()
+            self.at_seq, self.at_ns = label, at
             for rec in self.records:
                 while rec.triggers and rec.triggers[0] <= at:
                     rec.triggers.pop(0)
@@ -1629,6 +1689,7 @@ class _Folder:
         clock = ns if self.clock is None else max(self.clock, ns)
         self.advance(clock, self.last_seq)
         self.clock, self.last_seq = clock, seq
+        self.at_seq, self.at_ns = seq, ns
         kind, payload = event["kind"], event["payload"]
         if kind == "note" and "pilot" in payload:
             dirty = self.pilot_note(event, seq, ns)
@@ -1670,16 +1731,17 @@ class _Folder:
         self.sessions.append({"seq": seq, "session_id": inner["session_id"], "utc_day": inner["utc_day"],
                               "until_ns": inner["until_ns"],
                               "registration_receipt_sha256": inner["registration_receipt_sha256"],
-                              "pt4": self.pt4_receipt is None})
+                              "pt4": self.pt4_receipt is None, "ended_seq": None, "ended_reason": None})
 
     def session_problem(self, session_id, ns, seq):
-        """The armed-session checks for a reservation or decision (note §3; critique 15)."""
+        """The armed-session checks for a reservation or decision at its own append (note §3; critique 15): the
+        session exists, its time has not ended, and no KILL, HALT or stop has terminated it (Astra #1)."""
         session = self.session(session_id)
         if session is None:
             return "session_not_armed"
         if ns >= session_end_ns(session):
             return "session_expired"
-        if any(s["scope"] == "session" and session["seq"] < s["seq"] < seq for s in self.stops):
+        if session["ended_seq"] is not None and session["ended_seq"] < seq:
             return "session_stopped"
         return None
 
@@ -1720,7 +1782,7 @@ class _Folder:
         session = self.session(inner["session_id"])
         if session is not None and session["registration_receipt_sha256"] != inner["registration_receipt_sha256"]:
             problems.append("decision_registration_differs")
-        problem = self.session_problem(inner["session_id"], inner["decision_book_wall_ns"], seq)
+        problem = self.session_problem(inner["session_id"], ns, seq)    # authority at its own append (Astra #4)
         if problem:
             problems.append(problem)
         if reservation is not None and reservation["decision_seq"] is None and not problems:
@@ -1730,10 +1792,11 @@ class _Folder:
                                "reservation_seq": inner["reservation_seq"]})
             for code in problems:
                 self.violation(code, seq, ns)
+            self.skip_stops(inner, session, seq)
             return set()
         if inner["customer_order_ref"] in self.by_ref:
             problems.append("ref_reused")
-        problems += self.place_rule_problems(inner, session)
+        problems += self.place_rule_problems(inner, session, ns)
         rec = _Rec(self.contract, inner, seq, ns, bool(session and session["pt4"]), len(self.records))
         self.records.append(rec)
         self.by_ref.setdefault(rec.ref, rec)
@@ -1747,9 +1810,34 @@ class _Folder:
             self.next_trigger = rec.triggers[0]
         return {rec.index}
 
-    def place_rule_problems(self, inner, session):
-        """A PLACE record the rule does not allow, judged on the record itself and on the journal before it
-        (critique 15, 16): a bet RS-19 does not allow is a protocol violation."""
+    def skip_stops(self, inner, session, seq):
+        """The stops a SKIP decision implies by itself, so they never depend on separate appends (Astra #2):
+        SKIP(pause) fires the crossed levels with their session and review stops; SKIP(cap) at the day limit
+        sets a session stop. Journaled stop notes with the same ids are idempotent with these."""
+        c = self.contract
+        if inner["code"] == "pause":
+            acked = set(self.pause_acked)
+            levels = pause_levels_hit(self.equity + c.new_place_counted_at_p, step_p=c.pause_step_p, acked=acked)
+            if not levels:
+                # Equity only rises between classify and this append, so the level classify crossed is the
+                # highest one not acknowledged.
+                k = 1
+                while -c.pause_step_p * k in acked:
+                    k += 1
+                levels = [-c.pause_step_p * k]
+            for level in levels:
+                self.pause_fired.setdefault(level, seq)
+                for stop in pause_stops(c, level):
+                    self.imply(stop)
+        elif inner["code"] == "cap" and self.lifetime_used < c.lifetime_place_records:
+            source = inner["reservation_seq"]
+            self.imply(stop_payload(c, stop_id_for("day_limit", source) + "-session", "session", "day_limit",
+                                    source_seq=source))
+
+    def place_rule_problems(self, inner, session, ns):
+        """A PLACE record the rule does not allow, judged on the record itself and, for placement authority, on
+        the journal at its own append (its recorded_at and seq; critique 15, 16; Astra #4): a bet RS-19 does not
+        allow is a protocol violation."""
         c = self.contract
         problems = []
         wall, off = inner["decision_book_wall_ns"], inner["off_ns"]
@@ -1780,10 +1868,10 @@ class _Folder:
             problems.append("place_while_stopped")
         if self.ending_notes:
             problems.append("place_after_ending")
-        if wall >= c.final_date_ns:
+        if ns >= c.final_date_ns or wall >= c.final_date_ns:
             problems.append("place_after_final_date")
-        if self.n_done is not None and (self.n_done["trigger_ns"] is None or wall >= self.n_done["trigger_ns"]):
-            problems.append("place_after_n_reached")
+        if self.n_done is not None:
+            problems.append("place_after_n_reached")   # N reached before this append, by seq or by its time
         capacity = _capacity(c, equity_p=self.equity, acked=set(self.pause_acked),
                              lifetime_used=self.lifetime_used, day_used=self.day_used.get(inner["utc_day"], 0),
                              pt4=bool(session and session["pt4"]), slot_seq=None)
@@ -1811,6 +1899,7 @@ class _Folder:
             self.pause_fired.setdefault(level, seq)
         self.stops.append({"stop_id": inner["stop_id"], "scope": inner["scope"], "reason": inner["reason"],
                            "level_p": inner["level_p"], "source_seq": inner["source_seq"], "seq": seq})
+        self.terminate(seq, ns, inner["reason"])
 
     def note_ack(self, inner, event, seq, ns):
         """An ACK the rules allow (note §10, §12): a pending review stop; a pause level that fired and is not yet
@@ -1872,7 +1961,12 @@ class _Folder:
 
     def note_capture_commission(self, inner, event, seq, ns):
         self.commissions.setdefault(event["market_id"], []).append({"seq": seq, "commission": inner["commission"]})
-        return {rec.index for rec in self.by_market.get(event["market_id"], [])}
+        dirty = set()
+        for rec in self.by_market.get(event["market_id"], []):
+            if inner["commission"] is not None:
+                rec.evidence.append(("commission", seq, ns, inner["commission"]))
+            dirty.add(rec.index)
+        return dirty
 
     def note_commission_verified(self, inner, event, seq, ns):
         if inner["our_commission_p"] != inner["website_commission_p"]:
@@ -1897,6 +1991,44 @@ class _Folder:
             self.violation(inner["code"], seq, ns)
         else:
             self.ending_notes.append({"reason": inner["reason"], "code": inner["code"], "seq": seq, "ns": ns})
+
+    def note_refusal(self, inner, event, seq, ns):
+        """A journaled classify refusal implies the review stop classify returned with it (Astra #2)."""
+        if inner["code"] != "placing_ended":
+            source = inner["reservation_seq"]
+            self.imply(stop_payload(self.contract, stop_id_for(inner["code"], source), "review", inner["code"],
+                                    source_seq=source))
+
+    def gap_stop(self, stop_id):
+        """The review stop of a ledger gap with this id, journaled or implied, or None."""
+        stops = [s for s in self.stops if s["stop_id"] == stop_id and s["scope"] == "review"]
+        stops += [s for (sid, scope), s in self.implied.items() if sid == stop_id and scope == "review"]
+        return next((s for s in stops if s["reason"] in LEDGER_GAP_REASONS), None)
+
+    def note_gap_resolved(self, inner, event, seq, ns):
+        """An explicit resolution of one ledger gap, with its cause written (Astra #6): it names a known gap stop
+        and, for a record's gap, that record's decision seq."""
+        stop = self.gap_stop(inner["stop_id"])
+        if (stop is None or inner["cause_written"] is not True
+                or (inner["decision_seq"] is not None and inner["decision_seq"] != stop["source_seq"])):
+            self.invalid_note(seq)
+            return
+        self.resolved_gaps.setdefault(inner["stop_id"], seq)
+
+    def note_finalized(self, inner, event, seq, ns):
+        """The durable finalization frontier (Astra #7): from here the record's execution record and class are
+        frozen as the journal before this note gives them, and later evidence is only logged. A record that is
+        not final here, or whose row or class differs from the note, gets the review stop finalized_mismatch."""
+        rec = self.by_ref.get(event["customer_order_ref"])
+        if rec is None or inner["final_at_ns"] > ns:
+            self.invalid_note(seq)
+            return
+        self.evaluate(rec, seq, self.clock)
+        execution, measurement = rec.execution, rec.measurement
+        if (execution is None or not measurement["final"] or execution["row"] != inner["row"]
+                or measurement["class"] != inner["class"]):
+            self.imply_review("finalized_mismatch", seq)
+        return {rec.index}
 
     def note_violation(self, inner, event, seq, ns):
         rec = next((r for r in self.records if r.decision_seq == inner["source_seq"]), None)
@@ -1992,11 +2124,14 @@ class _Folder:
         """HALT, kill and resume as journal.py's fold applies them (journal.py:791-829)."""
         if kind in ("report", "risk_decision") and payload.get("halts"):
             self.halts.append((seq, None))
+            self.terminate(seq, event["_ns"], "halt")
         if kind == "halt":
             market = event.get("market_id") if payload.get("scope") == "market" else None
             self.halts.append((seq, market))
+            self.terminate(seq, event["_ns"], "halt")
         elif kind == "kill":
             self.halts.append((seq, None))
+            self.terminate(seq, event["_ns"], "kill")
         elif kind == "resume":
             scope = payload.get("scope")
             if scope == "market" and event.get("market_id") is not None:
@@ -2032,6 +2167,9 @@ class _Folder:
             self.violation("submit_after_open_ended", seq, ns, rec)
         if self.journaled_active_stops(rec.session_id):
             self.violation("submit_while_stopped", seq, ns, rec)
+        session = self.session(rec.session_id)
+        if session is not None and session["ended_seq"] is not None and session["ended_seq"] < seq:
+            self.violation("submit_after_session_end", seq, ns, rec)
         if self.halted(rec.market_id):
             self.violation("submit_while_halted", seq, ns, rec)
         if self.ending_notes:
@@ -2229,29 +2367,26 @@ class _Folder:
             return False, "profit_missing", [], None, {}
         if self.profit_basis() != "gross":
             return False, "profit_basis_unverified", [], None, {}
-        gap = [("cleared_figure_gap", rec.decision_seq)]
-        try:
-            bf = bf_profit_pence(settled_l["row"].get("profit"))
-        except PilotError:
-            return False, "cleared_figure_gap", gap, None, {}
-        if bf is None:
+        bf = _pence_or_none(settled_l["row"].get("profit"))
+        if bf is None and settled_l["row"].get("profit") is None:
             return False, "profit_missing", [], None, {}
         if ours == "WINNER":
-            figures = s_winner_value(size, price, bf, c=c.commission_rate)
-            gross, commission, value = figures["gross_p"], figures["commission_p"], figures["value_p"]
+            figures = s_winner_value(size, price, 0, c=c.commission_rate)
+            gross, commission = figures["gross_p"], figures["commission_p"]
         else:
             gross, commission = loss_pence(size), 0
-            value = gross
-        if abs(gross - bf) > c.gap_tolerance_p:
-            return False, "cleared_figure_gap", gap, None, {}
-        captured = [x["commission"] for x in self.commissions.get(rec.market_id, []) if x["commission"] is not None]
+        if bf is None or abs(gross - bf) > c.gap_tolerance_p:
+            self.gap(rec, "cleared_figure_gap", [_pence_or_none(r["row"].get("profit")) for r in rec.l_rows
+                                                 if r["row"].get("betStatus") == "SETTLED"], gross)
+            return False, "cleared_figure_gap", [], None, {}
+        value = min(gross - commission, bf - commission) if ours == "WINNER" else gross
+        captured = [_pence_or_none(x["commission"]) for x in self.commissions.get(rec.market_id, [])
+                    if x["commission"] is not None]
         if captured:
-            try:
-                betfair_p = bf_profit_pence(captured[0])
-            except PilotError:
-                betfair_p = None
-            if betfair_p is None or abs(commission - betfair_p) > c.gap_tolerance_p:
-                return False, "commission_gap", [("commission_gap", rec.decision_seq)], None, {}
+            # Every API commission capture is held against ours, never just the first (Astra #3).
+            if any(p is None or abs(commission - p) > c.gap_tolerance_p for p in captured):
+                self.gap(rec, "commission_gap", captured, commission)
+                return False, "commission_gap", [], None, {}
         elif not self.commission_method_verified():
             return False, "commission_unverified", [], None, {}
         if rec.market_id not in self.settled:
@@ -2260,7 +2395,16 @@ class _Folder:
             return False, "no_pt4_receipt", [], None, {}
         row = settled_l["row"]
         return True, None, [], value, {"P": price, "profit": row.get("profit"), "result": ours,
-                                       "outcome": row.get("betOutcome")}
+                                       "outcome": row.get("betOutcome"), "commission_p": commission,
+                                       "betfair_commission_p": captured[0] if captured else None}
+
+    def gap(self, rec, reason, figures, ours):
+        """Set a ledger gap's review stop; it is resolved when the latest captured figure agrees with ours within
+        the tolerance (Astra #6). Resolution clears the gap for an ACK; it never moves the record into S."""
+        stop_id = stop_id_for(reason, rec.decision_seq)
+        self.imply_review(reason, rec.decision_seq)
+        if len(figures) > 1 and figures[-1] is not None and abs(figures[-1] - ours) <= self.contract.gap_tolerance_p:
+            self.resolved_gaps.setdefault(stop_id, self.at_seq)
 
     def profit_basis(self):
         """The sign and basis of Betfair's profit as the PT receipts recorded it; None until one does, or when
@@ -2280,8 +2424,9 @@ class _Folder:
 
     def contradiction(self, rec, basis):
         """Every execution item journaled after the basis's own source observation that shows a different matched
-        size, a larger one in a report, or for S a different price, profit or result, moves the record to W at
-        -200 for good and sets a review stop (note §10; decision Q12; finding 6). Only a size basis is
+        size, a larger one in a report, or for S a different price (a later EXECUTION_COMPLETE C or L), profit,
+        result or API commission (more than 1p from the one S used or from ours), moves the record to W at -200
+        for good and sets a review stop (note §10; decision Q12; finding 6; Astra #3). Only a size basis is
         contradicted (critique 11)."""
         if rec.contradicted_seq is not None or basis is None:
             return
@@ -2291,6 +2436,14 @@ class _Folder:
                 continue
             if kind == "c":
                 found = item.get("sizeMatched") is None or item["sizeMatched"] != basis["size"]
+                if basis["rule"] == "s" and item.get("status") == "EXECUTION_COMPLETE":
+                    found = found or item.get("averagePriceMatched") != basis["P"]       # Astra #3
+            elif kind == "commission":
+                captured = _pence_or_none(item)
+                found = basis["rule"] == "s" and (
+                    captured is None or abs(captured - basis["commission_p"]) > self.contract.gap_tolerance_p
+                    or (basis["betfair_commission_p"] is not None
+                        and abs(captured - basis["betfair_commission_p"]) > self.contract.gap_tolerance_p))
             elif kind == "l":
                 found = item.get("sizeSettled") is None or item["sizeSettled"] != basis["size"]
                 if basis["rule"] == "s" and item.get("betStatus") == "SETTLED":
@@ -2299,7 +2452,7 @@ class _Folder:
                              or item.get("betOutcome") != basis["outcome"])
             elif kind in ("report", "cancel"):
                 found = item > basis_p
-            else:
+            else:                                        # a book read
                 runners = item["runners"] if item["status"] == "CLOSED" else None
                 found = basis["rule"] == "s" and runners is not None and (
                     (runners.get(str(rec.selection_id)) or {}).get("status") != basis["result"]
@@ -2336,9 +2489,11 @@ class _Folder:
         """Close the opens that are not live, evaluate every time trigger up to the fold's now at its own time, then
         every record at now."""
         now = now_ns if self.clock is None else max(self.clock, now_ns)
+        self.at_seq, self.at_ns = self.last_seq, self.clock
         for index in sorted(self.end_opens(self.live_open_id, now if self.clock is None else self.clock)):
             self.evaluate(self.records[index], self.last_seq, self.clock)
         self.advance(now, self.last_seq)
+        self.at_seq, self.at_ns = self.last_seq, now
         for rec in self.records:
             self.evaluate(rec, self.last_seq, now)
         self.pause_check(self.last_seq)
@@ -2421,6 +2576,7 @@ def fold(events, *, contract, now_ns, live_open_id=None):
         pause_fired=dict(folder.pause_fired), pause_acked=dict(folder.pause_acked), stops=stops,
         due_stops=tuple(folder.due_stops()), active_stops=tuple(folder.active_stops()),
         violations=tuple(dict(item) for item in folder.violations), invalid_records=tuple(folder.invalid),
+        resolved_gaps=dict(folder.resolved_gaps),
         ending_notes=tuple(folder.ending_notes), ending=None)
     values = {name: getattr(state, name) for name in state.__dataclass_fields__}
     values["ending"] = placing_ending(state, now_ns=now)
@@ -2472,15 +2628,13 @@ def ack_check(state, stop_id, *, journal_reconciled, unresolved_order, cause_wri
         return "ack_journal_not_reconciled"
     if unresolved_order:
         return "ack_unresolved_order"
-    if any(s["scope"] == "review" and s["reason"] in LEDGER_GAP_REASONS and s["stop_id"] != stop_id
+    if any(s["scope"] == "review" and s["reason"] in LEDGER_GAP_REASONS and s["stop_id"] not in state.resolved_gaps
            for s in state.active_stops):
-        return "ack_ledger_gap_open"
+        return "ack_ledger_gap_open"                     # a gap, this one included, not yet resolved (Astra #6)
     if not pause and not cause_written:
         return "ack_cause_required"
     return None
 
-
-LEDGER_GAP_REASONS = ("cleared_figure_gap", "commission_gap", "commission_mismatch", "ledger_contradiction")
 
 
 # ---------------------------------------------------------------------------------------------------------------

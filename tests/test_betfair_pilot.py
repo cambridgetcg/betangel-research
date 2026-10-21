@@ -494,6 +494,7 @@ class Boundaries(unittest.TestCase):
             ("decimal", 0, ("Decimal", "DecimalException")), ("fractions", 0, ("Fraction",)),
             ("hashlib", 0, ("hashlib",)),
             ("json", 0, ("json",)), ("math", 0, ("math",)), ("re", 0, ("re",)),
+            ("constants", 1, ("CLASSIC_MAX_PRICE_H", "CLASSIC_MIN_PRICE_H")),
             ("ticks", 1, ("is_on_ladder", "tick_index"))})
         self.assertTrue({m for m, level, _ in imports if not level} <= backtest_boundaries.BACKTEST_STDLIB)
 
@@ -605,13 +606,17 @@ class Boundaries(unittest.TestCase):
         journal_.ack("pause-15000")
         journal_.note("ending", reason="yu_written", code="yu_ended_in_writing")
         journal_.note("violation", code="send_without_record", source_seq=1)
+        journal_.note("gap_resolved", stop_id="cleared-figure-gap-9", decision_seq=9, cause_written=True)
+        journal_.note("finalized", ref_col=placed.ref, final_at_ns=placed.off + DAY_NS, row=1, **{"class": "eligible"})
         payloads = [e for e in journal_.events if e["kind"] == "note"]
         payloads.append({"payload": {"pilot": result["record"]}, "market_id": placed.market,
                          "customer_order_ref": None})
-        for stop in pilot.pause_stops(C, -15000) + pilot.classify(
-                C, journal_.fold(), reservation_seq=999, open_id="o", session_id="s0",
-                registration_receipt_sha256=journal_.registration, customer_order_ref="r", row_body=b"",
-                book_body=b"", observed_wall_ns=OFF, observed_monotonic_ns=1)["stops"]:
+        refused = pilot.classify(C, journal_.fold(), reservation_seq=999, open_id="o", session_id="s0",
+                                 registration_receipt_sha256=journal_.registration, customer_order_ref="r",
+                                 row_body=b"", book_body=b"", observed_wall_ns=OFF, observed_monotonic_ns=1)
+        payloads.append({"payload": {"pilot": refused["refusal_record"]}, "market_id": None,
+                         "customer_order_ref": None})
+        for stop in pilot.pause_stops(C, -15000) + refused["stops"]:
             payloads.append({"payload": {"pilot": stop}, "market_id": None, "customer_order_ref": None})
         kinds = set()
         for event in payloads:
@@ -1182,8 +1187,10 @@ class Capacity(unittest.TestCase):
 
     def test_stop_active_refuses_classification(self):
         journal_ = Pilot(pt4=True)
+        # An unacknowledged review stop from before this ARM (a stop inside a session ends it, Astra #1).
+        stop_seq = journal_.stop("capture-check-failed-9", "review", "capture_check_failed", source=9,
+                                 at=DAY0 + 7 * HOUR)
         session = journal_.arm(0)
-        stop_seq = journal_.stop("capture-check-failed-9", "review", "capture_check_failed", source=9)
         result, placed, res = journal_.classify(session)
         self.assertEqual((result["refusal"], result["record"]), ("stop_active", None))
         self.assertEqual([(s["scope"], s["reason"], s["stop_id"]) for s in result["stops"]],
@@ -1605,6 +1612,10 @@ class Pause(unittest.TestCase):
         journal_.stop("cleared-figure-gap-7", "review", "cleared_figure_gap", source=7)
         state = journal_.fold()
         self.assertEqual(pilot.ack_check(state, "capture-check-failed-3", **ok), "ack_ledger_gap_open")
+        self.assertEqual(pilot.ack_check(state, "cleared-figure-gap-7", **ok), "ack_ledger_gap_open")
+        journal_.note("gap_resolved", stop_id="cleared-figure-gap-7", decision_seq=7, cause_written=True)
+        state = journal_.fold()
+        self.assertIsNone(pilot.ack_check(state, "capture-check-failed-3", **ok))
         self.assertIsNone(pilot.ack_check(state, "cleared-figure-gap-7", **ok))
 
     def test_invalid_acks_are_not_folded(self):
@@ -1640,6 +1651,9 @@ class FoldProtocol(unittest.TestCase):
                          [(f"ledger-contradiction-{p.seq}", None)])
         flags = dict(journal_reconciled=True, unresolved_order=False)
         stop_id = f"ledger-contradiction-{p.seq}"
+        self.assertEqual(pilot.ack_check(state, stop_id, cause_written=True, **flags), "ack_ledger_gap_open")
+        journal_.note("gap_resolved", stop_id=stop_id, decision_seq=p.seq, cause_written=True)
+        state = journal_.fold()
         self.assertEqual(pilot.ack_check(state, stop_id, cause_written=False, **flags), "ack_cause_required")
         self.assertIsNone(pilot.ack_check(state, stop_id, cause_written=True, **flags))
         journal_.ack(stop_id, cause=True)
@@ -1914,26 +1928,13 @@ class ReviewFindings(unittest.TestCase):
                     observed_wall_ns=observed, observed_monotonic_ns=1)
         early = journal_.fold(now=deadline - S, live_open_id="open-b", contract=C_ONE)
         self.assertIsNone(early.ending)
-        refused = pilot.classify(C_ONE, early, **args)
-        self.assertEqual((refused["refusal"], refused["record"]), ("state_not_at_decision_time", None))
+        refused = pilot.classify(C_ONE, early, **args)                # a head folded before the book was read
+        self.assertEqual((refused["refusal"], refused["record"]), ("state_before_observation", None))
         self.assertEqual([(s["scope"], s["reason"]) for s in refused["stops"]],
-                         [("review", "state_not_at_decision_time")])
+                         [("review", "state_before_observation")])
         at = journal_.fold(now=observed, live_open_id="open-b", contract=C_ONE)
         self.assertEqual(at.ending["reason"], "n_reached")
         self.assertEqual(pilot.classify(C_ONE, at, **args)["refusal"], "placing_ended")
-
-    def test_finding_09_22_n_by_time_judged_at_the_observation(self):
-        """When a time trigger completes N, a PLACE observed before it is surplus even if journaled after it; one
-        observed at or after it is a violation (the fold agrees with classify at the observation)."""
-        for seconds, flagged in ((-2, False), (2, True)):
-            with self.subTest(observed=seconds):
-                journal_ = Pilot(pt4=True)
-                a = self.eligible_c_only(journal_, journal_.arm(0))
-                deadline = a.off + 7 * DAY_NS
-                journal_.place(journal_.arm(7), off=deadline + seconds * S + 295 * S, market="1.778",
-                               decided_at=deadline + 5 * S)
-                state = journal_.fold(contract=C_ONE)
-                self.assertEqual("place_after_n_reached" in codes(state), flagged)
 
     def test_finding_10_final_class_never_changes_rows_3_and_5(self):
         """Property: a record final through the deadline (C only, or neither) keeps its class and execution
@@ -2097,8 +2098,9 @@ class ReviewFindings(unittest.TestCase):
                                                                   market_id=p.market),
                  "submit_while_halted kill": lambda j, p: j.add("kill", {"reason": "kill", "scope": "own"}),
                  "submit_after_ending": lambda j, p: j.note("ending", reason="yu_written", code="yu_in_writing"),
-                 "none: halt then resume": lambda j, p: (j.add("halt", {"reason": "x", "scope": "global"}),
-                                                         j.add("resume", {"scope": "global"}))}
+                 # A RESUME clears the HALT but not the session's end (Astra #1): still a violation.
+                 "submit_after_session_end: halt then resume": lambda j, p: (
+                     j.add("halt", {"reason": "x", "scope": "global"}), j.add("resume", {"scope": "global"}))}
         for label, step in steps.items():
             with self.subTest(case=label):
                 journal_ = Pilot(pt4=True)
@@ -2106,7 +2108,10 @@ class ReviewFindings(unittest.TestCase):
                 step(journal_, p)
                 journal_.send(p)
                 found = codes(journal_.fold(live_open_id=p.open_id))
-                self.assertEqual(found, [] if label.startswith("none") else [label.split(" ")[0]])
+                expected = {label.split(" ")[0].rstrip(":")}
+                if label.startswith(("submit_while_stopped", "submit_while_halted")):
+                    expected.add("submit_after_session_end")              # the stop or HALT also ended it
+                self.assertEqual(found, sorted(expected))
         for failed, expected in ((False, ["sent_after_session_end"]), (True, [])):
             with self.subTest(case="session end", failed=failed):
                 journal_ = Pilot(pt4=True)
@@ -2180,6 +2185,365 @@ class ReviewFindings(unittest.TestCase):
         journal_.l_row(a, price="3.44", at=b.off - 400 * S)
         state = journal_.fold(contract=C_ONE)
         self.assertEqual((codes(state), state.ending["reason"]), ([], "n_reached"))
+
+
+def stop_ids(stops):
+    return sorted((s["stop_id"], s["scope"]) for s in stops)
+
+
+def replayed(journal_, **kw):
+    return pilot.fold(json.loads(json.dumps(journal_.events)), contract=kw.pop("contract", C),
+                      now_ns=kw.pop("now", journal_.now), **kw)
+
+
+class AstraReview(unittest.TestCase):
+    """Regression tests for Astra's review of 93d5d83 (astra-review-p1-05.md, findings 1-7), built on the inputs
+    of her synthetic probes (p1-05/astra-r1-*). Each fails on 93d5d83."""
+
+    def test_astra_1_a_terminated_session_stays_ended(self):
+        """ARM, then a HALT, a KILL or a review stop: a RESUME or an ACK clears it, but the session stays ended; a
+        reservation in it is a violation, classify refuses, a submit is a violation; a new ARM the next day may
+        place again (astra-r1-ledger-probes: session_termination)."""
+        def review_stop_then_ack(j, session):
+            _, first, _ = j.classify(session)
+            j.send(first)
+            j.c_read(first, matched="1.00", cancelled="1.00")          # below the place report: capture check fails
+            j.journal_due(j.fold())
+            (stop,) = [s for s in j.fold().active_stops if s["scope"] == "review"]
+            self.assertEqual(stop["reason"], "capture_check_failed")
+            j.ack(stop["stop_id"], cause=True)
+
+        cases = {"halt_then_resume": lambda j, s: (j.add("halt", {"scope": "global", "reason": "operator"}),
+                                                  j.add("resume", {"scope": "global"})),
+                 "kill_then_resume": lambda j, s: (j.add("kill", {"scope": "own", "reason": "operator"}),
+                                                  j.add("resume", {"scope": "global"})),
+                 "review_stop_then_ack": review_stop_then_ack}
+        for label, end in cases.items():
+            with self.subTest(case=label):
+                journal_ = Pilot(pt4=True)
+                session = journal_.arm(0)
+                end(journal_, session)
+                state = journal_.fold()
+                self.assertEqual((state.active_stops, codes(state)), ((), []))
+                self.assertIsNotNone(state.sessions[-1]["ended_seq"])
+                result, placed, _ = journal_.classify(session)
+                self.assertIsNone(placed)
+                self.assertEqual(result["refusal"], "placing_ended")
+                self.assertEqual(codes(journal_.fold()), ["session_stopped"])     # the reservation itself
+                self.assertEqual(journal_.fold(), replayed(journal_))
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        off = journal_.next_off(session)
+        res = journal_.reserve("1.400", off, session=session, open_id="open-1")   # before the HALT: valid
+        journal_.add("halt", {"scope": "global", "reason": "operator"})
+        journal_.add("resume", {"scope": "global"})
+        row_body, book_body = bodies("1.400", off)
+        refused = pilot.classify(C, journal_.fold(now=off - 290 * S, live_open_id="open-1"), reservation_seq=res,
+                                 open_id="open-1", session_id=session, registration_receipt_sha256=journal_.registration,
+                                 customer_order_ref="ref-1", row_body=row_body, book_body=book_body,
+                                 observed_wall_ns=off - 295 * S, observed_monotonic_ns=1)
+        self.assertEqual(refused["refusal"], "session_ended")
+        result, placed, _ = journal_.classify(journal_.arm(1))                  # a new ARM, the next day
+        self.assertEqual((result["record"]["outcome"], codes(journal_.fold())), ("PLACE", []))
+
+    def test_astra_2_a_skip_decision_implies_its_stops(self):
+        """A SKIP(pause) persisted without its two stop notes still fires the level and both stops on replay, and
+        keeps them through equity recovery (astra-r1-ledger-probes: interrupted_pause_notes)."""
+        journal_ = Pilot(pt4=True)
+        placed = bulk(journal_, 74, lambda j, p: j.send(p) if p.ref == "ref-1" else j.lose(p), per_day=24)
+        session = placed[-1].record["session_id"]
+        result, _, _ = journal_.classify(session, journal_it=False)
+        record = result["record"]
+        self.assertEqual((record["outcome"], record["code"]), ("SKIP", "pause"))
+        seq = journal_.inner(record, at=record["decision_book_wall_ns"] + S, market_id=record["market_id"])
+        restarted = journal_.fold()
+        self.assertEqual((restarted.equity_p, restarted.pause_fired), (-14800, {-15000: seq}))
+        self.assertEqual(stop_ids(restarted.due_stops), stop_ids(result["stops"]))
+        with_stops = Pilot(pt4=True)
+        with_stops.events = [dict(e) for e in journal_.events]
+        with_stops.now = journal_.now
+        for stop in result["stops"]:
+            with_stops.inner(stop)
+        full = with_stops.fold()
+        self.assertEqual(full.pause_fired, restarted.pause_fired)
+        self.assertEqual(stop_ids(full.active_stops), stop_ids(restarted.active_stops))
+        pending = placed[0]                                              # the pending winner settles: equity recovers
+        journal_.c_read(pending, at=journal_.now + S)
+        journal_.closed(pending, ours="WINNER", at=journal_.now + S)
+        journal_.settle(pending, at=journal_.now + S)
+        journal_.l_row(pending, profit="4.00", outcome="WIN", at=journal_.now + S)
+        journal_.commission(pending, "0.08", at=journal_.now + S)
+        recovered = journal_.fold()
+        self.assertGreater(recovered.equity_p, -14800)
+        self.assertIn(("pause-15000", "review"), stop_ids(recovered.active_stops))
+        self.assertIsNone(journal_.classify(session)[1])                 # no PLACE without an ACK and a new ARM
+
+    def test_astra_2_cap_and_refusal_records_imply_their_stops(self):
+        journal_ = Pilot(pt4=False)                                      # a PT4 day: 5 PLACE records
+        session = journal_.arm(0)
+        for _ in range(5):
+            journal_.classify(session)
+        result, _, res = journal_.classify(session, journal_it=False)
+        self.assertEqual(result["record"]["code"], "cap")
+        journal_.inner(result["record"], market_id=result["record"]["market_id"])
+        self.assertEqual(stop_ids(journal_.fold().due_stops), stop_ids(result["stops"]))
+        refusing = Pilot(pt4=True)
+        session = refusing.arm(0)
+        refused = pilot.classify(C, refusing.fold(now=DAY0 + 9 * HOUR), reservation_seq=999, open_id="open-x",
+                                 session_id=session, registration_receipt_sha256=refusing.registration,
+                                 customer_order_ref="ref-x", row_body=b"", book_body=b"",
+                                 observed_wall_ns=DAY0 + 9 * HOUR, observed_monotonic_ns=1)
+        self.assertEqual(refused["refusal"], "reservation_unknown")
+        refusing.inner(refused["refusal_record"])
+        self.assertEqual(stop_ids(refusing.fold().due_stops), stop_ids(refused["stops"]))
+
+    def test_astra_3_s_basis_price_and_commission_contradictions(self):
+        """A settled winner (S +392) and 74 losers: equity -14408. A later EXECUTION_COMPLETE C at 3.50 restores W at
+        -200: equity -15000, the contradiction stop and the pause, also on replay; the analytical record is kept
+        (astra-r1-ledger-probes: corrected_c_price_misses_pause, later_commission_correction)."""
+        journal_ = Pilot(pt4=True)
+        placed = bulk(journal_, 75, lambda j, p: j.win(p) if p.ref == "ref-1" else j.lose(p))
+        before = journal_.fold()
+        self.assertEqual((before.equity_p, before.place_records[0].ledger["value_p"]), (-14408, 392))
+        journal_.c_read(placed[0], at=journal_.now + S, price="3.50")
+        for after in (journal_.fold(), replayed(journal_)):
+            target = after.place_records[0]
+            self.assertEqual((target.ledger["part"], target.ledger["value_p"], after.equity_p), ("W", -200, -15000))
+            self.assertEqual(target.execution, before.place_records[0].execution)
+            self.assertEqual(stop_ids(after.due_stops), [(f"ledger-contradiction-{placed[0].seq}", "review"),
+                                                         ("pause-15000", "review"),
+                                                         ("pause-15000-session", "session")])
+            self.assertIn(-15000, after.pause_fired)
+        same_price = Pilot(pt4=True)
+        p = same_price.place(same_price.arm(0))
+        same_price.win(p)
+        same_price.c_read(p, at=same_price.now + S, price="3.00")
+        self.assertEqual(only(same_price.fold()).ledger["value_p"], 392)
+        commission = Pilot(pt4=True)
+        p = commission.place(commission.arm(0))
+        commission.win(p)
+        self.assertEqual(commission.fold().equity_p, 392)
+        commission.commission(p, "0.20", at=commission.now + S)
+        for after in (commission.fold(), replayed(commission)):
+            self.assertEqual((only(after).ledger["part"], after.equity_p), ("W", -200))
+            self.assertEqual({s["reason"] for s in after.due_stops}, {"ledger_contradiction", "commission_gap"})
+        later = Pilot(pt4=True)                             # every capture is checked, not only captured[0]
+        q = later.place(later.arm(0))
+        later.win(q, commission=None)
+        later.commission(q, "0.20")
+        later.commission(q, "0.08")
+        state = later.fold()
+        self.assertEqual((only(state).ledger["part"], only(state).ledger["reason"]), ("W", "commission_gap"))
+        self.assertEqual(sorted(state.resolved_gaps), [f"commission-gap-{q.seq}"])     # the later figure agrees
+
+    def test_astra_4_benign_head_change_is_rechecked_cleanly(self):
+        """An unrelated note one second after the observation: classify on the latest head, same bytes, PLACE
+        (astra-r1-root-probes: latest_head)."""
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        off = journal_.next_off(session)
+        observed = off - 295 * S
+        reservation = journal_.reserve("1.900001", off, session=session, open_id="head-open")
+        row, book = bodies("1.900001", off)
+        kwargs = dict(reservation_seq=reservation, open_id="head-open", session_id=session,
+                      registration_receipt_sha256=journal_.registration, customer_order_ref="head-ref",
+                      row_body=row, book_body=book, observed_wall_ns=observed, observed_monotonic_ns=1)
+        before = pilot.classify(C, journal_.fold(now=observed, live_open_id="head-open"), **kwargs)
+        journal_.add("note", {"operator": "read-only capture completed"}, at=observed + S)
+        after = pilot.classify(C, journal_.fold(now=observed, live_open_id="head-open"), **kwargs)
+        self.assertEqual((before["record"]["outcome"], after["refusal"], after["record"]), ("PLACE", None,
+                                                                                           before["record"]))
+
+    def test_astra_4_a_stop_between_observation_and_classify(self):
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        off = journal_.next_off(session)
+        observed = off - 295 * S
+        reservation = journal_.reserve("1.900002", off, session=session, open_id="open-s")
+        journal_.stop("capture-check-failed-2", "review", "capture_check_failed", source=2, at=observed + S)
+        row, book = bodies("1.900002", off)
+        result = pilot.classify(C, journal_.fold(now=observed + 2 * S, live_open_id="open-s"),
+                                reservation_seq=reservation, open_id="open-s", session_id=session,
+                                registration_receipt_sha256=journal_.registration, customer_order_ref="ref-s",
+                                row_body=row, book_body=book, observed_wall_ns=observed, observed_monotonic_ns=1)
+        # Judged at the latest head: the stop is active and has ended the session, whatever the book showed.
+        self.assertEqual((result["refusal"], result["record"]), ("session_ended", None))
+
+    def test_astra_4_time_driven_n_between_observation_and_append(self):
+        """N = 400 completes by time (the 400th eligible record, C only, is final at deadline + 1 ns). A record
+        observed at deadline - 2 s and appended at deadline + 5 s is a violation, and classify on a head at or after
+        the deadline refuses (astra-r1-root-probes: n_at_append)."""
+        journal_ = Pilot(pt4=True)
+        last = None
+        for i in range(400):
+            if i % 25 == 0:
+                session = journal_.arm(i // 25)
+            p = journal_.place(session)
+            if i != 399:
+                journal_.win(p)
+            else:
+                journal_.send(p)
+                journal_.c_read(p)
+                journal_.closed(p)
+                last = p
+        deadline = last.off + 7 * DAY_NS
+        self.assertIsNone(journal_.fold(now=deadline).ending)
+        session = journal_.arm(22)
+        off = deadline + 293 * S
+        res = journal_.reserve("1.950001", off, session=session, open_id="open-late")
+        row, book = bodies("1.950001", off)
+        late_head = journal_.fold(now=deadline + 3 * S, live_open_id="open-late")
+        self.assertEqual(late_head.ending["reason"], "n_reached")
+        refused = pilot.classify(C, late_head, reservation_seq=res, open_id="open-late", session_id=session,
+                                 registration_receipt_sha256=journal_.registration, customer_order_ref="ref-late",
+                                 row_body=row, book_body=book, observed_wall_ns=off - 295 * S, observed_monotonic_ns=1)
+        self.assertEqual(refused["refusal"], "placing_ended")
+        p = journal_.place(session, off=off + 30 * MIN, decided_at=deadline + 5 * S)
+        journal_.intent(p, at=deadline + 6 * S)
+        journal_.submit(p, at=deadline + 7 * S)
+        journal_.report(p, at=deadline + 8 * S)
+        after = journal_.fold()
+        self.assertIn("place_after_n_reached", codes(after))
+        self.assertEqual(after.ending["reason"], "breach")
+
+    def test_astra_5_matched_prices_outside_classic_are_unresolved(self):
+        def raw_l(price):
+            body = dumps({"jsonrpc": "2.0", "id": 1, "result": {"clearedOrders": [{
+                "betId": "5001", "sizeSettled": Raw("2.00"), "priceMatched": Raw(price), "priceReduced": False,
+                "profit": Raw("2000.00"), "betOutcome": "WIN"}]}}).encode()
+            return pilot.extract_cleared_row(body, bet_id="5001")["priceMatched"]
+
+        def raw_c(price):
+            body = dumps({"jsonrpc": "2.0", "id": 1, "result": {"currentOrders": [{
+                "betId": "5001", "status": "EXECUTION_COMPLETE", "sizeMatched": Raw("2.00"),
+                "averagePriceMatched": Raw(price)}]}}).encode()
+            return pilot.extract_current_row(body, bet_id="5001")["averagePriceMatched"]
+
+        for price, kept in (("0", None), ("-1", None), ("1", None), ("1.00999", None), ("1001", None),
+                            ("1000.01", None), ("1.01", "1.01"), ("1000", "1000"), ("3.444", "3.444")):
+            with self.subTest(price=price):
+                self.assertEqual((raw_l(price), raw_c(price)), (kept, kept))
+        for price in ("NaN", "Infinity"):
+            self.assertRaises(pilot.EvidenceError, raw_l, price)
+        for price, cls in (("0", "measurement_unresolved"), ("1001", "measurement_unresolved"),
+                           ("3.444", "eligible")):
+            with self.subTest(l_only=price):
+                journal_ = Pilot(pt4=True)
+                _, p, _ = journal_.classify(journal_.arm(0))
+                journal_.send(p)
+                journal_.closed(p, sp="3.10")
+                journal_.inner({"v": 1, "type": "capture_l", "contract_sha256": C.sha256, "bet_id": p.bet_id,
+                                "raw_sha256": "0" * 64, "row": cleared_row(price=price)},
+                               customer_order_ref=p.ref)
+                self.assertEqual(only(journal_.fold()).measurement["class"], cls)
+
+    def test_astra_5_full_sample_at_an_impossible_price_does_not_pass(self):
+        """400 bets over 16 dates, C = L = 2.00 at 1001 with matching profit and commission and valid BSPs
+        (astra-r1-analysis-probes: final_price_probe) gave PASS; now every record is unresolved."""
+        journal_ = Pilot(pt4=True)
+        for day in range(16):
+            session = journal_.arm(day)
+            for _ in range(25):
+                p = journal_.place(session)
+                journal_.send(p)
+                journal_.c_read(p, price="1001")
+                journal_.closed(p, ours="WINNER", sp="3.10" if day < 8 else "3.20")
+                journal_.settle(p)
+                journal_.l_row(p, price="1001", profit="2000.00", outcome="WIN")
+                journal_.commission(p, "40.00")
+        state = journal_.fold()
+        classes = {r.measurement["class"] for r in state.place_records}
+        # Each bet is now unresolved at -200, so the pause fires and later PLACEs are protocol violations.
+        self.assertEqual(classes, {"measurement_unresolved", "protocol_violation"})
+        self.assertEqual(pilot.verdict(state, contract=C, now_ns=state.now_ns)["result"], "INVALID")
+
+    def test_astra_6_two_gaps_resolve_then_ack(self):
+        """Two sent orders with 3p cleared-figure gaps: both genuinely open, so neither ACK is accepted; one is
+        resolved by a later L row that agrees, the other by a gap_resolved record with its cause; then both ACKs
+        are accepted in either order, and a replay agrees (astra-r1-ledger-probes: two_gap_ack_deadlock)."""
+        def two_gaps():
+            journal_ = Pilot(pt4=True)
+            session = journal_.arm(0)
+            placed = []
+            for _ in range(2):
+                p = journal_.place(session)
+                journal_.send(p)
+                journal_.c_read(p, at=p.off - 290 * S)
+                placed.append(p)
+            for p in placed:
+                journal_.closed(p, ours="WINNER", at=max(journal_.now + S, p.off + 20 * MIN))
+                journal_.settle(p, at=journal_.now + S)
+                journal_.l_row(p, profit="4.03", outcome="WIN", at=journal_.now + S)
+                journal_.commission(p, "0.08", at=journal_.now + S)
+            journal_.journal_due(journal_.fold())
+            return journal_, placed
+
+        flags = dict(journal_reconciled=True, unresolved_order=False, cause_written=True)
+        for order in ((0, 1), (1, 0)):
+            with self.subTest(ack_order=order):
+                journal_, placed = two_gaps()
+                state = journal_.fold()
+                gaps = [f"cleared-figure-gap-{p.seq}" for p in placed]
+                self.assertEqual([pilot.ack_check(state, g, **flags) for g in gaps], ["ack_ledger_gap_open"] * 2)
+                journal_.l_row(placed[0], profit="4.00", outcome="WIN", at=journal_.now + S)    # agrees: resolved
+                state = journal_.fold()
+                self.assertEqual(sorted(state.resolved_gaps), [gaps[0]])
+                self.assertEqual([pilot.ack_check(state, g, **flags) for g in gaps], ["ack_ledger_gap_open"] * 2)
+                bad = journal_.note("gap_resolved", stop_id=gaps[1], decision_seq=placed[1].seq, cause_written=False)
+                wrong = journal_.note("gap_resolved", stop_id=gaps[1], decision_seq=placed[0].seq, cause_written=True)
+                journal_.note("gap_resolved", stop_id=gaps[1], decision_seq=placed[1].seq, cause_written=True)
+                state = journal_.fold()
+                self.assertEqual(state.invalid_records, (bad, wrong))
+                self.assertEqual(sorted(state.resolved_gaps), sorted(gaps))
+                not_a_gap = journal_.note("gap_resolved", stop_id=f"pilot-record-invalid-{bad}", decision_seq=None,
+                                          cause_written=True)
+                self.assertIn(not_a_gap, journal_.fold().invalid_records)
+                journal_.journal_due(journal_.fold())                # the invalid notes' own review stops
+                for stop in [s for s in journal_.fold().active_stops if s["reason"] == "pilot_record_invalid"]:
+                    journal_.ack(stop["stop_id"], cause=True)
+                for index in order:
+                    self.assertIsNone(pilot.ack_check(journal_.fold(), gaps[index], **flags))
+                    journal_.ack(gaps[index], cause=True)
+                final = journal_.fold()
+                self.assertEqual([s for s in final.active_stops if s["reason"] == "cleared_figure_gap"], [])
+                self.assertEqual(final, replayed(journal_))
+
+    def test_astra_7_a_finalized_note_is_the_durable_frontier(self):
+        """C 3.44 and a CLOSED book; a fold at deadline + 2 s gives row 3 / eligible. An L at 3.06 stamped exactly at
+        the deadline and journaled afterwards would make a fresh fold row 2 / unresolved; with the finalized note
+        that P1-10 writes after that first fold, the record stays eligible (astra-r1-analysis-probes)."""
+        for with_note in (False, True):
+            with self.subTest(finalized_note=with_note):
+                journal_ = Pilot(pt4=True)
+                _, p, _ = journal_.classify(journal_.arm(0))
+                journal_.send(p)
+                deadline = p.off + 7 * DAY_NS
+                journal_.c_read(p, price="3.44")
+                journal_.closed(p, sp="3.10")
+                first = only(journal_.fold(now=deadline + 2 * S))
+                self.assertEqual((first.execution["row"], first.measurement["class"]), (3, "eligible"))
+                if with_note:
+                    journal_.note("finalized", at=deadline + 2 * S, ref_col=p.ref,
+                                  final_at_ns=first.measurement["final_at_ns"], row=3, **{"class": "eligible"})
+                journal_.l_row(p, price="3.06", at=deadline)
+                rec = only(journal_.fold(now=deadline + 2 * S))
+                expected = (3, "eligible") if with_note else (2, "measurement_unresolved")
+                self.assertEqual((rec.execution["row"], rec.measurement["class"]), expected)
+                if with_note:
+                    state = journal_.fold()
+                    self.assertEqual((state.invalid_records, state.due_stops), ((), ()))
+        journal_ = Pilot(pt4=True)
+        _, p, _ = journal_.classify(journal_.arm(0))
+        journal_.send(p)
+        journal_.c_read(p, price="3.44")
+        journal_.closed(p, sp="3.10")
+        deadline = p.off + 7 * DAY_NS
+        seq = journal_.note("finalized", at=deadline + 2 * S, ref_col=p.ref, final_at_ns=deadline + 1, row=1,
+                            **{"class": "missing_bsp"})
+        self.assertEqual(stop_ids(journal_.fold().due_stops), [(f"finalized-mismatch-{seq}", "review")])
+        unknown = journal_.note("finalized", at=deadline + 3 * S, ref_col="ref-none", final_at_ns=deadline + 1, row=3,
+                                **{"class": "eligible"})
+        self.assertIn(unknown, journal_.fold().invalid_records)
 
 
 class Finalization(unittest.TestCase):

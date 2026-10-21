@@ -37,7 +37,7 @@ import test_betfair_boundaries as boundaries
 REPO = Path(__file__).resolve().parent.parent
 # The one place the frozen contract is named; Nuance repoints these two lines when contract p1 is re-frozen.
 CONTRACT_PATH = REPO / "research" / "pilots" / "p1-fav-t5.json"
-CONTRACT_SHA256 = "0e93b17209f86abf73641cd3ad08b2b0b3e66ebee9d75ac98458a6e61cb2e4c1"
+CONTRACT_SHA256 = "4dbccb5a45f7a4779e0263d4df5048f582f10b8dc3bd22c5f2e93e791155de92"
 
 
 def load_p1():

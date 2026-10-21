@@ -1529,7 +1529,6 @@ class _Rec:
         self.basis = None
         self.contradicted_seq = self.contradiction_basis = None
         self.last_own_ns = ns                # its decision or intent: when an unsent record was established
-        self.frontiers = []                  # (seq, finalized note) to verify once the fold has every fact
         self.value_p = -contract.size_p
         self.ledger = {"part": "W", "value_p": self.value_p, "basis": None, "reason": "worst_case"}
 
@@ -1575,7 +1574,7 @@ class _Folder:
         self.violations, self.invalid, self.ending_notes = [], [], []
         self.halts = []                      # (seq, market_id or None) of HALTs in force, as the core fold keeps them
         self.n_done = None                   # {"seq", "trigger_ns", "at_ns"}: where and when N was reached
-        self.cap_reached = None              # {"seq", "ns", "index"}: the PLACE record that took the last slot
+        self.cap_reached = None              # {"seq", "index"}: the PLACE record that took the last slot
         self.newly_final = False
         self.resolved_gaps = {}              # gap stop id -> seq of its resolution (Astra #6)
         self.at_seq = self.at_ns = None      # where in the journal the fold is: the event, or the trigger before it
@@ -1675,7 +1674,9 @@ class _Folder:
 
     def end_opens(self, keep, ns):
         """Every open but keep has ended (one placement open at a time, note §4): its records with no submit are
-        definitely unsent and its reservations with no record are interrupted."""
+        definitely unsent and its reservations with no record are interrupted. The journal establishes this where
+        another open reserves; live_open_id adds it only at the end of the fold, as the present's knowledge, so it
+        never supports a frontier note journaled earlier (Nuance R3-1)."""
         affected = set()
         for open_id in self.opens:
             if open_id != keep and open_id not in self.ended_opens:
@@ -1837,7 +1838,7 @@ class _Folder:
         self.lifetime_used += 1
         self.day_used[inner["utc_day"]] = self.day_used.get(inner["utc_day"], 0) + 1
         if self.lifetime_used == self.contract.lifetime_place_records and self.cap_reached is None:
-            self.cap_reached = {"seq": seq, "ns": self.clock, "index": rec.index}
+            self.cap_reached = {"seq": seq, "index": rec.index}
         self.equity += rec.value_p
         if self.next_trigger is None or rec.triggers[0] < self.next_trigger:
             self.next_trigger = rec.triggers[0]
@@ -2070,29 +2071,25 @@ class _Folder:
 
     def note_finalized(self, inner, event, seq, ns):
         """The durable finalization frontier (Astra #7): from here the record's execution record and class are
-        frozen as the journal before this note gives them, and later evidence is only logged. The note is verified
-        at the end of the fold, once every fact it rests on is established (an open that ended, an absent submit,
-        FAILED(transport_not_sent); Nuance R2-3). Row None is for the classes final without the execution table."""
+        frozen as the journal before this note gives them, and later evidence is only logged. The note is checked
+        at its own position, on the facts the journal has established by then (an open ended by another open's
+        reservation, a submit absent, FAILED(transport_not_sent), C, L, CLOSED, the time triggers crossed): a
+        record not final there, or final otherwise (class, final time, and row or None for an unsent or violating
+        class), sets the review stop finalized_mismatch at once, which ends the session it falls in and which no
+        later evidence removes. The derived record is kept: the note's class is never adopted and the final time
+        is never moved to the note (Nuance R2-3, R2-5, R3-1)."""
         rec = self.by_ref.get(event["customer_order_ref"])
         if rec is None or (inner["row"] is None and inner["class"] not in UNSENT_CLASSES):
             self.invalid_note(seq)
             return
         self.evaluate(rec, seq, self.clock)
-        rec.frontiers.append((seq, inner))
+        measurement = rec.measurement
+        row = None if rec.execution is None else rec.execution["row"]
+        row_ok = inner["row"] == row or (inner["row"] is None and measurement["class"] in UNSENT_CLASSES)
+        if not (measurement["final"] and measurement["final_at_ns"] <= self.clock and row_ok
+                and measurement["class"] == inner["class"] and measurement["final_at_ns"] == inner["final_at_ns"]):
+            self.imply_review("finalized_mismatch", seq)
         return {rec.index}
-
-    def verify_frontiers(self):
-        """A finalized note that the derived record does not match exactly (final, class, final time, and row or
-        None for an unsent or violating class) sets the review stop finalized_mismatch. The derived record is
-        kept: the note's class is never adopted and the final time is never moved to the note (R2-3, R2-5)."""
-        for rec in self.records:
-            measurement = rec.measurement
-            row = None if rec.execution is None else rec.execution["row"]
-            for seq, inner in rec.frontiers:
-                row_ok = inner["row"] == row or (inner["row"] is None and measurement["class"] in UNSENT_CLASSES)
-                if not (measurement["final"] and measurement["class"] == inner["class"] and row_ok
-                        and measurement["final_at_ns"] == inner["final_at_ns"]):
-                    self.imply_review("finalized_mismatch", seq)
 
     def note_violation(self, inner, event, seq, ns):
         rec = next((r for r in self.records if r.decision_seq == inner["source_seq"]), None)
@@ -2261,21 +2258,20 @@ class _Folder:
             self.violation_once("sent_after_session_end", seq, ns, rec)
         if rec.submit_ns >= self.contract.final_date_ns:
             self.violation_once("sent_after_final_date", seq, ns, rec)
-        ending = self.derived_ending_ns(rec)
-        if ending is not None and rec.submit_ns >= ending:
+        if self.submitted_after_derived_ending(rec):
             self.violation_once("sent_after_ending", seq, ns, rec)
 
-    def derived_ending_ns(self, rec):
-        """When placing ended for a send by this record, from what the fold derived (Nuance R2-2): N reached (at its
-        trigger time, or the journal's time at the event that completed it) or the lifetime cap (at the append of
-        the PLACE record that took the last slot, whose own send it does not end). The final date has its own
-        check; an ending note is judged at the submit."""
-        times = []
-        if self.n_done is not None:
-            times.append(self.n_done["at_ns"])
-        if self.cap_reached is not None and self.cap_reached["index"] != rec.index:
-            times.append(self.cap_reached["ns"])
-        return min(times) if times else None
+    def submitted_after_derived_ending(self, rec):
+        """Whether this record's submit came after an ending the fold derived (Nuance R2-2, R3-2), decided by the
+        submit's own position, never by the evidence that shows the send: N completed by an event, or the lifetime
+        cap (the PLACE record that took the last slot, whose own send it does not end), by journal order (the
+        submit's seq after the completing event's); N completed by a time trigger, by the submit's recorded_at at
+        or after the trigger's time. The final date has its own check; an ending note is judged at the submit."""
+        done, cap = self.n_done, self.cap_reached
+        if done is not None and (rec.submit_ns >= done["trigger_ns"] if done["trigger_ns"] is not None
+                                 else rec.submit_seq > done["seq"]):
+            return True
+        return cap is not None and cap["index"] != rec.index and rec.submit_seq > cap["seq"]
 
     # -- evaluation ----------------------------------------------------------------------------------------------
 
@@ -2592,7 +2588,6 @@ class _Folder:
             self.evaluate(rec, self.last_seq, now)
         self.pause_check(self.last_seq)
         self.n_check(self.last_seq, None)
-        self.verify_frontiers()
         return now
 
 

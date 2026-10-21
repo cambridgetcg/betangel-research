@@ -2,10 +2,10 @@
 
 Status: Proposed, together with [RS-19](betfair-pilot-policy.md) and its [engineering note](betfair-pilot-engineering.md). Yu set the money numbers on 2026-10-21; nothing is approved yet. The current rules stay in force until Yu's go-live consent (RS-19, consent 2).
 
-For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against betangel-research main 416702f. Astra reviewed the design with the earlier policy draft in four rounds; the findings (#1-#12, R2-1 to R2-9, R3-1 to R3-5) stay closed, and R4-1 and R4-2 are applied. The 2026-10-21 revision follows Yu's choice of principles over rules: RS-19 is now one page, its detail moved to the engineering note with the section numbers kept, and the drawdown episodes became the −£150 pause.
+For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against betangel-research main 416702f. Astra reviewed the design with the earlier policy draft in four rounds, and its findings (#1-#12, R2-1 to R2-9, R3-1 to R3-5, R4-1, R4-2) were closed there. The 2026-10-21 revision follows Yu's choice of principles over rules: RS-19 is now one page, its detail moved to the engineering note with the section numbers kept, and the drawdown episodes became the −£150 pause. Some revised parts touch areas those findings covered: the pause replaces the drawdown stops and their ACK rule (R3-4); the ledger's W rule now uses a checked current-order read; the three consents replace the old approval steps and sentences. Those parts await Astra's review.
 
 - "RS-19" means [docs/betfair-pilot-policy.md](betfair-pilot-policy.md); "the note" means [docs/betfair-pilot-engineering.md](betfair-pilot-engineering.md); "contract p1" means [research/pilots/p1-fav-t5.json](../research/pilots/p1-fav-t5.json).
-- The note is the single source for every shared rule. This plan points to its sections and keeps only its own content: the goal, why this rule, the statistics, the reason for each value, the tasks, the first-live steps and the timeline.
+- RS-19 holds the policy and Yu's money numbers; the note holds the engineering detail (RS-19 wins on any difference); contract p1 holds the frozen rule and analysis values. This plan points to them and keeps only its own content: the goal, why this rule, the statistics, the reason for each value, the tasks, the first-live steps and the timeline.
 - *Estimate* and *Inference* mark numbers that have not been measured.
 - File:line citations refer to the tree at main 416702f.
 
@@ -76,10 +76,10 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against b
   - the stake-weighted mean, Σ s_i·x_i / Σ s_i over the primary bets (s_i = final matched size), and the count of every class (attrition);
   - the decision-price series: NCLV at the decision price for every PLACE record in the same decision range, sent or not, filled or not, with its own exclusions (void, post-decision removal, missing BSP). It shows fill selection; it does not remove it from the primary;
   - surplus bets; raw CLV by price band and country; BSP calibration by band; profit after commission and the running total, as plain tables.
-- Afterwards: a PASS leads to one replication contract at the same flat stake, with no Kelly yet. Scaling up (a bigger stake, or staking in proportion to the bankroll) comes only after that, in a later pilot with its own consents (RS-19, Money). A FAIL ends this rule. Either way, the measured SD sets N for Pilot 2.
+- Afterwards: scaling up (a bigger stake, or staking in proportion to the bankroll) comes once a strategy has shown an edge, in a later pilot with its own consents (RS-19, Money). Nuance recommends that a PASS first leads to one replication contract at the same flat stake, with no Kelly yet, because one pass at α = 0.025 can still be luck; whether that is needed is Yu's decision. A FAIL ends this rule. Either way, the measured SD sets N for Pilot 2.
 
 ## Values and why
-Money numbers are Yu's (RS-19, Money): the first four rows are those and the £ caps that follow from them. Every other number was chosen by the principles; this is its reason. Changing one needs Astra's review and, if it weakens a protection, Yu's yes (RS-19, Where the rest lives).
+Money numbers are Yu's (RS-19, Money): the first four rows are those and the £ caps that follow from them, and only Yu changes them. Every other number was chosen by the principles before the freeze, with Astra's review; this is its reason. After the freeze, a value in contract p1 changes only through a replacement contract with the build and go-live consents again (note §6, §14); a config value only through a new registration receipt, Astra's acceptance and the go-live consent again (note §7); a value held only in the note with Astra's review, plus Yu's yes if it weakens a protection (RS-19, Where the rest lives).
 
 | Value | Number | Why |
 |---|---|---|
@@ -103,7 +103,7 @@ Money numbers are Yu's (RS-19, Money): the first four rows are those and the £ 
 | Wall/monotonic drift at the first byte | 2 s | more means a sleep or clock jump, which is a reason to skip |
 | Wait for a kill outcome before the handoff | 30 s | just under the kill's last re-sweep at T0 + 35 s; after it, Yu takes over |
 | No decision due before a settle point | 3 min | settling never crowds a decision |
-| N | 400 eligible bets | the smallest sample that still says something (power above), inside the £990 bound |
+| N | 400 eligible bets | about the most that fits inside 495 records (£990) at an 81% eligible yield; it detects only a large net edge (about 1.4% at an assumed SD of 0.10, power above), so a small real edge will most likely come out INCONCLUSIVE |
 | One-sided α | 0.025 | the usual 5% two-sided bar, applied to the side that matters |
 | Minimum clusters G | 15 | CR1 needs enough days; 25 a day gives at least 16 |
 | Fill rate; missing BSP; measurement_unresolved | at least 80%; at most 2%; at most 1% | below or above these, the bets we measured are not a fair picture of the rule, or our measurement is the story |

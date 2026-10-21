@@ -2,7 +2,7 @@
 
 Prepared **2026-10-10**. Order-path design and operating guide, not evidence of profitability. No credentials existed, no order was placed and no live call was made when this was written.
 
-**預設 paper；live 要全部條件齊、人喺終端機逐張打返，任何未知結果先對數、唔重發。**（RS-19 例外：登記咗嘅 pilot executor 嘅單唔使逐張打，由 Yu 每個 racing day 打嘅 `PILOT ARM` 行加 decision record 代替；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。）
+**預設 paper；live 要全部條件齊、人喺終端機逐張打返，任何未知結果先對數、唔重發。**（RS-19 例外：登記咗嘅 pilot executor 嘅單唔使逐張打，由 Yu 喺自己揀嘅 racing day 最多打一次嘅 `PILOT ARM` 行加 decision record 代替；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。）
 
 呢份文件講 `betangel_research/betfair` 點樣落單、取消、對數、人手 settle 同 kill；改單（replace）只限 paper。v1 嘅 live 範圍喺 2026-10-10 收窄咗（§1，[amendment A3](../.team-work/betfair-exchange-20261010/amendment-v1-live-scope.md)）。Setup、Keychain、state root 同讀資料喺 [接入指南](betfair-integration.md)；外部事實（F-id）喺 [fact register](betfair-facts.md)。威脅模型（擋到咩、擋唔到咩）見 [接入指南 §2](betfair-integration.md#2-threat-model)：一個以 Yu 嘅 macOS user 身份刻意作惡嘅 process 唔喺保護範圍內。
 
@@ -10,7 +10,7 @@ live 安全靠以下七樣嘢，冇一樣係靠 app key 類型：
 
 1. 預設 paper。live 要每個命令都明確寫 `--mode live`，**同時** config 要 arm 咗。
 2. 只有一個 choke point：`gateway.py`。每個 capability 綁定準確 request body bytes 嘅 sha256；transport 拒絕任何唔係讀取、又冇對應 digest 嘅 JSON-RPC call。
-3. 每張 live 單，Yu 都要喺 `/dev/tty` 打返一次。RS-19 pilot 單例外：Yu 每個 racing day 喺 `/dev/tty` 打一次 `PILOT ARM` 行，每張 pilot 單由 [engineering note](betfair-pilot-engineering.md) §4 嘅 decision record 代替逐張打（E1）；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。
+3. 每張 live 單，Yu 都要喺 `/dev/tty` 打返一次。RS-19 pilot 單例外：Yu 喺自己揀嘅 racing day 喺 `/dev/tty` 最多打一次 `PILOT ARM` 行，每張 pilot 單由 [engineering note](betfair-pilot-engineering.md) §4 嘅 decision record 代替逐張打（E1）；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。
 4. 每部 Mac 一個固定 state root，喺所有 worktree 以外；kill file 同 gateway lock 係全域；journal anchor 放 Keychain；每次 live 開始都同 exchange 對數。
 5. Journal 只可以加、唔可以改，有 hash chain；每條紀錄喺任何 byte 出網之前用 `F_FULLFSYNC` commit。
 6. 未知結果永遠唔當零。UNKNOWN、ABSENT_UNCONFIRMED（同 paper 嘅 provisional replace child）用全額不利 exposure 計，未解決之前唔准再落新單；永遠唔會自動重發。Live 嘅 exchange 證據只可以證明一張 bet 存在、提高已知 matched size，永遠唔會降低計住嘅 worst case；冇任何嘢會自動 settle 一張 live 單（§8）。
@@ -152,7 +152,7 @@ Exit 5 嘅情況同訊息（JSON 照印，之後先 exit）：
 | `pilot-capture`（RS-19，只讀） | session 入面由 executor 喺 placement open 之間跑；session 之後 Yu 打（[engineering note](betfair-pilot-engineering.md) §11）：唔使 arming 行、乜都唔送、唔郁單嘅狀態或者 exposure；有 session arm 住嗰陣 Yu 自己跑會被拒 |
 | `PILOT ACK` 行（RS-19） | Yu 打：A2、A11、A13；清一個 review stop，包括 RS-19 嘅 −£150 停頓（[engineering note](betfair-pilot-engineering.md) §10） |
 
-RS-19 嗰幾行（`pilot-*` 同 `PILOT …`）只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先存在；之前冇呢啲命令，表入面其他行照舊。
+RS-19 嗰幾行（`pilot-*` 同 `PILOT …`）嘅代碼喺 RS-19 嘅 build 同意之後先寫同 merge；Yu 畀 go-live 同意、再跑 `pilot-register` 之前冇 registration receipt，PA1–PA3 會拒絕所有 pilot 落單。表入面其他行照舊。
 
 Live `replace` 冇 arming：喺任何檢查之前已經拒絕（§1）。`status`、`journal`、`doctor`、`keychain-setup` 同 `init-config` 全部離線，唔使 arming。
 
@@ -237,7 +237,7 @@ flowchart LR
 - Banner 講真話（round 4）：`LIVE_BANNER`（`MODE=LIVE: this sends a real order to Betfair with real money.`）只用喺落單同 probe。`ACCEPT ABSENT` 嘅 banner 由一次唯讀 fold 砌：`MODE=LIVE: ACCEPT ABSENT sends no order. It stops counting order <ref> (market <M> sel <s> <side> @ <price> size <size>, now <state>, worst case £x.xx) as possibly live, and lets new orders through. Do this only after the Betfair website or Bet Angel shows no such bet.`（journal 冇呢張單就喺打句子之前拒絕，`accept_unknown_order`）。`RESUME LIVE`：`MODE=LIVE: RESUME sends no order. It clears the journal HALT as of journal seq <n> (halt reasons: …); after it, live place and live-probe can send orders again once every other arming condition passes.` Account-wide 嗰句：`MODE=LIVE: this cancels every unmatched bet on the Betfair account, Bet Angel's included; matched bets cannot be undone.` `RESET LOGIN FAILURES` 嘅 banner 講明 ban 唔會清、修壞行會開一個 20 分鐘、連 kill 都擋嘅 ban（§9 第 7 步）。
 - `place`、`live-probe`、`reconcile --accept` 同 `settle-market` 嘅句子喺 `open()` 攞 lock 之前打（`OrderGateway.preconfirm`，§3）。Account-wide 嗰句係 spec 要求喺 kill 開咗之後先打；kill 唔攞 lock，所以呢個提示唔會擋住任何人，`answer_timeout_s` 照樣做後備。
 
-**佢證明到咩、證明唔到咩。** 佢令 cron、CI、agent、冇 tty 嘅 script 落唔到 live 單，亦令每張單都要人睇過內容先出。佢唔係密碼學證明：一個以 Yu 身份運行、刻意作惡嘅 process 可以假扮 pty。佢只係拖慢自動化，唔係認證。RS-19 pilot 單例外：Yu 成個 session 喺終端機前面睇住，但唔會逐張睇；每張單嘅內容由 [engineering note](betfair-pilot-engineering.md) §4 嘅 decision record 定。打行仍然只係摩擦，所以禁止 agent 同 script 起 `pilot-run` 或者打 pilot 句子嘅係 [RS-19](betfair-pilot-policy.md) 本身（[engineering note](betfair-pilot-engineering.md) §3）；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。
+**佢證明到咩、證明唔到咩。** 佢令 cron、CI、agent、冇 tty 嘅 script 落唔到 live 單，亦令每張單都要人睇過內容先出。佢唔係密碼學證明：一個以 Yu 身份運行、刻意作惡嘅 process 可以假扮 pty。佢只係拖慢自動化，唔係認證。RS-19 pilot 單例外：Yu 成個 session 喺終端機前面睇住，但唔會逐張睇；每張單嘅內容由 [engineering note](betfair-pilot-engineering.md) §4 嘅 decision record 定。打行仍然只係摩擦，所以禁止 agent 同 script 起 `pilot-run` 或者打 pilot 句子嘅係 [RS-19](betfair-pilot-policy.md) 本身（[engineering note](betfair-pilot-engineering.md) §3），由 RS-19 嘅 build 同意起生效。唔逐張睇嘅例外只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。
 
 ## 5. Lifecycle state machine
 

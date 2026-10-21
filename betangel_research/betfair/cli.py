@@ -1439,16 +1439,27 @@ def _unresolved_line(item, flag=""):
 def _settle_during_pilot_session(args, ctx):
     """P1-08 §4.13, before the gateway: only when the live journal holds a pilot session_start, True when
     pilot_run.pilot_session_live says a second process must not settle (no ownership here, ticket None). A journal
-    that exists but cannot be read is True too (P108-C4, OWN-1): whether it holds a session_start is then unknown, and
-    the under-lock check cannot recover the ownership term skipped here."""
-    from . import pilot_gate, pilot_run
+    that exists but cannot be read (P108-C4, OWN-1): True when the config names orders.pilot, or when the ticket=None
+    owner-lock term holds (pilot-run may still own the state); else False, so a non-pilot settle meets the gateway's
+    own journal error exactly as before P1-08."""
+    from . import admission, pilot_gate, pilot_run
+    from .config import pilot_enabled
+    from .errors import AdmissionRefused
     paths = _paths(args, ctx)
     path = paths.journal_path("live")
     if not path.exists():
         return False
     read = pilot_run.pilot_events_after(path, 0)
     if not read["readable"]:
-        return True
+        if pilot_enabled(_config(args, paths)):
+            return True
+        if admission.owner_lock_state(paths, clock=ctx.clock) == "free":
+            return False
+        try:
+            current = admission.admission_status(paths)["admission"]
+        except AdmissionRefused:
+            return True
+        return current is not None and current["owner"].startswith("pilot-session:")
     if pilot_gate.latest_note(read["events"], "session_start") is None:
         return False
     config = _config(args, paths)

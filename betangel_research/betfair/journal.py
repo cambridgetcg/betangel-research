@@ -470,12 +470,15 @@ class OrderJournal:
             raise JournalError("fold_now_ns_must_be_integer")
         db = self._db
         try:
-            db.execute("BEGIN")                       # one read snapshot for the head and the catch-up
+            if db.in_transaction:                     # left by an interrupted call: a read never extends it
+                db.execute("ROLLBACK")
             try:
+                db.execute("BEGIN")                   # one read snapshot for the head and the catch-up
                 head = db.execute("SELECT seq, event_sha256 FROM events ORDER BY seq DESC LIMIT 1").fetchone()
                 folder = self._committed_folder(tuple(head) if head else None)
             finally:
-                db.execute("COMMIT")
+                if db.in_transaction:
+                    db.execute("COMMIT")
         except (JournalError, sqlite3.Error):
             self._fold_cache = None
             return fold_events(list(self.events()), mode=self.mode, now_ns=now_ns,
@@ -530,6 +533,8 @@ class OrderJournal:
         the write lock is taken) is before it, and the wall clock read again once the lock is held and again just
         before COMMIT is too. The commit's own flush can still finish after before_ns; the pilot fold judges the
         event by its recorded_at, and the first-byte gate re-checks a submit's time. Without it nothing changes.
+        A transaction an interrupted call left open on this connection is rolled back first (nothing it held was
+        committed), and BEGIN IMMEDIATE sits inside the block whose handlers roll back only an open transaction.
         """
         if before_ns is not None and type(before_ns) is not int:
             raise JournalError("before_ns_invalid")
@@ -556,9 +561,11 @@ class OrderJournal:
         recorded_at = self.clock.utc_now()
         monotonic_ns = self.clock.monotonic_ns()
         db = self._db
-        db.execute("BEGIN IMMEDIATE")
+        if db.in_transaction:
+            db.execute("ROLLBACK")
         candidate = None
         try:
+            db.execute("BEGIN IMMEDIATE")
             head = db.execute("SELECT seq, event_sha256 FROM events ORDER BY seq DESC LIMIT 1").fetchone()
             if expected is not None and (tuple(head) if head else (0, GENESIS_PREV)) != expected:
                 raise JournalError("journal_head_moved")
@@ -591,10 +598,12 @@ class OrderJournal:
                 raise JournalError("journal_append_too_late")      # the fold above can take time: rolled back
             db.execute("COMMIT")
         except sqlite3.IntegrityError:
-            db.execute("ROLLBACK")
+            if db.in_transaction:
+                db.execute("ROLLBACK")
             raise JournalError("customer_order_ref_reused" if kind == "intent" else "journal_integrity_error") from None
         except BaseException:
-            db.execute("ROLLBACK")
+            if db.in_transaction:
+                db.execute("ROLLBACK")
             raise
         if candidate is not None:
             self._fold_cache = (seq, event["event_sha256"], candidate)

@@ -982,7 +982,7 @@ def _arm_under_ownership(env, journal, view, stop, ticket, *, session_id, day, u
         elif armed_session_check(paths):
             out.append(f"an armed-session file not written by this ARM is left at {armed_session_path(paths)}")
         result = admission.release_own(ticket, paths, config=config, clock=clock)
-        out += release_lines(result)
+        out += release_lines(result, env.paused_flag)
         out.append(f"owner {ticket.owner}, generation {generation}")
         raise Refused(code, out)
 
@@ -1551,6 +1551,10 @@ class Run:
                 return "end"
             return self.after_place(gateway, ctx, market_id, result)
         except BaseException as exc:                         # §3.7: every placement action
+            # Plain stores first, no call (a Python signal handler runs only at a call or function entry): the
+            # exception is kept for finish_owed, and §3.7 step 0's deferral is on before the handler's own entry.
+            ctx["exc"] = exc
+            self.env.ctx.signals.deferring = True
             self.after_exception(exc, ctx, in_cancel=ctx["in_cancel"])
             raise _HandedOff(exc) from None
 
@@ -1655,10 +1659,16 @@ class Run:
                     report = None
                 if report is not None and ctx.get("open_id") is None:
                     ctx["open_id"] = report.get("open_id") or gateway.open_id
+            exc = ctx.get("exc")
             if result is not None and result.get("pilot", {}).get("latch") is None:
                 self.write_owed(ctx, result)
             elif report is not None:
                 self.not_armed_at_open(report, ctx)
+            elif (result is None and exc is not None and not ctx.get("exc_done")
+                  and not isinstance(exc, self.env.signal_stop)):
+                # A placement action raised and the signal landed before §3.7's handler began: the same
+                # classification now (no submit: the login family, else executor_exception; a submit: its handoff).
+                self.after_exception(exc, ctx, in_cancel=ctx.get("in_cancel", False))
         except Exception:
             self.mark_abnormal("owed_write_failed")
         finally:
@@ -1849,6 +1859,7 @@ class Run:
         family, and at most one session stop by the state read. No Betfair read, no cancel, no release; re-raised."""
         signal_stop = self.env.signal_stop
         self.deferring(True)
+        ctx["exc_done"] = True                               # finish_owed never runs this handler a second time
         read = self.read(0)
         submit = None
         if read["readable"]:

@@ -2283,6 +2283,9 @@ class PerformanceTests(PilotCase):
 
 
 class LegacyPinTests(unittest.TestCase):
+    """Non-pilot live behaviour byte for byte: a manual live place under a config with no orders.pilot journals the
+    same events (every column and payload but the random event ids and hashes), the same decision id and the same
+    request params as main 31ffc4c did (values computed on an export of that commit with deterministic refs)."""
 
     # NP-3 (P1-08 §1): the digests of this sequence computed on a 2d3b092 export (no P1-08 code at all).
     NON_PILOT_DIGESTS = {"events": "1fb1ba1188b37179293c24ea1c40c539e1820e348c39dc8aed36b4bfc63b7a9b",
@@ -2344,9 +2347,6 @@ class LegacyPinTests(unittest.TestCase):
                  "orders": canonical_sha256([(r["method"], r["params"]) for r in env.router.order_requests]),
                  "outputs": canonical_sha256(outputs)}
         self.assertEqual(found, self.NON_PILOT_DIGESTS)
-    """Non-pilot live behaviour byte for byte: a manual live place under a config with no orders.pilot journals the
-    same events (every column and payload but the random event ids and hashes), the same decision id and the same
-    request params as main 31ffc4c did (values computed on an export of that commit with deterministic refs)."""
 
     MAIN = {"config_sha256": "08ab18b78cb15a9612f1de0d0962505ccb5458989b20b9d2904186f2d2dad921",
             "token": "live-08ab18b78cb1-20200101",

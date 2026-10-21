@@ -379,12 +379,15 @@ class RiskGuard:
             failures.append(_failure("daily_loss", "daily_loss_budget_exceeded"))
         return {"market_pence": market, "total_pence": total, "daily_used_pence": realized_loss + total}
 
-    def _funds_rules(self, failures, state, funds, now_ns, new_orders, before_total, funds_checked_at=None):
+    def _funds_rules(self, failures, state, funds, now_ns, new_orders, before_total, funds_checked_at=None,
+                     floor_ns=None):
         """R11 and R12 (live). Returns detail fields; the R12 result is always reported.
 
         Funds are never assumed fresh: funds passed in must say when they were fetched
         (funds_checked_at, or a "checked_at" key), and otherwise the journal's latest funds_check
-        (state funds + funds_checked_at) is used. Either way the age must be within funds_max_age_s.
+        (state funds + funds_checked_at) is used. Either way the age must be within funds_max_age_s at
+        now_ns, and not negative at now_ns or at floor_ns (a pilot decision's raw reading, when now_ns is
+        its later retained time).
         """
         detail = {"required_stake_pence": None, "available_pence": None, "external_exposure_pence": None,
                   "halt": False, "halt_reason": None}
@@ -405,7 +408,9 @@ class RiskGuard:
             failures.append(_failure("funds", "funds_age_unknown_refresh_required"))
         else:
             try:
-                age_ok = 0 <= now_ns - parse_utc_ns(checked) <= int(caps["funds_max_age_s"] * _NS_PER_S)
+                checked_ns = parse_utc_ns(checked)
+                age_ok = (0 <= now_ns - checked_ns <= int(caps["funds_max_age_s"] * _NS_PER_S)
+                          and (floor_ns is None or floor_ns >= checked_ns))
             except (TypeError, ValueError):
                 age_ok = False
             if not age_ok:
@@ -462,7 +467,7 @@ class RiskGuard:
 
     def evaluate_place(self, market_id, instructions, *, book, state, arming, funds=None, now_ns, probe=False,
                        now_monotonic_ns=None, kill_engaged=None, customer_ref=None, customer_order_refs=None,
-                       funds_checked_at=None, source=None, pilot_binding=None):
+                       funds_checked_at=None, source=None, pilot_binding=None, raw_now_ns=None):
         """R1-R12 and V0-V14/V9b for one place request -> the decision.
 
         source and pilot_binding (P1-06): under a pilot-enabled config (orders.pilot) the decision binds the
@@ -471,9 +476,18 @@ class RiskGuard:
         for source "pilot" only, is {"record_sha256", "contract_sha256"}: the PLACE record's digest and the
         contract's, bound into decision_id and carried as the decision's pilot_record_sha256 (note §4,
         "Binding"); a malformed one is a programming error (ValueError). Without either, decisions and their
-        decision_id are exactly as before."""
+        decision_id are exactly as before.
+
+        raw_now_ns (an RS-19 pilot decision, P106-R3-1 as corrected in round 4): now_ns is then the open's retained
+        time and raw_now_ns the raw wall reading taken for this decision. Staleness (V9b, V10's wall age, R11's
+        funds age) is judged at now_ns, an upper bound; the R6/R7 windows at raw_now_ns, so a transient forward
+        reading cannot move a window's start; and a book or funds read after either reading is a negative age
+        (V10 book_age_negative, R11). Without it, everything is judged at now_ns, as before."""
         if type(now_ns) is not int:
             raise ValueError("now_ns must be an integer")
+        if raw_now_ns is not None and type(raw_now_ns) is not int:
+            raise ValueError("raw_now_ns must be an integer")
+        window_ns = now_ns if raw_now_ns is None else raw_now_ns
         if (source == "pilot") != (pilot_binding is not None):
             raise ValueError("pilot_binding is required for source pilot and only for it")
         if pilot_binding is not None and (
@@ -484,6 +498,8 @@ class RiskGuard:
                   "arming": arming, "funds": funds, "now_ns": now_ns, "probe": probe,
                   "now_monotonic_ns": now_monotonic_ns, "kill_engaged": kill_engaged, "customer_ref": customer_ref,
                   "customer_order_refs": customer_order_refs, "funds_checked_at": funds_checked_at}
+        if raw_now_ns is not None:
+            inputs["raw_now_ns"] = raw_now_ns
         extra = {}
         if pilot_enabled(self.config):
             extra["customer_strategy_ref"] = inputs["customer_strategy_ref"] = order_strategy_ref(self.config, source)
@@ -500,7 +516,7 @@ class RiskGuard:
         for item in validate_place(market_id, instructions, book=book, open_orders=list(state["orders"].values()),
                                    config=self.config, mode=self.mode, now_ns=now_ns, probe=probe,
                                    now_monotonic_ns=now_monotonic_ns, customer_ref=customer_ref,
-                                   customer_order_refs=customer_order_refs):
+                                   customer_order_refs=customer_order_refs, floor_ns=raw_now_ns):
             failures.append(_failure("validation:" + item["rule"], item["reason"], item["instruction"]))
         self._refs_required(failures, customer_ref, customer_order_refs, action="place")
         listed = instructions if isinstance(instructions, list) else []
@@ -510,13 +526,13 @@ class RiskGuard:
         new = [(i, instruction) for i, instruction in enumerate(listed) if _usable(instruction)]
         new_orders = [(i, _pseudo_order(market_id, ins, f"new-{i}")) for i, ins in new]
         self._r5(failures, new_orders)
-        rates = self._r6_r7(failures, state, now_ns, len(listed))
+        rates = self._r6_r7(failures, state, window_ns, len(listed))
         # R12's explained exposure is the credited (smaller) figure, so the unexplained remainder it
         # leaves is at least as large as without credit: R12 is never loosened by C1 (amendment A3, A11).
         before = self._exposure(state, market_id, book, hedge_credit=True)
         worst = self._exposure_rules(failures, state, market_id, book, [([o for _, o in new_orders], ())])
         detail = self._funds_rules(failures, state, funds, now_ns, new_orders, before["total"],
-                                   funds_checked_at=funds_checked_at)
+                                   funds_checked_at=funds_checked_at, floor_ns=raw_now_ns)
         detail["rates"] = rates
         version = book.get("version") if isinstance(book, dict) else None
         return self._decide("place", market_id, failures, inputs=inputs, worst_case=worst, now_ns=now_ns,
@@ -525,18 +541,22 @@ class RiskGuard:
                             customer_order_refs=list(customer_order_refs) if customer_order_refs is not None else None,
                             probe=bool(probe), extra=extra)
 
-    def evaluate_pilot_reservation(self, market_id, *, state, now_ns, size_p, kill_engaged=None):
+    def evaluate_pilot_reservation(self, market_id, *, state, now_ns, size_p, kill_engaged=None, raw_now_ns=None):
         """P1-06 critique 1: the rules the journal already predicts, checked before a pilot reservation takes a
         market (and, through its PLACE record, a lifetime slot): R1 (halted, KILL, clock regression), R3 (an
         unresolved order anywhere), R6 (the minute, hour and day windows), R8 and R9 (market and total worst case)
         and R10 (the daily loss budget), for one more size_p BACK counted at its full worst case. The guard's own
-        rule functions; [] or the failures in RULE_ORDER. evaluate_place still runs every rule at the decision."""
+        rule functions; [] or the failures in RULE_ORDER. evaluate_place still runs every rule at the decision.
+        raw_now_ns: the raw wall reading the R6 windows are judged at, when now_ns is the open's retained time
+        (as evaluate_place)."""
         if type(now_ns) is not int or type(size_p) is not int or size_p <= 0:
             raise ValueError("now_ns and size_p must be integers")
+        if raw_now_ns is not None and type(raw_now_ns) is not int:
+            raise ValueError("raw_now_ns must be an integer")
         failures = []
         self._r1(failures, state, kill_engaged)
         self._r3(failures, state, market_id)
-        self._r6_r7(failures, state, now_ns, 1)
+        self._r6_r7(failures, state, now_ns if raw_now_ns is None else raw_now_ns, 1)
         # A BACK loses its whole stake in every outcome but its own, whatever its price.
         back = {"selection_id": 1, "handicap": 0, "side": "BACK", "price_h": 101, "size_p": size_p,
                 "persistence_type": "LAPSE"}

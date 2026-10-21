@@ -134,6 +134,15 @@ class LoginBudgetExceeded(AuthError):
         super().__init__(status, error_code=error_code)
 
 
+class ReadStopped(BetfairError):
+    """A pilot read guard refused a read attempt before any byte (P1-08, P108-C3): reason "stop" (Yu's flag), "kill" (a
+    KILL file or a kill since the session started) or "skipped_kill" (pilot-capture's own kill rule)."""
+
+    def __init__(self, reason):
+        super().__init__(safe_code(reason))
+        self.reason = safe_code(reason)
+
+
 class LoginStopped(AuthError):
     """The session's login guard refused a login before any attempt was reserved (a recorder that must stop or
     whose end instant passed); nothing was sent and the login ledger is unchanged."""

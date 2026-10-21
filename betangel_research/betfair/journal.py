@@ -455,8 +455,32 @@ class OrderJournal:
         return {} if row is None else {"seq": row[0], "last_sha256": row[1]}
 
     def fold(self, *, now_ns, submitting_as_unknown=True):
-        return fold_events(list(self.events()), mode=self.mode, now_ns=now_ns,
-                           submitting_as_unknown=submitting_as_unknown)
+        """fold_events of every committed event: the same state, caught up from this connection's committed-fold
+        cache (the incremental folder append keeps) rather than refolded from event 1 (P1-08 timing; the pilot send
+        window reads it three times). JournalFolder.state is pure in the folder and now_ns, and the folder at a head
+        is the same whether built at once or event by event, so the state is identical by construction; a test pins it
+        across appends from another connection, rollbacks and refused appends.
+
+        The head and the catch-up rows are read under one read snapshot. The cache is keyed by (seq, event_sha256) and
+        re-checked against the file (a mismatch rebuilds from event 1). Neither this nor the full fold verifies the
+        hash chain (verify() does), so the cache changes nothing there. Any failure of the cached path (an unfoldable
+        event, an unreadable row) falls back to the full fold, so a broken journal raises exactly what it raised
+        before."""
+        if type(now_ns) is not int:
+            raise JournalError("fold_now_ns_must_be_integer")
+        db = self._db
+        try:
+            db.execute("BEGIN")                       # one read snapshot for the head and the catch-up
+            try:
+                head = db.execute("SELECT seq, event_sha256 FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+                folder = self._committed_folder(tuple(head) if head else None)
+            finally:
+                db.execute("COMMIT")
+        except (JournalError, sqlite3.Error):
+            self._fold_cache = None
+            return fold_events(list(self.events()), mode=self.mode, now_ns=now_ns,
+                               submitting_as_unknown=submitting_as_unknown)
+        return folder.state(now_ns=now_ns, submitting_as_unknown=submitting_as_unknown)
 
     # --- writes -----------------------------------------------------------------------------
 

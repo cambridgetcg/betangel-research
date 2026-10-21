@@ -2242,10 +2242,14 @@ class ManualOrderTests(PilotCase):
 class PerformanceTests(PilotCase):
     """Critique 3: with a representative journal (494 PLACE records and at least 20,000 events) the 495th placement's
     send book is still fresh at its first byte, in real elapsed time (time.perf_counter), not only on the FakeClock:
-    the pilot fold runs before the funds read, never inside the book-age window."""
+    the pilot fold runs before the funds read, never inside the book-age window. The clock moves with real time
+    during the placement (RealTimeClock), so the risk decision and the first-byte gate judge the real duration, and
+    the window ends when placeOrders reaches the router: after the gate and the transport's final send-by check
+    (P1-08 timing; before, the before_gate hook ended it ahead of the gate's head read)."""
 
     def test_495th_record_inside_the_book_age_window(self):
-        env = self.build(start="2026-12-14T08:00:00.000000Z", arm=False)
+        with patch.object(support, "FakeClock", sp.RealTimeClock):
+            env = self.build(start="2026-12-14T08:00:00.000000Z", arm=False)
         events, today = sp.build_history(env, place_records=494, skips_per_place=1, min_events=20_000)
         self.assertGreaterEqual(events, 20_000)
         off = today + 19 * 3600 * S
@@ -2261,7 +2265,8 @@ class PerformanceTests(PilotCase):
             return snapshot(*args, **kw)
 
         self.open()
-        env.transport.before_gate = lambda: marks.setdefault("first_byte", time.perf_counter())
+        sp.first_byte_marks(env, marks)
+        env.clock.start_real()
         started = time.perf_counter()
         with patch.object(env.read, "market_snapshot", side_effect=observed):
             result = self.place(market)
@@ -2278,6 +2283,67 @@ class PerformanceTests(PilotCase):
 
 
 class LegacyPinTests(unittest.TestCase):
+
+    # NP-3 (P1-08 §1): the digests of this sequence computed on a 2d3b092 export (no P1-08 code at all).
+    NON_PILOT_DIGESTS = {"events": "1fb1ba1188b37179293c24ea1c40c539e1820e348c39dc8aed36b4bfc63b7a9b",
+                         "orders": "1bde15a23e9d778e6937f7b6f8f48a92678069b4380a9cfaf3c0158e10b80697",
+                         "outputs": "8829ebadde085d33fa02cdeb26b1a1be77df4d486c8dbd638c7858440a107ae7"}
+
+    def test_non_pilot_commands_unchanged_from_base(self):
+        """§1's invariance test (NP-3): on a config without orders.pilot, place, cancel, live-probe, reconcile, place,
+        settle-market twice (refused while the market is open, then settled once it is CLOSED and our bets are no
+        longer current), kill, and resume after the KILL file is removed, through cli.main, give the same journal
+        events (without event ids, chain hashes and monotonic stamps), the same order requests and the same
+        (exit, stdout, stderr) per command as at 2d3b092. Refs, customer refs and intent ids are made deterministic."""
+        import io as io_module
+        import itertools
+        from betangel_research.betfair import cli as cli_module
+        from betangel_research.betfair.journal import OrderJournal as Journal
+        env = gw.build_live_gateway(self)
+        env.journal.close()
+        self.assertNotIn("pilot", env.config["orders"])
+        counter = itertools.count(1)
+        deps = {"keychain_runner": env.runner, "http_transport": env.transport, "clock": env.clock,
+                "confirmer": env.confirmer}
+        outputs = []
+
+        def run(*argv):
+            out, err = io_module.StringIO(), io_module.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli_module.main(list(argv), deps=deps)
+            root = str(env.paths.profile_dir.parent.parent)
+            outputs.append([code, out.getvalue().replace(root, "<root>"), err.getvalue().replace(root, "<root>")])
+            return code, out.getvalue()
+
+        place = ["place", "--market", "1.1", "--selection", str(gw.SELECTION), "--side", "BACK", "--price", "3.50",
+                 "--size", "2.00", "--mode", "live", "--confirm-live", env.token]
+        with patch.object(gateway_module, "make_customer_order_ref", lambda now: f"ref-{next(counter):04d}"), \
+                patch.object(gateway_module, "make_customer_ref", lambda now: f"cref-{next(counter):04d}"), \
+                patch.object(gateway_module, "_intent_id", lambda: f"int-{next(counter):04d}"):
+            bet = json.loads(run(*place)[1])["orders"][0]["bet_id"]
+            run("cancel", "--market", "1.1", "--bet-id", bet, "--mode", "live", "--confirm-live", env.token)
+            run("live-probe", "--market", "1.1", "--selection", str(gw.SELECTION), "--confirm-live", env.token)
+            run("reconcile", "--mode", "live", "--confirm-live", env.token)
+            bet2 = json.loads(run(*place)[1])["orders"][0]["bet_id"]
+            run("settle-market", "--market", "1.1", "--confirm-live", env.token)
+            run("cancel", "--market", "1.1", "--bet-id", bet2, "--mode", "live", "--confirm-live", env.token)
+            env.exchange.market_status = "CLOSED"
+            env.exchange.hide_cancelled_unmatched = True
+            run("settle-market", "--market", "1.1", "--confirm-live", env.token)
+            run("kill", "--reason", "invariance test")
+            env.paths.kill_file.unlink()
+            run("resume", "--mode", "live", "--confirm-live", env.token)
+        self.assertEqual([o[0] for o in outputs], [0, 0, 0, 0, 0, 2, 0, 0, 0, 0])
+        journal = Journal(env.paths.journal_path("live"), mode="live", clock=env.clock)
+        try:
+            events = [{k: v for k, v in e.items() if k not in ("event_id", "prev_sha256", "event_sha256",
+                                                               "monotonic_ns")} for e in journal.events()]
+        finally:
+            journal.close()
+        found = {"events": canonical_sha256(events),
+                 "orders": canonical_sha256([(r["method"], r["params"]) for r in env.router.order_requests]),
+                 "outputs": canonical_sha256(outputs)}
+        self.assertEqual(found, self.NON_PILOT_DIGESTS)
     """Non-pilot live behaviour byte for byte: a manual live place under a config with no orders.pilot journals the
     same events (every column and payload but the random event ids and hashes), the same decision id and the same
     request params as main 31ffc4c did (values computed on an export of that commit with deterministic refs)."""

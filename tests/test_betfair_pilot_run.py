@@ -2009,6 +2009,7 @@ class SettleTests(RunCase):
                                                                              "status": "CLOSED"}}}] if closed else []
         offered = []
         run = SimpleNamespace(fold=lambda: projection, read=lambda since=0: {"events": events}, offered=set(),
+                              settle_orders_clear=pilot_run.Run.settle_orders_clear,
                               settle_allowed=lambda at: open_at - now_ns > 330 * S,
                               settle_one=lambda market, at: offered.append(market))
         pilot_run.Run.settle_points(run, open_at)
@@ -2494,19 +2495,48 @@ class BoundaryTests(unittest.TestCase):
             self.assertTrue(HELP[name].startswith("Live only"), name)
 
     def test_non_pilot_wiring_is_unchanged(self):
-        """Without P1-08's options, _gateway hands _live_gateway today's values: no clock, credentials or pilot,
-        in_session_settle False (the settle-market, place, cancel and resume paths call it so)."""
+        """Without P1-08's options, _gateway hands _live_gateway today's values: no clock, credentials, pilot or read
+        guard, in_session_settle False. place, cancel, settle-market, kill, live-probe and reconcile call it without
+        any of them (resume does not call _gateway). The behaviour itself is pinned against 2d3b092 by
+        test_betfair_pilot_gateway.LegacyPinTests.test_non_pilot_commands_unchanged_from_base (NP-3)."""
         import inspect
         signature = inspect.signature(cli._gateway)
         for name, default in (("clock", None), ("credentials", None), ("pilot", None), ("in_session_settle", False),
-                              ("stop_requested", None)):
+                              ("stop_requested", None), ("read_guard", None)):
             self.assertEqual(signature.parameters[name].default, default)
         source = inspect.getsource(cli)
-        for command in ("cmd_place", "cmd_cancel", "cmd_settle_market", "cmd_kill"):
+        for command in ("cmd_place", "cmd_cancel", "cmd_settle_market", "cmd_kill", "cmd_live_probe",
+                        "cmd_reconcile"):
             body = inspect.getsource(getattr(cli, command))
-            for word in ("pilot=", "in_session_settle=", "credentials=", "stop_requested="):
+            for word in ("pilot=", "in_session_settle=", "credentials=", "stop_requested=", "read_guard="):
                 self.assertNotIn(word, body, command)
         self.assertIn("def _pilot_factory", source)
+
+    def test_in_session_settle_is_set_only_by_the_settle_point(self):
+        """§4.13: in_session_settle=True appears once in betangel_research/, at pilot_run's settle-point factory
+        call; in cli.py the keyword appears only inside _pilot_factory, _gateway and _live_gateway."""
+        import ast
+        package = sp.REPO / "betangel_research"
+        trues, cli_sites = [], []
+        for path in sorted(package.rglob("*.py")):
+            tree = ast.parse(path.read_text())
+            parents = {}
+            for node in ast.walk(tree):
+                for child in ast.iter_child_nodes(node):
+                    parents[child] = node
+            for node in ast.walk(tree):
+                if isinstance(node, ast.keyword) and node.arg == "in_session_settle":
+                    owner = parents.get(node)
+                    while owner is not None and not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        owner = parents.get(owner)
+                    name = owner.name if owner is not None else None
+                    if isinstance(node.value, ast.Constant) and node.value.value is True:
+                        trues.append((path.name, name))
+                    if path.name == "cli.py":
+                        cli_sites.append(name)
+        self.assertEqual(trues, [("pilot_run.py", "settle_one")])
+        self.assertTrue(cli_sites)
+        self.assertLessEqual(set(cli_sites), {"_pilot_factory", "factory", "_gateway", "_live_gateway"})
 
 
 if __name__ == "__main__":

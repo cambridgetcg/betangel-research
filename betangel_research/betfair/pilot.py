@@ -997,8 +997,10 @@ def _scope_table():
     rows(("login_failed", "unknown_unresolved", "remainder_cancel_failed", "remainder_left_executable",
           "session_end", "session_abandoned"), "end", "session")
     rows(("not_armed_before_lock",), "end", "review")
-    # The settle step only (note :117): skip that offer, nothing journaled; settle_market_* codes by prefix.
-    rows(("settle_point_closed", "operator_confirmation_missing"), "skip_offer", "none")
+    # The settle step only (note :117): skip that offer, nothing journaled; settle_market_* codes by prefix. The
+    # typed SETTLE line's mismatch and timeout skip too (§4.6; SCOPE-3): no other caller classifies them.
+    rows(("settle_point_closed", "operator_confirmation_missing", "operator_echo_mismatch", "operator_echo_timeout"),
+         "skip_offer", "none")
     for scope in table.values():
         if scope.action not in SCOPE_ACTIONS or scope.durable not in SCOPE_DURABLES:
             raise RuntimeError("scope table names an unknown action or durable")
@@ -1029,17 +1031,6 @@ def scope_of(code, reason=None):
         return Scope("skip_offer", "none", code)
     found = SCOPE_TABLE.get(code) if isinstance(code, str) else None
     return found if found is not None else Scope("end", "review", code if isinstance(code, str) else "refused")
-
-
-def decision_skip_scope(code):
-    """The Scope of a journaled SKIP decision (P1-08 §3.1): SKIP(pause) ends placing with the classifier's review and
-    session stops, SKIP(cap) at the day limit with its session stop; any other SKIP ends that market only (the decision
-    record is the durable fact)."""
-    if code == "pause":
-        return Scope("end", "review", "pause")
-    if code == "cap":
-        return Scope("end", "session", "cap")
-    return Scope("skip_market", "market", code)
 
 
 def strongest_scope(durables):

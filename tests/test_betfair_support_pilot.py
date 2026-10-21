@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import sqlite3
 import subprocess
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -352,6 +353,44 @@ def assert_no_violations(test, env):
     state = fold(env)
     test.assertEqual(state.violations, (), state.violations)
     return state
+
+
+class RealTimeClock(support.FakeClock):
+    """A FakeClock that, once started (start_real()), also moves with real elapsed time (time.perf_counter_ns) on
+    both its wall and monotonic readings, so the first-byte gate and the risk decision judge a placement's real
+    duration; sleep and advance still add their fake seconds on top."""
+
+    real_since = None
+
+    def start_real(self):
+        self.real_since = time.perf_counter_ns()
+
+    def _real(self):
+        return 0 if self.real_since is None else time.perf_counter_ns() - self.real_since
+
+    def time_ns(self):
+        return super().time_ns() + self._real()
+
+    def monotonic_ns(self):
+        return super().monotonic_ns() + self._real()
+
+    def utc_now(self):
+        return pilot.utc_text_from_ns(self.time_ns())
+
+
+def first_byte_marks(env, marks):
+    """Wrap env.transport's router: marks["first_byte"] is set (time.perf_counter) when placeOrders reaches it, that
+    is after the first-byte gate and the transport's final send-by check, when the first request byte goes out."""
+    original = env.transport.router
+
+    def router(record):
+        url = record["url"]
+        if not url.endswith(("/api/login", "/api/certlogin", "/api/logout", "/api/keepAlive")) \
+                and json.loads(record["body"])["method"].endswith("placeOrders"):
+            marks.setdefault("first_byte", time.perf_counter())
+        return original(record)
+
+    env.transport.router = router
 
 
 def other_writer(env, clock=None):

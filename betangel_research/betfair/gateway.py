@@ -1616,21 +1616,32 @@ class OrderGateway:
         """Every (rule, reason) through the one scope table (P1-08 §3.1, mixed causes; P108-R2-2): one session stop
         per session code, one review occurrence for the first review code (a carried stop after a carrier, else a
         refusal note), nothing for market or none; -> the strongest scope found (review, session, market, none). The
-        pre-reservation step and the risk decision share it, so they cannot drift."""
-        found, sessions, noted = [], [], False
+        pre-reservation step and the risk decision share it, so they cannot drift.
+
+        Every scope is chosen before anything is appended. With no durable carrier before it (the pre-reservation
+        step, carrier_seq None) the review occurrence, a refusal note that is its own carrier, is journaled before
+        any session stop, so a death after the first append never leaves a session (KILL) stop alone (P108-C2).
+        After a carrier the review is already durable, and the appends keep the failure-list order."""
+        found, sessions, review = [], [], None
         for failure in failures:
             scope = pilot_rules.scope_of(failure["rule"], failure.get("reason"))
             durable = "none" if scope.durable == "review_unless_halt" else scope.durable
             found.append(durable)
-            if durable == "session" and scope.code not in sessions:
-                sessions.append(scope.code)
-                self._pilot_session_stop(scope.code, reservation_seq)
-            elif durable == "review" and not noted:
-                noted = True
-                if carrier_seq is None:
-                    self._pilot_refusal_note(scope.code, reservation_seq)
+            if durable == "session" and scope.code not in [code for code, _ in sessions]:
+                sessions.append((scope.code, len(found)))
+            elif durable == "review" and review is None:
+                review = (scope.code, len(found))
+        if carrier_seq is None:
+            if review is not None:
+                self._pilot_refusal_note(review[0], reservation_seq)
+            for code, _ in sessions:
+                self._pilot_session_stop(code, reservation_seq)
+        else:
+            for code, position in sorted(sessions + ([review] if review else []), key=lambda item: item[1]):
+                if review is not None and (code, position) == review:
+                    self._pilot_carried_stop(code, reservation_seq, carrier_seq)
                 else:
-                    self._pilot_carried_stop(scope.code, reservation_seq, carrier_seq)
+                    self._pilot_session_stop(code, reservation_seq)
         return pilot_rules.strongest_scope(found)
 
     def _pilot_latch(self, pilot, rule, *, reason=None, carrier_seq=None):
@@ -2080,6 +2091,10 @@ class OrderGateway:
                                            send_by_monotonic_ns=send_by, send_gate=gate)
             outcome = extra.get("send_exception", {}).get("outcome")
             carried = (reported.get("event") or {}).get("seq")         # the report: these latches' carrier
+            # The halts the fold will read are the durable report's (SCOPE-2): _append_moves can add one
+            # (report_moves_skipped) to what the report computed before it.
+            durable_halts = bool(((reported.get("event") or {}).get("payload") or {}).get("halts")
+                                 or (reported.get("event") is None and reported.get("halts")))
             if pilot is not None and outcome == "FAILED_NOT_SENT":
                 # After the report: a KILL file seen, by the gate or now, whatever the code, ends the session
                 # (critique 2; R2-N2); a §5 first-byte refusal (deadline, freshness, head) ends that market only
@@ -2107,7 +2122,7 @@ class OrderGateway:
             elif pilot is not None and outcome == "FAILED_REJECTED":
                 # Betfair refused the call (an ApiError: session, rate limit and the rest). A HALT journaled with
                 # the report already ends the session; any other code is not named in note §9: a review stop (Q11).
-                if reported.get("halts"):
+                if durable_halts:
                     pilot["latch"] = "none"
                 else:
                     self._pilot_latch(pilot, extra["send_exception"]["code"], carrier_seq=carried)
@@ -2116,7 +2131,7 @@ class OrderGateway:
                 # unlatched: MARKET_NOT_OPEN_FOR_BETTING or MARKET_SUSPENDED end that market (the post-send V9
                 # market_not_open),
                 # every other code is a review stop (Q11; Nuance's ruling).
-                if reported.get("halts"):
+                if durable_halts:
                     pilot["latch"] = "none"
                 elif reported.get("failure") is not None:
                     self._pilot_latch(pilot, reported["failure"], carrier_seq=carried)

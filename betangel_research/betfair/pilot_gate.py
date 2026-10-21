@@ -64,21 +64,24 @@ NO_NEW_STOP_CODES = frozenset({"pa4_pilot_stop", "pa4_placing_ended", "pa3_sessi
 # The note §9 latch table, with Q11 (Yu 2026-10-21) for the codes §9 does not name and critique 2 for the KILL file.
 # "market": that market only, nothing more journaled (its reservation already uses it up). "session": a session stop.
 # "review": a refusal note, from which the fold derives a review stop. "none": the HALT already ends the session.
-MARKET_LATCH = frozenset({"validation:V13", "validation:V9b", "rate_minute", "rate_hour", "transport_not_sent",
-                          "pilot_send_book_off_differs", "journal_changed_since_decision", "book_fetch_failed",
-                          "market_exposure", "total_exposure"})
+# MARKET_NOT_OPEN_FOR_BETTING and MARKET_SUSPENDED in a place report are the post-send forms of V9 market_not_open
+# and market_inplay (Nuance's ruling, 2026-10-21).
+MARKET_LATCH = frozenset({"validation:V13", "validation:V9b", "rate_minute", "rate_hour", "pilot_send_book_off_differs",
+                          "journal_changed_since_decision", "book_fetch_failed", "market_exposure", "total_exposure",
+                          "MARKET_NOT_OPEN_FOR_BETTING", "MARKET_SUSPENDED"})
 MARKET_V9_REASONS = frozenset({"market_not_open", "market_inplay"})
 SESSION_LATCH = frozenset({"rate_day", "daily_loss", "unresolved_orders", "lock_busy", "kill_file"})
 # RS-19: "No manual or Bet Angel bet is open on the account during a session. If the code finds one, it halts."
 MANUAL_BET_OPEN = "manual_bet_open_during_session"
 NO_NOTE_LATCH = frozenset({"halted", "unexplained_account_exposure", MANUAL_BET_OPEN})
 KILL_REASONS = frozenset({"kill_engaged", "kill_state_unknown"})
-# The note §5 first-byte refusals, FAILED(transport_not_sent) and market only (note §9) unless their cause ends more
-# (a KILL file: a session stop). Any other failure before the first byte (a refused capability, P106-C3) keeps its
-# own latch.
-FIRST_BYTE_CODES = frozenset({"send_window_expired", "book_stale_before_send", "send_gate_failed",
-                              "pilot_gate_head_moved", "pilot_gate_head_unreadable", "pilot_gate_deadline",
-                              "pilot_gate_window", "pilot_gate_clock_drift"})
+# The note §5 first-byte refusals (send-by, freshness, head, deadline, window, drift), FAILED(transport_not_sent) and
+# market only (note §9) unless their cause ends more (a KILL file: a session stop). Any other failure before the first
+# byte keeps its own latch, a review stop by Q11's default: a refused capability (P106-C3), a connect, TLS or
+# preflight failure, and send_gate_failed, a fault inside the gate itself.
+FIRST_BYTE_CODES = frozenset({"send_window_expired", "book_stale_before_send", "pilot_gate_head_moved",
+                              "pilot_gate_head_unreadable", "pilot_gate_deadline", "pilot_gate_window",
+                              "pilot_gate_clock_drift"})
 # Dynamic arming codes at a pilot-place open that journal no refusal note: A17's foreign or contradicting bets
 # HALT through the startup pass, and its unresolved orders stop placing until reconciled (note §9).
 HALT_IMPLYING_OPEN_CODES = frozenset({"unresolved_or_foreign_orders"})
@@ -334,13 +337,37 @@ def latest_note(events, record_type, contract_sha256=None):
 
 def open_manual_refs(events, orders):
     """Refs of our orders that are not the pilot's (their intent's source is not "pilot") and are open on the
-    account or matched and unsettled: not RECORDED (never sent), not terminal, and not EXECUTION_COMPLETE with
-    nothing matched. orders is the core fold's (workflow #3)."""
+    account or matched and unsettled: not RECORDED (never sent), and either not terminal and not EXECUTION_COMPLETE
+    with nothing matched, or matched and not yet SETTLED or VOIDED (a REPLACED bet's matched part settles later, as
+    journal.py's unsettled liability counts it). orders is the core fold's (workflow #3)."""
     pilot_refs = {event.get("customer_order_ref") for event in events if event.get("kind") == "intent"
                   and isinstance(event.get("payload"), dict) and event["payload"].get("source") == "pilot"}
-    return sorted(ref for ref, order in orders.items()
-                  if ref not in pilot_refs and order["state"] != "RECORDED" and order["state"] not in TERMINAL_STATES
-                  and not (order["state"] == "EXECUTION_COMPLETE" and order["size_matched_p"] == 0))
+
+    def open_or_unsettled(order):
+        if order["state"] == "RECORDED":
+            return False
+        if (order["size_matched_p"] or 0) > 0 and order["state"] not in ("SETTLED", "VOIDED"):
+            return True
+        return order["state"] not in TERMINAL_STATES and not (order["state"] == "EXECUTION_COMPLETE"
+                                                               and order["size_matched_p"] == 0)
+
+    return sorted(ref for ref, order in orders.items() if ref not in pilot_refs and open_or_unsettled(order))
+
+
+def place_report_failure(report):
+    """The code of a normalised place report in which Betfair refused the pilot's one instruction (the report's or
+    the instruction's status FAILURE), else None: the instruction's own code, else, when it has none or only
+    ERROR_IN_ORDER (failed because the whole request did), the report's, else "place_report_failure"."""
+    if not isinstance(report, dict):
+        return None
+    items = report.get("instructions") or []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    if report.get("status") != "FAILURE" and item.get("status") != "FAILURE":
+        return None
+    code = item.get("error_code")
+    if code in (None, "ERROR_IN_ORDER"):
+        code = report.get("error_code") or code
+    return code or "place_report_failure"
 
 
 def session_window_open(events, *, now_ns):

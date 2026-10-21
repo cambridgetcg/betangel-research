@@ -227,7 +227,9 @@ class PilotGateTests(unittest.TestCase):
             ("halted", "kill_state_unknown"): "session", ("halted", "journal_halted"): "none",
             ("halted", "clock_regression"): "none", ("unexplained_account_exposure", None): "none",
             ("funds", "insufficient_available_to_bet"): "review", ("market_exposure", None): "market",
-            ("total_exposure", None): "market", ("transport_not_sent", None): "market",
+            ("total_exposure", None): "market", ("transport_not_sent", None): "review",
+            ("send_gate_failed", None): "review", ("connect_failed", None): "review",
+            ("INVALID_SESSION_INFORMATION", None): "review", ("pilot_gate_head_unreadable", None): "review",
             ("pilot_send_book_off_differs", None): "market", ("journal_changed_since_decision", None): "market",
             ("book_fetch_failed", None): "market", ("pilot_submit_too_late", None): "review",
             ("r13_body_differs", None): "review", ("pa2_tree_dirty", None): "review",
@@ -1501,7 +1503,8 @@ class FirstByteTests(PilotCase):
 
         with patch.object(env.journal, "append", side_effect=late_submit):
             result = self.place(market)
-        self.assertEqual(result["refusal"]["rule"], "pilot_submit_too_late")
+        self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("pilot_submit_too_late", "review"))
+        self.assertEqual([n["code"] for n in self.notes("refusal")], ["pilot_submit_too_late"])
         self.assertNotIn("submit", self.kinds())
         self.assertEqual([o["state"] for o in result["orders"]], ["REFUSED"])
         self.clean()
@@ -2004,9 +2007,13 @@ class StopsAndLatchTests(PilotCase):
         self.assertIn(stop_id, [stop["stop_id"] for stop in self.notes("stop")])
         env.gateway.close()
         sp.set_time(env.clock, second.off_ns - 299 * S - 3600 * S)
-        sp.note(env, "ack", stop_id=stop_id, cause_written=True)
         env.session_id = sp.arm_session(env, until_ns=sp.UNTIL + 86400 * S)
         sp.set_time(env.clock, second.off_ns - 299 * S)
+        # yu-stop-s ended only yesterday's session; the refusal's own review stop alone still holds the new one.
+        self.assertEqual([stop["stop_id"] for stop in sp.fold(env).active_stops], [stop_id])
+        self.assertEqual(self.open()["failures"], ["pa4_pilot_stop"])
+        env.gateway.close()
+        sp.note(env, "ack", stop_id=stop_id, cause_written=True)
         self.open()
         self.assert_sent(self.place(second))
         self.clean()
@@ -2743,6 +2750,417 @@ class ClockObservationTests(PilotCase):
         self.assertIs(plain.clock, env.clock)                          # without a pilot nothing is required
         observed = env.gateway.clock
         self.assertEqual((observed.time_ns(), observed.utc_now()), (env.clock.time_ns(), env.clock.utc_now()))
+
+
+def failure_report(code, exec_code=None):
+    """A placeOrders handler for SimExchange: Betfair's FAILURE report with one instruction error code (and the
+    report's own code)."""
+    def handler(params):
+        instruction = params["instructions"][0]
+        return {"customerRef": params["customerRef"], "status": "FAILURE", "errorCode": exec_code,
+                "marketId": params["marketId"],
+                "instructionReports": [{"status": "FAILURE", "errorCode": code, "instruction": instruction}]}
+    return handler
+
+
+def aping_error(code):
+    """A placeOrders response: an APINGException with code (Betfair refused the call itself)."""
+    return lambda record: support.rpc_error_response(
+        -32099, "x", data={"exceptionname": "APINGException", "APINGException": {"errorCode": code}},
+        rpc_id=json.loads(record["body"])["id"])
+
+
+class ReviewRound2Tests(PilotCase):
+    """The refute-first workflow on 2e8973f and Nuance's round 2 on 5d7b6d5 (R2-N2, the C2 residual cases, R2-N3, the
+    latch residuals and wf3's). Each test fails on 5d7b6d5 unless its docstring says it pins what 5d7b6d5 already
+    holds. Production margins throughout unless a test says otherwise."""
+
+    UNTIL = OFF + 600 * S                          # the session ends at 10:10; the open starts at 09:55:01
+
+    def reopen_is_refused(self, market):
+        """After this open, the same ARM places nothing: the next open is refused pa3_session_ended."""
+        env = self.env
+        env.gateway.close()
+        self.assertEqual(self.open()["failures"], ["pa3_session_ended"])
+        with self.assertRaises(NotArmed):
+            self.place(market)
+        env.gateway.close()
+
+    # --- item 1: R2-N2 --------------------------------------------------------------------------------------------
+
+    def test_r2_n2_a_kill_file_wins_over_an_unreadable_head(self):
+        """A file-only KILL that appears after the post-submit KILL check, while the gate's head read fails: the gate
+        still returns kill_engaged_before_send and the session stop is journaled, so removing the file does not let
+        the same ARM place again."""
+        env = self.build()
+        market, later = self.market(), self.market(off_ns=OFF + 60 * S)
+        self.open()
+        env.transport.before_gate = lambda: engage(env.paths, "test", clock=env.clock)
+        with patch.object(env.journal, "head_fresh", side_effect=OSError("disk")):
+            result = self.place(market)
+        self.assert_not_sent_at_first_byte(result, "kill_engaged_before_send")
+        self.assertEqual(result["pilot"]["latch"], "session")
+        self.assertEqual([(n["scope"], n["reason"]) for n in self.notes("stop")], [("session", "kill_file")])
+        os.remove(env.paths.kill_file)
+        self.reopen_is_refused(later)
+        self.assertEqual(env.router.order_requests, [])
+        self.clean()
+
+    def test_r2_n2_a_kill_file_seen_after_any_not_sent_code_ends_the_session(self):
+        """The belt: whatever code a request ended FAILED(transport_not_sent) with, a KILL file there now journals
+        the kill_file session stop (here it appears inside the gate, after its KILL check, which then refuses on
+        its deadline check)."""
+        env = self.build()
+        market, later = self.market(), self.market(off_ns=OFF + 60 * S)
+        self.open()
+
+        def kill_then_deadline(*args, **kw):
+            engage(env.paths, "test", clock=env.clock)
+            return "pilot_gate_deadline"
+
+        with patch.object(pilot_gate, "first_byte_refusal", side_effect=kill_then_deadline):
+            result = self.place(market)
+        self.assert_not_sent_at_first_byte(result, "pilot_gate_deadline")
+        self.assertEqual(result["pilot"]["latch"], "session")
+        self.assertEqual([(n["scope"], n["reason"]) for n in self.notes("stop")], [("session", "kill_file")])
+        os.remove(env.paths.kill_file)
+        self.reopen_is_refused(later)
+        self.clean()
+
+    # --- item 2: the C2 residual cases ---------------------------------------------------------------------------
+
+    def excursion(self, call):
+        """call with the wall clock at UNTIL + 1 s (the monotonic clock untouched), then the clock put back."""
+        env = self.env
+        wall = env.clock.wall_ns
+        env.clock.wall_ns = self.UNTIL + S
+        try:
+            return call()
+        finally:
+            env.clock.wall_ns = wall
+
+    def assert_kept(self, result):
+        env = self.env
+        self.assertEqual(env.router.order_requests, [])
+        self.assertGreaterEqual(env.gateway._pilot_seen_ns, self.UNTIL + S)
+        self.assertLess(env.clock.time_ns(), self.UNTIL)
+        self.clean()
+
+    def test_r2_case_c_a_send_book_stamped_past_the_end_is_kept(self):
+        """Pins 5d7b6d5 (its observed clock closes it; 2e8973f sent): the send book's observed_at reads 10:10:01, the
+        book then looks stale and is fetched again at the returned clock. The open keeps 10:10:01: the submit is
+        refused (pilot_submit_too_late, a review stop) and nothing is sent."""
+        env = self.build(until_ns=self.UNTIL)
+        market = self.market()
+        self.open()
+        snapshot, calls = env.read.market_snapshot, []
+
+        def first_past_the_end(*args, **kw):
+            calls.append(True)
+            if len(calls) == 1:
+                return self.excursion(lambda: snapshot(*args, **kw))
+            return snapshot(*args, **kw)
+
+        with patch.object(env.read, "market_snapshot", side_effect=first_past_the_end):
+            result = self.place(market)
+        self.assertEqual((len(calls), env.router.order_requests), (2, []))
+        self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("pilot_submit_too_late", "review"))
+        self.assert_kept(result)
+
+    def test_r2_case_d_a_reservation_stamped_past_the_end_ends_the_open(self):
+        """The reservation append is stamped 10:10:01 and refused journal_append_too_late; the clock returns. Pins
+        5d7b6d5's mark (the stamp is an observed read), and the structural close fails on it: the open, having
+        attempted its reservation, places nothing more."""
+        env = self.build(until_ns=self.UNTIL)
+        market, second = self.market(), self.market(off_ns=OFF + 60 * S)
+        self.open()
+        append, done = env.journal.append, []
+
+        def late_reservation(kind, payload, **columns):
+            inner = payload.get("pilot") if isinstance(payload, dict) else None
+            if not done and isinstance(inner, dict) and inner.get("type") == "reservation":
+                done.append(True)
+                return self.excursion(lambda: append(kind, payload, **columns))
+            return append(kind, payload, **columns)
+
+        with patch.object(env.journal, "append", side_effect=late_reservation):
+            result = self.place(market)
+            self.assertEqual((result["refusal"]["rule"], result["pilot"]["latch"]), ("pilot_reserve_too_late", None))
+            self.assertEqual(self.notes("reservation"), [])
+            for again in (market, second):
+                with self.assertRaises(OrderRefused) as caught:
+                    self.place(again)
+                self.assertEqual(caught.exception.rule, "pilot_one_reservation_per_open")
+        self.assertEqual(self.reads(sp.CATALOGUE), [])
+        self.assert_kept(result)
+
+    def test_r2_case_d_one_reservation_attempt_per_open_whatever_the_clock(self):
+        """The structural close without any clock step: a reservation whose head kept moving (another process's
+        events, three attempts) ends the open's placements; a refusal before any append (too early) may be retried
+        in the same open, which then places."""
+        env = self.build()
+        market, second = self.market(), self.market(off_ns=OFF + 60 * S)
+        self.open()
+        original, writer = env.gateway._pilot_append, sp.other_writer(env)
+
+        def foreign_note_first(payload, **kw):
+            if payload["pilot"]["type"] == "reservation":
+                writer.append("note", {"reason": "another_process"})
+            return original(payload, **kw)
+
+        with patch.object(env.gateway, "_pilot_append", side_effect=foreign_note_first):
+            result = self.place(market)
+        self.assertEqual(result["refusal"]["rule"], "pilot_reserve_head_unstable")
+        for again in (market, second):
+            with self.assertRaises(OrderRefused) as caught:
+                self.place(again)
+            self.assertEqual(caught.exception.rule, "pilot_one_reservation_per_open")
+        self.assertEqual((self.notes("reservation"), self.reads(), env.router.order_requests), ([], [], []))
+        self.clean()
+        early = self.build(start=pilot.utc_text_from_ns(OFF - 301 * S))
+        market = self.market()
+        self.open()
+        self.assertEqual(self.place(market)["refusal"]["rule"], "pilot_reserve_too_early")
+        early.clock.advance(2)
+        self.assert_sent(self.place(market))
+        self.clean()
+
+    def test_r2_case_e_the_order_ref_read_past_the_end_is_kept(self):
+        """Pins 5d7b6d5: the one clock read that mints the record's order ref sees 10:10:01; the clock returns. The
+        open keeps that time, so the decision is not journaled as live and nothing is sent."""
+        env = self.build(until_ns=self.UNTIL)
+        market = self.market()
+        self.open()
+        store, mint, saved = pilot_gate.store_evidence, gateway_module.make_customer_order_ref, []
+
+        def stored(*args, **kw):
+            out = store(*args, **kw)
+            if args[3] == "book":                  # the next wall read is the order ref's
+                saved.append(env.clock.wall_ns)
+                env.clock.wall_ns = self.UNTIL + S
+            return out
+
+        def minted(now_ns, *args, **kw):
+            if saved and env.clock.wall_ns == self.UNTIL + S:
+                env.clock.wall_ns = saved[0]
+            return mint(now_ns, *args, **kw)
+
+        with patch.object(pilot_gate, "store_evidence", side_effect=stored), \
+                patch.object(gateway_module, "make_customer_order_ref", side_effect=minted):
+            result = self.place(market)
+        self.assertEqual(len(saved), 1)
+        self.assertNotEqual(result["decision"], "accepted")
+        self.assert_kept(result)
+
+    # --- item 3: R2-N3 --------------------------------------------------------------------------------------------
+
+    def test_r2_n3_one_refusal_note_per_open(self):
+        """pilot_not_configured and a dynamic failure (can_bet False) in one armed open: one refusal note, for the
+        first failure reached, and one review stop."""
+        env = self.build()
+        gateway = sp.new_gateway(env, pilot_context=False)
+        with patch.object(gateway.rpc.session, "can_bet", return_value=False):
+            report = gateway.open(command="pilot-place", confirm_token=sp.token(env))
+        gateway.close()
+        self.assertIn("pilot_not_configured", report["failures"])
+        self.assertEqual([n["code"] for n in self.notes("refusal")], ["pilot_not_configured"])
+        self.assertEqual([s["reason"] for s in sp.fold(env).active_stops], ["pilot_not_configured"])
+        self.clean()
+
+    # --- item 4: latch residuals ---------------------------------------------------------------------------------
+
+    def test_r2_4a_a_fault_inside_the_gate_is_a_review_stop(self):
+        """send_gate_failed (the gate raised) is not a §5 refusal: Q11's review default, the stricter choice."""
+        env = self.build()
+        market, later = self.market(), self.market(off_ns=OFF + 60 * S)
+        self.open()
+        with patch.object(pilot_gate, "first_byte_refusal", side_effect=RuntimeError("fault")):
+            result = self.place(market)
+        self.assert_not_sent_at_first_byte(result, "send_gate_failed")
+        self.assertEqual((result["pilot"]["latch"], [n["code"] for n in self.notes("refusal")]),
+                         ("review", ["send_gate_failed"]))
+        self.reopen_is_refused(later)
+        self.clean()
+
+    def test_r2_4b_a_connect_failure_after_the_submit_is_a_review_stop(self):
+        """Pins 5d7b6d5 (P106-C3 already gives it): a connect failure after the submit, no byte written, is
+        FAILED(transport_not_sent) and, not being a §5 refusal, a review stop (Q11; note §9)."""
+        env = self.build()
+        market, later = self.market(), self.market(off_ns=OFF + 60 * S)
+        self.open()
+        env.router.next_response[gw.PLACE_SUFFIX] = [support.transport_failure("connect", "connect_failed")]
+        result = self.place(market)
+        self.assertEqual([(o["state"], o["error_code"]) for o in result["orders"]], [("FAILED", "transport_not_sent")])
+        self.assertEqual((env.transport.bytes_written[-1], result["send_exception"]["code"]), (0, "connect_failed"))
+        self.assertEqual((result["pilot"]["latch"], [n["code"] for n in self.notes("refusal")]),
+                         ("review", ["connect_failed"]))
+        self.assertTrue(sp.fold(env, live_open_id=env.gateway._open_id).place_records[-1].failed_not_sent)
+        self.reopen_is_refused(later)
+        self.clean()
+
+    def test_r2_4c_a_betfair_refusal_without_a_halt_is_a_review_stop(self):
+        """placeOrders refused by Betfair (FAILED, rejected before processing) with no HALT: not named in note §9, so a
+        review stop (Q11), journaled once; nothing is resent."""
+        for code in ("INVALID_SESSION_INFORMATION", "TOO_MANY_REQUESTS"):
+            with self.subTest(code=code):
+                env = self.build()
+                market, later = self.market(), self.market(off_ns=OFF + 60 * S)
+                self.open()
+                env.router.next_response[gw.PLACE_SUFFIX] = [aping_error(code)]
+                result = self.place(market)
+                self.assertEqual([(o["state"], o["error_code"]) for o in result["orders"]],
+                                 [("FAILED", "rejected_before_processing")])
+                self.assertEqual((result["send_exception"]["outcome"], len(env.router.order_requests)),
+                                 ("FAILED_REJECTED", 1))
+                self.assertFalse(env.journal.fold(now_ns=env.clock.time_ns())["halted"])
+                self.assertEqual((result["pilot"]["latch"], [n["code"] for n in self.notes("refusal")]),
+                                 ("review", [pilot_gate.refusal_code(code)]))
+                self.reopen_is_refused(later)
+                self.assertEqual(len(env.router.order_requests), 1)
+                self.clean()
+
+    def test_r2_4c_loss_limit_insufficient_funds_and_access_denied_keep_their_halt(self):
+        """Note §9's LOSS_LIMIT_EXCEEDED and INSUFFICIENT_FUNDS (a FAILURE report) and a refused call that HALTs
+        (ACCESS_DENIED) keep their HALT, which ends the session; no refusal note is added."""
+        for code in ("LOSS_LIMIT_EXCEEDED", "INSUFFICIENT_FUNDS", "ACCESS_DENIED"):
+            with self.subTest(code=code):
+                env = self.build()
+                market = self.market()
+                self.open()
+                if code == "ACCESS_DENIED":
+                    env.router.next_response[gw.PLACE_SUFFIX] = [aping_error(code)]
+                else:
+                    env.exchange.place_handler = failure_report(code)
+                result = self.place(market)
+                self.assertEqual([o["state"] for o in result["orders"]], ["FAILED"])
+                core = env.journal.fold(now_ns=env.clock.time_ns())
+                self.assertEqual((core["halted"], core["halt_reasons"]), (True, ["terminal_account"]))
+                self.assertEqual(self.notes("refusal"), [])
+                self.assertEqual(result["pilot"]["latch"], "none")
+                env.gateway.close()
+                with self.assertRaises(NotArmed) as caught:      # A7, before the lock: the HALT holds
+                    self.open()
+                self.assertEqual(caught.exception.rule, "halted")
+                self.assertEqual(len(env.router.order_requests), 1)
+                self.clean()
+
+    def test_r2_4c_every_refusing_place_report_has_its_latch(self):
+        """Nuance's ruling: a place report in which Betfair refuses the instruction is never left at latch None. With
+        no HALT, MARKET_NOT_OPEN_FOR_BETTING and MARKET_SUSPENDED (the post-send V9) end that market only and every
+        other code is a review stop; a code that journals a HALT keeps it (latch none), a code the error table does
+        not know included (unrecognized)."""
+        cases = {   # (instruction code, report code) -> (latch, HALT reasons)
+            ("MARKET_NOT_OPEN_FOR_BETTING", None): ("market", []),
+            ("ERROR_IN_ORDER", "MARKET_SUSPENDED"): ("market", []),       # Betfair's shape for a suspended market
+            ("RUNNER_REMOVED", None): ("review", []), ("BET_TAKEN_OR_LAPSED", None): ("review", []),
+            ("ERROR_IN_MATCHER", None): ("review", []),
+            ("INVALID_ODDS", None): ("none", ["validator_gap"]),
+            ("INVALID_BET_SIZE", None): ("none", ["validator_gap"]),
+            ("LOSS_LIMIT_EXCEEDED", None): ("none", ["terminal_account"]),
+            ("INSUFFICIENT_FUNDS", None): ("none", ["terminal_account"]),
+            ("SOMETHING_NEW_FROM_BETFAIR", None): ("none", ["unrecognized"])}
+        for (code, exec_code), (latch, halts) in cases.items():
+            with self.subTest(code=code, report_code=exec_code):
+                env = self.build()
+                market_ = self.market()
+                self.open()
+                env.exchange.place_handler = failure_report(code, exec_code)
+                result = self.place(market_)
+                env.exchange.place_handler = None
+                named = exec_code if code == "ERROR_IN_ORDER" else code
+                self.assertEqual(len(env.router.order_requests), 1)
+                self.assertNotIn(result["orders"][0]["state"], ("EXECUTABLE", "EXECUTION_COMPLETE"))
+                self.assertEqual(env.journal.fold(now_ns=env.clock.time_ns())["halt_reasons"], halts)
+                self.assertEqual(result["pilot"]["latch"], latch)
+                notes = [n["code"] for n in self.notes("refusal")]
+                self.assertEqual(notes, [pilot_gate.refusal_code(named)] if latch == "review" else [])
+                stops = [s["reason"] for s in sp.fold(env).active_stops]
+                self.assertEqual(stops, notes)
+                self.clean()
+        self.assertEqual(pilot_gate.latch_for("SOMETHING_NEW_FROM_BETFAIR"), "review")    # with no HALT: review
+
+    def first_byte_refusal(self, code):
+        """Drive one placement to the §5 first-byte refusal code (the item-5 verifier's ways in) -> the result."""
+        env = self.env
+        with contextlib.ExitStack() as stack:
+            if code == "send_window_expired":
+                env.transport.before_gate = lambda: env.clock.advance(3)
+            elif code == "book_stale_before_send":
+                head_fresh = env.journal.head_fresh
+
+                def slow_head():
+                    env.clock.advance(3)
+                    return head_fresh()
+
+                stack.enter_context(patch.object(env.journal, "head_fresh", side_effect=slow_head))
+            elif code == "pilot_gate_head_moved":
+                writer = sp.other_writer(env)
+                env.transport.before_gate = lambda: writer.append("note", {"reason": "another_process"})
+            elif code == "pilot_gate_head_unreadable":
+                stack.enter_context(patch.object(env.journal, "head_fresh", side_effect=OSError("disk")))
+            elif code == "pilot_gate_clock_drift":
+                funds = env.gateway._funds
+
+                def stepped():
+                    env.clock.step_wall(10)
+                    return funds()
+
+                stack.enter_context(patch.object(env.gateway, "_funds", side_effect=stepped))
+            else:
+                # deadline and window: the margins stood down so that the gate, not G9, is the check reached
+                stack.enter_context(patch.object(pilot_gate, "DECISION_MARGIN_NS", 0))
+                stack.enter_context(patch.object(pilot_gate, "END_MARGIN_NS", 0))
+                funds, head_fresh = env.gateway._funds, env.journal.head_fresh
+
+                def near_the_deadline():
+                    sp.set_time(env.clock, OFF - 240 * S - S // 2)
+                    return funds()
+
+                stack.enter_context(patch.object(env.gateway, "_funds", side_effect=near_the_deadline))
+                if code == "pilot_gate_deadline":
+                    env.transport.before_gate = lambda: env.clock.step_wall(1)
+                else:
+                    def monotonic_past_the_window():
+                        env.clock.advance(1)
+                        env.clock.step_wall(-1)
+                        return head_fresh()
+
+                    stack.enter_context(patch.object(env.journal, "head_fresh",
+                                                     side_effect=monotonic_past_the_window))
+            return self.place(self.market())
+
+    def test_r2_4e_every_first_byte_code_ends_that_market_only(self):
+        """One case per FIRST_BYTE_CODES member, which is exactly this set: FAILED(transport_not_sent), latch market,
+        no refusal note, no active stop."""
+        codes = ("send_window_expired", "book_stale_before_send", "pilot_gate_head_moved",
+                 "pilot_gate_head_unreadable", "pilot_gate_deadline", "pilot_gate_window", "pilot_gate_clock_drift")
+        self.assertEqual(pilot_gate.FIRST_BYTE_CODES, frozenset(codes))
+        for code in codes:
+            with self.subTest(code=code):
+                env = self.build()
+                self.open()
+                result = self.first_byte_refusal(code)
+                self.assert_not_sent_at_first_byte(result, code)
+                self.assertEqual((result["pilot"]["latch"], self.notes("refusal")), ("market", []))
+                self.assertEqual(sp.fold(env).active_stops, ())
+                self.clean()
+
+    # --- item 5: wf3's residuals ---------------------------------------------------------------------------------
+
+    def test_r2_5_a_replaced_bet_with_matched_size_is_unsettled(self):
+        """open_manual_refs: a REPLACED bet's matched part settles later, so it counts as open until SETTLED or
+        VOIDED (latent: live replace is refused); the rest of the table as before."""
+        table = {("RECORDED", 0): False, ("EXECUTABLE", 0): True, ("EXECUTION_COMPLETE", 0): False,
+                 ("EXECUTION_COMPLETE", 200): True, ("REPLACED", 0): False, ("REPLACED", 150): True,
+                 ("SETTLED", 200): False, ("VOIDED", 200): False, ("LAPSED", 0): False, ("FAILED", 0): False,
+                 ("UNKNOWN", 0): True, ("ABSENT_UNCONFIRMED", 0): True, ("CANCEL_PENDING", 0): True}
+        for (state, matched), expected in table.items():
+            with self.subTest(state=state, matched=matched):
+                orders = {"bar-1": {"state": state, "size_matched_p": matched}}
+                self.assertEqual(pilot_gate.open_manual_refs([], orders), ["bar-1"] if expected else [])
+        pilot_intent = [{"kind": "intent", "customer_order_ref": "bar-1", "payload": {"source": "pilot"}}]
+        self.assertEqual(pilot_gate.open_manual_refs(pilot_intent, {"bar-1": {"state": "REPLACED",
+                                                                             "size_matched_p": 150}}), [])
 
 
 if __name__ == "__main__":

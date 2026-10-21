@@ -39,6 +39,24 @@ active HALT, no halted or unresolved market (stricter than design v4 section E),
 journal that is a symlink, not a regular file or cannot be inspected fails closed) and the step 8 rule
 passes; then ADMISSION and INHIBIT are removed. An older generation can never release a newer one.
 
+One ownership lifecycle (P1-08 §3.4; Astra P108-4 to P108-6). Every owning command admits through
+live_ownership and releases through release_own, never by calling admit or release itself (pinned):
+- .live-owner.lock, taken with LOCK_NB before any admission, credential read or login and held for the
+  command's whole life, through its final logout and its own release. Busy refuses owner_live, an error
+  owner_state_unknown, with nothing written; the kernel lets go of it when the process dies, so holding it
+  proves the previous owner's process is gone. Lock order: the owner lock, then admission.lock (inside
+  admit and release); .gateway.lock is never taken while admission.lock is held.
+- Three phases under that one lock: the owner lock; a read-only before-admit phase (the caller's checks,
+  which may refuse with nothing changed: no ADMISSION or INHIBIT written, no recorder drained); then the
+  admission itself. A fresh ticket refuses any ADMISSION in force (admission_held) and notes whether INHIBIT
+  was already set. A restricted continuation names its generation explicitly, needs it admitted, takes the
+  retained owner's admission back (INHIBIT restored, any recorder drained) with cleanup chosen per command
+  (only reconcile's cleanup skips step 8), never places and never releases.
+- release_own releases only a fresh ticket whose INHIBIT did not predate it, under the extra checks that
+  this process still holds the owner lock and that ADMISSION still names exactly its owner and generation.
+owner_lock_state is the probe for a process that does not hold the lock (a lock this process holds would
+conflict with itself, so an owner uses its ticket's holds() instead).
+
 The emergency kill never calls anything here, and nothing here takes .gateway.lock.
 """
 
@@ -51,7 +69,7 @@ import subprocess
 import sys
 
 from .auth import ledger_review
-from .errors import AdmissionRefused, AuthError, JournalError, LockBusy, RecorderRunning
+from .errors import AdmissionRefused, AuthError, BetfairError, JournalError, LockBusy, RecorderRunning, safe_code
 from .journal import read_only_fold
 from .paths import file_lock, kill_engaged
 from .receipts import SYSTEM_CLOCK, atomic_write_json, parse_utc_ns, strict_json_loads
@@ -533,3 +551,159 @@ def release(paths, *, config, generation, clock=SYSTEM_CLOCK, extra_checks=()):
         _unlink(paths.inhibit_file)
         _fsync_dir(paths.recordings_dir)
     return {"released": True, "generation": generation, "owner": owner, "status": "released"}
+
+
+# --- the ownership lifecycle (P1-08 §3.4) -------------------------------------------------------------
+
+
+class OwnershipRefused(BetfairError):
+    """live_ownership refused before (or instead of) an admission: owner_live, owner_state_unknown, a before-admit
+    code, admission_held, admission_state_unknown, continuation_generation_mismatch or
+    continuation_needs_admitted_generation. Nothing was admitted, written or drained, and the owner lock is let go.
+    str() is the code; problems lists every code (a before-admit check may give several)."""
+
+    def __init__(self, code, *, problems=(), owner=None, generation=None, state=None):
+        code = safe_code(code)
+        super().__init__(code)
+        self.code = code
+        self.problems = [safe_code(problem) for problem in problems] or [code]
+        self.owner = safe_code(owner) if owner is not None else None
+        self.generation = generation if type(generation) is int else None
+        self.state = state if state in ADMISSION_STATES else None
+
+
+class OwnerTicket:
+    """What live_ownership yields: owner (the ADMISSION owner: the command's own for a fresh ticket, the retained one
+    for a continuation), command_owner (the name the command gave), generation N, kind ("fresh" or "continuation"),
+    placement_allowed (False for a continuation), inhibit_preexisting (INHIBIT was set before a fresh admit),
+    recorder (admit's drain result) and holds() (this process still holds the owner lock, at the path)."""
+
+    def __init__(self, *, owner, command_owner, generation, kind, placement_allowed, inhibit_preexisting, recorder,
+                 held):
+        self.owner = owner
+        self.command_owner = command_owner
+        self.generation = generation
+        self.kind = kind
+        self.placement_allowed = placement_allowed
+        self.inhibit_preexisting = inhibit_preexisting
+        self.recorder = recorder
+        self._held = held
+
+    def holds(self):
+        return self._held is not None and self._held.held()
+
+
+def owner_lock_state(paths, *, clock=SYSTEM_CLOCK):
+    """"free", "held" or "unknown": .live-owner.lock tried with LOCK_NB and let go at once. Any OSError is unknown,
+    which every caller treats as held. Never call it while this process holds the lock (flock conflicts within one
+    process too): an owner checks its ticket's holds() instead (Q3's self-lock exception)."""
+    try:
+        with file_lock(paths.live_owner_lock, timeout_s=0, clock=clock):
+            return "free"
+    except LockBusy:
+        return "held"
+    except OSError:
+        return "unknown"
+
+
+@contextmanager
+def live_ownership(paths, *, owner, purpose, config, continue_generation=None, cleanup=False, before_admit=None,
+                   clock=SYSTEM_CLOCK, processes=None, drain_timeout_s=DRAIN_TIMEOUT_S):
+    """Own the live recording state for one command and yield its OwnerTicket; the owner lock is held until exit.
+
+    Phase 1, the owner lock (LOCK_NB): busy refuses owner_live, an error owner_state_unknown, nothing written.
+    Phase 2, before_admit(paths) when given: read only, it returns [] or refusal codes; codes refuse (the first
+    one) with ADMISSION, INHIBIT, the recorder and the journal exactly as before the call. Phase 3, the admission:
+    fresh (continue_generation None) refuses an ADMISSION in force (admission_held, with its owner and generation),
+    notes INHIBIT set before it (inhibit_preexisting) and admits owner; a restricted continuation needs ADMISSION at
+    exactly generation N and admitted (else continuation_generation_mismatch or continuation_needs_admitted_
+    generation) and continues the retained owner's generation with cleanup as the command chooses (True only for
+    the cleanup that makes release possible, reconcile; False runs step 8, so a dirty login ledger refuses
+    login_ledger_not_clean with ADMISSION and INHIBIT unchanged). An unreadable state is admission_state_unknown.
+    admit's own refusals propagate as AdmissionRefused. A continuation never places and never releases."""
+    if continue_generation is not None and (type(continue_generation) is not int or continue_generation < 1):
+        raise ValueError("continue_generation_invalid")
+    if type(cleanup) is not bool:
+        raise ValueError("admission_cleanup_must_be_boolean")
+    _check_owner(owner, purpose)
+    if continue_generation is None and purpose is None:
+        raise ValueError("admission_purpose_invalid")          # a fresh ADMISSION records its purpose
+    paths.ensure()
+    stack = ExitStack()
+    try:
+        held = stack.enter_context(file_lock(paths.live_owner_lock, timeout_s=0, clock=clock))
+    except LockBusy:
+        raise OwnershipRefused("owner_live") from None
+    except OSError:
+        raise OwnershipRefused("owner_state_unknown") from None
+    with stack:
+        if before_admit is not None:
+            codes = list(before_admit(paths))
+            if codes:
+                raise OwnershipRefused(codes[0], problems=codes)
+        try:
+            status = admission_status(paths)
+        except AdmissionRefused:
+            raise OwnershipRefused("admission_state_unknown") from None
+        current = status["admission"]
+        if continue_generation is None:
+            if current is not None:
+                raise OwnershipRefused("admission_held", owner=current["owner"], generation=current["generation"],
+                                       state=current["state"])
+            result = admit(paths, owner=owner, purpose=purpose, config=config, clock=clock, processes=processes,
+                           drain_timeout_s=drain_timeout_s)
+            ticket = OwnerTicket(owner=owner, command_owner=owner, generation=result["generation"], kind="fresh",
+                                 placement_allowed=True, inhibit_preexisting=bool(status["inhibit"]),
+                                 recorder=result["recorder"], held=held)
+        else:
+            if current is None or current["generation"] != continue_generation:
+                raise OwnershipRefused("continuation_generation_mismatch",
+                                       owner=None if current is None else current["owner"],
+                                       generation=None if current is None else current["generation"],
+                                       state=None if current is None else current["state"])
+            if current["state"] != "admitted":
+                raise OwnershipRefused("continuation_needs_admitted_generation", owner=current["owner"],
+                                       generation=current["generation"], state=current["state"])
+            result = admit(paths, owner=current["owner"], purpose=None, config=config, generation=continue_generation,
+                           cleanup=cleanup, clock=clock, processes=processes, drain_timeout_s=drain_timeout_s)
+            ticket = OwnerTicket(owner=current["owner"], command_owner=owner, generation=continue_generation,
+                                 kind="continuation", placement_allowed=False,
+                                 inhibit_preexisting=bool(status["inhibit"]), recorder=result["recorder"], held=held)
+        yield ticket
+
+
+def release_own(ticket, paths, *, config, extra_checks=(), clock=SYSTEM_CLOCK):
+    """Release the ticket's own generation at its orderly end -> {"released", "outcome", "problems", "owner",
+    "generation"}; never raises an admission refusal (the caller prints the result).
+
+    Only a fresh ticket whose INHIBIT did not predate it may release (else nothing is called: outcome
+    "continuation_never_releases" or "inhibit_preexisting"). The release runs the clean-state and step 8 rules and
+    every extra check under admission.lock, plus two of its own: owner_lock_lost unless this process still holds the
+    owner lock (its ticket, never a probe), and admission_owner_changed unless ADMISSION names exactly this owner,
+    generation and "admitted" (release itself checks the generation only), admission_state_unknown when it cannot
+    be read. On a refusal nothing changes: ADMISSION and INHIBIT stay, and the generation is named for Yu's typed
+    recording-release."""
+    out = {"released": False, "outcome": None, "problems": [], "owner": ticket.owner, "generation": ticket.generation}
+    if ticket.kind != "fresh":
+        return dict(out, outcome="continuation_never_releases", problems=["continuation_never_releases"])
+    if ticket.inhibit_preexisting:
+        return dict(out, outcome="inhibit_preexisting", problems=["inhibit_preexisting"])
+
+    def owner_held(_paths):
+        return [] if ticket.holds() else ["owner_lock_lost"]
+
+    def own_admission(checked_paths):
+        try:
+            current = admission_status(checked_paths)["admission"]
+        except AdmissionRefused:
+            return ["admission_state_unknown"]
+        named = None if current is None else (current["owner"], current["generation"], current["state"])
+        return [] if named == (ticket.owner, ticket.generation, "admitted") else ["admission_owner_changed"]
+
+    try:
+        result = release(paths, config=config, generation=ticket.generation, clock=clock,
+                         extra_checks=[*extra_checks, owner_held, own_admission])
+    except AdmissionRefused as exc:
+        return dict(out, outcome=exc.outcome, problems=list(exc.problems) or [exc.detail or exc.outcome],
+                    owner=exc.owner or ticket.owner)
+    return dict(out, released=bool(result["released"]), outcome=result["status"])

@@ -2007,7 +2007,8 @@ class LiveGatewayTests(unittest.TestCase):
         self.assertTrue(env.journal.fold(now_ns=env.clock.time_ns())["ref_roundtrip_verified"])
         self.assertEqual(kinds(env.journal)[-2:], ["probe_result", "ref_roundtrip_verified"])
         files = sorted(p.name for p in env.paths.live_tests_dir.rglob("*.json"))
-        self.assertEqual(files, ["cleared_cancelled.json", "cleared_lapsed.json", "current_orders.json"])
+        self.assertEqual(files, ["cleared_cancelled.json", "cleared_lapsed.json", "current_orders.json",
+                                 "current_orders_after_cancel.json"])
         # Place then cancel only: the replace step was removed with live replace in v1 (amendment A3, D2).
         self.assertNotIn("replace", result)
         probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]
@@ -2024,6 +2025,59 @@ class LiveGatewayTests(unittest.TestCase):
         self.assertNotIn("ref_roundtrip_verified", kinds(env3.journal)[-1:])
         # A place (not the probe) still needs A19.
         self.assertFalse(env3.journal.fold(now_ns=env3.clock.time_ns())["ref_roundtrip_verified"])
+
+    def test_probe_looks_up_by_ref_before_the_cancel(self):
+        """Regression (first live probe, 2026-10-21): Betfair drops a fully cancelled bet with nothing matched from
+        listCurrentOrders at once, so the ref lookup must come before the cancel or A19 can never be set."""
+        env = gw.build_live_gateway(self, roundtrip=False)
+        env.exchange.hide_cancelled_unmatched = True
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        self.assertTrue(result["found_by_ref"])
+        self.assertTrue(result["ref_roundtrip_verified"])
+        self.assertEqual(result["cancel"]["orders"][0]["state"], "EXECUTION_COMPLETE")
+        ref = result["place"]["orders"][0]["customer_order_ref"]
+        ops = [(name, keys) for name, keys in env.exchange.timeline
+               if name in ("placeOrders", "cancelOrders") or keys == (ref,)]
+        self.assertEqual([name for name, _ in ops],
+                         ["placeOrders", "listCurrentOrders", "cancelOrders", "listCurrentOrders"])
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertEqual((probe_result["lookup"], probe_result["current_count"],
+                          probe_result["current_after_cancel_count"]), ("before_cancel", 1, 0))
+        self.assertEqual(kinds(env.journal)[-2:], ["probe_result", "ref_roundtrip_verified"])
+        self.assertTrue(env.journal.fold(now_ns=env.clock.time_ns())["ref_roundtrip_verified"])
+
+    def test_probe_cancels_even_if_the_lookup_fails(self):
+        # A read error before the cancel: the cancel still goes out, no marker is set.
+        env = gw.build_live_gateway(self, roundtrip=False)
+        env.exchange.hide_cancelled_unmatched = True
+        gw.open_live(self, env, "live-probe", selection_id=gw.SELECTION)
+        # Enough failures to outlast the read client's retries, for the lookup and the read after the cancel.
+        env.exchange.read_failures["listCurrentOrders"] = [TransportError("read_timeout", phase="receive")
+                                                           for _ in range(20)]
+        result = env.gateway.probe("1.1", gw.SELECTION, confirm_token=env.token)
+        self.assertFalse(result["ref_roundtrip_verified"])
+        self.assertEqual(result["cancel"]["orders"][0]["state"], "EXECUTION_COMPLETE")
+        names = [name for name, _ in env.exchange.timeline]
+        self.assertLess(names.index("placeOrders"), names.index("cancelOrders"))
+        self.assertNotIn("ref_roundtrip_verified", kinds(env.journal))
+        probe_result = [e for e in env.journal.events() if e["kind"] == "probe_result"][-1]["payload"]
+        self.assertIsNotNone(probe_result["current_read_error"])
+        # An unexpected exception in the lookup: the cancel still goes out, then the exception propagates.
+        env2 = gw.build_live_gateway(self, roundtrip=False)
+        gw.open_live(self, env2, "live-probe", selection_id=gw.SELECTION)
+        original = env2.exchange.current
+
+        def exploding(**kw):
+            if kw.get("customer_order_refs"):
+                raise RuntimeError("lookup exploded")
+            return original(**kw)
+        env2.exchange.current = exploding
+        with self.assertRaises(RuntimeError):
+            env2.gateway.probe("1.1", gw.SELECTION, confirm_token=env2.token)
+        self.assertIn("cancelOrders", [name for name, _ in env2.exchange.timeline])
+        orders_state = env2.journal.fold(now_ns=env2.clock.time_ns())["orders"]
+        self.assertTrue(all(o["state"] != "EXECUTABLE" for o in orders_state.values()))
 
     def test_env_none_reads_the_process_environment(self):
         env = self.env

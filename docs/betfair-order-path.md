@@ -617,7 +617,8 @@ python3 -m betangel_research.betfair live-probe --market <id> --selection <id> -
 ```
 
 - 固定落 `LAY £1.00 @ 1.01`，selection 由 Yu 揀。就算 match 咗最多輸 £0.01（liability = 1.00 × 0.01）。除咗 V13 豁免，其他規則全部照過，cap 唔變。
-- 流程：喺攞 lock 之前打 `PROBE <market> <selection> LAY 1.01 1.00` 確認，之後落單 → 即刻用 betId 取消 → `listCurrentOrders(customerOrderRefs=[ref])` 確認搵到 → `listClearedOrders(CANCELLED|LAPSED, customerOrderRefs=[ref])`（T10）→ raw response 寫入 `live-tests/probe-<ts>/` → 加 `probe_result`；只有用 `customerOrderRef` 搵到先加 `ref_roundtrip_verified`。
+- 流程：喺攞 lock 之前打 `PROBE <market> <selection> LAY 1.01 1.00` 確認，之後落單 → **趁張單仲生效**用 `listCurrentOrders(customerOrderRefs=[ref], orderProjection=ALL)` 確認搵到 → 即刻用 betId 取消（查詢出錯或者拋 exception 都照取消）→ 再讀一次 `listCurrentOrders`，記低取消後仲搵唔搵到 → `listClearedOrders(CANCELLED|LAPSED, customerOrderRefs=[ref])`（T10）→ raw response 寫入 `live-tests/probe-<ts>/`（`current_orders.json`、`current_orders_after_cancel.json`、兩個 cleared）→ 加 `probe_result`（`lookup: before_cancel`）；只有取消前用 `customerOrderRef` 搵到先加 `ref_roundtrip_verified`。
+- 點解喺取消之前查（2026-10-21 第一次 live probe，私人收據 `probe-20261021T114801Z-…`）：一張完全冇 match、取消咗嘅單，取消之後即刻喺 `listCurrentOrders` 消失，兩分鐘後再讀都冇；settle 之前 CANCELLED／LAPSED 嘅 cleared views 亦冇佢。舊流程先取消後查，所以永遠搵唔到，A19 設唔到。改咗之後張單會多生效一次讀取嘅時間，最多都係輸 £0.01。
 - Probe 只係落單再取消：`--replace-step` 同 live replace 一齊刪咗（argparse exit 2），T11 剔走。Probe bet 冇取消到就 exit 5，stderr 寫明 betId 同點樣即刻取消（§1）。
 - T10 加長（F77）：probe 嘅 market settle 咗之後，用 `settle-market` 嗰兩個讀取睇 listMarketBook 返 CLOSED 返幾耐、listCurrentOrders 係咪唔再列已 settle 嘅 bet。
 

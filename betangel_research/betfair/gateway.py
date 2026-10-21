@@ -1810,7 +1810,8 @@ class OrderGateway:
     # --- probe ---------------------------------------------------------------------------------
 
     def probe(self, market_id, selection_id, *, confirm_token):
-        """Spec section 9.10: LAY 1.00 @ 1.01, cancelled at once; the only way to set ref_roundtrip_verified.
+        """Spec section 9.10: LAY 1.00 @ 1.01, looked up by ref, then cancelled at once; the only way to set
+        ref_roundtrip_verified.
 
         Place then cancel only: the replace step was removed with live replace in v1."""
         if self.mode != "live":
@@ -1827,12 +1828,24 @@ class OrderGateway:
             return out
         ref = placed["orders"][0]["customer_order_ref"]
         started_ns = self.clock.time_ns()
-        order = self._state()["orders"][ref]
-        if order["state"] == "EXECUTABLE" and order["bet_id"] is not None:
-            out["cancel"] = self._cancel(market_id, [{"bet_id": order["bet_id"], "size_reduction_p": None}],
-                                         kill_targets=None, reconcile=True)
-        current, current_error = self._probe_read(lambda: list(self.read.iter_current_orders(
-            customer_order_refs=[ref], order_projection="ALL")))
+
+        def current_by_ref():
+            return self._probe_read(lambda: list(self.read.iter_current_orders(
+                customer_order_refs=[ref], order_projection="ALL")))
+
+        # Look the bet up by ref before the cancel. Betfair drops a fully cancelled bet with nothing matched from
+        # listCurrentOrders at once, and it is not in the cleared views before settlement (first live probe,
+        # 2026-10-21), so a lookup after the cancel never finds it. The bet stays live for one more read and can
+        # lose at most £0.01. The cancel runs even if the lookup raises.
+        current, current_error = None, None
+        try:
+            current, current_error = current_by_ref()
+        finally:
+            order = self._state()["orders"][ref]
+            if order["state"] == "EXECUTABLE" and order["bet_id"] is not None:
+                out["cancel"] = self._cancel(market_id, [{"bet_id": order["bet_id"], "size_reduction_p": None}],
+                                             kill_targets=None, reconcile=True)
+        after, after_error = current_by_ref()
         cleared = {}
         for status in ("CANCELLED", "LAPSED"):
             cleared[status], _ = self._probe_read(lambda: list(self.read.iter_cleared_orders(
@@ -1841,11 +1854,14 @@ class OrderGateway:
         directory = self.paths.live_tests_dir / f"probe-{utc_compact_from_ns(self.clock.time_ns())}-{ref[-8:]}"
         self.paths.ensure()
         directory.mkdir(mode=0o700, parents=False, exist_ok=False)
-        receipts = {"current_orders.json": scrub(current), "cleared_cancelled.json": scrub(cleared["CANCELLED"]),
+        receipts = {"current_orders.json": scrub(current), "current_orders_after_cancel.json": scrub(after),
+                    "cleared_cancelled.json": scrub(cleared["CANCELLED"]),
                     "cleared_lapsed.json": scrub(cleared["LAPSED"])}
         hashes = {name: atomic_write_json(directory / name, {"items": value}) for name, value in receipts.items()}
-        self._append("probe_result", {"found_by_ref": found, "current_count": len(current or []),
-                                      "current_read_error": current_error,
+        self._append("probe_result", {"found_by_ref": found, "lookup": "before_cancel",
+                                      "current_count": len(current or []), "current_read_error": current_error,
+                                      "current_after_cancel_count": len(after or []),
+                                      "current_after_cancel_read_error": after_error,
                                       "cleared_cancelled_count": len(cleared["CANCELLED"] or []),
                                       "cleared_lapsed_count": len(cleared["LAPSED"] or []),
                                       "receipt_sha256": hashes},

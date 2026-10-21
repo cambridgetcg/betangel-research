@@ -93,6 +93,9 @@ class StatePaths:
         self.admission_file = self.recordings_dir / "ADMISSION"
         self.admission_generation_file = self.recordings_dir / "admission-generation.json"
         self.recorder_pid_file = self.recordings_dir / "recorder.pid"
+        # The live owner's lock (P1-08 §3.4): held, never written, by one owning command from before its admission
+        # and credential read until after its own release; the kernel lets go of it when that process dies.
+        self.live_owner_lock = self.recordings_dir / ".live-owner.lock"
         self.recordings_index_dir = self.recordings_dir / "index"
         # RS-19 pilot evidence and registration receipts; made lazily (0700) by their writers, never by ensure().
         self.pilot_dir = self.profile_dir / "pilot"

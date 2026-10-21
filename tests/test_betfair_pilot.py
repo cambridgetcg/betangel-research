@@ -13,6 +13,7 @@ are as Betfair documents them, not repo-verified.
 """
 
 import ast
+import copy
 import dataclasses
 from decimal import Decimal, InvalidOperation, localcontext
 from fractions import Fraction
@@ -421,6 +422,17 @@ class Pilot:
 def only(state):
     (record,) = state.place_records
     return record
+
+
+def occurrences_of(stops, reason, decision_seq):
+    """The ids of the stop occurrences '<reason>-<decision seq>-<raising seq>' for one record (Nuance R2-1)."""
+    head = "-".join(reason.split("_")) + f"-{decision_seq}-"
+    return [s["stop_id"] for s in stops if s["reason"] == reason and s["stop_id"].startswith(head)]
+
+
+def occurrence(stops, reason, decision_seq):
+    (found,) = occurrences_of(stops, reason, decision_seq)
+    return found
 
 
 def codes(state):
@@ -1074,7 +1086,9 @@ class Capacity(unittest.TestCase):
                                 row_body=b"", book_body=b"", observed_wall_ns=DAY0 + 11 * HOUR,
                                 observed_monotonic_ns=1)
         self.assertEqual(result["refusal"], "reservation_unknown")
-        self.assertEqual([(s["scope"], s["reason"]) for s in result["stops"]], [("review", "reservation_unknown")])
+        self.assertEqual((result["stops"], result["refusal_record"]["code"]), ([], "reservation_unknown"))
+        seq = clean.inner(result["refusal_record"])
+        self.assertEqual(stop_ids(clean.fold().due_stops), [(f"reservation-unknown-999-{seq}", "review")])
 
     def test_interrupted_skip(self):
         journal_ = Pilot(pt4=True)
@@ -1148,7 +1162,7 @@ class Capacity(unittest.TestCase):
                                  row_body=row_body, book_body=book_body, observed_wall_ns=off - 295 * S,
                                  observed_monotonic_ns=1)
         self.assertEqual((refused["refusal"], refused["record"]), ("reservation_other_open", None))
-        self.assertEqual(refused["stops"][0]["stop_id"], f"reservation-other-open-{res}")
+        self.assertEqual((refused["stops"], refused["refusal_record"]["reservation_seq"]), ([], res))
         good = pilot.classify(C, state, reservation_seq=res, open_id="open-a", session_id=session,
                               registration_receipt_sha256=journal_.registration, customer_order_ref="ref-b",
                               row_body=row_body, book_body=book_body, observed_wall_ns=off - 295 * S,
@@ -1195,8 +1209,9 @@ class Capacity(unittest.TestCase):
         session = journal_.arm(0)
         result, placed, res = journal_.classify(session)
         self.assertEqual((result["refusal"], result["record"]), ("stop_active", None))
-        self.assertEqual([(s["scope"], s["reason"], s["stop_id"]) for s in result["stops"]],
-                         [("review", "stop_active", f"stop-active-{res}")])
+        self.assertEqual((result["stops"], result["refusal_record"]["code"]), ([], "stop_active"))
+        seq = journal_.inner(result["refusal_record"])
+        self.assertIn((f"stop-active-{res}-{seq}", "review"), stop_ids(journal_.fold().due_stops))
         self.assertLess(stop_seq, res)
 
     def test_session_checks(self):
@@ -1296,8 +1311,9 @@ class LedgerPinned(unittest.TestCase):
                 gaps = [s for s in state.due_stops if s["reason"] == "cleared_figure_gap"]
                 self.assertEqual(bool(gaps), stop)
                 if stop:
+                    l_seq = only(state).l_rows[0]["seq"]
                     self.assertEqual((gaps[0]["scope"], gaps[0]["stop_id"]),
-                                     ("review", f"cleared-figure-gap-{p.seq}"))
+                                     ("review", f"cleared-figure-gap-{p.seq}-{l_seq}"))
 
     def test_ledger_contradiction_restart(self):
         """Place report 0; C1 (0 matched, 2 cancelled) -> 0; C2 (1 matched, 1 cancelled) -> -200 and a review
@@ -1320,14 +1336,14 @@ class LedgerPinned(unittest.TestCase):
         self.assertEqual(state.pause_fired, {})
         c1 = [e["seq"] for e in journal_.events if e["kind"] == "note"
               and e["payload"]["pilot"]["type"] == "capture_c" and e["customer_order_ref"] == target.ref][0]
-        journal_.c_read(target, matched="1.00", cancelled="1.00", at=journal_.now + S)
+        c2 = journal_.c_read(target, matched="1.00", cancelled="1.00", at=journal_.now + S)
         for _ in range(2):
             state = journal_.fold()
             rec = state.place_records[0]
             self.assertEqual((rec.ledger["value_p"], rec.ledger["reason"], state.equity_p),
                              (-200, "contradiction", -15100))
             due = {(s["stop_id"], s["scope"]) for s in state.due_stops}
-            self.assertEqual(due, {(f"ledger-contradiction-{target.seq}", "review"),
+            self.assertEqual(due, {(f"ledger-contradiction-{target.seq}-{c2}", "review"),
                                    ("pause-15000", "review"), ("pause-15000-session", "session")})
             self.assertIn(-15000, state.pause_fired)
             self.assertEqual(state, pilot.fold(json.loads(json.dumps(journal_.events)), contract=C,
@@ -1432,7 +1448,7 @@ class LedgerAdversarial(unittest.TestCase):
                     self.assertEqual(rec.measurement["class"], cls)
         journal_, p = self.one()
         journal_.win(p, commission="0.10")
-        self.assertIn(f"commission-gap-{p.seq}", [s["stop_id"] for s in journal_.fold().due_stops])
+        self.assertEqual(len(occurrences_of(journal_.fold().due_stops, "commission_gap", p.seq)), 1)
         mismatch, q = self.one()
         mismatch.win(q, commission=None)
         seq = mismatch.note("commission_verified", market_id=q.market, our_commission_p=8, website_commission_p=9)
@@ -1478,7 +1494,7 @@ class LedgerAdversarial(unittest.TestCase):
         for _ in range(2):
             state = journal_.fold()
             self.assertEqual((only(state).ledger["part"], only(state).ledger["value_p"]), ("W", -200))
-            self.assertIn(f"ledger-contradiction-{p.seq}", [s["stop_id"] for s in state.due_stops])
+            occurrence(state.due_stops, "ledger_contradiction", p.seq)
             self.assertEqual(only(state).execution["P"], Decimal("3.00"))
         for change in (dict(price="3.05"), dict(profit="3.99", outcome="WIN"), dict(outcome="LOSE", profit="4.00")):
             with self.subTest(change=change):
@@ -1643,16 +1659,15 @@ class FoldProtocol(unittest.TestCase):
     def test_due_stops_journal_then_ack(self):
         journal_, p = self.contradicted()
         state = journal_.fold()
-        self.assertEqual([s["stop_id"] for s in state.due_stops], [f"ledger-contradiction-{p.seq}"])
+        stop_id = occurrence(state.due_stops, "ledger_contradiction", p.seq)
+        self.assertEqual([s["stop_id"] for s in state.due_stops], [stop_id])
         for stop in state.due_stops:
             journal.prepare_event("note", {"pilot": stop})
         journal_.journal_due(state)
         state = journal_.fold()
         self.assertEqual(state.due_stops, ())
-        self.assertEqual([(s["stop_id"], s["acked_seq"]) for s in state.active_stops],
-                         [(f"ledger-contradiction-{p.seq}", None)])
+        self.assertEqual([(s["stop_id"], s["acked_seq"]) for s in state.active_stops], [(stop_id, None)])
         flags = dict(journal_reconciled=True, unresolved_order=False)
-        stop_id = f"ledger-contradiction-{p.seq}"
         self.assertEqual(pilot.ack_check(state, stop_id, cause_written=True, **flags), "ack_ledger_gap_open")
         journal_.note("gap_resolved", stop_id=stop_id, decision_seq=p.seq, cause_written=True)
         state = journal_.fold()
@@ -1680,11 +1695,12 @@ class FoldProtocol(unittest.TestCase):
         state = journal_.fold()
         journal_.journal_due(state)
         journal_.ack("pause-15000")
-        journal_.ack(f"ledger-contradiction-{target.seq}", cause=True)
+        journal_.ack(occurrence(state.due_stops, "ledger_contradiction", target.seq), cause=True)
         journal_.c_read(spare, matched="1.00", cancelled="1.00", at=journal_.now + S)
         state = journal_.fold()
         self.assertEqual(state.equity_p, -15300)
-        self.assertEqual([s["stop_id"] for s in state.due_stops], [f"ledger-contradiction-{spare.seq}"])
+        self.assertEqual([s["stop_id"] for s in state.due_stops],
+                         [occurrence(state.due_stops, "ledger_contradiction", spare.seq)])
         self.assertEqual(state.pause_acked.keys(), {-15000})
 
     def test_replacement_contract_refused(self):
@@ -1863,14 +1879,14 @@ class ReviewFindings(unittest.TestCase):
         journal_.report(p, 0, at=p.off + 3 * MIN)
         state = journal_.fold()
         self.assertEqual((only(state).ledger["value_p"], only(state).ledger["reason"]), (-200, "contradiction"))
-        self.assertIn(f"ledger-contradiction-{p.seq}", [s["stop_id"] for s in state.due_stops])
+        occurrence(state.due_stops, "ledger_contradiction", p.seq)
         # probe1 case B: no place report (UNKNOWN); C1 0 matched, then C2 1.00 matched.
         journal_, p = one()
         journal_.c_read(p, matched="0.00", cancelled="2.00", price=None)
         journal_.c_read(p, matched="1.00", cancelled="1.00", at=p.off + 2 * MIN)
         state = journal_.fold(now=p.off + 7 * DAY_NS + 1)
         self.assertEqual((only(state).ledger["value_p"], only(state).ledger["reason"]), (-200, "contradiction"))
-        self.assertIn(f"ledger-contradiction-{p.seq}", [s["stop_id"] for s in state.due_stops])
+        occurrence(state.due_stops, "ledger_contradiction", p.seq)
         # probe1 case A: a reconcile showed 200 matched, then C1 shows 0: C1 is never used.
         journal_, p = one()
         journal_.reconcile(p, 200, at=p.off + 30 * S)
@@ -1932,8 +1948,7 @@ class ReviewFindings(unittest.TestCase):
         self.assertIsNone(early.ending)
         refused = pilot.classify(C_ONE, early, **args)                # a head folded before the book was read
         self.assertEqual((refused["refusal"], refused["record"]), ("state_before_observation", None))
-        self.assertEqual([(s["scope"], s["reason"]) for s in refused["stops"]],
-                         [("review", "state_before_observation")])
+        self.assertEqual(refused["refusal_record"]["code"], "state_before_observation")
         at = journal_.fold(now=observed, live_open_id="open-b", contract=C_ONE)
         self.assertEqual(at.ending["reason"], "n_reached")
         self.assertEqual(pilot.classify(C_ONE, at, **args)["refusal"], "placing_ended")
@@ -2296,8 +2311,8 @@ class AstraReview(unittest.TestCase):
                                  customer_order_ref="ref-x", row_body=b"", book_body=b"",
                                  observed_wall_ns=DAY0 + 9 * HOUR, observed_monotonic_ns=1)
         self.assertEqual(refused["refusal"], "reservation_unknown")
-        refusing.inner(refused["refusal_record"])
-        self.assertEqual(stop_ids(refusing.fold().due_stops), stop_ids(refused["stops"]))
+        seq = refusing.inner(refused["refusal_record"])
+        self.assertEqual(stop_ids(refusing.fold().due_stops), [(f"reservation-unknown-999-{seq}", "review")])
 
     def test_astra_3_s_basis_price_and_commission_contradictions(self):
         """A settled winner (S +392) and 74 losers: equity -14408. A later EXECUTION_COMPLETE C at 3.50 restores W at
@@ -2307,12 +2322,12 @@ class AstraReview(unittest.TestCase):
         placed = bulk(journal_, 75, lambda j, p: j.win(p) if p.ref == "ref-1" else j.lose(p))
         before = journal_.fold()
         self.assertEqual((before.equity_p, before.place_records[0].ledger["value_p"]), (-14408, 392))
-        journal_.c_read(placed[0], at=journal_.now + S, price="3.50")
+        read = journal_.c_read(placed[0], at=journal_.now + S, price="3.50")
         for after in (journal_.fold(), replayed(journal_)):
             target = after.place_records[0]
             self.assertEqual((target.ledger["part"], target.ledger["value_p"], after.equity_p), ("W", -200, -15000))
             self.assertEqual(target.execution, before.place_records[0].execution)
-            self.assertEqual(stop_ids(after.due_stops), [(f"ledger-contradiction-{placed[0].seq}", "review"),
+            self.assertEqual(stop_ids(after.due_stops), [(f"ledger-contradiction-{placed[0].seq}-{read}", "review"),
                                                          ("pause-15000", "review"),
                                                          ("pause-15000-session", "session")])
             self.assertIn(-15000, after.pause_fired)
@@ -2332,11 +2347,11 @@ class AstraReview(unittest.TestCase):
         later = Pilot(pt4=True)                             # every capture is checked, not only captured[0]
         q = later.place(later.arm(0))
         later.win(q, commission=None)
-        later.commission(q, "0.20")
+        bad = later.commission(q, "0.20")
         later.commission(q, "0.08")
         state = later.fold()
         self.assertEqual((only(state).ledger["part"], only(state).ledger["reason"]), ("W", "commission_gap"))
-        self.assertEqual(sorted(state.resolved_gaps), [f"commission-gap-{q.seq}"])     # the later figure agrees
+        self.assertEqual(sorted(state.resolved_gaps), [f"commission-gap-{q.seq}-{bad}"])  # the later figure agrees
 
     def test_astra_4_benign_head_change_is_rechecked_cleanly(self):
         """An unrelated note one second after the observation: classify on the latest head, same bytes, PLACE
@@ -2472,20 +2487,21 @@ class AstraReview(unittest.TestCase):
                 journal_.send(p)
                 journal_.c_read(p, at=p.off - 290 * S)
                 placed.append(p)
+            gaps = []
             for p in placed:
                 journal_.closed(p, ours="WINNER", at=max(journal_.now + S, p.off + 20 * MIN))
                 journal_.settle(p, at=journal_.now + S)
-                journal_.l_row(p, profit="4.03", outcome="WIN", at=journal_.now + S)
+                gaps.append(f"cleared-figure-gap-{p.seq}-"
+                            f"{journal_.l_row(p, profit='4.03', outcome='WIN', at=journal_.now + S)}")
                 journal_.commission(p, "0.08", at=journal_.now + S)
             journal_.journal_due(journal_.fold())
-            return journal_, placed
+            return journal_, placed, gaps
 
         flags = dict(journal_reconciled=True, unresolved_order=False, cause_written=True)
         for order in ((0, 1), (1, 0)):
             with self.subTest(ack_order=order):
-                journal_, placed = two_gaps()
+                journal_, placed, gaps = two_gaps()
                 state = journal_.fold()
-                gaps = [f"cleared-figure-gap-{p.seq}" for p in placed]
                 self.assertEqual([pilot.ack_check(state, g, **flags) for g in gaps], ["ack_ledger_gap_open"] * 2)
                 journal_.l_row(placed[0], profit="4.00", outcome="WIN", at=journal_.now + S)    # agrees: resolved
                 state = journal_.fold()
@@ -2620,10 +2636,261 @@ class BspFrontier(unittest.TestCase):
         bad = [journal_.inner({"v": 1, "type": "bsp_decided", "contract_sha256": C.sha256, "decided_at_ns": p.off,
                                "outcome": "bsp", "actual_sp": None, "read_seq": None}, customer_order_ref=p.ref),
                journal_.note("bsp_decided", ref_col="ref-none", decided_at_ns=p.off, outcome="none", actual_sp=None,
-                             read_seq=None),
-               journal_.note("bsp_decided", at=p.off + HOUR, ref_col=p.ref, decided_at_ns=p.off + 2 * HOUR,
-                             outcome="none", actual_sp=None, read_seq=None)]
-        self.assertEqual(journal_.fold().invalid_records, tuple(bad))
+                             read_seq=None)]
+        self.assertEqual(journal_.fold().invalid_records, tuple(bad))      # a wrong time is a mismatch (R2-5)
+
+
+R2_FLAGS = dict(journal_reconciled=True, unresolved_order=False, cause_written=True)
+
+
+class AstraReviewR2(unittest.TestCase):
+    """Regression tests for Astra's second review of 1763130 (astra-review-p1-05-r2.md), on the inputs of her
+    probes (p1-05/astra-r2-*). Each fails on 1763130."""
+
+    def one_gap(self, kind):
+        journal_ = Pilot(pt4=True)
+        p = journal_.place(journal_.arm(0))
+        if kind == "profit":
+            journal_.win(p, profit="4.03")
+            raised = only(journal_.fold()).l_rows[0]["seq"]
+            stop_id = f"cleared-figure-gap-{p.seq}-{raised}"
+        else:
+            journal_.win(p, commission="0.20")
+            raised = [e["seq"] for e in journal_.events if e["kind"] == "note"
+                      and e["payload"]["pilot"]["type"] == "capture_commission"][0]
+            stop_id = f"commission-gap-{p.seq}-{raised}"
+        journal_.journal_due(journal_.fold())
+        self.assertEqual([s["stop_id"] for s in journal_.fold().active_stops], [stop_id])
+        return journal_, p, stop_id
+
+    @staticmethod
+    def figure(journal_, p, kind, agreeing):
+        if kind == "profit":
+            return journal_.l_row(p, profit="4.00" if agreeing else "4.05", outcome="WIN", at=journal_.now + S)
+        return journal_.commission(p, "0.08" if agreeing else "0.30", at=journal_.now + S)
+
+    def resolve(self, journal_, p, stop_id, kind, method):
+        if method == "automatic":
+            return self.figure(journal_, p, kind, True)
+        return journal_.note("gap_resolved", stop_id=stop_id, decision_seq=p.seq, cause_written=True)
+
+    def test_r2_1_a_gap_recurs_before_its_ack(self):
+        """Gap, resolution (agreeing figure or gap_resolved), then a new disagreement: a new unacknowledged
+        occurrence, so the first stop's ACK is refused while it is open (astra-r2-ledger-probes:
+        gap_lifecycle, bad_again_before_ack)."""
+        for kind in ("profit", "commission"):
+            for method in ("automatic", "explicit"):
+                with self.subTest(kind=kind, resolution=method):
+                    journal_, p, stop_id = self.one_gap(kind)
+                    resolution = self.resolve(journal_, p, stop_id, kind, method)
+                    self.assertIsNone(pilot.ack_check(journal_.fold(), stop_id, **R2_FLAGS))
+                    bad = self.figure(journal_, p, kind, False)
+                    state = journal_.fold()
+                    reason = "cleared_figure_gap" if kind == "profit" else "commission_gap"
+                    reopened = f"{'-'.join(reason.split('_'))}-{p.seq}-{bad}"
+                    self.assertEqual(state.resolved_gaps, {stop_id: resolution})
+                    self.assertEqual([s["stop_id"] for s in state.due_stops], [reopened])
+                    self.assertEqual(pilot.ack_check(state, stop_id, **R2_FLAGS), "ack_ledger_gap_open")
+                    self.assertEqual(only(state).ledger["value_p"], -200)
+                    self.assertEqual(state, replayed(journal_))
+
+    def test_r2_1_a_gap_recurs_after_a_valid_ack_and_a_new_arm(self):
+        """ACK while the figures agree, ARM the next day, then a fresh bad capture: a new occurrence ends the new
+        session, and no PLACE follows (astra-r2-ledger-probes: legitimate_ack_then_new_session_then_bad)."""
+        for kind in ("profit", "commission"):
+            for method in ("automatic", "explicit"):
+                with self.subTest(kind=kind, resolution=method):
+                    journal_, p, stop_id = self.one_gap(kind)
+                    self.resolve(journal_, p, stop_id, kind, method)
+                    journal_.ack(stop_id, cause=True)
+                    session = journal_.arm(1)
+                    self.assertIsNone(journal_.fold().sessions[-1]["ended_seq"])
+                    bad = self.figure(journal_, p, kind, False)
+                    fresh = journal_.fold()
+                    self.assertEqual(len(fresh.due_stops), 1)
+                    self.assertTrue(fresh.due_stops[0]["stop_id"].endswith(f"-{p.seq}-{bad}"))
+                    self.assertEqual(fresh.sessions[-1]["ended_seq"], bad)
+                    result, placed, _ = journal_.classify(session)
+                    self.assertIsNone(placed)
+                    self.assertEqual(journal_.fold().place_records[0].ledger["value_p"], -200)
+
+    def test_r2_1_a_contradiction_recurs_after_its_ack(self):
+        journal_ = Pilot(pt4=True)
+        p = journal_.place(journal_.arm(0))
+        journal_.win(p)
+        first = journal_.c_read(p, at=journal_.now + S, price="3.50")
+        stop_id = f"ledger-contradiction-{p.seq}-{first}"
+        journal_.journal_due(journal_.fold())
+        journal_.note("gap_resolved", stop_id=stop_id, decision_seq=p.seq, cause_written=True)
+        journal_.ack(stop_id, cause=True)
+        journal_.c_read(p, at=journal_.now + S, price="3.00")              # agrees: no new occurrence
+        self.assertEqual(journal_.fold().due_stops, ())
+        again = journal_.c_read(p, at=journal_.now + S, price="3.60")
+        self.assertEqual(stop_ids(journal_.fold().due_stops), [(f"ledger-contradiction-{p.seq}-{again}", "review")])
+
+    def test_r2_4_each_refusal_note_is_its_own_occurrence(self):
+        """Day 0: a refusal, its stop journaled and ACKed. Day 1: the same refusal again, persisted before an
+        interruption: its own unacknowledged stop ends the new session (astra-r2-ledger-probes:
+        repeated_refusal)."""
+        journal_ = Pilot(pt4=True)
+        notes = []
+        for day in (0, 1):
+            session = journal_.arm(day)
+            at = DAY0 + day * DAY_NS + 9 * HOUR
+            refused = pilot.classify(C, journal_.fold(now=at), reservation_seq=999, open_id=f"missing-{day}",
+                                     session_id=session, registration_receipt_sha256=journal_.registration,
+                                     customer_order_ref=f"bad-{day}", row_body=b"", book_body=b"",
+                                     observed_wall_ns=at, observed_monotonic_ns=1)
+            self.assertEqual(refused["refusal"], "reservation_unknown")
+            notes.append(journal_.inner(refused["refusal_record"], at=at + S))
+            state = journal_.fold()
+            stop_id = f"reservation-unknown-999-{notes[-1]}"
+            self.assertEqual([s["stop_id"] for s in state.due_stops], [stop_id])
+            self.assertEqual(state.sessions[-1]["ended_seq"], notes[-1])
+            if day == 0:
+                journal_.journal_due(state)
+                self.assertEqual([s["stop_id"] for s in journal_.fold().active_stops], [stop_id])   # one occurrence
+                self.assertIsNone(pilot.ack_check(journal_.fold(), stop_id, **R2_FLAGS))
+                journal_.ack(stop_id, cause=True)
+        result, placed, _ = journal_.classify(session)
+        self.assertIsNone(placed)
+        self.assertEqual(journal_.fold(), replayed(journal_))
+
+    @classmethod
+    def setUpClass(cls):
+        """Astra's full N = 400 journal: 399 eligible winners, then the 400th, C only, final at its deadline."""
+        journal_ = Pilot(pt4=True)
+        for i in range(400):
+            if i % 25 == 0:
+                session = journal_.arm(i // 25)
+            p = journal_.place(session)
+            if i < 399:
+                journal_.win(p)
+            else:
+                journal_.send(p)
+                journal_.c_read(p)
+                journal_.closed(p)
+                last = p
+        cls.full_n, cls.deadline = journal_, last.off + 7 * DAY_NS
+
+    def n_journal(self):
+        journal_ = copy.deepcopy(self.full_n)
+        session = journal_.arm(22)
+        result, placed, _ = journal_.classify(session, off=self.deadline + 293 * S)  # observed -2 s, appended -1 s
+        self.assertEqual((result["record"]["outcome"], placed.record["lifetime_slot"]), ("PLACE", 401))
+        return journal_, placed
+
+    def test_r2_2_a_send_after_n_reached_by_time(self):
+        """Slot 401 placed validly before N completes at deadline + 1 ns, but submitted at + 7 s and reported at
+        + 8 s: a send after the ending (astra-r2-root-probes: authority_probe, n_during_send)."""
+        journal_, p = self.n_journal()
+        journal_.intent(p, at=self.deadline + 6 * S)
+        journal_.submit(p, at=self.deadline + 7 * S)
+        journal_.report(p, at=self.deadline + 8 * S)
+        state = journal_.fold()
+        self.assertEqual(codes(state), ["sent_after_ending"])
+        self.assertEqual(state.place_records[-1].measurement["class"], "protocol_violation")
+
+    def test_r2_2_not_sent_and_sent_before_the_ending(self):
+        journal_, p = self.n_journal()
+        journal_.intent(p, at=self.deadline + 6 * S)
+        journal_.submit(p, at=self.deadline + 7 * S)
+        journal_.failed(p, at=self.deadline + 8 * S)                      # FAILED(transport_not_sent): no bet
+        self.assertEqual(codes(journal_.fold()), [])
+        before, q = self.n_journal()
+        before.intent(q, at=self.deadline - S // 2)
+        before.submit(q, at=self.deadline - S // 4)                       # sent before the ending
+        before.report(q, at=self.deadline + 8 * S)                        # its report after it
+        before.c_read(q, at=self.deadline + MIN)
+        self.assertEqual(codes(before.fold()), [])
+
+    def test_r2_2_a_send_after_the_lifetime_cap(self):
+        """The 495th record's own send is allowed; an earlier record's send after it is not."""
+        journal_ = Pilot(pt4=True)
+        placed = bulk(journal_, 495)
+        last = placed[-1]
+        journal_.send(last, at=None)
+        self.assertEqual(codes(journal_.fold()), [])
+        earlier = placed[-2]
+        journal_.intent(earlier, at=journal_.now + S)
+        journal_.submit(earlier, at=journal_.now + S)
+        journal_.report(earlier, at=journal_.now + S)
+        self.assertIn("sent_after_ending", codes(journal_.fold()))
+
+    def unsent(self, failed):
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        _, p, _ = journal_.classify(session)
+        if failed:
+            journal_.intent(p)
+            journal_.submit(p)
+            journal_.failed(p)
+        journal_.closed(p, sp="3.10")
+        return journal_, p
+
+    def test_r2_3_unsent_frontier_round_trips(self):
+        """FAILED_NOT_SENT and no submit (its open ended): final definitely_unsent before seven days with no
+        execution row; a finalized note with row None round-trips with no stop, the final time is the derived one,
+        and later events never move it (astra-r2-analysis-probes: frontier_probe)."""
+        for failed in (True, False):
+            with self.subTest(failed_not_sent=failed):
+                journal_, p = self.unsent(failed)
+                first = only(journal_.fold())
+                self.assertEqual((first.measurement["class"], first.measurement["final"], first.execution["row"]),
+                                 ("definitely_unsent", True, None))
+                self.assertLess(first.measurement["final_at_ns"], p.off + 7 * DAY_NS)
+                journal_.note("finalized", at=journal_.now + S, ref_col=p.ref,
+                              final_at_ns=first.measurement["final_at_ns"], row=None,
+                              **{"class": "definitely_unsent"})
+                journal_.add("note", {"operator": "later"}, at=journal_.now + HOUR)
+                for state in (journal_.fold(), replayed(journal_)):
+                    self.assertEqual((state.invalid_records, state.due_stops), ((), ()))
+                    self.assertEqual(only(state).measurement, first.measurement)
+        journal_, p = self.unsent(False)                               # at the deadline its row is 5
+        late = only(journal_.fold(now=p.off + 7 * DAY_NS + 2 * S))
+        self.assertEqual((late.execution["row"], late.measurement["class"]), (5, "definitely_unsent"))
+        journal_.note("finalized", at=p.off + 7 * DAY_NS + 2 * S, ref_col=p.ref,
+                      final_at_ns=late.measurement["final_at_ns"], row=5, **{"class": "definitely_unsent"})
+        self.assertEqual(journal_.fold().due_stops, ())
+
+    def test_r2_3_the_note_class_is_never_adopted(self):
+        journal_, p = self.unsent(True)
+        first = only(journal_.fold())
+        claimed = journal_.note("finalized", at=journal_.now + S, ref_col=p.ref,
+                                final_at_ns=first.measurement["final_at_ns"], row=None,
+                                **{"class": "protocol_violation"})
+        state = journal_.fold()
+        self.assertEqual((only(state).measurement["class"], stop_ids(state.due_stops)),
+                         ("definitely_unsent", [(f"finalized-mismatch-{claimed}", "review")]))
+        bad = journal_.note("finalized", at=journal_.now + S, ref_col=p.ref,
+                            final_at_ns=first.measurement["final_at_ns"], row=None, **{"class": "eligible"})
+        self.assertIn(bad, journal_.fold().invalid_records)          # row None only for classes 1 and 2
+
+    def test_r2_5_frontier_times_must_match_exactly(self):
+        """decided_at_ns or final_at_ns of 0 (a wrong past time) or in the future: the mismatch stop, the derived
+        values kept (astra-r2-analysis-probes: wrong_frontier_timestamps)."""
+        for label, delta in (("past", None), ("future", HOUR)):
+            with self.subTest(time=label):
+                journal_ = Pilot(pt4=True)
+                _, p, _ = journal_.classify(journal_.arm(0))
+                journal_.send(p)
+                journal_.c_read(p, price="3.44")
+                book = journal_.closed(p, sp="3.10")
+                derived = only(journal_.fold())
+                decided = 0 if delta is None else derived.bsp["decided_at_ns"] + delta
+                bsp_note = journal_.note("bsp_decided", ref_col=p.ref, decided_at_ns=decided, outcome="bsp",
+                                         actual_sp="3.10", read_seq=book)
+                deadline = p.off + 7 * DAY_NS
+                final = only(journal_.fold(now=deadline + 2 * S)).measurement
+                final_at = 0 if delta is None else final["final_at_ns"] + delta
+                final_note = journal_.note("finalized", at=deadline + 2 * S, ref_col=p.ref, final_at_ns=final_at,
+                                           row=3, **{"class": "eligible"})
+                state = journal_.fold()
+                self.assertEqual(stop_ids(state.due_stops), sorted([(f"bsp-decided-mismatch-{bsp_note}", "review"),
+                                                                    (f"finalized-mismatch-{final_note}", "review")]))
+                self.assertEqual((only(state).bsp["decided_at_ns"], only(state).measurement), (
+                    derived.bsp["decided_at_ns"], final))
+                self.assertEqual(state.invalid_records, ())
 
 
 class Finalization(unittest.TestCase):
@@ -2767,7 +3034,7 @@ class Finalization(unittest.TestCase):
         rec = only(state)
         self.assertEqual((rec.execution["consistency_failed"], rec.execution["size"], rec.ledger["value_p"]),
                          (True, None, -200))
-        self.assertIn(f"consistency-failed-{p.seq}", [s["stop_id"] for s in state.due_stops])
+        occurrence(state.due_stops, "consistency_failed", p.seq)
         self.assertFalse(pilot.consistency_check(Decimal("1.00"), place_report_matched_p=150, c=None))
         self.assertTrue(pilot.consistency_check(Decimal("1.00"), place_report_matched_p=None, c=None))
 

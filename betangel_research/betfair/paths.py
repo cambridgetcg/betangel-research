@@ -87,6 +87,13 @@ class StatePaths:
         self.catalogue_cache_dir = self.profile_dir / "catalogue-cache"
         self.recordings_dir = self.profile_dir / "recordings"
         self.recorder_lock = self.recordings_dir / ".recorder.lock"
+        # Recording admission (admission.py): shared by every checkout and worktree of this profile.
+        self.admission_lock = self.recordings_dir / "admission.lock"
+        self.inhibit_file = self.recordings_dir / "INHIBIT"
+        self.admission_file = self.recordings_dir / "ADMISSION"
+        self.admission_generation_file = self.recordings_dir / "admission-generation.json"
+        self.recorder_pid_file = self.recordings_dir / "recorder.pid"
+        self.recordings_index_dir = self.recordings_dir / "index"
 
     def journal_path(self, mode):
         if mode not in JOURNAL_MODES:
@@ -106,7 +113,8 @@ class StatePaths:
     def describe(self):
         names = ("root", "kill_file", "gateway_lock", "accounts_file", "profile_dir", "config_path",
                  "login_ledger", "paper_lock", "anchor_lock", "live_tests_dir", "reads_dir", "catalogue_cache_dir",
-                 "recordings_dir", "recorder_lock")
+                 "recordings_dir", "recorder_lock", "admission_lock", "inhibit_file", "admission_file",
+                 "recorder_pid_file", "recordings_index_dir")
         described = {name: str(getattr(self, name)) for name in names}
         described["journal_paper"] = str(self.journal_path("paper"))
         described["journal_live"] = str(self.journal_path("live"))

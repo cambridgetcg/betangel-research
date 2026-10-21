@@ -268,6 +268,39 @@ def ledger_status(config, paths, *, clock=SYSTEM_CLOCK):
             "emergency_login_allowed": not (banned or failures_block)}
 
 
+def ledger_review(config, paths, *, clock=SYSTEM_CLOCK):
+    """What recording admission's step 8 reads (admission.py): no lock, no write, no network.
+
+    The barrier is the last login_reset row or the last outcome row whose outcome is a success (the rows
+    _summarise lets clear the failure count). After it, every failure outcome counts (not_sent changes
+    nothing, as in _summarise) and so does every login_attempt with no outcome row anywhere in the
+    ledger, whatever its age: unlike _summarise, an attempt still in flight is not given the benefit of
+    the doubt. A ban in force counts whatever the barrier. An invalid line raises
+    AuthError("login_ledger_unreadable") exactly as ledger_status does (a repair reset still skips the
+    lines before it); the repair reset itself is a login_reset row, so it is a barrier, and its ban
+    counts while in force. Clean means no ban, no consecutive failure, and nothing after the barrier.
+    """
+    now_ns = clock.time_ns()
+    rows = _read_ledger(paths.login_ledger)
+    summary = _summarise(rows, now_ns, _pending_s(config))
+    banned = summary["banned_until_ns"] is not None and summary["banned_until_ns"] > now_ns
+    barrier, barrier_row = -1, None
+    for position, row in enumerate(rows):
+        if row["kind"] == "login_reset" or (row["kind"] == "login_outcome" and row.get("outcome") in SUCCESS_OUTCOMES):
+            barrier, barrier_row = position, row
+    resolved = {row.get("attempt_id") for row in rows if row["kind"] == "login_outcome"}
+    failures = sum(1 for position, row in enumerate(rows) if position > barrier and row["kind"] == "login_outcome"
+                   and row.get("outcome") not in SUCCESS_OUTCOMES and row.get("outcome") != NOT_SENT_OUTCOME)
+    unresolved = sum(1 for position, row in enumerate(rows) if position > barrier and row["kind"] == "login_attempt"
+                     and row.get("attempt_id") not in resolved)
+    clean = not banned and summary["consecutive_failures"] == 0 and failures == 0 and unresolved == 0
+    return {"banned_until": utc_from_ns(summary["banned_until_ns"]) if banned else None,
+            "consecutive_failures": summary["consecutive_failures"],
+            "barrier": None if barrier_row is None else {
+                "kind": "login_reset" if barrier_row["kind"] == "login_reset" else "success", "at": barrier_row["at"]},
+            "failures_after_barrier": failures, "unresolved_attempts_after_barrier": unresolved, "clean": clean}
+
+
 def append_login_reset(paths, *, clock=SYSTEM_CLOCK):
     """Append the operator's reset row (the CLI's login-reset, after its tty echo). A ban is not cleared.
 

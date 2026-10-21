@@ -559,14 +559,20 @@ class ReadClient:
         params["maxResults"] = max_results
         return _list_result(self.rpc.call(CATALOGUE_METHOD, params))
 
-    def count_markets(self, rest_filter):
-        """Market ids matching the filter, first to start first (up to 1000), for the recorder pre-count."""
+    def precount_markets(self, rest_filter):
+        """(market id, marketStartTime text or None) pairs matching the filter, first to start first (up to
+        1000), for the recorder pre-count; the recorder keeps them as its structural snapshot (C4)."""
         rows = self.list_market_catalogue(rest_filter, projections=("MARKET_START_TIME",), max_results=1000,
                                           sort="FIRST_TO_START")
         ids = [row.get("marketId") for row in rows]
         if any(not isinstance(i, str) or not _MARKET_ID.fullmatch(i) for i in ids) or len(set(ids)) != len(ids):
             raise ApiError("unexpected_result_shape", surface="local")
-        return ids
+        starts = [row.get("marketStartTime") for row in rows]
+        return [(market_id, start if isinstance(start, str) else None) for market_id, start in zip(ids, starts)]
+
+    def count_markets(self, rest_filter):
+        """Market ids matching the filter, first to start first (up to 1000), for the recorder pre-count."""
+        return [market_id for market_id, _ in self.precount_markets(rest_filter)]
 
     def list_market_book(self, market_ids, price_data=("EX_BEST_OFFERS",), depth=None, order_projection=None,
                          match_projection=None, customer_strategy_refs=None):

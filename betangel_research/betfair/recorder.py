@@ -10,8 +10,16 @@ events.jsonl. Time between segments is listed as a gap and never forward-filled.
 Receipt clocks are the local wall clock and monotonic clock at line read, unauthenticated; pt is
 Betfair publish time. The recorder is read-only: it never places, cancels or changes an order. It
 uses the delayed key unless recorder.allow_live_key is set, because Betfair does not permit
-read-only use of the live key (F46). Delayed-key data is 1-180 s delayed and conflated to 180 s
-(F44, F51), so it cannot support features finer than 180 s.
+read-only use of the live key (F46); require_delayed_key refuses any other key whatever that setting
+says. Delayed-key data is 1-180 s delayed and conflated to 180 s (F44, F51), so it cannot support
+features finer than 180 s.
+
+Every run goes through recording admission (admission.recorder_admission) before it connects:
+INHIBIT or a live ADMISSION refuses it, it holds recordings/.recorder.lock for the whole run and
+writes recorder.pid. It never takes .gateway.lock. end_at_ns bounds the run on the wall clock
+(time_ns), checked with every stop check and again before every pre-count, login and relogin,
+because the monotonic clock stops while the Mac sleeps. Each segment's pre-count, the catalogue's
+(marketId, marketStartTime) pairs, is kept beside the session in precount.jsonl as structural data.
 """
 
 import copy
@@ -24,15 +32,17 @@ import random
 import re
 
 from .. import stream as _stream
+from .admission import check_invocation_id, recorder_admission
 from .book import replay_market_time
 from .config import config_sha256, validate_config
 from .constants import STREAM_STATUS_ERROR_CODES
 from .errors import BetfairError, ConfigError, StreamError, TransportError, classify, safe_code
 from .esa import LOCAL_CONNECTION_CODES, ReconnectPolicy, StreamClient
 from .filters import MARKET_ID_RE, to_rest_market_filter, to_stream_market_filter
-from .paths import file_lock, require_outside_worktrees
+from .paths import require_outside_worktrees
 from .receipts import (SYSTEM_CLOCK, append_jsonl, atomic_write_json, bytes_sha256, canonical_sha256, code_hashes,
-                       full_fsync, git_state, strict_json_loads, utc_compact_from_ns, utc_from_ns)
+                       file_sha256, full_fsync, git_state, parse_utc_ns, strict_json_loads, utc_compact_from_ns,
+                       utc_from_ns, utc_ms_from_ns)
 from .secret import assert_clean
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +72,10 @@ REJECT_REASONS = ("not_mcm", "superseded_id", "pt_not_int", "pt_regression", "se
 RECV_ROW_KEYS = frozenset({"line", "byte_offset", "bytes", "sha256", "received_at", "monotonic_ns", "pt", "clk"})
 PRECOUNT_LOOKBACK_S = 1800
 PRECOUNT_LIMIT = 1000          # the lister asks for at most 1000 ids, so 1000 means "possibly more"
+PRECOUNT_NAME = "precount.jsonl"
+PRECOUNT_ROW_KEYS = frozenset({"segment", "taken_at", "lookback_s", "count", "possibly_more", "subscription_mode",
+                               "requested_count", "markets"})
+END_AT_REACHED = "end_at_reached"
 POLL_S = 1.0
 PROGRESS_INTERVAL_S = 60
 KEEPALIVE_RETRY_S = 60
@@ -153,15 +167,32 @@ def _code(exc):
     return type(exc).__name__
 
 
-def _clean_ids(ids):
-    if not isinstance(ids, (list, tuple)):
+def _start_time(value):
+    """A catalogue marketStartTime as UTC text with milliseconds, or None when absent or not a timestamp."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return utc_ms_from_ns(parse_utc_ns(value))
+    except ValueError:
+        return None
+
+
+def _clean_precount(items):
+    """[(market_id, market_start_time or None)] from a market_lister result, first occurrence kept.
+
+    Each item is a market id, or a (market id, catalogue marketStartTime) pair (ReadClient.precount_markets).
+    Only the id and the normalised start time are kept: the whitelist of the structural snapshot (C4)."""
+    if not isinstance(items, (list, tuple)):
         raise ValueError("market_lister_must_return_a_list")
-    cleaned = []
-    for market_id in ids:
+    cleaned, seen = [], set()
+    for item in items:
+        market_id, start = (item, None) if isinstance(item, str) else (
+            tuple(item) if isinstance(item, (list, tuple)) and len(item) == 2 else (None, None))
         if not isinstance(market_id, str) or not MARKET_ID_RE.fullmatch(market_id):
             raise ValueError("market_lister_returned_invalid_id")
-        if market_id not in cleaned:
-            cleaned.append(market_id)
+        if market_id not in seen:
+            seen.add(market_id)
+            cleaned.append((market_id, _start_time(start)))
     return cleaned
 
 
@@ -293,17 +324,26 @@ class StreamRecorder:
     stream_factory() must return a new esa.StreamClient built on this same session object with the
     config's stream host, port, heartbeat_ms and conflate_ms (the values the receipt states, and the
     session the live-key gate checked). Anything else stops the session before it connects, with
-    reason stream_factory_mismatch:<field>.
+    reason stream_factory_mismatch:<field>. market_lister(rest_filter) returns market ids, or
+    (market id, marketStartTime) pairs (ReadClient.precount_markets), first to start first.
+
+    require_delayed_key (record --require-delayed-key, C6) refuses unless the session's app_key_slot is
+    "delayed", whatever recorder.allow_live_key says. invocation_id (record --invocation-id, C7) is
+    written into recorder.pid, receipt.partial.json, receipt.json and the run-ledger row.
     """
 
     def __init__(self, config, *, paths, session, stream_factory, market_lister, clock=SYSTEM_CLOCK, rng=None,
-                 emit=None):
+                 emit=None, invocation_id=None, require_delayed_key=False):
         self.config = validate_config(config, paths=paths)
         self.paths = paths
         stream_config, recorder = self.config["stream"], self.config["recorder"]
         slot = session.app_key_slot
         if slot not in ("delayed", "live"):
             raise ConfigError("recorder_session_app_key_slot_unknown")
+        if type(require_delayed_key) is not bool:
+            raise TypeError("require_delayed_key must be a boolean")
+        if require_delayed_key and slot != "delayed":
+            raise ConfigError("recorder_delayed_key_required")
         if slot == "live" and not recorder["allow_live_key"]:
             # Betfair does not permit read-only use of the live key (F46).
             raise ConfigError("recorder_live_key_not_allowed")
@@ -311,6 +351,7 @@ class StreamRecorder:
             raise ConfigError("recorder_session_slot_does_not_match_stream_app_key_slot")
         if not callable(stream_factory) or not callable(market_lister):
             raise TypeError("stream_factory and market_lister must be callables")
+        self.invocation_id = check_invocation_id(invocation_id)
         self.session = session
         self.stream_factory = stream_factory
         self.market_lister = market_lister
@@ -322,34 +363,46 @@ class StreamRecorder:
         self.market_filter = copy.deepcopy(recorder["market_filter"])
         self.market_data_filter = copy.deepcopy(recorder["market_data_filter"])
 
-    def run(self, stop_requested=lambda: False, *, max_seconds=None):
+    def run(self, stop_requested=lambda: False, *, max_seconds=None, end_at_ns=None, admission=None):
         """Record until a stop condition; returns the final receipt (also written as receipt.json).
 
-        Stops on stop_requested(), recorder.max_duration_s, max_seconds, recorder.max_bytes (nothing is
+        Stops on stop_requested(), recorder.max_duration_s, max_seconds, end_at_ns (a UTC instant in
+        nanoseconds, compared with clock.time_ns(), never at or before now), recorder.max_bytes (nothing is
         ever deleted), SUBSCRIPTION_LIMIT_EXCEEDED, a fatal stream or app-key error, an unrecognized
         error, or an exhausted reconnect budget. Each stop closes the segment, writes the receipt and
-        logs out. One recorder per profile at a time (recordings/.recorder.lock).
+        logs out. One recorder per profile at a time: admission is the RecorderTicket cmd_record took
+        before reading credentials; without one, run takes its own (admission.recorder_admission), so
+        INHIBIT, a live ADMISSION or another recorder refuses before anything connects.
         """
         if max_seconds is not None and (isinstance(max_seconds, bool) or not isinstance(max_seconds, (int, float))
                                         or not max_seconds > 0):
             raise ValueError("max_seconds must be a positive number")
+        if end_at_ns is not None and (type(end_at_ns) is not int or end_at_ns <= self.clock.time_ns()):
+            raise ValueError("end_at must be a UTC instant after now")
         if not callable(stop_requested):
             raise TypeError("stop_requested must be a callable")
         root = require_outside_worktrees(self.root, what="recordings_root")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with file_lock(self.paths.recorder_lock, clock=self.clock):
-            return _Session(self, root, stop_requested, max_seconds).run()
+        if admission is not None:
+            if not admission.holds(self.paths) or admission.invocation_id != self.invocation_id:
+                raise ConfigError("recorder_admission_not_held")
+            return _Session(self, root, stop_requested, max_seconds, end_at_ns).run()
+        with recorder_admission(self.paths, invocation_id=self.invocation_id, clock=self.clock):
+            return _Session(self, root, stop_requested, max_seconds, end_at_ns).run()
 
 
 class _Session:
     """The state of one recording run."""
 
-    def __init__(self, recorder, root, stop_requested, max_seconds):
+    def __init__(self, recorder, root, stop_requested, max_seconds, end_at_ns):
         self.r = recorder
         self.clock = recorder.clock
         self.root = root
         self.stop_requested = stop_requested
         self.max_seconds = max_seconds
+        self.end_at_ns = end_at_ns
+        self.precount = None            # {"taken_at", "rows"} of the latest successful pre-count
+        self.precount_rows = 0
         self.rec = recorder.config["recorder"]
         self.stream_config = recorder.config["stream"]
         self.start_ns = self.clock.monotonic_ns()
@@ -398,9 +451,11 @@ class _Session:
             receipt_sha = atomic_write_json(receipt_path, receipt)
             # The ledger stays at the profile's recordings/run-ledger.jsonl even when recorder.root
             # puts the sessions on another disk; receipt_path is absolute either way.
-            append_jsonl(Path(self.r.paths.recordings_dir) / "run-ledger.jsonl", {
-                "created_at": self.created_at, "session_id": self.session_id, "receipt_path": str(receipt_path),
-                "receipt_sha256": receipt_sha, "segments": len(self.segments), "status": RECEIPT_STATUS})
+            row = {"created_at": self.created_at, "session_id": self.session_id, "receipt_path": str(receipt_path),
+                   "receipt_sha256": receipt_sha, "segments": len(self.segments), "status": RECEIPT_STATUS}
+            if self.r.invocation_id is not None:
+                row["invocation_id"] = self.r.invocation_id
+            append_jsonl(Path(self.r.paths.recordings_dir) / "run-ledger.jsonl", row)
             logout_attempted = True
             logout = self._logout()
         finally:
@@ -457,6 +512,10 @@ class _Session:
                 return self._stream_outcome(exc, client)
             connection_id = info.get("connection_id")
             self._event("connected", connection_id=connection_id)
+            reason = self._end_at_reason()          # authenticate() may log in
+            if reason:
+                self._event("disconnected", reason=reason)
+                return "stop", reason
             try:
                 auth = client.authenticate()
             except StreamError as exc:
@@ -496,14 +555,19 @@ class _Session:
     # --- market selection and subscription ----------------------------------------------------
 
     def _precount(self):
-        """Market ids for the next subscription, or (None, stop reason) when the lister fails."""
+        """Market ids for the next subscription, or (None, stop reason) when the lister fails or end_at passed."""
+        reason = self._end_at_reason()
+        if reason:
+            return None, reason
         try:
-            start_from = utc_from_ns(self.clock.time_ns() - PRECOUNT_LOOKBACK_S * _NS)
+            taken_ns = self.clock.time_ns()
+            start_from = utc_from_ns(taken_ns - PRECOUNT_LOOKBACK_S * _NS)
             rest_filter = to_rest_market_filter(self.r.market_filter, start_from_utc=start_from)
-            ids = _clean_ids(self.r.market_lister(rest_filter))
+            rows = _clean_precount(self.r.market_lister(rest_filter))
         except (BetfairError, ValueError) as exc:
             return None, f"market_lister_failed:{_code(exc)}"
-        return ids, None
+        self.precount = {"taken_at": utc_from_ns(taken_ns), "rows": rows}
+        return [market_id for market_id, _ in rows], None
 
     def _plan(self, ids):
         """Coarse filter while the pre-count fits under max_markets; else the first max_markets ids."""
@@ -527,6 +591,7 @@ class _Session:
         self.segment = _SegmentWriter(self.dir, index, clock=self.clock, fsync_interval_s=self.rec["fsync_interval_s"],
                                       connection_id=connection_id, plan=plan)
         self.next_refresh_ns = self.clock.monotonic_ns() + self.rec["refresh_s"] * _NS
+        self._write_precount(index, plan)
         sent = client.subscription_message("market") or {}       # what actually went on the wire
         self._event("subscribed", segment=index, request_id=request_id, subscription_mode=plan["mode"],
                     market_filter=sent.get("marketFilter"), market_data_filter=sent.get("marketDataFilter"),
@@ -535,6 +600,19 @@ class _Session:
         self.r.emit({"event": "segment_opened", "at": self.clock.utc_now(), "session_id": self.session_id,
                      "segment": index, "subscription_mode": plan["mode"], "requested_count": plan["requested_count"]})
         return None
+
+    def _write_precount(self, index, plan):
+        """One precount.jsonl row for the segment just opened (C4): the pre-count that planned it, as the
+        catalogue's (marketId, marketStartTime) pairs only."""
+        if self.precount is None:
+            return
+        rows = self.precount["rows"]
+        append_jsonl(self.dir / PRECOUNT_NAME, {
+            "segment": index, "taken_at": self.precount["taken_at"], "lookback_s": PRECOUNT_LOOKBACK_S,
+            "count": len(rows), "possibly_more": len(rows) >= PRECOUNT_LIMIT, "subscription_mode": plan["mode"],
+            "requested_count": plan["requested_count"],
+            "markets": [{"market_id": market_id, "market_start_time": start} for market_id, start in rows]})
+        self.precount_rows += 1
 
     # --- reading one segment ------------------------------------------------------------------
 
@@ -550,6 +628,9 @@ class _Session:
                 if failure is None:
                     self._close_segment("scheduled_refresh")
                     return "refresh", ids
+                if failure == END_AT_REACHED:
+                    self._close_segment(failure)
+                    return "stop", failure
                 # Keep the current subscription (it was within limits) and try again next interval.
                 self._event("refresh_failed", reason=failure)
                 self.next_refresh_ns = now + self.rec["refresh_s"] * _NS
@@ -664,6 +745,9 @@ class _Session:
         if category == "stream_subscription_limit":
             return "stop", "subscription_limit_exceeded"       # never retry the same set
         if category == "session":
+            reason = self._end_at_reason()          # never a relogin after the end instant
+            if reason:
+                return "stop", reason
             try:
                 self.r.session.invalidate_and_relogin()
             except BetfairError as relogin_error:
@@ -708,7 +792,12 @@ class _Session:
             label = "live_unconflated"
         else:
             label = "live_conflated"         # conflated, or conflation never echoed: claim less, not more
+        extra = {"invocation_id": self.r.invocation_id} if self.r.invocation_id is not None else {}
+        precount_path = self.dir / PRECOUNT_NAME
+        precount = {"path": PRECOUNT_NAME, "rows": self.precount_rows,
+                    "sha256": file_sha256(precount_path) if self.precount_rows else None}
         return {
+            **extra, "precount": precount,
             "schema_version": 1, "status": RECEIPT_STATUS, "complete": complete, "session_id": self.session_id,
             "created_at": self.created_at, "closed_at": closed_at, "stop_reason": stop_reason,
             "data_kind": DATA_KIND, "key_type": self.r.key_type,
@@ -737,9 +826,19 @@ class _Session:
 
     # --- housekeeping -------------------------------------------------------------------------
 
+    def _end_at_reason(self):
+        """END_AT_REACHED once the wall clock reached end_at_ns (time_ns keeps running while the Mac sleeps,
+        the monotonic clock does not)."""
+        if self.end_at_ns is not None and self.clock.time_ns() >= self.end_at_ns:
+            return END_AT_REACHED
+        return None
+
     def _stop_reason(self):
         if self.stop_requested():
             return "stop_requested"
+        reason = self._end_at_reason()
+        if reason:
+            return reason
         elapsed = self.clock.monotonic_ns() - self.start_ns
         if elapsed >= self.rec["max_duration_s"] * _NS:
             return "max_duration_reached"
@@ -774,6 +873,8 @@ class _Session:
         now = self.clock.monotonic_ns()
         if self.keepalive_retry_ns is not None and now < self.keepalive_retry_ns:
             return
+        if self._end_at_reason():
+            return                              # a keepAlive can relogin (NO_SESSION); the loop stops next
         try:
             result = self.r.session.maybe_keep_alive()
         except BetfairError as exc:

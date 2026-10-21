@@ -35,6 +35,13 @@ after it starts and never defers them: a signal during a kill is kill_incomplete
 with the website / Bet Angel advice, never exit 4. The kill never takes or waits for the gateway
 lock (amendment A3, D4), and neither a journal it cannot read nor an invalid --profile stops it
 engaging the KILL file; an unreadable journal does not stop its sweep either (config strategy ref).
+
+record traps SIGTERM, SIGINT and SIGHUP (a closed terminal) as its very first statement: each only asks
+the recorder to stop, so it closes the segment, writes the receipt and logs out, and record exits 0.
+Before it reads a credential, record takes recording admission (admission.py): INHIBIT or a live
+ADMISSION, another recorder holding .recorder.lock, or unreadable admission state refuses it with exit
+2 and "Betfair recording refused: <outcome>" (a JSON "refused" line on stdout names the outcome).
+recordings index and verify-day are offline and read only; their stdout carries counts only.
 """
 
 import argparse
@@ -101,8 +108,13 @@ HELP = {
     "orders-cleared": "Read-only listClearedOrders; personal use, places nothing",
     "funds": "Read-only getAccountFunds; balances are personal data, never written to reports",
     "account": "Read-only whitelisted getAccountDetails (currency, country, discount, points); no names",
-    "record": "Record the delayed-key market stream to local files; read-only, no orders; personal use only",
+    "record": "Record the delayed-key market stream to local files; read-only, no orders; personal use only; "
+              "refused while recording is inhibited for live work",
     "verify-recording": "Offline hash and replay check of one recording session",
+    "recordings": "Offline, read-only structural index of one UTC day's recordings (index); the per-market index "
+                  "stays in the state root and stdout carries counts only",
+    "verify-day": "Offline, read-only check of one UTC day's recording sessions against their receipts and the "
+                  "run ledger; prints counts and failed check names only",
     "place": PAPER_LIVE_HELP,
     "cancel": ("Cancel own bets by betId. Paper by default; live needs --mode live and A4, A5, A8, A10, A12, A13 plus "
                "a login; allowed while halted or killed; live cancels are full cancels (no --size-reduction); sent "
@@ -327,9 +339,21 @@ def build_parser():
     cleared.add_argument("--out", action="store_true")
     record = add("record")
     record.add_argument("--max-seconds", dest="max_seconds", type=float)
+    record.add_argument("--end-at", dest="end_at", help="UTC instant (Z or offset) at which recording stops, on the "
+                                                         "wall clock")
+    record.add_argument("--invocation-id", dest="invocation_id",
+                        help="written into recorder.pid, both receipts and the run-ledger row")
+    record.add_argument("--require-delayed-key", action="store_true", dest="require_delayed_key",
+                        help="refuse unless the session uses the delayed key")
     record.add_argument("--bet-angel-paused", action="store_true", dest="bet_angel_paused")
     verify = add("verify-recording")
     verify.add_argument("--session", required=True)
+    recordings = add("recordings")
+    recordings_commands = recordings.add_subparsers(dest="recordings_command", required=True)
+    index = recordings_commands.add_parser("index", help=HELP["recordings"], description=HELP["recordings"])
+    index.add_argument("--day", required=True, help="UTC date YYYY-MM-DD")
+    verify_day = add("verify-day")
+    verify_day.add_argument("--day", required=True, help="UTC date YYYY-MM-DD")
     place = add("place")
     place.add_argument("--market", required=True)
     place.add_argument("--selection", required=True, type=int)
@@ -1077,42 +1101,139 @@ def cmd_account(args, ctx):
     return _read_command(args, ctx, lambda read, config: read.get_account_details(), command="account")
 
 
+class _RecordStop:
+    """record's stop flag. SIGTERM, SIGINT and SIGHUP (a closed terminal, C1) only set it, so the recorder stops
+    at its next check, closes the segment, writes the receipt and logs out."""
+
+    SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+    def __init__(self):
+        self.requested = False
+        self.previous = {}
+
+    @classmethod
+    def install(cls):
+        stop = cls()
+        try:
+            for sig in cls.SIGNALS:
+                stop.previous[sig] = signal.signal(sig, stop.handler)
+        except ValueError:          # not the main thread: the process default stays
+            stop.restore()
+        return stop
+
+    def handler(self, signum, frame):
+        self.requested = True
+
+    def restore(self):
+        previous, self.previous = self.previous, {}
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def cmd_record(args, ctx):
+    stop = _RecordStop.install()      # the very first statement (C1, C5): a SIGTERM from admission is never lost
+    try:
+        return _record(args, ctx, stop)
+    finally:
+        stop.restore()
+
+
+def _record(args, ctx, stop):
+    """record: check the flags, take recording admission (admission.recorder_admission: INHIBIT, ADMISSION and
+    .recorder.lock, then recorder.pid) and only then read credentials and run the recorder under that ticket."""
+    from .admission import check_invocation_id, recorder_admission
+    from .errors import AdmissionRefused
     from .esa import StreamClient
+    from .receipts import parse_utc_ns
     from .recorder import StreamRecorder
     from .transport import open_stream_socket
+    try:
+        invocation_id = check_invocation_id(args.invocation_id)
+    except ValueError:
+        raise _Done(2, "Betfair input error: invocation_id_invalid; use 1-64 of A-Z a-z 0-9 . _ : - starting with a "
+                       "letter or digit") from None
+    end_at_ns = None
+    if args.end_at is not None:
+        try:
+            end_at_ns = parse_utc_ns(args.end_at)
+        except ValueError:
+            raise _Done(2, "Betfair input error: end_at_invalid; give a UTC instant such as 2026-10-21T22:00:00Z") \
+                from None
+        if end_at_ns <= ctx.clock.time_ns():
+            raise _Done(2, "Betfair input error: end_at_not_after_now; the recording window would not be positive")
     paths = _paths(args, ctx)
     config = _config(args, paths)
-    session, read = _read_client(config, args, ctx, paths, purpose="stream")
-    stop = {"requested": False}
-
-    def stopping(signum, frame):
-        stop["requested"] = True
-
-    previous = {sig: signal.signal(sig, stopping) for sig in (signal.SIGTERM, signal.SIGINT)}
+    if args.require_delayed_key and config["stream"]["app_key_slot"] != "delayed":
+        raise _Done(2, "Betfair input error: recorder_delayed_key_required; stream.app_key_slot is not delayed")
     stream = config["stream"]
     factory = ctx.stream_socket_factory or open_stream_socket
-
-    def stream_factory():
-        return StreamClient(host=stream["host"], port=stream["port"], session=session, socket_factory=factory,
-                            clock=ctx.clock, heartbeat_ms=stream["heartbeat_ms"], conflate_ms=stream["conflate_ms"],
-                            connect_timeout_s=stream["connect_timeout_s"], max_line_bytes=stream["max_line_bytes"])
 
     def emit(event):
         ctx.out.write(json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str) + "\n")
         ctx.out.flush()
 
     try:
-        recorder = StreamRecorder(config, paths=paths, session=session, stream_factory=stream_factory,
-                                  market_lister=read.count_markets, clock=ctx.clock, emit=emit)
-        receipt = recorder.run(stop_requested=lambda: stop["requested"], max_seconds=args.max_seconds)
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
-        session.close()
+        with recorder_admission(paths, invocation_id=invocation_id, clock=ctx.clock) as ticket:
+            if stop.requested:          # a signal arrived before any credential was read: nothing to record
+                emit({"summary": {"status": "not_started", "stop_reason": "stop_requested_before_start",
+                                  "invocation_id": invocation_id}})
+                return 0
+            session, read = _read_client(config, args, ctx, paths, purpose="stream")
+
+            def stream_factory():
+                return StreamClient(host=stream["host"], port=stream["port"], session=session, socket_factory=factory,
+                                    clock=ctx.clock, heartbeat_ms=stream["heartbeat_ms"],
+                                    conflate_ms=stream["conflate_ms"], connect_timeout_s=stream["connect_timeout_s"],
+                                    max_line_bytes=stream["max_line_bytes"])
+
+            try:
+                recorder = StreamRecorder(config, paths=paths, session=session, stream_factory=stream_factory,
+                                          market_lister=read.precount_markets, clock=ctx.clock, emit=emit,
+                                          invocation_id=invocation_id, require_delayed_key=args.require_delayed_key)
+                receipt = recorder.run(stop_requested=lambda: stop.requested, max_seconds=args.max_seconds,
+                                       end_at_ns=end_at_ns, admission=ticket)
+            finally:
+                session.close()
+    except AdmissionRefused as exc:
+        emit({"refused": {"outcome": exc.outcome, "detail": exc.detail, "owner": exc.owner,
+                          "generation": exc.generation, "invocation_id": invocation_id}})
+        raise _Done(2, f"Betfair recording refused: {exc}") from None
     emit({"summary": {"status": receipt.get("status"), "session_id": receipt.get("session_id"),
                       "complete": receipt.get("complete"), "segments": len(receipt.get("segments") or []),
-                      "stop_reason": receipt.get("stop_reason")}})
+                      "stop_reason": receipt.get("stop_reason"), "invocation_id": invocation_id}})
+    return 0
+
+
+def _recordings_root(paths, config):
+    return Path(config["recorder"]["root"]) if config["recorder"]["root"] is not None else Path(paths.recordings_dir)
+
+
+def cmd_recordings(args, ctx):
+    """recordings index --day D: offline, read only (no credential, no network); writes the per-market index under
+    the profile's recordings/index and prints counts only."""
+    from .recordings import build_index, day_bounds
+    try:
+        day_bounds(args.day)
+    except ValueError:
+        raise _Done(2, "Betfair input error: day_invalid; give a UTC date YYYY-MM-DD") from None
+    paths = _paths(args, ctx)
+    config = _config(args, paths)
+    ctx.print_json(build_index(paths, root=_recordings_root(paths, config), day=args.day, clock=ctx.clock))
+    return 0
+
+
+def cmd_verify_day(args, ctx):
+    from .recordings import day_bounds, verify_day
+    try:
+        day_bounds(args.day)
+    except ValueError:
+        raise _Done(2, "Betfair input error: day_invalid; give a UTC date YYYY-MM-DD") from None
+    paths = _paths(args, ctx)
+    config = _config(args, paths)
+    result = verify_day(paths, root=_recordings_root(paths, config), day=args.day)
+    ctx.print_json(result)
+    if result["status"] != "verified":
+        raise _Done(2, "Betfair input error: day_failed_verification")
     return 0
 
 
@@ -1579,7 +1700,8 @@ COMMANDS = {
     "init-config": cmd_init_config, "doctor": cmd_doctor, "keychain-setup": cmd_keychain_setup,
     "login-reset": cmd_login_reset, "event-types": cmd_event_types, "catalogue": cmd_catalogue, "book": cmd_book,
     "orders-current": cmd_orders_current, "orders-cleared": cmd_orders_cleared, "funds": cmd_funds,
-    "account": cmd_account, "record": cmd_record, "verify-recording": cmd_verify_recording, "place": cmd_place,
+    "account": cmd_account, "record": cmd_record, "verify-recording": cmd_verify_recording,
+    "recordings": cmd_recordings, "verify-day": cmd_verify_day, "place": cmd_place,
     "cancel": cmd_cancel, "replace": cmd_replace, "live-probe": cmd_live_probe, "paper-step": cmd_paper_step,
     "paper-replay": cmd_paper_replay, "reconcile": cmd_reconcile, "settle-market": cmd_settle_market,
     "journal": cmd_journal, "status": cmd_status, "kill": cmd_kill, "resume": cmd_resume,

@@ -925,6 +925,173 @@ def pause_stops(contract, level_p):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# One outcome/scope table (note §9; P1-08 §3.1), refusal codes and stop ids (§3.2). The gateway's latch, the fold's
+# durable carriers and pilot-run read the same table, so every writer journals the same stop ids. Unlisted means
+# review (Yu 2026-10-21, P1-06 Q11).
+
+# placement_authority's codes as the gateway's PA codes (note §2, §6, §7); moved here from pilot_gate (P1-08 §3.1).
+AUTHORITY_CODES = {"placing_ended": "pa4_placing_ended", "stop_active": "pa4_pilot_stop",
+                   "session_not_armed": "pa3_session_not_armed", "session_ended": "pa3_session_ended",
+                   "session_expired": "pa3_session_expired", "record_unknown": "pilot_record_unknown",
+                   "record_not_decision": "pilot_record_not_decision", "record_open_ended": "pilot_record_open_ended",
+                   "record_submitted": "pilot_record_submitted"}
+# PA refusals that journal no new stop (note §9 as narrowed by Q6, Yu 2026-10-21): an already-active stop, a genuine
+# ending, no armed or unexpired session. The one definition of the exempt set, built from AUTHORITY_CODES.
+NO_NEW_STOP_CODES = frozenset(AUTHORITY_CODES[reason] for reason in ("placing_ended", "stop_active",
+                                                                      "session_not_armed", "session_ended",
+                                                                      "session_expired"))
+# That market only: its reservation already uses it up, nothing more is journaled. MARKET_NOT_OPEN_FOR_BETTING and
+# MARKET_SUSPENDED in a place report are the post-send forms of V9 market_not_open (Nuance's ruling, 2026-10-21).
+MARKET_LATCH = frozenset({"validation:V13", "validation:V9b", "rate_minute", "rate_hour", "pilot_send_book_off_differs",
+                          "journal_changed_since_decision", "book_fetch_failed", "market_exposure", "total_exposure",
+                          "MARKET_NOT_OPEN_FOR_BETTING", "MARKET_SUSPENDED"})
+MARKET_V9_REASONS = frozenset({"market_not_open", "market_inplay"})
+SESSION_LATCH = frozenset({"rate_day", "daily_loss", "unresolved_orders", "lock_busy", "kill_file"})
+# RS-19: "No manual or Bet Angel bet is open on the account during a session. If the code finds one, it halts."
+MANUAL_BET_OPEN = "manual_bet_open_during_session"
+NO_NOTE_LATCH = frozenset({"halted", "unexplained_account_exposure", MANUAL_BET_OPEN})
+KILL_REASONS = frozenset({"kill_engaged", "kill_state_unknown"})
+# The note §5 first-byte refusals (send-by, freshness, head, deadline, window, drift): FAILED(transport_not_sent),
+# that market only unless their cause ends more (a KILL file: a session stop). Any other failure before the first
+# byte keeps its own latch, a review stop by Q11's default: a refused capability, a connect, TLS or preflight
+# failure, and send_gate_failed, a fault inside the gate itself (never a member here).
+FIRST_BYTE_CODES = frozenset({"send_window_expired", "book_stale_before_send", "pilot_gate_head_moved",
+                              "pilot_gate_head_unreadable", "pilot_gate_deadline", "pilot_gate_window",
+                              "pilot_gate_clock_drift"})
+# A17's foreign or contradicting bets HALT through the startup pass; its unresolved orders stop placing until
+# reconciled: the gateway journals no note for it, pilot-run journals its review occurrence (P1-08 §4.5 step 3).
+HALT_IMPLYING_OPEN_CODES = frozenset({"unresolved_or_foreign_orders"})
+SCOPE_ACTIONS = ("retry", "skip_market", "skip_offer", "end")
+SCOPE_DURABLES = ("none", "market", "session", "review", "review_unless_halt")
+# The strongest scope first: what one invocation's latch names when several causes met (gateway.py's order).
+SCOPE_STRENGTH = ("review", "session", "market", "none")
+
+
+@dataclass(frozen=True)
+class Scope:
+    """What one refusal or failure code does (P1-08 §3.1): action, the invocation's ("retry", "skip_market",
+    "skip_offer" or "end"); durable, what the journal must hold afterwards ("none", "market", "session", "review" or
+    "review_unless_halt"); code, the code every writer journals for it (the code itself unless a rule renames it)."""
+    action: str
+    durable: str
+    code: str
+
+
+def _scope_table():
+    table = {}
+
+    def rows(codes, action, durable):
+        for code in codes:
+            if code in table:
+                raise RuntimeError("scope table names one code twice")
+            table[code] = Scope(action, durable, code)
+
+    rows(sorted(MARKET_LATCH | FIRST_BYTE_CODES), "skip_market", "market")
+    rows(sorted(SESSION_LATCH), "end", "session")
+    rows(("unexplained_account_exposure", MANUAL_BET_OPEN), "end", "none")
+    rows(sorted(NO_NEW_STOP_CODES), "end", "none")
+    rows(sorted(HALT_IMPLYING_OPEN_CODES), "end", "review_unless_halt")
+    # One pre-append retry in the same open (note §4:41; §13 ruling 1); pilot-run makes a second one review.
+    rows(("pilot_reserve_too_early",), "retry", "none")
+    # The executor's own session stops (note §9, :122, :124, :125; Q2, Q4; C12).
+    rows(("login_failed", "unknown_unresolved", "remainder_cancel_failed", "remainder_left_executable",
+          "session_end", "session_abandoned"), "end", "session")
+    rows(("not_armed_before_lock",), "end", "review")
+    # The settle step only (note :117): skip that offer, nothing journaled; settle_market_* codes by prefix.
+    rows(("settle_point_closed", "operator_confirmation_missing"), "skip_offer", "none")
+    for scope in table.values():
+        if scope.action not in SCOPE_ACTIONS or scope.durable not in SCOPE_DURABLES:
+            raise RuntimeError("scope table names an unknown action or durable")
+    return table
+
+
+SCOPE_TABLE = _scope_table()
+
+
+def scope_of(code, reason=None):
+    """The Scope of one refusal or failure code (P1-08 §3.1). Any code not in SCOPE_TABLE is end + review. Reason
+    rules: "halted" is keyed on its reason (kill_engaged or kill_state_unknown: a session stop journaled as kill_file;
+    journal_halted: none, the HALT is durable; anything else, clock_regression and None included: review, journaled
+    as clock_regression when the reason says so); the rule "kill_engaged" (the KILL file before a reservation) and a
+    not-sent "kill_engaged_before_send" are the kill_file session stop; V9 with market_not_open or market_inplay is
+    that market only; an OrderRefused code beginning settle_market_ is the settle step's skip_offer."""
+    if code == "halted":
+        if reason in KILL_REASONS:
+            return Scope("end", "session", "kill_file")
+        if reason == "journal_halted":
+            return Scope("end", "none", "halted")
+        return Scope("end", "review", "clock_regression" if reason == "clock_regression" else "halted")
+    if code in ("kill_engaged", "kill_engaged_before_send"):
+        return Scope("end", "session", "kill_file")
+    if code == "validation:V9":
+        return Scope("skip_market", "market", code) if reason in MARKET_V9_REASONS else Scope("end", "review", code)
+    if isinstance(code, str) and code.startswith("settle_market_"):
+        return Scope("skip_offer", "none", code)
+    found = SCOPE_TABLE.get(code) if isinstance(code, str) else None
+    return found if found is not None else Scope("end", "review", code if isinstance(code, str) else "refused")
+
+
+def decision_skip_scope(code):
+    """The Scope of a journaled SKIP decision (P1-08 §3.1): SKIP(pause) ends placing with the classifier's review and
+    session stops, SKIP(cap) at the day limit with its session stop; any other SKIP ends that market only (the decision
+    record is the durable fact)."""
+    if code == "pause":
+        return Scope("end", "review", "pause")
+    if code == "cap":
+        return Scope("end", "session", "cap")
+    return Scope("skip_market", "market", code)
+
+
+def strongest_scope(durables):
+    """The strongest of the durables met (review, session, market, none), or None when there is none."""
+    found = set(durables)
+    return next((name for name in SCOPE_STRENGTH if name in found), None)
+
+
+def refusal_code(rule):
+    """A rule or code as a refusal-note code: lower case, ':' as '_', only [a-z0-9_], at most 60 characters, so the
+    derived stop id '<code with hyphens>-<res>-<note seq>' fits STOP_ID_RE (validation:V13 -> validation_v13)."""
+    text = re.sub(r"[^a-z0-9_]", "", re.sub(":", "_", str(rule).lower()))[:60]
+    return text or "refused"
+
+
+def session_stop_id(code, anchor):
+    """'<code with hyphens>-<anchor>-session' (STOP_ID_RE): anchor is the reservation seq for a stop about one
+    reservation, else the session_start seq (the executor's) or the open id's hex (the gateway's, before any
+    reservation)."""
+    return f"{'-'.join(refusal_code(code).split('_'))}-{anchor}-session"
+
+
+def carried_review_stop_id(code, reservation_seq, carrier_seq):
+    """The review stop a durable event implies by itself (P1-08 §3.2; P108-R3-1): '<normalised code with
+    hyphens>-<reservation seq>-<carrier seq>', the formula a refusal note's occurrence has always used."""
+    return f"{stop_id_for(refusal_code(code), reservation_seq)}-{carrier_seq}"
+
+
+def place_report_failure(report):
+    """The code of a normalised place report in which Betfair refused the pilot's one instruction (the report's or
+    the instruction's status FAILURE), else None. Each level may carry only a marker that wraps the other level's code
+    (§13 ruling 11): the instruction's ERROR_IN_ORDER means it failed because the whole request did, so the code that
+    says why is the report's; the report's BET_ACTION_ERROR means an instruction failed (errors.py's "partial"), so
+    the code that says why is the instruction's. Each marker is set aside and the wrapped code classified, never the
+    marker. Of the codes left, the stronger: one that is not market only (a review stop) wins, so the result is market
+    only when every code left is a market code. A marker with nothing to wrap gives the marker itself, and no code at
+    all "place_report_failure" (both review stops). Scope is never inferred from the outer marker."""
+    if not isinstance(report, dict):
+        return None
+    items = report.get("instructions") or []
+    item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+    if report.get("status") != "FAILURE" and item.get("status") != "FAILURE":
+        return None
+    instruction, whole = item.get("error_code"), report.get("error_code")
+    codes = [code for code in (None if instruction == "ERROR_IN_ORDER" else instruction,
+                               None if whole == "BET_ACTION_ERROR" else whole) if code is not None]
+    if not codes:
+        return instruction or whole or "place_report_failure"
+    return next((code for code in codes if scope_of(code).durable != "market"), codes[0])
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # Raw C, L and closed-book captures (note §11).
 
 def _row_number(value):
@@ -1680,8 +1847,7 @@ class _Folder:
 
     def session_armed(self, ns):
         """Whether a session is armed at ns: the latest session, before its end and not terminated."""
-        session = self.sessions[-1] if self.sessions else None
-        return session is not None and ns < session_end_ns(session) and session["ended_seq"] is None
+        return _session_armed_at(self.sessions[-1] if self.sessions else None, ns)
 
     def halted(self, market_id):
         return any(market is None or market == market_id for _, market in self.halts)
@@ -2047,11 +2213,12 @@ class _Folder:
 
     def note_refusal(self, inner, event, seq, ns):
         """A journaled classify refusal implies its review stop (Astra #2). Each refusal note is its own occurrence,
-        '<code>-<reservation seq>-<note seq>': an ACK of an earlier one never covers it (Nuance R2-4)."""
+        '<code>-<reservation seq>-<note seq>': an ACK of an earlier one never covers it (Nuance R2-4). The note is its
+        own carrier (P1-08 §3.2): the id and reason come from the one shared builder."""
         if inner["code"] != "placing_ended":
             source = inner["reservation_seq"]
-            self.imply(stop_payload(self.contract, f"{stop_id_for(inner['code'], source)}-{seq}", "review",
-                                    inner["code"], source_seq=source))
+            self.imply(stop_payload(self.contract, carried_review_stop_id(inner["code"], source, seq), "review",
+                                    refusal_code(inner["code"]), source_seq=source))
 
     def gap_stop(self, stop_id):
         """The review stop of a ledger gap with this id, journaled or implied, or None."""
@@ -2200,6 +2367,57 @@ class _Folder:
                 self.sending(rec, seq, ns)
             dirty.add(rec.index)
         return dirty
+
+    def carrier(self, kind, payload, moves, seq):
+        """A durable event that carries a refusal code implies its stops (P1-08 §3.2; P108-2), with the ids the gateway
+        journals, so a process death between the event and its latch loses nothing: (1) a refusing risk_decision (each
+        failure's rule and reason, else its rule); (2) a place report FAILED_NOT_SENT with an exception code
+        (kill_engaged_before_send read as the KILL); (3) a place report not_sent_kill_engaged; (4) FAILED_REJECTED and
+        (5) a refused place report (place_report_failure), each only with no HALT in the same event. It carries the
+        pilot refs in its transitions, refused_moves or skipped_moves. Through scope_of: every session code implies its
+        session stop, the first review code one review stop '<code>-<res>-<carrier seq>'; market and none nothing."""
+        codes = None
+        if kind == "risk_decision" and payload.get("approved") is False:
+            detail = payload.get("detail")
+            failures = detail.get("failures") if isinstance(detail, dict) else None
+            if isinstance(failures, list) and failures:
+                codes = [(f["rule"], f.get("reason")) for f in failures
+                         if isinstance(f, dict) and isinstance(f.get("rule"), str)]
+            elif isinstance(payload.get("rule"), str):
+                codes = [(payload["rule"], None)]
+        elif kind == "report" and payload.get("action") == "place":
+            outcome, halts = payload.get("outcome"), payload.get("halts")
+            exception = payload.get("exception") if isinstance(payload.get("exception"), dict) else {}
+            code = exception.get("code") if isinstance(exception.get("code"), str) else None
+            if outcome == "FAILED_NOT_SENT" and code is not None:
+                codes = [("halted", "kill_engaged")] if code == "kill_engaged_before_send" else [(code, None)]
+            elif outcome == "not_sent_kill_engaged":
+                codes = [("halted", "kill_engaged")]
+            elif outcome == "FAILED_REJECTED" and code is not None and not halts:
+                codes = [(code, None)]
+            elif outcome == "reported" and not halts:
+                failure = place_report_failure(payload.get("report"))
+                codes = None if failure is None else [(failure, None)]
+        if not codes:
+            return
+        refs = {move.get("customer_order_ref") for move in moves}
+        for key in ("refused_moves", "skipped_moves"):
+            if isinstance(payload.get(key), list):
+                refs |= set(payload[key])
+        for ref in sorted(ref for ref in refs if isinstance(ref, str)):
+            rec = self.by_ref.get(ref)
+            if rec is None:
+                continue
+            res, reviewed = rec.reservation_seq, False
+            for rule, reason in codes:
+                scope = scope_of(rule, reason)
+                if scope.durable == "session":
+                    self.imply(stop_payload(self.contract, session_stop_id(scope.code, res), "session",
+                                            refusal_code(scope.code), source_seq=res))
+                elif scope.durable == "review" and not reviewed:
+                    reviewed = True
+                    self.imply(stop_payload(self.contract, carried_review_stop_id(scope.code, res, seq), "review",
+                                            refusal_code(scope.code), source_seq=res))
 
     def track_halts(self, kind, payload, event, seq):
         """HALT, kill and resume as journal.py's fold applies them (journal.py:791-829)."""
@@ -2816,6 +3034,43 @@ def next_trigger_ns(state):
     found = [t for rec in state.place_records for t in (rec.off_ns + contract.bsp_cutoff_s * NS + 1,
                                                         rec.deadline_ns + 1) if t > state.now_ns]
     return min(found) if found else None
+
+
+def _session_armed_at(session, ns):
+    """The one armed predicate (P1-08 C25): the session exists, ns is before its end, and nothing terminated it."""
+    return session is not None and ns < session_end_ns(session) and session["ended_seq"] is None
+
+
+def session_armed(state, *, now_ns):
+    """Whether the latest session is armed at max(now_ns, state.now_ns): before its end (UNTIL or 23:59:59Z) and
+    not ended by a KILL, HALT or stop, journaled or implied (the fold's own rule, _Folder.session_armed)."""
+    if not _is_ns(now_ns):
+        raise PilotError("session_armed_input_invalid")
+    return _session_armed_at(state.sessions[-1] if state.sessions else None, max(now_ns, state.now_ns))
+
+
+def gap_resolve_check(state, stop_id):
+    """None, or why PILOT GAP RESOLVED cannot name stop_id (P1-08 §4.11, Q10): it must be one known review stop
+    occurrence, journaled or implied, of a ledger gap (LEDGER_GAP_REASONS) not yet resolved. The note's decision_seq
+    is that stop's source_seq (gap_decision_seq). Resolution never acknowledges: PILOT ACK still follows."""
+    if not isinstance(stop_id, str) or not STOP_ID_RE.fullmatch(stop_id):
+        return "gap_unknown_stop"
+    found = [s for s in tuple(state.stops) + tuple(state.due_stops)
+             if s["stop_id"] == stop_id and s["scope"] == "review"]
+    if not found:
+        return "gap_unknown_stop"
+    if not any(s["reason"] in LEDGER_GAP_REASONS for s in found):
+        return "gap_not_a_ledger_gap"
+    if stop_id in state.resolved_gaps:
+        return "gap_already_resolved"
+    return None
+
+
+def gap_decision_seq(state, stop_id):
+    """The source_seq (the record's decision seq, or None) of the ledger-gap stop gap_resolve_check accepted."""
+    found = [s for s in tuple(state.stops) + tuple(state.due_stops)
+             if s["stop_id"] == stop_id and s["scope"] == "review" and s["reason"] in LEDGER_GAP_REASONS]
+    return found[0]["source_seq"] if found else None
 
 
 AUTHORITY_PHASES = ("reserve", "send")

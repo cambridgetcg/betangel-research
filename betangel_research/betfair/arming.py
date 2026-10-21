@@ -10,6 +10,7 @@ needs none of this (the gateway passes {"armed": True, "failures": []} to the ri
 """
 
 import hmac
+import os
 import re
 import sqlite3
 import sys
@@ -19,7 +20,7 @@ from .config import config_sha256, money_pence
 from .constants import ABSOLUTE_CEILINGS, ACCOUNT_CURRENCY, CEILING_PATHS, LIVE_ACK_IDS
 from .credentials import anchor_read, check_cert_files, keychain_present
 from .errors import AuthError, BetfairError, ConfigError, CredentialError, NotArmed, NotPresent, OrderRefused
-from .paths import is_inside_git_worktree, kill_engaged, validate_profile
+from .paths import is_inside_git_worktree, validate_profile
 from .receipts import atomic_write_json, parse_utc_ns, strict_json_loads, utc_from_ns
 from .schemas import UNRESOLVED_STATES
 
@@ -61,6 +62,13 @@ COMMAND_CHECKS = {
     "kill": ("A4", "A13"),
     "kill-account": ("A4", "A11", "A13"),
     "resume": ("A2", "A11", "A13"),
+    # RS-19's executor commands that type a line or capture, none of which logs in to place (P1-08 §4.1; note §8):
+    # the resume set. Placement keeps pilot-place (A1-A19); the in-run settle uses settle-market.
+    "pilot-register": ("A2", "A11", "A13"),
+    "pilot-arm": ("A2", "A11", "A13"),
+    "pilot-ack": ("A2", "A11", "A13"),
+    "pilot-gap-resolved": ("A2", "A11", "A13"),
+    "pilot-capture": ("A2", "A11", "A13"),
 }
 # Commands whose static A13 checks the state root only (amendment A3, D4).
 KILL_STATIC_A13_ROOT_ONLY = frozenset({"kill", "kill-account"})
@@ -179,6 +187,32 @@ def _caps_ok(config):
     return True
 
 
+def a7_causes(paths, journal_state):
+    """Why A7 refuses, read only (P1-08 §4.5 step 2): {"kill": True | False | None, "halt", "clock_regression",
+    "unfoldable"}. kill is the KILL file by lstat: True for any entry of that name, None when lstat fails otherwise
+    (unknown, which A7 and the executor count as engaged), False only for a definite absence. journal_state is the
+    core fold, None when none was read (A7 then checks the KILL file only), or a stand-in without "orders" for a
+    journal that cannot be folded (as the gateway passes {"halted": True}): that stand-in is unfoldable unless it says
+    halted False. A7 refuses with ["halted"] when any cause is set, exactly as before this helper."""
+    try:
+        os.lstat(paths.kill_file)
+        kill = True
+    except FileNotFoundError:
+        kill = False
+    except OSError:
+        kill = None
+    unfoldable = halt = clock = False
+    if journal_state is not None:
+        if not isinstance(journal_state, dict):
+            unfoldable = True
+        elif "orders" not in journal_state and journal_state.get("halted") is not False:
+            unfoldable = True
+        else:
+            halt = journal_state.get("halted") is not False
+            clock = journal_state.get("clock_regression") is True
+    return {"kill": kill, "halt": halt, "clock_regression": clock, "unfoldable": unfoldable}
+
+
 def _static_check(check, config, *, command, paths, cli_mode, confirm_token, bet_angel_paused, env, confirmer,
                   keychain_runner, journal_anchor, journal_state, journal, now_ns):
     """Failure codes for one static check (empty when it passes)."""
@@ -211,9 +245,8 @@ def _static_check(check, config, *, command, paths, cli_mode, confirm_token, bet
     if check == "A6":
         return [] if _caps_ok(config) else ["caps_invalid"]
     if check == "A7":
-        halted = kill_engaged(paths)
-        if journal_state is not None:
-            halted = halted or journal_state.get("halted") is not False or journal_state.get("clock_regression") is True
+        causes = a7_causes(paths, journal_state)
+        halted = causes["kill"] is not False or causes["halt"] or causes["clock_regression"] or causes["unfoldable"]
         return ["halted"] if halted else []
     if check == "A8":
         ok = config["jurisdiction"] == "com" and config["account_currency"] == ACCOUNT_CURRENCY

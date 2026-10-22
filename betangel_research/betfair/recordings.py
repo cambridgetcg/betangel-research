@@ -73,6 +73,13 @@ SESSION_FILES = frozenset({"events.jsonl", "receipt.json", "receipt.partial.json
 # What a crash during receipts.atomic_write_json can leave behind.
 CRASH_LEFTOVER_RE = re.compile(r"\.(receipt\.json|receipt\.partial\.json)\.tmp-[0-9]+-[0-9a-f]{8}")
 LEDGER_ROW_KEYS = frozenset({"created_at", "session_id", "receipt_path", "receipt_sha256", "segments", "status"})
+RUN_LEDGER_NAME = "run-ledger.jsonl"
+# The one row shape `recordings ledger-repair` appends (design v9 §3.8 step 2): no session_id, so it can never stand
+# in for a session's row. exempt_lines lists the reviewed bad lines by index with the sha256 of their bytes.
+REPAIR_ROW_KIND = "run_ledger_repair"
+REPAIR_ROW_KEYS = frozenset({"kind", "created_at", "reviewed_ledger_sha256", "exempt_lines"})
+REPAIR_LINE_KEYS = frozenset({"line", "sha256"})
+TORN_LINE = "run_ledger_torn_line"
 PRECOUNT_DECLARATION_KEYS = frozenset({"path", "rows", "sha256"})
 PRECOUNT_MARKET_KEYS = frozenset({"market_id", "market_start_time"})
 
@@ -674,27 +681,205 @@ def build_index(paths, *, root, day, clock):
 # --- verify-day ----------------------------------------------------------------------------------------
 
 
-def _run_ledger(paths):
-    """(rows by session_id, problem code or None) from recordings/run-ledger.jsonl (whitelisted keys)."""
-    path = paths.recordings_dir / "run-ledger.jsonl"
-    rows = {}
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return rows, None
-    except OSError:
-        return rows, "run_ledger_unreadable"
-    for line in data.split(b"\n"):
+def _repair_row(row, index):
+    """True when row is a well-formed repair row whose listed lines all precede it (index)."""
+    if not isinstance(row, dict) or set(row) != REPAIR_ROW_KEYS or row.get("kind") != REPAIR_ROW_KIND:
+        return False
+    if _ns(row["created_at"]) is None or not (isinstance(row["reviewed_ledger_sha256"], str)
+                                              and SHA_RE.fullmatch(row["reviewed_ledger_sha256"])):
+        return False
+    listed = row["exempt_lines"]
+    if not isinstance(listed, list) or not listed:
+        return False
+    seen = set()
+    for item in listed:
+        if not (isinstance(item, dict) and set(item) == REPAIR_LINE_KEYS and type(item["line"]) is int
+                and 0 <= item["line"] < index and item["line"] not in seen
+                and isinstance(item["sha256"], str) and SHA_RE.fullmatch(item["sha256"])):
+            return False
+        seen.add(item["line"])
+    return True
+
+
+def run_ledger_scan(data):
+    """Read side of the run-ledger (design v9 §3.8), pure: from the file's bytes -> {"rows", "bad", "exempt",
+    "problems"}. rows: (line index, session row) for every whitelisted session row; bad: (line index, sha256 of its
+    bytes) for every line that is neither a session row nor a well-formed repair row; exempt: the bad line indices a
+    repair row lists with the same byte hash; problems: [(line index, code)] for every bad line no repair row exempts
+    and every listed index whose bytes no longer hash to the listed value, each "run_ledger_torn_line". Line indices
+    count every \\n-separated piece from 0 (blank lines included), so they never move as rows are appended."""
+    pieces = data.split(b"\n")
+    rows, bad, repairs = [], [], []
+    for index, line in enumerate(pieces):
         if not line.strip():
             continue
         try:
             row = strict_json_loads(line.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            return rows, "run_ledger_unreadable"
-        if not isinstance(row, dict) or not LEDGER_ROW_KEYS <= set(row) or set(row) - LEDGER_ROW_KEYS - {"invocation_id"}:
-            return rows, "run_ledger_unreadable"
-        rows.setdefault(row["session_id"], []).append(row)
-    return rows, None
+            row = None
+        if isinstance(row, dict) and "session_id" in row:
+            if LEDGER_ROW_KEYS <= set(row) and not set(row) - LEDGER_ROW_KEYS - {"invocation_id"}:
+                rows.append((index, row))
+                continue
+        elif _repair_row(row, index):
+            repairs.append(row)
+            continue
+        bad.append((index, hashlib.sha256(line).hexdigest()))
+    listed = {}
+    changed = set()
+    for row in repairs:
+        for item in row["exempt_lines"]:
+            current = hashlib.sha256(pieces[item["line"]]).hexdigest()
+            if current != item["sha256"]:
+                changed.add(item["line"])            # the reviewed bytes are gone: never exempt, fail closed
+            else:
+                listed[item["line"]] = item["sha256"]
+    exempt = sorted(index for index, digest in bad if listed.get(index) == digest and index not in changed)
+    problems = sorted({(index, TORN_LINE) for index, _ in bad if index not in exempt}
+                      | {(index, TORN_LINE) for index in changed})
+    return {"rows": rows, "bad": bad, "exempt": exempt, "problems": problems, "changed": sorted(changed)}
+
+
+def read_run_ledger(paths):
+    """The run-ledger, read only: {"rows" (by session_id), "by_invocation", "problems" (codes, a torn line as
+    "run_ledger_torn_line:<index>"), "exempt" (line indices a repair row exempts)}. A file that cannot be read is
+    run_ledger_unreadable; an absent one is empty."""
+    path = paths.recordings_dir / RUN_LEDGER_NAME
+    out = {"rows": {}, "by_invocation": {}, "problems": [], "exempt": []}
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return out
+    except OSError:
+        return dict(out, problems=["run_ledger_unreadable"])
+    scan = run_ledger_scan(data)
+    for _, row in scan["rows"]:
+        out["rows"].setdefault(row["session_id"], []).append(row)
+        if "invocation_id" in row:
+            out["by_invocation"].setdefault(row["invocation_id"], []).append(row)
+    out["problems"] = [f"{code}:{index}" for index, code in scan["problems"]]
+    out["exempt"] = scan["exempt"]
+    return out
+
+
+def run_ledger_problem(paths):
+    """The wrapper's preflight read (design v9 §4.3): "run_ledger_torn_line:<index>" for the first bad line no repair
+    row exempts, "run_ledger_unreadable", or None. Pure read: no lock, no write."""
+    problems = read_run_ledger(paths)["problems"]
+    return problems[0] if problems else None
+
+
+def _run_ledger(paths):
+    """(rows by session_id, first problem code or None) from recordings/run-ledger.jsonl (whitelisted keys)."""
+    ledger = read_run_ledger(paths)
+    return ledger["rows"], (ledger["problems"][0] if ledger["problems"] else None)
+
+
+# --- the wrapper's classification (design v9 §3.3, §4.4) ----------------------------------------------------------
+
+CLASSIFY_OUTCOMES = ("finalized", "incomplete", "receipt_without_ledger_row", "no_session", "partial_less_directory",
+                     "review")
+
+
+def _receipt_file(path):
+    """(present, value or None, sha256 of the bytes or None, problem or None) for one receipt file, read only."""
+    if not os.path.lexists(path):
+        return False, None, None, None
+    if path.is_symlink() or not path.is_file():
+        return True, None, None, "receipt_not_regular"
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return True, None, None, "receipt_unreadable"
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        value = strict_json_loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return True, None, digest, "receipt_unparseable"
+    if not (isinstance(value, dict) and value.get("schema_version") == 1 and value.get("status") == RECEIPT_STATUS
+            and isinstance(value.get("segments"), list)):
+        return True, None, digest, "receipt_shape"
+    return True, value, digest, None
+
+
+def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
+    """One wrapper attempt's outcome from disk (design v9 §3.3, §4.4 rules 2-6), pure read: no lock, no write.
+
+    -> {"outcome", "session_id", "codes", "stop_reason"}: outcome is "finalized" (rule 4; stop_reason is the
+    receipt's top-level stop_reason), "incomplete" (rule 3), "receipt_without_ledger_row" (rule 5), "no_session" (no
+    receipt, partial or ledger row carries the id and no directory is attributed; the wrapper applies rule 1 (b) or
+    rule 2), "partial_less_directory" (rule 2's one attribution not by id: a rec-* directory with neither receipt file
+    whose name stamp is at or after spawn_wall_ns - 1 s; review even when touched) or "review" (rule 6: several
+    matches, a row and receipt mismatch, an unreadable ledger, run_ledger_torn_line:<index>, complete not true).
+    Sessions are read under recorder.root, else the profile's recordings directory; the ledger always under the
+    profile."""
+    root = Path(config["recorder"]["root"]) if config["recorder"]["root"] is not None else Path(paths.recordings_dir)
+    ledger = read_run_ledger(paths)
+    out = {"outcome": "review", "session_id": None, "codes": list(ledger["problems"]), "stop_reason": None}
+    matches, attributed = [], []
+    try:
+        entries = sorted(root.iterdir())
+    except FileNotFoundError:
+        entries = []
+    except OSError:
+        return dict(out, codes=out["codes"] + ["recordings_root_unreadable"])
+    floor = spawn_wall_ns - _NS
+    for entry in entries:
+        match = SESSION_RE.fullmatch(entry.name)
+        if not match or entry.is_symlink() or not entry.is_dir():
+            continue
+        final = _receipt_file(entry / "receipt.json")
+        partial = _receipt_file(entry / "receipt.partial.json")
+        ids = {value.get("invocation_id") for _, value, _, _ in (final, partial) if isinstance(value, dict)}
+        if invocation_id in ids:
+            matches.append((entry, final, partial))
+        elif not final[0] and not partial[0] and _session_start_ns(match.group(1)) >= floor:
+            attributed.append(entry.name)
+    rows_with_id = ledger["by_invocation"].get(invocation_id, [])
+    if len(matches) > 1:
+        return dict(out, codes=out["codes"] + ["invocation_matches_several_sessions"])
+    if not matches:
+        if rows_with_id:
+            return dict(out, codes=out["codes"] + ["ledger_row_without_session"])
+        if attributed:
+            return dict(out, outcome="partial_less_directory", session_id=attributed[0],
+                        codes=out["codes"] + ["session_without_receipt"])
+        return dict(out, outcome="review" if out["codes"] else "no_session")
+    directory, final, partial = matches[0]
+    out["session_id"] = sid = directory.name
+    if out["codes"]:
+        return out                                     # an unreadable or torn ledger: review, whatever else holds
+    present, receipt, digest, problem = final
+    if not present:
+        return dict(out, outcome="incomplete", codes=["receipt_partial_only"])
+    if problem is not None:
+        return dict(out, codes=[problem])
+    codes = []
+    if receipt.get("complete") is not True:
+        codes.append("receipt_not_complete")
+    if receipt.get("invocation_id") != invocation_id:
+        codes.append("receipt_invocation_mismatch")
+    rows = ledger["rows"].get(sid, [])
+    if not rows and not rows_with_id and not codes:
+        return dict(out, outcome="receipt_without_ledger_row", codes=["receipt_without_ledger_row"])
+    if len(rows) != 1:
+        codes.append("receipt_without_ledger_row" if not rows else "ledger_rows_duplicated")
+    else:
+        row = rows[0]
+        if row.get("receipt_sha256") != digest:
+            codes.append("ledger_receipt_sha256_mismatch")
+        named = row.get("receipt_path")
+        if not isinstance(named, str) or Path(named).resolve() != (directory / "receipt.json").resolve():
+            codes.append("ledger_receipt_path_mismatch")
+        if row.get("invocation_id") != invocation_id:
+            codes.append("ledger_invocation_mismatch")
+    if any(row.get("session_id") != sid for row in rows_with_id):
+        codes.append("ledger_invocation_names_another_session")
+    if codes:
+        return dict(out, codes=codes)
+    stop_reason = receipt.get("stop_reason")
+    return dict(out, outcome="finalized", codes=[],
+                stop_reason=safe_code(stop_reason) if isinstance(stop_reason, str) else None)
 
 
 def expected_gaps(segments):
@@ -725,19 +910,23 @@ def verify_day(paths, *, root, day):
     exempts exactly those bytes (section 3.8)."""
     day_start, day_end = day_bounds(day)
     sessions = sessions_between(root, day_start, day_end)
-    ledger, ledger_problem = _run_ledger(paths)
+    run_ledger = read_run_ledger(paths)
+    ledger = run_ledger["rows"]
     failures = []
     counts = {"complete": 0, "crashed": 0, "receipt_invalid": 0, "no_receipt": 0, "closed_not_complete": 0}
     open_segments = leftovers = 0
 
-    def fail(session_id, check, segment=None):
+    def fail(session_id, check, segment=None, line=None):
         entry = {"session_id": session_id, "check": check}
         if segment is not None:
             entry["segment"] = segment
+        if line is not None:
+            entry["line"] = line
         failures.append(entry)
 
-    if ledger_problem:
-        fail(None, ledger_problem)
+    for problem in run_ledger["problems"]:
+        code, _, line = problem.partition(":")
+        fail(None, code, line=int(line) if line else None)
     for session in sessions:
         sid, directory = session["session_id"], session["dir"]
         kind = session["receipt_kind"]
@@ -815,4 +1004,5 @@ def verify_day(paths, *, root, day):
             fail(sid, "ledger_row_without_session")
     return {"status": "verified" if not failures else "failed", "day": day, "sessions": len(sessions),
             "sessions_by_status": counts, "open_segments": open_segments, "crash_leftovers": leftovers,
-            "checks_failed": len(failures), "failures": failures}
+            "run_ledger_exempt_lines": list(run_ledger["exempt"]), "checks_failed": len(failures),
+            "failures": failures}

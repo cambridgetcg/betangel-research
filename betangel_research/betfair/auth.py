@@ -22,7 +22,6 @@ and because a skipped line could have been a ban, the repair row carries a ban o
 """
 
 import hashlib
-import os
 import secrets
 from urllib.parse import urlencode
 
@@ -31,7 +30,7 @@ from .constants import APP_KEY_SLOTS, LOGIN_BAN_S, SSO_PATHS
 from .errors import (AuthError, BetfairError, ConfigError, CredentialError, LoginBanned, LoginBudgetExceeded,
                      LoginStopped, TransportError, classify_login, safe_code)
 from .paths import file_lock
-from .receipts import SYSTEM_CLOCK, append_jsonl, parse_utc_ns, strict_json_loads, utc_from_ns
+from .receipts import SYSTEM_CLOCK, append_jsonl, end_torn_line, parse_utc_ns, strict_json_loads, utc_from_ns
 from .secret import Secret
 from .transport import HttpTransport, make_tls_context
 
@@ -179,18 +178,8 @@ def _read_ledger(path):
     return [row for _, row in rows]
 
 
-def _end_torn_line(path):
-    """Terminate a last line left without a newline (a torn append), so the next row stands on its own."""
-    try:
-        fd = os.open(str(path), os.O_RDWR | os.O_APPEND)
-    except FileNotFoundError:
-        return
-    try:
-        size = os.fstat(fd).st_size
-        if size and os.pread(fd, 1, size - 1) != b"\n":
-            os.write(fd, b"\n")
-    finally:
-        os.close(fd)
+# The torn-line guard lives in receipts.py, shared with the recordings run-ledger (recording design v9 §3.8 step 1).
+_end_torn_line = end_torn_line
 
 
 def _append_ledger(path, row):

@@ -251,6 +251,22 @@ def atomic_write_bytes(path, data, *, mode=0o600):
     return hashlib.sha256(data).hexdigest()
 
 
+def end_torn_line(path):
+    """Terminate a last line left without a newline (a torn append), so the next row stands on its own. Shared by
+    the login ledger (auth) and the recordings run-ledger (recorder, recordings ledger-repair); the torn bytes stay
+    as they are, on their own line. Nothing happens when the file does not exist."""
+    try:
+        fd = os.open(str(path), os.O_RDWR | os.O_APPEND)
+    except FileNotFoundError:
+        return
+    try:
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            os.write(fd, b"\n")
+    finally:
+        os.close(fd)
+
+
 def append_jsonl(path, row, *, mode=0o600):
     """Append one compact JSON line and flush it durably before returning."""
     path = Path(path)

@@ -191,7 +191,9 @@ class ArmingTests(unittest.TestCase):
             "kill": ["A4", "A13"], "kill-account": ["A4", "A11", "A13"], "resume": ["A2", "A11", "A13"],
             "pilot-register": ["A2", "A11", "A13"], "pilot-arm": ["A2", "A11", "A13"],
             "pilot-ack": ["A2", "A11", "A13"], "pilot-gap-resolved": ["A2", "A11", "A13"],
-            "pilot-capture": ["A2", "A11", "A13"]}
+            "pilot-capture": ["A2", "A11", "A13"],
+            # Recording rollout (design v9 §3.5, §3.8, §8): Yu's typed recording-release and run-ledger repair.
+            "recording-release": ["A2", "A11", "A13"], "recordings-ledger-repair": ["A2", "A11", "A13"]}
         self.assertEqual({k: list(v) for k, v in COMMAND_CHECKS.items()}, expected)
         with self.assertRaises(ValueError):
             checks_for("updates")

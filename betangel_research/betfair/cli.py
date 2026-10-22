@@ -114,8 +114,11 @@ HELP = {
     "record": "Record the delayed-key market stream to local files; read-only, no orders; personal use only; "
               "refused while recording is inhibited for live work",
     "verify-recording": "Offline hash and replay check of one recording session",
-    "recordings": "Offline, read-only structural index of one UTC day's recordings (index); the per-market index "
-                  "stays in the state root and stdout carries counts only",
+    "recordings": "Offline recordings tools: index, a read-only structural index of one UTC day's recordings (the "
+                  "per-market index stays in the state root and stdout carries counts only); ledger-repair, the one "
+                  "typed, append-only subcommand: after Yu types REPAIR RECORDING LEDGER <sha256> for the reviewed "
+                  "run-ledger digest it appends one repair row that exempts the shown torn lines (never an edit or a "
+                  "deletion; the torn session stays failed); needs --confirm-live TOKEN and a terminal",
     "verify-day": "Offline, read-only check of one UTC day's recording sessions against their receipts and the "
                   "run ledger; prints counts and failed check names only",
     "place": PAPER_LIVE_HELP,
@@ -157,6 +160,12 @@ HELP = {
                      "terminal, never scheduled; --continue-admission N continues a retained admission",
 }
 PILOT_SETTLE_ADVICE = "wait until pilot-run has exited; after a crash run pilot-end-session first"
+RECORDINGS_INDEX_HELP = ("Offline, read-only structural index of one UTC day's recordings; the per-market index stays "
+                         "in the state root and stdout carries counts only")
+RECORDINGS_REPAIR_HELP = ("Yu's typed, append-only run-ledger repair (design v9 §3.8): shows the ledger digest and each "
+                          "torn line's index and hash, then after REPAIR RECORDING LEDGER <sha256> appends one repair "
+                          "row with the recorder idle; needs --confirm-live TOKEN and a terminal; no login or network")
+REPAIR_LEDGER_PHRASE = "REPAIR RECORDING LEDGER {digest}"
 
 
 class _Done(Exception):
@@ -367,8 +376,11 @@ def build_parser():
     verify.add_argument("--session", required=True)
     recordings = add("recordings")
     recordings_commands = recordings.add_subparsers(dest="recordings_command", required=True)
-    index = recordings_commands.add_parser("index", help=HELP["recordings"], description=HELP["recordings"])
+    index = recordings_commands.add_parser("index", help=RECORDINGS_INDEX_HELP, description=RECORDINGS_INDEX_HELP)
     index.add_argument("--day", required=True, help="UTC date YYYY-MM-DD")
+    repair = recordings_commands.add_parser("ledger-repair", help=RECORDINGS_REPAIR_HELP,
+                                            description=RECORDINGS_REPAIR_HELP)
+    repair.add_argument("--confirm-live", dest="confirm_live")
     verify_day = add("verify-day")
     verify_day.add_argument("--day", required=True, help="UTC date YYYY-MM-DD")
     place = add("place")
@@ -1281,9 +1293,109 @@ def _recordings_root(paths, config):
     return Path(config["recorder"]["root"]) if config["recorder"]["root"] is not None else Path(paths.recordings_dir)
 
 
+def _typed_state_arming(args, ctx, paths, config, command, confirmer):
+    """Static arming for a typed state command (recording-release, recordings ledger-repair): A2, A11 and A13, the
+    resume set, run before any lock. Reads the Keychain anchor and the live journal head only: no credential, no
+    login, no network. NotArmed with every failure (its JSON printed first, as a live gateway command prints it)."""
+    from .arming import static_arming
+    from .errors import NotArmed
+    now_ns = ctx.clock.time_ns()
+    existing = _existing_journal(paths, "live", ctx.clock)
+    try:
+        anchor, state = _journal_view(existing, now_ns)
+        report = static_arming(config, command=command, paths=paths, cli_mode="live",
+                               confirm_token=getattr(args, "confirm_live", None), bet_angel_paused=False,
+                               env=dict(ctx.env), confirmer=confirmer, keychain_runner=ctx.keychain_runner,
+                               journal_anchor=anchor, now_ns=now_ns, journal=existing, journal_state=state)
+    finally:
+        if existing is not None:
+            existing.close()
+    if not report["armed"]:
+        ctx.print_json({"mode": "live", "command": command, "armed": False, "failures": report["failures"]})
+        raise NotArmed(report["failures"][0], detail={"failures": report["failures"]})
+
+
+def _ledger_review(data):
+    """(ledger sha256, [{"line", "sha256"}] of the bad lines no repair row exempts, changed exempt lines) of the
+    run-ledger's bytes as read."""
+    from .receipts import bytes_sha256
+    from .recordings import run_ledger_scan
+    scan = run_ledger_scan(data)
+    exempt = set(scan["exempt"])
+    return (bytes_sha256(data), [{"line": index, "sha256": digest} for index, digest in scan["bad"]
+                                 if index not in exempt], scan["changed"])
+
+
+def _recordings_ledger_repair(args, ctx):
+    """recordings ledger-repair (design v9 §3.8 step 2; Astra Q15): static arming (A2, A11, A13) first; then one read
+    of run-ledger.jsonl with no lock, shown as codes only (the ledger digest, each torn line's index and hash); Yu's
+    typed REPAIR RECORDING LEDGER <digest>; then, with .recorder.lock taken LOCK_NB and held, a recheck of the bytes
+    and one appended repair row. Append-only: nothing is edited or deleted, and the torn session stays failed."""
+    from .errors import LockBusy
+    from .paths import file_lock
+    from .receipts import append_jsonl, end_torn_line
+    from .recordings import REPAIR_ROW_KIND, RUN_LEDGER_NAME
+    paths = _paths(args, ctx)
+    config = _config(args, paths)
+    confirmer = ctx.confirmer()
+    _typed_state_arming(args, ctx, paths, config, "recordings-ledger-repair", confirmer)
+    path = paths.recordings_dir / RUN_LEDGER_NAME
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        data = b""
+    except OSError:
+        raise _Done(2, "Betfair input error: run_ledger_unreadable; nothing was written") from None
+    digest, bad, changed = _ledger_review(data)
+    shown = {"status": "run_ledger_review", "ledger_sha256": digest, "bad_lines": bad}
+    if changed:
+        ctx.print_json(dict(shown, status="refused", exempt_lines_changed=changed))
+        raise _Done(2, "Betfair input error: run_ledger_exempt_line_changed; a repaired line's bytes changed; nothing "
+                       "was written; stop for review")
+    if not bad:
+        ctx.print_json(dict(shown, status="nothing_to_repair"))
+        return 0
+    ctx.print_json(shown)
+    phrase = REPAIR_LEDGER_PHRASE.format(digest=digest)
+    confirmer.confirm_line(phrase, banner=(
+        f"Repair the recordings run-ledger by appending one row that exempts {len(bad)} reviewed torn line(s) "
+        f"({', '.join(str(item['line']) for item in bad)}). Nothing is edited or deleted; the session whose row was "
+        f"torn stays failed. Type the line with the ledger digest you reviewed."))
+    held = contextlib.ExitStack()
+    try:              # the recorder is idle, definitely: its lock is taken only now, after the prompt, and held
+        paths.ensure()
+        held.enter_context(file_lock(paths.recorder_lock, timeout_s=0, clock=ctx.clock))
+    except LockBusy:
+        raise _Done(2, "Betfair input error: recorder_running; a recorder holds .recorder.lock; nothing was "
+                       "written") from None
+    except OSError:
+        raise _Done(2, "Betfair input error: recorder_state_unknown; nothing was written") from None
+    with held:
+        try:
+            current = path.read_bytes()
+        except FileNotFoundError:
+            current = b""
+        except OSError:
+            raise _Done(2, "Betfair input error: ledger_changed; the run-ledger cannot be read again; nothing was "
+                           "written") from None
+        now_digest, now_bad, now_changed = _ledger_review(current)
+        if now_digest != digest or now_bad != bad or now_changed:
+            raise _Done(2, "Betfair input error: ledger_changed; the run-ledger changed after it was shown; nothing "
+                           "was written")
+        row = {"kind": REPAIR_ROW_KIND, "created_at": ctx.clock.utc_now(), "reviewed_ledger_sha256": digest,
+               "exempt_lines": bad}
+        end_torn_line(path)
+        append_jsonl(path, row)
+    ctx.print_json({"status": "run_ledger_repaired", "reviewed_ledger_sha256": digest,
+                    "exempt_lines": [item["line"] for item in bad]})
+    return 0
+
+
 def cmd_recordings(args, ctx):
     """recordings index --day D: offline, read only (no credential, no network); writes the per-market index under
-    the profile's recordings/index and prints counts only."""
+    the profile's recordings/index and prints counts only. recordings ledger-repair: Yu's typed repair (above)."""
+    if args.recordings_command == "ledger-repair":
+        return _recordings_ledger_repair(args, ctx)
     from .recordings import build_index, day_bounds
     try:
         day_bounds(args.day)

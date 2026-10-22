@@ -69,6 +69,10 @@ COMMAND_CHECKS = {
     "pilot-ack": ("A2", "A11", "A13"),
     "pilot-gap-resolved": ("A2", "A11", "A13"),
     "pilot-capture": ("A2", "A11", "A13"),
+    # Recording rollout (design v9 §3.5, §3.8; Astra Q15): Yu's typed recording-release and the typed, append-only
+    # run-ledger repair. The resume set: no login, no network and no credential read; A13 reads only the anchor.
+    "recording-release": ("A2", "A11", "A13"),
+    "recordings-ledger-repair": ("A2", "A11", "A13"),
 }
 # Commands whose static A13 checks the state root only (amendment A3, D4).
 KILL_STATIC_A13_ROOT_ONLY = frozenset({"kill", "kill-account"})

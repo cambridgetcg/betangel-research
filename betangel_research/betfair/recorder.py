@@ -37,7 +37,8 @@ import re
 import signal
 
 from .. import stream as _stream
-from .admission import check_invocation_id, recorder_admission
+from .admission import check_invocation_id, ledger_problems, recorder_admission
+from .auth import NOT_SENT_OUTCOME, SUCCESS_OUTCOMES
 from .book import replay_market_time
 from .config import config_sha256, validate_config
 from .constants import STREAM_STATUS_ERROR_CODES
@@ -483,20 +484,48 @@ class _Session:
         self.last_progress_ns = self.start_ns
         self.keepalive_retry_ns = None
         self.static = None
+        # R3 (design v9 §3.7): this run's sticky login stop, held in this process only and never derived from the
+        # shared login ledger, so another process's login-reset during the run never clears it.
+        self.login_stop = None
 
     # --- top level ----------------------------------------------------------------------------
 
     def run(self):
-        """The run, with a login guard on the session for its whole length (SessionManager.guard_logins):
-        once any stop condition holds, no login or relogin starts, whoever asks for it."""
+        """The run, with a login guard on the session for its whole length (SessionManager.guard_logins), installed
+        before the run's first lazy login (the precount's included): once any stop condition holds, no login or
+        relogin starts, whoever asks for it. R3: the guard also refuses while the login ledger is not clean
+        (login_ledger_not_clean), and after any failed or unknown login of this run every later login is refused and
+        the run stops with login_failed_this_run:<outcome>, so one recorder run can never take the ledger to the
+        two-failure state that refuses kill's emergency login."""
         guard = getattr(self.r.session, "guard_logins", None)
         if callable(guard):
-            guard(self._stop_reason)
+            guard(self._login_guard, on_outcome=self._login_outcome)
         try:
             return self._run()
         finally:
             if callable(guard):
                 guard(None)
+
+    def _login_guard(self):
+        """The run's login guard: a stop reason (sticky login stops first), else login_ledger_not_clean when step 8's
+        ledger rule would refuse, else None. Read only: no lock, no write but this run's events."""
+        reason = self._stop_reason()
+        if reason:
+            return reason
+        problems = ledger_problems(self.r.config, self.r.paths, clock=self.clock)
+        if problems:
+            self.login_stop = "login_ledger_not_clean"
+            self._event("login_refused", reason=self.login_stop, problems=[safe_code(p) for p in problems])
+            return self.login_stop
+        return None
+
+    def _login_outcome(self, outcome):
+        """Every login outcome of this run: a failed or unknown one (anything but a success or a proven not_sent)
+        stops the run, and no later login of this run is attempted."""
+        if outcome in SUCCESS_OUTCOMES or outcome == NOT_SENT_OUTCOME or self.login_stop is not None:
+            return
+        self.login_stop = f"login_failed_this_run:{safe_code(str(outcome))}"
+        self._event("login_failed", reason=self.login_stop)
 
     def _run(self):
         try:
@@ -906,6 +935,8 @@ class _Session:
         return None
 
     def _stop_reason(self):
+        if self.login_stop is not None:
+            return self.login_stop                  # R3: sticky for the rest of the run
         if self.stop_requested():
             return "stop_requested"
         reason = self._end_at_reason()

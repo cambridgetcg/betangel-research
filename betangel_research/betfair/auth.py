@@ -383,6 +383,7 @@ class SessionManager:
         self._coexistence_ack = coexistence_ack
         self._relogin_active = False
         self._login_guard = None
+        self._login_observer = None
 
     # -- properties and accessors --
 
@@ -428,15 +429,21 @@ class SessionManager:
 
     # -- login --
 
-    def guard_logins(self, guard):
-        """Install guard (None removes it): a callable checked at the start of every login, lazy logins and
-        every relogin included (stream session errors, the REST retry, keepAlive's NO_SESSION), before any
-        attempt is reserved or sent. A non-empty return refuses that login with LoginStopped(<return>).
-        The recorder installs one for its run (its stop flag and wall-clock end); logout, keepAlive itself
-        and every caller that installs none are unchanged."""
+    def guard_logins(self, guard, on_outcome=None):
+        """Install guard (None removes it, and its on_outcome with it): a callable checked at the start of every
+        login, lazy logins and every relogin included (stream session errors, the REST retry, keepAlive's
+        NO_SESSION), before any attempt is reserved or sent. A non-empty return refuses that login with
+        LoginStopped(<return>). on_outcome, when given, is called with the ledger outcome of every attempt this
+        session reserved, right after its outcome row is written (the recorder's per-run login stop, design v9 §3.7
+        R3: its run refuses every later login after one failed or unknown outcome). The recorder installs both for
+        its run (its stop flag and wall-clock end); logout, keepAlive itself and every caller that installs none
+        are unchanged."""
         if guard is not None and not callable(guard):
             raise TypeError("login guard must be callable or None")
+        if on_outcome is not None and (guard is None or not callable(on_outcome)):
+            raise TypeError("login outcome observer must be callable and needs a guard")
         self._login_guard = guard
+        self._login_observer = on_outcome
 
     def _url(self, host_kind, path_name):
         return f"https://{self._hosts[host_kind]}{SSO_PATHS[path_name]}"
@@ -481,6 +488,8 @@ class SessionManager:
             "jurisdiction": self.config["jurisdiction"], "outcome": outcome, "outcome_status": outcome_status,
             "outcome_error": outcome_error, "emergency": emergency, "coexistence_ack": coexistence_ack,
             "ban_until": ban_until})
+        if self._login_observer is not None:
+            self._login_observer(outcome)
 
     def _drop_session(self):
         self._token = None

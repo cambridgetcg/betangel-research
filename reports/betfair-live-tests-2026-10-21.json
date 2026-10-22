@@ -1,0 +1,329 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-10-21",
+  "status": "live_key_first_live_tests_two_probe_orders_placed_and_cancelled_none_matched",
+  "scope": "First-live tests after the live key was activated on 2026-10-20: T5 (live half), T9 and T10, plus a T0 observation without a receipt. Yu ran the T5 full run and every T9 run at Yu's own terminal; the first T5 attempt and the T10 reads ran from the agent's shell (see run_by). Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts, durations and short notes only; clock times are left out (run_date gives the day; the T10 CLOSED-retention poll ran on into 2026-10-22). Codes not in a receipt come from the live journal, opened read-only and immutable, with only event kinds, states, outcome codes, counts and monotonic durations taken, and from the session notes.",
+  "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory, as on 2026-10-13. One T5 entry is the 2026-10-13 T8a receipt (listed as T8 in betfair-live-tests-2026-10-13.json): Yu decided it counts as the receipt for T5's delayed half, so it is listed here as T5 too; it was not re-run. The first T5 attempt stopped before any live-key call and is recorded under live_test_observations.T5 only. The first T9 attempt was refused before any send and has no receipt directory.",
+  "code_revisions": {
+    "T5": "416702f",
+    "T9_refused_attempt": "416702f",
+    "T9_probe_1": "416702f",
+    "T9_probe_2": "46c68cf",
+    "T10": "unknown"
+  },
+  "key_types": {
+    "T5": "delayed_catalogue_then_live_login_and_book",
+    "T9": "live",
+    "T10": "delayed"
+  },
+  "live_orders_placed": 2,
+  "live_orders_matched": 0,
+  "live_orders_refused_before_send": 1,
+  "first_live_tests_run": [
+    {
+      "test_id": "T5",
+      "receipt_sha256": "385d5f85185fec8e80fe2d03434b1333e389840facaff7dae8d2de2e8fb6bfdd"
+    },
+    {
+      "test_id": "T5",
+      "receipt_sha256": "f356d2dbcea12681f2317cceedef60493aa365350700f274c839644aaac2cda3"
+    },
+    {
+      "test_id": "T9",
+      "receipt_sha256": "0033dd6dea0314d4abef1f11251cb42ee95a2b33831ed8b3ef1e7b48badb7180"
+    },
+    {
+      "test_id": "T9",
+      "receipt_sha256": "bd59be2ebf8cd4101ea1f25a86b7dd7ab1d9d8e09b091ccc883d70800a0426f9"
+    },
+    {
+      "test_id": "T10",
+      "receipt_sha256": "caf487aeced96790f73e11aa8342912f6d8a277e0b4dea5f045137ddc55b657f"
+    }
+  ],
+  "live_test_observations": {
+    "T5": {
+      "live_half": {
+        "receipt_sha256": "385d5f85185fec8e80fe2d03434b1333e389840facaff7dae8d2de2e8fb6bfdd",
+        "command": "python3 <archive>/live-1/livekey-check.py (a read-only helper outside the repository, using the repository's ReadClient; not a CLI command)",
+        "run_by": "Yu at Yu's terminal",
+        "result": "pass",
+        "files_in_receipt": 6,
+        "sha256sums_verified": true,
+        "delayed_login": {
+          "method": "cert",
+          "status": "SUCCESS",
+          "can_bet": true
+        },
+        "catalogue_rows": 37,
+        "catalogue_filter": "event type 7, GB and IE, WIN, rest of the day",
+        "live_login": {
+          "method": "cert",
+          "status": "SUCCESS",
+          "can_bet": true
+        },
+        "markets_read": 1,
+        "price_data": [
+          "EX_BEST_OFFERS"
+        ],
+        "key_type": "live",
+        "app_key_slot": "live",
+        "is_market_data_delayed": false,
+        "market_status": "OPEN",
+        "inplay": false,
+        "catalogue_present": true,
+        "runners": 16,
+        "runners_with_back_price": 14,
+        "orders_sent": 0,
+        "also_holds": "one live-key cert login, which the receipt README calls the T1 live-key check; it is not listed as T1"
+      },
+      "first_attempt": {
+        "receipt_sha256": "b54018d9e99520665da078cc645a20d81295991e0f5ecb8c2a50d48561dd2af6",
+        "run_by": "the agent's shell, at Yu's request",
+        "result": "stopped_before_live_login",
+        "files_in_receipt": 4,
+        "sha256sums_verified": true,
+        "delayed_login": {
+          "method": "cert",
+          "status": "SUCCESS",
+          "can_bet": true
+        },
+        "catalogue_rows": 37,
+        "live_step_failed_code": "keychain_item_unavailable:app_key_live",
+        "live_step_error_class": "CredentialError",
+        "live_requests_sent": 0,
+        "note": "the live-key Keychain read did not succeed from the agent's shell; the full run was then made at Yu's terminal"
+      },
+      "delayed_half": {
+        "receipt_sha256": "f356d2dbcea12681f2317cceedef60493aa365350700f274c839644aaac2cda3",
+        "receipt": "the 2026-10-13 T8a receipt, recorded as T8 in betfair-live-tests-2026-10-13.json",
+        "counted_as_T5_by": "Yu's decision, relayed on 2026-10-21 and confirmed by Yu directly on 2026-10-22: T8a counts as the receipt for T5's delayed half, and this report says so",
+        "re_run": false,
+        "is_market_data_delayed": true,
+        "markets_read": 2,
+        "reads_per_market": 2
+      },
+      "both_halves": "REST market books carried is_market_data_delayed true on the delayed key (T8a, 2 markets, 2 reads each) and false on the live key (1 market, 1 read)"
+    },
+    "T9": {
+      "command": "live-probe --market <id> --selection <id> --confirm-live <daily token>",
+      "arming": "armed with the archive helper arm-live.py and disarmed with disarm-live.py after each probe; live-probe needs every arming condition except A19 and a typed confirmation at a terminal",
+      "run_by": "Yu at Yu's terminal",
+      "fixed_probe_shape": "LAY 1.00 @ 1.01, LIMIT, LAPSE (gateway constants)",
+      "attempts": [
+        {
+          "attempt": "refused",
+          "code_revision": "416702f",
+          "receipt": "none: refused before any send",
+          "selection": "a non-runner taken from the catalogue",
+          "startup_reconcile_clean": true,
+          "risk_decision_approved": false,
+          "rule": "validation:V9",
+          "failure_reason": "runner_not_active",
+          "state_after": "REFUSED",
+          "transition_reason": "risk_refused",
+          "place_submitted": false,
+          "lesson": "the catalogue lists non-runners; pick an ACTIVE runner from the book"
+        },
+        {
+          "attempt": "probe_1",
+          "code_revision": "416702f",
+          "receipt_sha256": "0033dd6dea0314d4abef1f11251cb42ee95a2b33831ed8b3ef1e7b48badb7180",
+          "files_in_receipt": 3,
+          "sha256sums_verified": true,
+          "startup_reconcile_clean": true,
+          "place_status": "SUCCESS",
+          "place_order_status": "EXECUTABLE",
+          "matched_nothing": true,
+          "cancel_status": "SUCCESS",
+          "cancelled_in_full": true,
+          "final_state": "EXECUTION_COMPLETE",
+          "place_round_trip_ms": 307,
+          "place_submit_to_cancel_submit_ms": 318,
+          "cancel_round_trip_ms": 271,
+          "lookup": "after_cancel",
+          "current_orders_by_ref_order_projection_all": 0,
+          "cleared_cancelled_by_ref": 0,
+          "cleared_lapsed_by_ref": 0,
+          "current_read_error": null,
+          "found_by_ref": false,
+          "ref_roundtrip_verified": false,
+          "a19_set": false,
+          "finding": "a fully cancelled, never-matched bet was gone from listCurrentOrders at once and was not in listClearedOrders before settlement, so a lookup after the cancel could not verify the ref"
+        },
+        {
+          "attempt": "probe_fix",
+          "change": "PR #30: look the bet up by ref before the cancel, with the cancel in a finally",
+          "merged_as": "46c68cf",
+          "merge": "rebase merge after two Astra reviews (accept with nits) and Yu's go-ahead"
+        },
+        {
+          "attempt": "probe_2",
+          "code_revision": "46c68cf",
+          "receipt_sha256": "bd59be2ebf8cd4101ea1f25a86b7dd7ab1d9d8e09b091ccc883d70800a0426f9",
+          "files_in_receipt": 4,
+          "sha256sums_verified": true,
+          "startup_reconcile_clean": true,
+          "place_status": "SUCCESS",
+          "place_order_status": "EXECUTABLE",
+          "matched_nothing": true,
+          "lookup": "before_cancel",
+          "current_orders_by_ref_order_projection_all": 1,
+          "current_order_row": {
+            "status": "EXECUTABLE",
+            "orderType": "LIMIT",
+            "persistenceType": "LAPSE",
+            "side": "LAY",
+            "customerOrderRef_present": true,
+            "customerStrategyRef_present": true,
+            "field_names": [
+              "averagePriceMatched",
+              "betId",
+              "bspLiability",
+              "customerOrderRef",
+              "customerStrategyRef",
+              "handicap",
+              "marketId",
+              "orderType",
+              "persistenceType",
+              "placedDate",
+              "priceSize",
+              "regulatorCode",
+              "selectionId",
+              "side",
+              "sizeCancelled",
+              "sizeLapsed",
+              "sizeMatched",
+              "sizeRemaining",
+              "sizeVoided",
+              "status"
+            ]
+          },
+          "cancel_status": "SUCCESS",
+          "cancelled_in_full": true,
+          "final_state": "EXECUTION_COMPLETE",
+          "place_round_trip_ms": 222,
+          "place_submit_to_cancel_submit_ms": 991,
+          "cancel_round_trip_ms": 294,
+          "current_orders_after_cancel_by_ref": 0,
+          "cleared_cancelled_by_ref": 0,
+          "cleared_lapsed_by_ref": 0,
+          "read_errors": 0,
+          "kill_engaged": false,
+          "found_by_ref": true,
+          "ref_roundtrip_verified": true,
+          "journal_event": "ref_roundtrip_verified",
+          "a19_set": true,
+          "after": "no open position, not halted, disarmed",
+          "note": "the second observation that a cancelled, unmatched bet leaves listCurrentOrders at once"
+        }
+      ],
+      "customer_ref_echo": "not_answered: neither receipt keeps the raw place report, and the normalised report keeps only the instruction-level customer_order_ref"
+    },
+    "T10": {
+      "receipt_sha256": "caf487aeced96790f73e11aa8342912f6d8a277e0b4dea5f045137ddc55b657f",
+      "files_in_receipt": 4,
+      "sha256sums_verified": true,
+      "probe_followed": "probe_1",
+      "run_by": "the agent's shell (session notes)",
+      "key_type": "delayed",
+      "order_reads_command": "unknown: the README names the API methods, not the command",
+      "ids_kept_in_receipt": "none: betId and customerOrderRef were compared with the journal in memory and not stored",
+      "cancelled_probe_before_settlement": {
+        "reads": 3,
+        "minutes_after_the_cancel": [
+          0,
+          2,
+          15
+        ],
+        "listCurrentOrders_rows": 0,
+        "listClearedOrders_cancelled_rows": 0,
+        "market_status_at_last_read": "OPEN"
+      },
+      "settlement": {
+        "market_status": "CLOSED",
+        "winners": 1,
+        "settled_minutes_after_the_off": "about 6 (the off is approximate)"
+      },
+      "cancelled_probe_after_settlement": {
+        "minutes_after_settlement": 6,
+        "listCurrentOrders_rows": 0,
+        "listClearedOrders_cancelled_rows": 1,
+        "row_is_the_probe": true,
+        "betId_matches_journal": true,
+        "customerOrderRef_present_and_matches_journal": true,
+        "settledDate_present": true,
+        "side": "LAY",
+        "orderType": "LIMIT",
+        "persistenceType": "LAPSE",
+        "cancelled_in_full": true,
+        "listClearedOrders_lapsed_settled_voided_rows": 0
+      },
+      "closed_retention": {
+        "command": "book --market <probe market> --price-data EX_BEST_OFFERS (other flags not recorded)",
+        "poll_interval_s": 1200,
+        "polls": 72,
+        "polls_closed": 72,
+        "markets_per_poll": 1,
+        "first_poll_s_after_settlement": 465,
+        "first_to_last_poll_hours": 23.68,
+        "last_poll_hours_after_settlement": 23.81,
+        "stop_reason": "poll_limit_reached_not_a_miss",
+        "closed_visible_lower_bound_hours": 23.7,
+        "basis": "one market on one day; a lower bound, not a retention period"
+      },
+      "settled_bet_leaves_listCurrentOrders": "not_answered: the probe was cancelled unmatched and was already gone before settlement",
+      "sha256sums_note": "SHA256SUMS was rewritten on 2026-10-22, after the poll ended, to cover the two retention files; an earlier digest beginning 1a5f0cd7edcd in the session notes is superseded"
+    },
+    "T0": {
+      "receipt": "none",
+      "source": "Yu's account in the session notes, plus the T5 first-attempt receipt",
+      "agent_shell_live_key_read": "keychain_item_unavailable:app_key_live (CredentialError)",
+      "first_live_key_read_at_yu_terminal_dialogs": 1,
+      "first_live_key_read_choice": "Always Allow",
+      "later_t9_live_key_read_dialog_seen": false,
+      "dialogs_per_t9_run": "unknown",
+      "app_key_live_created_with_empty_trust_list": "unknown: keychain_setup_commands prints the live key's add command with -T \"\", but how the item was created is not in these sources",
+      "follow_up": "Yu removes /usr/bin/security from the app-key.live item's Always Allow list by hand, then checks that the prompt returns on the next live-key read (Yu's decision, confirmed 2026-10-22)",
+      "follow_up_done": "unknown",
+      "prompt_returned_after_removal": "unknown",
+      "locked_keychain_half": "not_run",
+      "missing_item_exit_44": "not_re_observed"
+    }
+  },
+  "not_run": {
+    "T0": "observation only, no receipt; see live_test_observations.T0",
+    "T1": "the T5 live-half receipt holds a live-key cert login (SUCCESS, can_bet true), not listed as T1; the T1 receipt stays the 2026-10-13 delayed-key one",
+    "T2": "not run on 2026-10-21; run on 2026-10-22 and reported separately",
+    "T3": "not run on 2026-10-21; run on 2026-10-22 and reported separately",
+    "T4": "not re-run with the live key",
+    "T6": "live-key half deferred by Yu's decision (confirmed 2026-10-22): run it only if the rollout design still needs it",
+    "T7": "not re-run with the live key",
+    "T8": "not re-run with the live key"
+  },
+  "facts_relabelled_secondary_first_person_observation": {},
+  "facts_not_relabelled": {
+    "F22": "neither T9 receipt keeps the raw place report; Yu decided (confirmed 2026-10-22) that F22 is captured from the raw place report in PT1 and PT4, with no extra probe",
+    "F47": "the T5 live half shows a funded live key returning is_market_data_delayed false; no unfunded or overridden live key was tried",
+    "F68": "no T0 receipt",
+    "F73": "no T0 receipt; Yu's account of one dialog, then Always Allow, then no dialog is in live_test_observations.T0"
+  },
+  "findings_for_next_register_round": {
+    "F43": "candidate for a secondary first_person_observation on the isMarketDataDelayed part: the two T5 receipts show it present, true on the delayed key and false on the live key; the snapshot is normalised, so the rest of the value is not shown; the register is not edited in this report",
+    "F36": "candidate on the cancelled-bet part: the T10 receipt shows the cancelled, unmatched probe absent from cleared CANCELLED in 3 reads before settlement and present after it; lapsed bets were not tested, and F36's secondary slot already holds forum_participant_opinion",
+    "F77": "candidate on the CLOSED part only: the settled market read CLOSED in 72 of 72 polls over about 23.7 h (one market, a lower bound); the listCurrentOrders part is not answered",
+    "F23": "probe 2 found its bet by filtering listCurrentOrders on customerOrderRef (1 row), which supports 'can be filtered on'; F23 is in no checklist row, so it is not relabelled",
+    "cancelled_unmatched": "in both probes a fully cancelled, never-matched bet was gone from listCurrentOrders (by ref, orderProjection ALL) right after the cancel; no fact in the register states this, and the probe now looks the bet up before the cancel (PR #30)"
+  },
+  "economic_result": null,
+  "limitations": [
+    "Two live orders, both the fixed probe, both cancelled with nothing matched; no strategy order and no open position.",
+    "Each observation is one run on one account on one day; it shows behaviour seen, not a documented guarantee.",
+    "The CLOSED period is a lower bound from one market: the poll stopped at its 72-poll limit, not on a miss.",
+    "The T0 notes are Yu's account relayed in the session, not a receipt.",
+    "The probe and T10 SHA256SUMS files were written on 2026-10-22, after the T10 poll ended; the probe files match the per-file hashes the probe journaled when it ran, while the T10 files have no run-time hash.",
+    "The refused T9 attempt has no receipt; its codes come from the live journal only.",
+    "Raw responses, the journal and order rows stay private; no market or selection id, betId, ref or account value is here."
+  ],
+  "amendments": []
+}

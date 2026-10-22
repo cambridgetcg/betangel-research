@@ -1718,10 +1718,10 @@ class _Rec:
 
 class _Folder:
     """One pass over the journal in seq order. Before each event, every time trigger it crosses (a BSP cutoff or a
-    7-day deadline) is evaluated at its own time; then the records the event names are re-evaluated at the
-    journal's time (the running maximum of recorded_at). So a record freezes at its first final computation, a
-    deadline-final record is decided on evidence recorded by its deadline only, and the pause is checked after
-    every ledger change (note §10, §11)."""
+    7-day deadline) is evaluated at its own time; then the records the event names (every record, at the event where
+    the commission method becomes verified: IR-25) are re-evaluated at the journal's time (the running maximum of
+    recorded_at). So a record freezes at its first final computation, a deadline-final record is decided on evidence
+    recorded by its deadline only, and the pause is checked after every ledger change (note §10, §11)."""
 
     def __init__(self, contract, live_open_id):
         self.contract, self.live_open_id = contract, live_open_id
@@ -1740,6 +1740,7 @@ class _Folder:
         self.l_fields_refuted = False
         self.profit_bases = []
         self.verified_commission = []        # (seq, market_id) of commission_verified notes that match
+        self.commission_method_on = False    # commission_method_verified() after the last event; never turns false
         self.stops, self.acks = [], []
         self.implied = {}                    # (stop_id, scope) -> stop payload implied by the journal
         self.pause_fired, self.pause_acked = {}, {}
@@ -1900,6 +1901,12 @@ class _Folder:
             dirty = self.intent(event, seq, ns)
         else:
             dirty = self.core(event, seq, ns)
+        if not self.commission_method_on and self.commission_method_verified():
+            # The method is verified for every market by an event in one (a note, its CLOSED read or a new record
+            # there), so every record is re-evaluated here: replay must reproduce the present, which re-evaluates
+            # every record at now (IR-25).
+            self.commission_method_on = True
+            dirty = range(len(self.records))
         for index in sorted(set(dirty or ())):
             self.evaluate(self.records[index], seq, self.clock)
         self.pause_check(seq)

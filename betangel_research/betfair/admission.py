@@ -595,8 +595,15 @@ class OwnerTicket:
 
 def owner_lock_state(paths, *, clock=SYSTEM_CLOCK):
     """"free", "held" or "unknown": .live-owner.lock tried with LOCK_NB and let go at once. Any OSError is unknown,
-    which every caller treats as held. Never call it while this process holds the lock (flock conflicts within one
-    process too): an owner checks its ticket's holds() instead (Q3's self-lock exception)."""
+    which every pilot caller treats as held. A lock file that does not exist is free and is not created: a probe
+    leaves no file behind (P1-08 residual 3). Never call it while this process holds the lock (flock conflicts within
+    one process too): an owner checks its ticket's holds() instead (Q3's self-lock exception)."""
+    try:
+        os.lstat(paths.live_owner_lock)
+    except FileNotFoundError:
+        return "free"
+    except OSError:
+        return "unknown"
     try:
         with file_lock(paths.live_owner_lock, timeout_s=0, clock=clock):
             return "free"

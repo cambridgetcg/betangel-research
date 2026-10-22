@@ -481,6 +481,10 @@ class OrderJournal:
                     db.execute("COMMIT")
         except (JournalError, sqlite3.Error):
             self._fold_cache = None
+            if db.in_transaction:
+                # A ROLLBACK or COMMIT that failed left this connection inside a transaction: the fallback would read
+                # through it (a stale or uncommitted snapshot), so fail closed instead (P1-08 residual 2).
+                raise JournalError("journal_transaction_stuck") from None
             return fold_events(list(self.events()), mode=self.mode, now_ns=now_ns,
                                submitting_as_unknown=submitting_as_unknown)
         return folder.state(now_ns=now_ns, submitting_as_unknown=submitting_as_unknown)
@@ -614,14 +618,20 @@ class OrderJournal:
         if not isinstance(fp, str) or not _FINGERPRINT_RE.fullmatch(fp):
             raise JournalError("account_fingerprint_invalid")
         db = self._db
-        db.execute("BEGIN IMMEDIATE")
+        # append's shape: a transaction an interrupted call left open is rolled back first, BEGIN IMMEDIATE sits
+        # inside the block, and the handler rolls back only an open transaction, so a failed COMMIT keeps its own
+        # error (P1-08 residual 2).
+        if db.in_transaction:
+            db.execute("ROLLBACK")
         try:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT value FROM journal_meta WHERE key='account_fingerprint'").fetchone()
             if row is None:
                 db.execute("INSERT INTO journal_meta (key, value) VALUES ('account_fingerprint', ?)", (fp,))
             db.execute("COMMIT")
         except BaseException:
-            db.execute("ROLLBACK")
+            if db.in_transaction:
+                db.execute("ROLLBACK")
             raise
         if row is not None and row[0] != fp:
             raise JournalError("account_fingerprint_mismatch")

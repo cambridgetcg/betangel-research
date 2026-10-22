@@ -2298,7 +2298,8 @@ class LegacyPinTests(unittest.TestCase):
     # N inserted where a manual command leaves its ADMISSION retained. The events and orders digests stay those of
     # 2d3b092; the outputs with the recording lines and release steps removed are 2d3b092's too; the full outputs
     # (release lines and the release steps' own output) are pinned here.
-    ROLLOUT_OUTPUTS = "f65aa68a01680736ed54a8c33db5da115379ca60220a6ff9b69ce2db011c0da1"
+    # Re-pinned after review round 1 (NP-01): the settle-market continuation's line is now the neutral one.
+    ROLLOUT_OUTPUTS = "8fcc661b1174f0418434a1e13e22a13e87aa32adbe2567756c64373cddfdd3f0"
     ROLLOUT_EXITS = [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0]
 
     def non_pilot_world(self):
@@ -2370,6 +2371,9 @@ class LegacyPinTests(unittest.TestCase):
         run("resume", "--mode", "live", "--confirm-live", env.token)
         self.assertEqual([o[0] for o in outputs], self.ROLLOUT_EXITS)
         self.assertIn("settle_market_not_closed", outputs[6][2])
+        self.assertNotIn("release refused", outputs[6][2])                # NP-01: a continuation never releases
+        self.assertIn("Betfair recording: continuation of generation 4 never releases (continuation_never_releases); "
+                      "recording stays off until Yu's typed recording-release (generation 4)", outputs[6][2])
         self.assertEqual(env.confirmer.prompts[1]["expected"], "RELEASE RECORDING GENERATION 1")
         self.assertEqual(admission.admission_status(env.paths)["admission"], None)
         found = {"events": self.journal_digests(env)[0],

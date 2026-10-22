@@ -23,6 +23,10 @@ Restarts (reconnect_budget_exhausted and exactly three transient precount codes,
 15 min apart; resumptions after live work (Astra Q9) at 8 a day, 5 min after the observed release; nothing starts
 with less than 30 min to the end instant. Every spacing is wall time (time_ns): the monotonic clock stops in sleep.
 
+One production wrapper per state root: a production run holds its own <state root>/recording-wrapper/.day.lock
+(LOCK_NB, close-on-exec) from before it reads the day file to its exit; a second one stops wrapper_already_running and
+reads or writes nothing (DAY-4).
+
 What it never does (§4.7): take admission.lock or .recorder.lock, write recorder.pid, call recorder_lock_held, write
 config.json or pinned.json, run login-reset, clear INHIBIT, delete or move a recording file, or read segment content.
 Its only effect under recordings/ is the pinned CLI's `recordings index` subprocess, run after the child has exited.
@@ -92,6 +96,10 @@ class DayFileWriteFailed(Exception):
     """A strict checked write failed at some step, the directory open or fsync included (day_file_write_failed)."""
 
 
+class SpawnFailed(Exception):
+    """The child could not be spawned (DAY-2): an OSError from the spawn itself, the stderr file's open included."""
+
+
 class Stop(Exception):
     """The day ends here: code is the closing code, state the day state it leaves."""
 
@@ -150,8 +158,8 @@ class SystemClock:
 
 
 class StrictWriter:
-    """The day file's strict checked atomic write (RV8-1): temp file, F_FULLFSYNC (fsync where it is refused),
-    rename, then open and fsync the directory, raising DayFileWriteFailed on any failure. receipts.atomic_write_json
+    """The day file's strict checked atomic write (RV8-1): temp file, F_FULLFSYNC (plain fsync only where the platform
+    has no F_FULLFSYNC), rename, then open and fsync the directory, raising DayFileWriteFailed on any failure. receipts.atomic_write_json
     swallows directory-sync errors, so it is never used for the day file. Tests replace the os-level calls."""
 
     open = staticmethod(os.open)
@@ -159,12 +167,11 @@ class StrictWriter:
     replace = staticmethod(os.replace)
 
     def full_fsync(self, fd):
+        """F_FULLFSYNC where the platform has it, and its failure propagates (ROLL-1: a reported full-sync failure is
+        a failed barrier, never a reason to fall back); plain fsync only where F_FULLFSYNC does not exist."""
         if hasattr(fcntl, "F_FULLFSYNC"):
-            try:
-                fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-                return
-            except OSError:
-                pass
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
         self.fsync(fd)
 
     def write(self, path, value):
@@ -241,7 +248,8 @@ class Child:
 
 
 class System:
-    """The real world. Every method here is replaced by a fake in the tests."""
+    """The real world. Every method here is replaced by a fake in the tests (day_lock excepted: it is a real flock on
+    the temporary state root there too)."""
 
     def __init__(self):
         self.clock = SystemClock()
@@ -296,12 +304,28 @@ class System:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
+    def day_lock(self, directory):
+        return day_lock(directory)
+
     def log(self, line):
         try:
             sys.stdout.write(line + "\n")
             sys.stdout.flush()
         except (OSError, ValueError):
             pass
+
+
+def day_lock(directory):
+    """DAY-4: the wrapper's own exclusive lock, <state root>/recording-wrapper/.day.lock (0600, close-on-exec, so no
+    child inherits it), taken LOCK_NB for a whole production run -> the fd; BlockingIOError while another wrapper holds
+    it, OSError when it cannot be opened. Neither admission.lock nor .recorder.lock (§4.7)."""
+    fd = os.open(str(Path(directory) / ".day.lock"), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 # --- the wrapper ---------------------------------------------------------------------------------------------------
@@ -464,7 +488,10 @@ class Wrapper:
 
     def check_day_allows(self):
         """The durable day file allows another attempt: none unfinished, the day open (§4.3 step 1)."""
-        fresh = self.load_day(self.day_path) if self.day_path.exists() else None
+        try:
+            fresh = self.load_day(self.day_path) if self.day_path.exists() else None
+        except DayFileError:
+            raise Stop("day_file_unreadable") from None
         if fresh is not None and fresh != self.day:
             raise Stop("day_file_changed")
         if any(entry["state"] == "reserved" for entry in self.day["attempts"]):
@@ -528,7 +555,10 @@ class Wrapper:
     def run_child(self, argv, invocation_id, spawn_ns):
         """Spawn, the post-start check, the wait -> (child, mismatch field or None)."""
         stderr_path = self.logs / f"child-{invocation_id}.stderr"
-        child = self.child = self.sys.spawn(argv, cwd=Path(self.pinned["worktree"]), stderr_path=stderr_path)
+        try:
+            child = self.child = self.sys.spawn(argv, cwd=Path(self.pinned["worktree"]), stderr_path=stderr_path)
+        except OSError as exc:
+            raise SpawnFailed(type(exc).__name__) from None
         if self.signalled is not None and not self.forwarded:
             self.forwarded = True
             child.terminate()
@@ -548,6 +578,12 @@ class Wrapper:
                         child.terminate()
                     break
             self.clock.sleep(CHILD_POLL_S)
+        if not checked:                   # DAY-5: exited before a poll saw its partial; check it if it is there now
+            partial = self.find_partial(invocation_id)
+            if partial is not None:
+                mismatch = self.post_start_mismatch(partial)
+                if mismatch is not None:
+                    self.log("post_start_mismatch", field=mismatch, invocation_id=invocation_id)
         child.wait()
         self.child = None
         return child, mismatch
@@ -558,7 +594,11 @@ class Wrapper:
             after = admission_status(self.paths)
         except Exception:
             after = None
-        disk = classify_invocation(self.paths, self.config, invocation_id, spawn_ns)
+        try:
+            disk = classify_invocation(self.paths, self.config, invocation_id, spawn_ns)
+        except Exception:
+            return "review", {"outcome": "classify_failed", "stop_reason": None, "session_id": None, "codes": [],
+                              "refusal_code": None, "receipt_sha256": None, "touched": None}
         fields = {"outcome": disk["outcome"], "stop_reason": disk.get("stop_reason"), "session_id": disk["session_id"],
                   "codes": list(disk["codes"]), "refusal_code": None, "receipt_sha256": disk.get("receipt_sha256")}
         if after is None:
@@ -589,20 +629,25 @@ class Wrapper:
             return "review", fields
         return "review", fields                                          # rules 2 (attributed), 3, 5, 6
 
+    def span_days(self, spawn_ns):
+        """The UTC days from the spawn to now, as YYYY-MM-DD."""
+        first = datetime.fromtimestamp(spawn_ns // NS, tz=timezone.utc).date()
+        last = datetime.fromtimestamp(self.clock.time_ns() // NS, tz=timezone.utc).date()
+        days = []
+        while first <= last:
+            days.append(first.isoformat())
+            first += timedelta(days=1)
+        return days
+
     def index_days(self, spawn_ns, session_id):
         """verify-day and recordings index for each UTC day the session spans, as pinned-CLI subprocesses."""
         if session_id is None:
             return
-        first = datetime.fromtimestamp(spawn_ns // NS, tz=timezone.utc).date()
-        last = datetime.fromtimestamp(self.clock.time_ns() // NS, tz=timezone.utc).date()
-        day = first
-        while day <= last:
-            text = day.isoformat()
+        for text in self.span_days(spawn_ns):
             base = [self.sys.interpreter()[0], "-E", "-s", "-m", "betangel_research.betfair"]
             verified = self.sys.run(base + ["verify-day", "--day", text], cwd=Path(self.pinned["worktree"]))
             indexed = self.sys.run(base + ["recordings", "index", "--day", text], cwd=Path(self.pinned["worktree"]))
             self.log("day_checked", day=text, verify_day_exit=verified, index_exit=indexed)
-            day += timedelta(days=1)
 
     # -- production -----------------------------------------------------------------------------------------------
 
@@ -696,7 +741,12 @@ class Wrapper:
                         close=("stopped_for_review", "wrapper_signalled_before_spawn"))
             raise Stop("wrapper_signalled_before_spawn", invocation_id=invocation_id)
         argv = self.child_argv(end_ns, invocation_id)
-        child, mismatch = self.run_child(argv, invocation_id, spawn_ns)
+        try:
+            child, mismatch = self.run_child(argv, invocation_id, spawn_ns)
+        except SpawnFailed:               # DAY-2: EMFILE, a missing interpreter, the stderr file: the charge stays
+            self.child = None
+            self.finish(entry, "review", {"outcome": "spawn_failed"}, close=("stopped_for_review", "spawn_failed"))
+            raise Stop("spawn_failed", invocation_id=invocation_id) from None
         if mismatch is not None:
             decision, fields = "review", {"outcome": f"post_start_mismatch:{mismatch}", "codes": [mismatch]}
             try:
@@ -708,7 +758,11 @@ class Wrapper:
             decision, fields = self.classify(invocation_id, spawn_ns, child)
         close = self.closing(decision, fields, end_ns)
         self.finish(entry, decision, fields, close=close)
-        self.index_days(spawn_ns, fields.get("session_id"))
+        if self.signalled is None:
+            self.index_days(spawn_ns, fields.get("session_id"))
+        else:
+            self.log("index_skipped", code="wrapper_signalled", session_id=fields.get("session_id"),
+                     days=self.span_days(spawn_ns))
         if close is not None:
             raise Stop(close[1], state=close[0], invocation_id=invocation_id)
         return decision
@@ -753,8 +807,11 @@ class Wrapper:
             atomic_write_json(self.record_path, self.record)
             return
         summary = self.day["summary"]
-        summary["outcomes"].append(entry["outcome"] if entry["stop_reason"] is None
-                                   else f"{entry['outcome']}:{entry['stop_reason']}")
+        if entry["refusal_code"]:                  # DAY-6: rule 2's diagnostic code reaches the summary too
+            summary["outcomes"].append(f"{entry['outcome']}:{entry['refusal_code']}")
+        else:
+            summary["outcomes"].append(entry["outcome"] if entry["stop_reason"] is None
+                                       else f"{entry['outcome']}:{entry['stop_reason']}")
         if entry["outcome"] == "finalized" and entry["receipt_sha256"]:
             summary["finalized"].append({"session_id": entry["session_id"], "receipt_sha256": entry["receipt_sha256"]})
         elif entry["session_id"] is not None:
@@ -785,6 +842,23 @@ class Wrapper:
         if self.mode == "attended":
             return self.run_attended(day)
         self.day_path = self.dir / f"{day.isoformat()}.json"
+        lock = None
+        if not self.dry_run:              # DAY-4: one production wrapper per state root, before the day file is read
+            try:
+                lock = self.sys.day_lock(self.dir)
+            except BlockingIOError:
+                self.log("stopped", code="wrapper_already_running", date=day.isoformat())
+                return 2
+            except OSError:
+                self.log("stopped", code="wrapper_lock_unavailable", date=day.isoformat())
+                return 2
+        try:
+            return self._production(day)
+        finally:
+            if lock is not None:
+                os.close(lock)
+
+    def _production(self, day):
         try:
             loaded = self.load_day(self.day_path)
         except DayFileError:
@@ -814,7 +888,7 @@ class Wrapper:
     def stopped(self, stop):
         """Log the closing code; write the day's state in its own write when nothing has written it yet."""
         if self.mode == "production" and self.day is not None and self.day["state"] == "open" and stop.code not in (
-                "day_file_write_failed", "day_already_closed", "day_file_changed"):
+                "day_file_write_failed", "day_already_closed", "day_file_changed", "day_file_unreadable"):
             self.close_day(stop.state, stop.code, stop.invocation_id)
             try:
                 self.write_day()

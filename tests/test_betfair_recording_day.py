@@ -5,8 +5,11 @@ network, the real state root or a real recording. Plus the plist templates, and 
 which starts one local Python child holding a real recorder admission and drains it through the real /bin/ps.
 """
 
+import ast
 import contextlib
 from datetime import date
+import errno
+import fcntl
 import io
 import json
 import os
@@ -63,7 +66,8 @@ class Writer(rd.StrictWriter):
     def __init__(self, world):
         self.world = world
         self.count = 0
-        self.fail = {}              # write number -> step ("temp", "replace", "dir_open", "dir_fsync", "death")
+        self.fail = {}              # write number -> step ("temp", "file_fsync", "full_fsync", "replace", "dir_open",
+        #                             "dir_fsync", "death")
         self.after = {}             # write number -> callable run after that write returned
 
     def write(self, path, value):
@@ -83,9 +87,17 @@ class Writer(rd.StrictWriter):
             return real_open(target, flags, mode)
 
         def syncer(fd):
-            if step == "dir_fsync" and os.fstat(fd).st_ino == os.stat(directory).st_ino:
+            is_directory = os.fstat(fd).st_ino == os.stat(directory).st_ino
+            if (step == "dir_fsync" and is_directory) or (step == "file_fsync" and not is_directory):
                 raise OSError("EIO")
             return real_fsync(fd)
+
+        real_fcntl = fcntl.fcntl
+
+        def full_sync(fd, cmd, *args):
+            if step == "full_fsync" and cmd == getattr(fcntl, "F_FULLFSYNC", None):
+                raise OSError(errno.EIO, "synthetic full sync EIO")
+            return real_fcntl(fd, cmd, *args)
 
         def replacer(src, dst):
             if step == "replace":
@@ -93,7 +105,8 @@ class Writer(rd.StrictWriter):
             return real_replace(src, dst)
         self.open, self.fsync, self.replace = opener, syncer, replacer
         try:
-            super().write(path, value)
+            with patch.object(rd.fcntl, "fcntl", full_sync):
+                super().write(path, value)
         finally:
             del self.open, self.fsync, self.replace
         self.world.events.append(("write", number))
@@ -120,6 +133,7 @@ class FakeChild:
             plan["during"](world)
         if plan.get("partial", True):
             self.dir = world.session(self.invocation_id, **plan.get("partial_fields", {}))
+        self.partial_on_exit = plan.get("partial_on_exit")       # written between the last two polls
 
     def poll(self):
         if self.code is not None:
@@ -133,6 +147,8 @@ class FakeChild:
 
     def end(self, result):
         kind = result[0]
+        if self.partial_on_exit is not None and self.dir is None:
+            self.dir = self.world.session(self.invocation_id, **self.partial_on_exit)
         if kind == "finalized":
             self.world.finalize(self.dir, self.invocation_id, result[1])
         elif kind == "no_row":
@@ -180,6 +196,8 @@ class World:
         plan = self.plans.pop(0)
         if plan == "death":
             raise Death("before the spawn")
+        if plan == "oserror":
+            raise OSError(errno.EMFILE, "synthetic: too many open files")
         child = FakeChild(self, argv, plan)
         child.cwd, child.stderr_path = cwd, stderr_path
         self.children.append(child)
@@ -207,6 +225,9 @@ class World:
 
     def install_signals(self, handler):
         return {}
+
+    def day_lock(self, directory):
+        return rd.day_lock(directory)
 
     def restore_signals(self, previous):
         pass
@@ -494,6 +515,10 @@ class OutcomeTests(WrapperCase):
         self.assertEqual((entry["outcome"], entry["refusal_code"], entry["decision"], day["state"]),
                          ("preflight_refusal", "recorder_identity_unknown", "review", "stopped_for_review"))
         self.assertEqual(day["counts"], {"first": 1, "restart": 0, "resumption": 0})
+        # DAY-6: the daily summary (and its log line) keep the refused code too, so refusals can be told apart.
+        self.assertEqual(day["summary"]["outcomes"], ["preflight_refusal:recorder_identity_unknown"])
+        self.assertEqual(self.world.codes("daily_summary")[-1]["outcomes"],
+                         ["preflight_refusal:recorder_identity_unknown"])
 
     def test_rule_1_qualifiers(self):
         cases = [("partial only", {"after": inhibit, "result": ("none",)}, "review"),
@@ -999,6 +1024,15 @@ class SignalTests(WrapperCase):
         entry = self.attempts()[0]
         self.assertEqual((entry["outcome"], entry["stop_reason"], entry["decision"]),
                          ("finalized", "stop_requested", "review"))
+        # DAY-3: no pinned-CLI subprocess after the forwarded SIGTERM (launchd's ExitTimeOut would SIGKILL the
+        # summary away); the skipped days are logged for Yu, and the closing lines still are.
+        kinds = [e[0] for e in self.world.events]
+        self.assertNotIn("run", kinds[kinds.index("sigterm"):])
+        (skipped,) = self.world.codes("index_skipped")
+        self.assertEqual((skipped["code"], skipped["session_id"], skipped["days"]),
+                         ("wrapper_signalled", entry["session_id"], ["2026-10-26"]))
+        self.assertTrue(self.world.codes("daily_summary"))
+        self.assertEqual(self.world.codes("stopped")[-1]["state"], "stopped_for_review")
 
 
 class NeverTouchesTests(WrapperCase):
@@ -1109,6 +1143,201 @@ class NativeDrainTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 90)
         self.assertEqual(child.wait(timeout=30), 0)
         admission.release(paths, config=config, generation=result["generation"])
+
+
+
+# --- review round 1 (Astra ROLL-1, ROLL-2; refute wf_ef757628 DAY-2 to DAY-6, REC-5, NP-03) ------------------------
+
+
+@unittest.skipUnless(hasattr(fcntl, "F_FULLFSYNC"), "the platform has no F_FULLFSYNC")
+class StrictSyncTests(WrapperCase):
+    """ROLL-1: a failed F_FULLFSYNC is a failed barrier: no spawn, day_file_write_failed."""
+
+    def test_astra_witness_every_full_sync_fails(self):
+        real = fcntl.fcntl
+        faults = []
+
+        def failing(fd, cmd, *args):
+            if cmd == fcntl.F_FULLFSYNC:
+                faults.append(cmd)
+                raise OSError(errno.EIO, "synthetic full sync EIO")
+            return real(fd, cmd, *args)
+        with patch.object(rd.fcntl, "fcntl", failing):
+            self.assertEqual(self.run_day({}), 2)
+        self.assertEqual((len(self.spawns()), len(faults)), (0, 1))
+        self.assertEqual(self.world.codes("stopped")[-1]["code"], "day_file_write_failed")
+        self.assertIsNone(self.day())                          # the reservation never landed
+
+    def test_full_sync_eio_on_the_reserve_write(self):
+        self.world.writer.fail[1] = "full_fsync"
+        self.assertEqual(self.run_day({}), 2)
+        self.assertEqual(self.spawns(), [])
+        self.assertEqual(self.world.codes("stopped")[-1]["code"], "day_file_write_failed")
+
+    def test_full_sync_eio_on_the_finish_write(self):
+        self.world.writer.fail[2] = "full_fsync"
+        self.assertEqual(self.run_day({"result": ("finalized", "reconnect_budget_exhausted")}, {}), 2)
+        self.assertEqual(len(self.spawns()), 1)                 # nothing more started
+        self.assertEqual(self.world.codes("stopped")[-1]["code"], "day_file_write_failed")
+        self.assertEqual(self.attempts()[0]["state"], "reserved")   # the finished version never replaced it
+
+    def test_plain_fsync_only_where_full_sync_does_not_exist(self):
+        from types import SimpleNamespace
+        no_full = SimpleNamespace(fcntl=fcntl.fcntl, flock=fcntl.flock, LOCK_EX=fcntl.LOCK_EX, LOCK_NB=fcntl.LOCK_NB)
+        with patch.object(rd, "fcntl", no_full):
+            self.assertEqual(self.run_day({}), 0)               # the fallback writes and spawns
+            self.setUp()
+            self.world.writer.fail[1] = "file_fsync"            # and its own failure is a failed barrier too
+            self.assertEqual(self.run_day({}), 2)
+        self.assertEqual(self.spawns(), [])
+        self.assertEqual(self.world.codes("stopped")[-1]["code"], "day_file_write_failed")
+
+
+class SpawnAndDayFileFailureTests(WrapperCase):
+    """DAY-2: a spawn failure after the reservation and a day file that turns unreadable mid-day each stop for review
+    with a code; nothing escapes as a raw exception, and a corrupt file is left as it is."""
+
+    def test_spawn_oserror_after_the_reservation(self):
+        self.assertEqual(self.run_day("oserror"), 2)
+        entry = self.attempts()[0]
+        self.assertEqual((entry["state"], entry["outcome"], entry["decision"]), ("finished", "spawn_failed", "review"))
+        day = self.day()
+        self.assertEqual((day["state"], day["close_code"], day["counts"]["first"]),
+                         ("stopped_for_review", "spawn_failed", 1))
+        self.assertEqual(self.world.codes("stopped")[-1]["code"], "spawn_failed")
+        self.assertTrue(self.world.codes("daily_summary"))
+
+    def test_day_file_unreadable_mid_day(self):
+        path = self.dir / "2026-10-26.json"
+        self.world.writer.after[2] = lambda: path.write_bytes(b"{not json")
+        self.assertEqual(self.run_day({"result": ("finalized", "reconnect_budget_exhausted")}, {}), 2)
+        self.assertEqual(len(self.spawns()), 1)
+        self.assertEqual(self.world.codes("stopped")[-1]["code"], "day_file_unreadable")
+        self.assertEqual(path.read_bytes(), b"{not json")      # never overwritten
+
+
+class DayLockTests(WrapperCase):
+    """DAY-4: a second production wrapper on the same state root is refused wrapper_already_running and neither reads
+    nor writes the day file; the first one's reservation stays."""
+
+    def test_a_second_wrapper_while_the_first_records(self):
+        seen = {}
+        path = self.dir / "2026-10-26.json"
+
+        def second(world):
+            seen["before"] = path.read_bytes()
+            seen["rc"] = self.wrapper().run()
+            seen["after"] = path.read_bytes()
+        self.assertEqual(self.run_day({"during": second}), 0)
+        self.assertEqual(seen["rc"], 2)
+        self.assertEqual(seen["before"], seen["after"])
+        self.assertIn("wrapper_already_running", [line["code"] for line in self.world.codes("stopped")])
+        self.assertEqual(self.day()["state"], "done")
+        self.assertEqual([a["kind"] for a in self.attempts()], ["first"])
+
+    def test_the_lock_is_released_at_exit_and_dry_runs_take_none(self):
+        self.assertEqual(self.run_day({}), 0)
+        os.close(rd.day_lock(self.dir))                         # free again after the run
+        self.setUp()
+        fd = rd.day_lock(self.dir)
+        try:
+            self.assertEqual(self.wrapper(dry_run=True).run(), 0)   # a dry run reads only, with the lock held elsewhere
+        finally:
+            os.close(fd)
+        self.assertEqual(self.spawns(), [])
+
+
+class PostStartAfterExitTests(WrapperCase):
+    """DAY-5: the post-start check also runs when the child has exited by the first poll, once its partial exists."""
+
+    def test_exit_by_the_first_poll_with_a_bad_field(self):
+        self.run_day({"partial_fields": {"git_revision": "f" * 40}, "polls": 1,
+                      "result": ("finalized", "reconnect_budget_exhausted")}, {})
+        entry = self.attempts()[0]
+        self.assertEqual((entry["outcome"], entry["decision"], self.day()["state"]),
+                         ("post_start_mismatch:git_revision", "review", "stopped_for_review"))
+        self.assertEqual(len(self.spawns()), 1)                 # no restart
+
+    def test_partial_written_between_two_polls_then_exit(self):
+        self.run_day({"partial": False, "partial_on_exit": {"code_sha256": {"x": "y"}}, "polls": 2,
+                      "result": ("finalized", "reconnect_budget_exhausted")}, {})
+        entry = self.attempts()[0]
+        self.assertEqual((entry["outcome"], entry["decision"]), ("post_start_mismatch:code_sha256", "review"))
+        self.assertEqual(len(self.spawns()), 1)
+
+    def test_no_partial_at_all_keeps_rules_1b_and_2(self):
+        self.run_day({"partial": False, "refused": "recorder_running", "polls": 1, "result": ("none",)})
+        self.assertEqual(self.attempts()[0]["outcome"], "preflight_refusal")
+
+
+class ImpossibleStampTests(WrapperCase):
+    """REC-5 through the wrapper: an impossible rec-* stamp beside the session never escapes as a ValueError."""
+
+    def test_impossible_stamp_beside_a_finalized_session(self):
+        (self.paths.recordings_dir / "rec-20269999T999999Z-deadbeef").mkdir(parents=True)
+        self.assertEqual(self.run_day({}), 0)
+        self.assertEqual(self.day()["state"], "done")
+
+    def test_a_classification_that_raises_is_review(self):
+        with patch.object(rd, "classify_invocation", side_effect=RuntimeError("synthetic")):
+            self.assertEqual(self.run_day({}), 2)
+        entry = self.attempts()[0]
+        self.assertEqual((entry["state"], entry["outcome"], entry["decision"]), ("finished", "classify_failed", "review"))
+
+
+class ImportPinTests(unittest.TestCase):
+    """NP-03: the wrapper's package imports are exactly §4.1's list; no dynamic import; atomic_write_json only for the
+    attended record."""
+
+    def test_imports_are_exactly_the_section_4_1_list(self):
+        tree = ast.parse((REPO / "betangel_research" / "betfair" / "recording_day.py").read_text())
+        relative = {(node.module, alias.name) for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.level >= 1 for alias in node.names}
+        self.assertEqual(relative, {("admission", "admission_status"), ("admission", "ledger_problems"),
+                                    ("config", "config_sha256"), ("config", "load_config"), ("paths", "StatePaths"),
+                                    ("receipts", "atomic_write_json"), ("receipts", "git_state"),
+                                    ("recordings", "classify_invocation"), ("recordings", "run_ledger_problem")})
+        absolute = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
+                    for alias in node.names}
+        absolute |= {node.module.split(".")[0] for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.level == 0}
+        self.assertNotIn("betangel_research", absolute)
+        self.assertTrue(absolute <= set(sys.stdlib_module_names), absolute)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        names = [c.func.id if isinstance(c.func, ast.Name) else c.func.attr if isinstance(c.func, ast.Attribute)
+                 else None for c in calls]
+        self.assertNotIn("__import__", names)
+        self.assertNotIn("import_module", names)
+        self.assertEqual(names.count("atomic_write_json"), 2)
+        writers = [f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                   and any(isinstance(c, ast.Call) and getattr(c.func, "id", None) == "atomic_write_json"
+                           for c in ast.walk(f))]
+        self.assertEqual(sorted(writers), ["attempt", "finish"])
+        finish = ast.unparse(next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "finish"))
+        self.assertIn("if self.mode == 'attended':\n        atomic_write_json(self.record_path, self.record)", finish)
+
+
+class RolloutDocTests(unittest.TestCase):
+    """ROLL-2: the recovery-only restore procedure replaces the old journal reset, and the seal rule is in §9."""
+
+    def test_order_path_restore_is_recovery_only(self):
+        text = (REPO / "docs" / "betfair-order-path.md").read_text()
+        self.assertNotIn("security delete-generic-password", text)
+        self.assertNotIn("復原係刻意嘅人手步驟", text)
+        section = text[text.index("**還原（restore）一律只係 recovery"):text.index("**Startup reconcile")]
+        for phrase in ("Recording job 保持 unload", "唔 ARM、唔 place、唔 live-probe", "Kill 照用得",
+                       "`cancel` 嘅 A13 係完整嘅", "RD2-4 custody 檢查同 read-back 檢查要重新做過",
+                       "day file 係由 backup 還原返嚟嘅 London 日期", "計數永遠唔會 reset", "reviewer"):
+            self.assertIn(phrase, section)
+
+    def test_integration_section_9_carries_the_seal_rule(self):
+        text = (REPO / "docs" / "betfair-integration.md").read_text()
+        section = text[text.index("## 9. Stream recorder"):text.index("## 10.")]
+        self.assertIn("> All recordings, of any year, stay on the Air in clear until the P1 data lock. Their only "
+                      "second copy is the Air's Time Machine backup on Yu's encrypted, directly attached disk. Only "
+                      "fixed counts, codes and hashes go anywhere else. The seal applies to every copy.", section)
+        self.assertIn("> On the Air the seal is a workflow control, not access control: any process running as this "
+                      "user can read the clear recordings and the archive.", section)
 
 
 if __name__ == "__main__":

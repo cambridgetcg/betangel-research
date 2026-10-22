@@ -268,6 +268,17 @@ def recorder_lock_held(paths, *, clock=SYSTEM_CLOCK):
         return True
 
 
+def recorder_pid_status(paths):
+    """recorder.pid for status, in one strict read: "absent" only when the file does not exist, "unreadable" when it
+    exists but cannot be read or parsed (a symlink, the wrong shape), else its record. _read_pid's None for both stays
+    as it is for the drain."""
+    try:
+        record = _load(paths.recorder_pid_file, PID_KEYS, _check_pid)
+    except AdmissionRefused:
+        return "unreadable"
+    return "absent" if record is None else record
+
+
 def admission_status(paths):
     """Read-only view for status lines and the release prompt: no lock taken, nothing written or probed.
     Raises AdmissionRefused(admission_state_unknown) when a state file cannot be read."""

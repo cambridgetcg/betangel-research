@@ -400,13 +400,15 @@ Paper replace 用兩個結局計：(a) 原單留低（取消失敗）、(b) 剩�
   - **寫嘅期間 lock 檔被換咗。** `held()` 喺寫之前查一次，寫完再查一次：`security` 最多可以行 120 秒（例如等緊 Keychain dialog），期間 lock 檔被刪或者被換（「stale lock clean-up」），另一個寫嘅人會鎖住新檔、寫較新嘅 head，之後我哋較舊嘅寫先落地，以前仲報成功。而家寫完發覺 lock 冇咗，就喺重新攞到嘅 lock 入面再讀再寫（最多 `credentials.ANCHOR_PUBLISH_ATTEMPTS`，3 次），所以 anchor 最後跟返最新嘅 head，中間只係短暫落後（A13 接受）；次次都被換就報 `journal_anchor_lock_unavailable`，anchor 可能落後 head 一次寫。冇 Keychain compare-and-swap，呢個係剩低嘅限制。
   喺 lock 外面先讀 Keychain 再比較都仲係 race，所以比較喺 lock 入面做。Append 唔攞呢個 lock：一個卡住喺 Keychain dialog 嘅寫（`anchor_write` 最多等 120 秒）只會令其他寫 anchor 嘅人等，唔會擋住任何 journal append（包括 kill 嘅）。冇用 journal 自己嘅 `BEGIN IMMEDIATE` 嚟做呢個 lock，就係因為咁會令所有 append（例如另一個 holder 送咗單之後嘅 `report`，busy timeout 30 秒）等住 Keychain。等 lock：淨係 `place`、`live-probe`、`reconcile --accept` 同 `settle-market` 嘅 `open()`（寫唔到就拒絕）同 `resume` 最多等 `credentials.ANCHOR_PUBLISH_WAIT_S`（30 秒）；其他（kill、`cancel` 同 `reconcile` 嘅 `open()`、所有 `close()`）最多 `killswitch.JOURNAL_BUSY_TIMEOUT_S`（2 秒）。原因：kill 嘅 `close()` 同 `resume` 攞住 anchor lock 但冇攞 `.gateway.lock`；佢哋卡住（Keychain dialog 冇人答、Ctrl-Z）嘅時候，以前一個手動 `cancel` 要等 30 秒先送，再喺 `close()` 等 30 秒，成段時間攞住 `.gateway.lock`，第二個 `cancel`（等 `order_deadline_s + 5` 秒）就會 `lock_busy`、張單仲 live。寫唔到嘅話只係 note 或者 warning，下一次寫會追返，所以等耐咗冇好處。等唔到（`journal_anchor_publish_busy`）、開唔到 lock 檔或者寫之前 lock 檔已經被換咗（`journal_anchor_lock_unavailable`）就乜都唔寫：anchor 停喺 journal head 或者之前，A13 接受，下一次寫會追返；`place`、`live-probe`、`reconcile --accept` 同 `settle-market` 嘅 `open()` 照舊當 `journal_anchor_write_failed` 拒絕。未驗證：`anchor_write` timeout 咗、`security` 被 kill 之後，Keychain 會唔會遲啲先完成嗰次寫（T0 未測）。`kill` 嘅 static A13 只查 state root；佢喺 `open()` 入面嘅一次 anchor 檢查失敗，只會令 journal 變「唔可信」，sweep 照做（§9）。
 
-v1 冇 override。**復原係刻意嘅人手步驟**：先搞清楚點解唔夾（例如還原咗舊 backup）；將有問題嘅 `journal-live.sqlite` 搬去一邊保留（唔好刪）；再人手刪 anchor：
+v1 冇 override。**還原（restore）一律只係 recovery（recording design v9 §6.5；Astra RV7-3）。** `journal_anchor_mismatch` 多數即係有人還原咗舊 backup（或者改過 journal）：呢個係停低嘅訊號，唔係要繞過嘅錯誤。成對還原（state root 同 Keychain 由同一個 backup 還原）會過到 A13，因為 anchor 檢查只係比較還原咗嘅 journal 同還原咗嘅 anchor；但 backup 之後嘅一切（PLACE 紀錄、pilot 計數、stop、settle、wrapper 嘅 attempt、recording）都冇咗。Hash 夾得上（A13 anchor、`receipt_sha256` 對還原咗嘅 ledger）只證明一致，唔證明齊全。所以**任何還原之後**（成部 Mac、成對、或者部分），唔理有冇過到 A13：
 
-```sh
-security delete-generic-password -s betangel-research.betfair.journal-anchor -a default
-```
+1. **Recording job 保持 unload。** 第一次 login 之後、做任何嘢之前，Yu unload 任何還原返嚟嘅 `recording-day` job（production 或者 test label），一直唔 load；亦唔做 attended run。Agent 永遠唔 load、unload 任何 plist。
+2. **唔 ARM、唔 place、唔 live-probe。** Yu 唔打 pilot ARM；任何 checkout 都唔跑人手 `place` 或者 `live-probe`。**Kill 照用得**：佢嘅 static A13 只查 state root（§9），`open()` 入面嗰次 anchor 檢查失敗只會令 journal 變「唔可信」，sweep 照做。`cancel` 嘅 A13 係完整嘅（Keychain anchor 都查，`arming.py` 嘅 cancel 檢查組合），所以部分或者唔夾嘅還原之後，`cancel` 會 `journal_anchor_mismatch` 拒絕：咁就用 kill 做緊急路徑。
+3. **搞清楚冇咗乜。** Yu 同一個 reviewer（Astra）用還原 backup 以外嘅證據確定 backup 時間同遺失之間、同埋之後嘅活動同帳目：落單、settle、pilot 計數同 stop、之後嘅 recording 日。證據係 Betfair 自己嘅紀錄（用讀取命令查）、Yu 喺外部保存嘅 `receipt_sha256` 清單同 Yu 嘅筆記；還原咗嘅 hash 唔係呢種證據。
+4. **之後先可以恢復。** RD2-4 custody 檢查同 read-back 檢查要重新做過、要過，Yu 先可以再 load plist、ARM 或者 place；而且永遠唔用一個 day file 係由 backup 還原返嚟嘅 London 日期。
+5. **救唔返嘅 pilot 歷史就一直停。** 嗰個 pilot 一直停：佢嘅計數永遠唔會 reset、唔會由還原咗嘅 journal 重新推算、亦唔會重新 register 由頭嚟；再做乜都係 Yu 嘅新決定，要 Astra review。
 
-之後第一次 live 開始會用新 journal。新 journal 冇今日嘅本地紀錄，所以每日上限靠下面嘅 exchange floor 撐住；呢個正正係 anchor 想防止嘅風險，所以唔好當例行操作。
+Backup 之後錄嘅 recording 就冇咗，嗰啲日子唔會重建。呢度以前寫嘅「將 `journal-live.sqlite` 搬去一邊、人手刪 Keychain anchor、開新 journal」唔係復原步驟，已經拎走：佢得出一個冇本地落單、計數同 stop 紀錄嘅 journal，正正係 anchor 想防止嘅風險。開新 journal 永遠唔會用嚟恢復一個 pilot；真係要做，都只可以喺上面第 3 步之後、由 Yu 同 reviewer 決定，冇新工具。
 
 **Startup reconcile（每次 live `open()`，`since_utc` = 今日 00:00Z）。** `iter_current_orders(customerStrategyRefs=<config ref ∪ 見過嘅 ref>, orderProjection="ALL", dateRange={"from": since}, includeSourceId=True)`、`iter_cleared_orders(SETTLED|LAPSED|CANCELLED, ...)`，再加 `sourceIdKey == live key` 嗰條腿（F71）。
 

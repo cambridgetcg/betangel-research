@@ -128,11 +128,31 @@ class TornLineReadTests(LedgerCase):
         self.ledger.write_bytes(data.replace(b"garbage-one", b"garbage-0ne", 1))
         self.assertEqual(run_ledger_problem(self.paths), "run_ledger_torn_line:1")
 
+    def test_non_string_ids_are_bad_lines_never_a_type_error(self):
+        """REC-4: a row with the whitelisted keys but a list session_id or a dict invocation_id is a bad line, so it
+        reads as run_ledger_torn_line:<index> everywhere (and ledger-repair can show and exempt it)."""
+        directory, row = write_session(self.writer, t("12:30:00"), "d20261021-a1-00000001")
+        for index, bad in ((1, dict(row, session_id=["a"])), (2, dict(row, invocation_id={"a": 1}))):
+            append_jsonl(self.ledger, bad)
+            with self.subTest(line=index):
+                self.assertEqual(run_ledger_problem(self.paths), "run_ledger_torn_line:1")
+                self.assertIn(f"run_ledger_torn_line:{index}", read_run_ledger(self.paths)["problems"])
+                self.assertEqual(self.classify("d20261021-a1-00000001")["outcome"], "review")
+                self.assertIn({"session_id": None, "check": "run_ledger_torn_line", "line": index},
+                              self.verify()["failures"])
+
     def test_repair_row_keys_never_satisfy_a_session_row(self):
         self.assertFalse(REPAIR_ROW_KEYS & {"session_id", "receipt_path", "receipt_sha256"})
 
 
 class TornAppendTests(LedgerCase):
+    def setUp(self):
+        super().setUp()
+        from betangel_research.betfair import admission
+        identity = patch.object(admission.ProcessTable, "start_time", lambda table, pid: "synthetic-start")
+        identity.start()                    # a synthetic process identity: no /bin/ps (native drain covers ps)
+        self.addCleanup(identity.stop)
+
     def test_torn_tail_then_a_new_append_leaves_the_new_row_whole(self):
         """The recorder's own run-ledger append, after a torn tail, through StreamRecorder.run (fake stream)."""
         self.ledger.write_bytes(b'{"created_at": "2026-10-21T12:00:00.000000Z", "sess')
@@ -325,6 +345,16 @@ class RepairCommandTests(RepairCliCase):
             pass                                                         # let go afterwards
         self.assertIsNone(run_ledger_problem(self.paths))
 
+    def test_ledger_repair_shows_and_exempts_a_non_string_id_row(self):
+        """REC-4: the row is shown by its index and hash, and the typed repair exempts it."""
+        directory, row = write_session(self.writer, t("12:30:00"), "d20261021-a1-00000001")
+        append_jsonl(self.ledger, dict(row, session_id=["a"]))
+        code, out, err = self.run_cli(confirmer=self.typed())
+        self.assertEqual(code, 0, err)
+        shown = json.loads(out.split("\n}\n")[0] + "\n}")
+        self.assertEqual([item["line"] for item in shown["bad_lines"]], [1])
+        self.assertIsNone(run_ledger_problem(self.paths))
+
     def test_help_names_ledger_repair_as_the_one_typed_subcommand(self):
         self.assertIn("ledger-repair, the one typed, append-only subcommand", cli.HELP["recordings"])
 
@@ -474,6 +504,31 @@ class ClassifyTests(LedgerCase):
         self.partial_less(t("12:29:58"))
         result = self.classify("d20261021-a1-00000001", t("12:30:00"))
         self.assertEqual(result["outcome"], "no_session")
+
+    def test_malformed_receipt_shape_with_a_matching_row_is_review_and_fails_verify_day(self):
+        """ROLL-4 / REC-3: one shape check for both readers (segments a list of dicts, gaps a list when present)."""
+        for label, change in (("segment not a dict", lambda r: r["segments"].append(1)),
+                              ("gaps not a list", lambda r: r.update(gaps={"x": 1}))):
+            with self.subTest(case=label):
+                self.setUp()
+                directory, row = write_session(self.writer, t("12:30:00"), "d20261021-a1-00000001", row="none")
+                receipt = json.loads((directory / "receipt.json").read_text())
+                change(receipt)
+                digest = atomic_write_json(directory / "receipt.json", receipt)
+                append_jsonl(self.ledger, dict(row, receipt_sha256=digest, segments=len(receipt["segments"])))
+                result = self.classify("d20261021-a1-00000001")
+                self.assertEqual((result["outcome"], result["codes"]), ("review", ["receipt_shape"]))
+                failures = {(f["session_id"], f["check"]) for f in self.verify()["failures"]}
+                self.assertIn((directory.name, "receipt_shape"), failures)
+
+    def test_impossible_stamp_is_attributed_never_a_value_error(self):
+        """REC-5: an impossible rec-* stamp can only add review."""
+        for name in ("rec-20269999T999999Z-deadbeef", "rec-20260230T120000Z-deadbeef"):
+            with self.subTest(name=name):
+                self.setUp()
+                (self.paths.recordings_dir / name).mkdir()
+                result = self.classify("d20261021-a1-00000001", t("12:30:00"))
+                self.assertEqual((result["outcome"], result["session_id"]), ("partial_less_directory", name))
 
     def test_recorder_root_is_honoured(self):
         other = Path(self.paths.root).parent / "elsewhere"

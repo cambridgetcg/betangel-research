@@ -47,6 +47,10 @@ def no_session():
 class R3Case(unittest.TestCase):
     def setUp(self):
         support.block_network(self)
+        from betangel_research.betfair import admission
+        identity = patch.object(admission.ProcessTable, "start_time", lambda table, pid: "synthetic-start")
+        identity.start()                    # a synthetic process identity: no /bin/ps (native drain covers ps)
+        self.addCleanup(identity.stop)
         self.paths = support.temp_state_paths(self)
         self.clock = support.FakeClock()
         self.config = load_config(support.write_test_config(self.paths, INTERACTIVE), paths=self.paths)

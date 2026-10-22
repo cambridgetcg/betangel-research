@@ -332,6 +332,17 @@ def _add_order_flags(sub, *, live_only=False):
                      help="operator states Bet Angel is logged out or not managing positions")
 
 
+def _generation(value):
+    """--continue-admission N: a positive integer generation, refused by the parser otherwise (EXCL-2)."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("continue_admission_invalid") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("continue_admission_invalid")
+    return number
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="python3 -m betangel_research.betfair", description=__doc__.split("\n\n")[0])
     parser.add_argument("--profile", default="default")
@@ -438,11 +449,11 @@ def build_parser():
     replay.add_argument("--out", required=True)
     reconcile = add("reconcile")
     reconcile.add_argument("--accept")
-    reconcile.add_argument("--continue-admission", dest="continue_admission", type=int)
+    reconcile.add_argument("--continue-admission", dest="continue_admission", type=_generation)
     _add_order_flags(reconcile)
     settle = add("settle-market")
     settle.add_argument("--market", required=True)
-    settle.add_argument("--continue-admission", dest="continue_admission", type=int)
+    settle.add_argument("--continue-admission", dest="continue_admission", type=_generation)
     _add_order_flags(settle, live_only=True)          # live only: no --mode flag at all
     journal = add("journal")
     journal.add_argument("--verify", action="store_true")
@@ -1132,9 +1143,9 @@ def _recording_status(paths, ctx):
         block["admission"] = ("none" if current is None else {"owner": current["owner"],
                                                                "generation": current["generation"],
                                                                "state": current["state"]})
-        pid = status["recorder_pid"]
-        block["recorder_pid"] = ({"present": False} if pid is None else
-                                 {"present": True, "invocation_id": pid["invocation_id"]})
+        pid = admission.recorder_pid_status(paths)          # one strict read (NP-02): absent, unreadable or the record
+        block["recorder_pid"] = ({"present": False} if pid == "absent" else "recorder_pid_unreadable"
+                                 if pid == "unreadable" else {"present": True, "invocation_id": pid["invocation_id"]})
     block["owner_lock"] = admission.owner_lock_state(paths, clock=ctx.clock)
     armed = pilot_run.armed_session_check(paths)
     block["armed_session"] = armed[0] if armed else "absent"
@@ -1772,7 +1783,6 @@ def _manual_owned(args, ctx, command, *, continue_generation, cleanup, body, pas
     generation. _gateway and _live_gateway are untouched (kill and cancel share them). The exit code is the command's.
     """
     from . import admission, pilot_run
-    from .errors import AdmissionRefused
     paths = _paths(args, ctx)
     config = _config(args, paths)
     ctx.paused_flag = _paused_flag(config)
@@ -1782,10 +1792,34 @@ def _manual_owned(args, ctx, command, *, continue_generation, cleanup, body, pas
     state = {"ticket": None, "done": False}
 
     def released(ticket):
+        """release_own's lines; handling counts as done only once they exist (ROLL-5, EXCL-1), so an interrupt inside
+        the release still reaches the abnormal-end lines below. A continuation never releases (§3.4.3): it gets one
+        neutral line, not a "release refused" one (NP-01)."""
+        if ticket.kind != "fresh":
+            lines = [f"continuation of generation {ticket.generation} never releases (continuation_never_releases); "
+                     f"recording stays off until Yu's typed recording-release (generation {ticket.generation})"]
+        else:
+            result = admission.release_own(ticket, paths, config=config, clock=ctx.clock)
+            lines = pilot_run.release_lines(result, ctx.paused_flag)
         state["done"] = True
-        result = admission.release_own(ticket, paths, config=config, clock=ctx.clock)
-        return pilot_run.release_lines(result, ctx.paused_flag)
+        return lines
 
+    # EXCL-3: from before the owner lock to the end, SIGTERM, SIGINT and SIGHUP raise SignalStop (never deferred
+    # here), so a signal during the drain, step 8 or the release still prints the recording line below and maps
+    # through main(); _gateway stacks its own guard over this one and restores it when it closes.
+    guard = _SignalGuard()
+    guard.install()
+    try:
+        return _manual_owned_inner(ctx, command, paths, config, owner, purpose, continue_generation, cleanup, body,
+                                   pass_ticket, processes, state, released)
+    finally:
+        guard.restore()
+
+
+def _manual_owned_inner(ctx, command, paths, config, owner, purpose, continue_generation, cleanup, body, pass_ticket,
+                        processes, state, released):
+    from . import admission, pilot_run
+    from .errors import AdmissionRefused
     try:
         with admission.live_ownership(paths, owner=owner, purpose=purpose, config=config,
                                       continue_generation=continue_generation, cleanup=cleanup, clock=ctx.clock,
@@ -1811,6 +1845,8 @@ def _manual_owned(args, ctx, command, *, continue_generation, cleanup, body, pas
     except BaseException as exc:
         if isinstance(exc, admission.OwnershipRefused):
             raise _ownership_refusal(exc, command, paths, ctx) from None
+        if state["ticket"] is None and type(exc) is ValueError:
+            raise                      # live_ownership's argument checks, before any lock: nothing was held
         if isinstance(exc, AdmissionRefused) and state["ticket"] is None:
             lines = pilot_run.admit_refusal_lines(exc, paths)
             if exc.outcome == "login_ledger_not_clean" and continue_generation is not None:

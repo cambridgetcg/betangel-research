@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Production label for the daily recording wrapper (recording design v9 §4.1, §4.8).
+  Placeholders, filled once from the rollout receipt: {{INTERPRETER}} (the absolute interpreter path recorded there,
+  never a bare python3), {{PINNED_WORKTREE}} (the standalone pinned clone at the rollout merge commit) and
+  {{STATE_ROOT}} (<home>/Library/Application Support/betangel-research/betfair).
+  Before any load (this label or the test label), Yu creates the logs directory once:
+      mkdir -m 0700 -p "{{STATE_ROOT}}/recording-wrapper/logs"
+  Yu loads the installed copy in ~/Library/LaunchAgents once (§7 step 8). Agents never load, unload, kickstart or
+  edit an installed plist. No EnvironmentVariables: no secret ever goes into the environment or argv.
+  launchd's 07:00 is Mac-local time; the Air's TZ is expected to be Europe/London (an assumption, not a guard).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.betangel-research.recording-day</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{INTERPRETER}}</string>
+    <string>-E</string>
+    <string>-s</string>
+    <string>-m</string>
+    <string>betangel_research.betfair.recording_day</string>
+    <string>--launchd</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{{PINNED_WORKTREE}}</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ExitTimeOut</key>
+  <integer>180</integer>
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>{{STATE_ROOT}}/recording-wrapper/logs/launchd-recording-day.out</string>
+  <key>StandardErrorPath</key>
+  <string>{{STATE_ROOT}}/recording-wrapper/logs/launchd-recording-day.err</string>
+</dict>
+</plist>

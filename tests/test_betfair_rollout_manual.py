@@ -595,6 +595,13 @@ class AbsentJournalReleaseTests(ManualCase):
             if path.exists():
                 path.unlink()
 
+    def test_status_live_state_clean_on_an_absent_journal_and_the_kill_code(self):
+        code, out, err = self.cli("status")
+        self.assertEqual((code, json.loads(out)["recording"]["live_state"]), (0, "clean"))
+        self.paths.kill_file.write_text("")
+        code, out, err = self.cli("status")
+        self.assertEqual(json.loads(out)["recording"]["live_state"], ["kill_file_engaged"])
+
     def test_absent_journal_does_not_block_the_inhibit_only_form(self):
         self.paths.inhibit_file.write_text("")
         code, out, err = self.release()

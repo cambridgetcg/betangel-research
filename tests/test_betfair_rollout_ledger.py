@@ -417,7 +417,8 @@ class ClassifyTests(LedgerCase):
                                      stop_reason="reconnect_budget_exhausted")
         result = self.classify("d20261021-a1-00000001", self.spawn_ns())
         self.assertEqual(result, {"outcome": "finalized", "session_id": directory.name, "codes": [],
-                                  "stop_reason": "reconnect_budget_exhausted"})
+                                  "stop_reason": "reconnect_budget_exhausted",
+                                  "receipt_sha256": hashlib.sha256((directory / "receipt.json").read_bytes()).hexdigest()})
 
     def test_rule_5_receipt_without_ledger_row(self):
         directory, _ = write_session(self.writer, t("12:30:00"), "d20261021-a1-00000001", row="none")

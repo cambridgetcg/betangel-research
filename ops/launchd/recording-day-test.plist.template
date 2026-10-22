@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Test label for the one launchd-launched run of recording design v9 §4.9 step 5: an attended run (its own record,
+  never the production day file) with a short {{END_AT}} (a UTC instant at least 30 min ahead). Yu loads it,
+  kickstarts it, and unloads it after it ends; it has no StartCalendarInterval and never fires on its own. It checks
+  what a Terminal run cannot: the /bin/ps start-time read under launchd, the Keychain under launchd (Q1), and the log
+  paths. Placeholders as in recording-day.plist.template; the logs directory must exist first.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.betangel-research.recording-day-test</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{INTERPRETER}}</string>
+    <string>-E</string>
+    <string>-s</string>
+    <string>-m</string>
+    <string>betangel_research.betfair.recording_day</string>
+    <string>--attended</string>
+    <string>--end-at</string>
+    <string>{{END_AT}}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{{PINNED_WORKTREE}}</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>ExitTimeOut</key>
+  <integer>180</integer>
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>{{STATE_ROOT}}/recording-wrapper/logs/launchd-recording-day-test.out</string>
+  <key>StandardErrorPath</key>
+  <string>{{STATE_ROOT}}/recording-wrapper/logs/launchd-recording-day-test.err</string>
+</dict>
+</plist>

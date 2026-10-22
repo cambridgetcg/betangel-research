@@ -643,11 +643,16 @@ class Wrapper:
         """verify-day and recordings index for each UTC day the session spans, as pinned-CLI subprocesses."""
         if session_id is None:
             return
-        for text in self.span_days(spawn_ns):
-            base = [self.sys.interpreter()[0], "-E", "-s", "-m", "betangel_research.betfair"]
-            verified = self.sys.run(base + ["verify-day", "--day", text], cwd=Path(self.pinned["worktree"]))
-            indexed = self.sys.run(base + ["recordings", "index", "--day", text], cwd=Path(self.pinned["worktree"]))
-            self.log("day_checked", day=text, verify_day_exit=verified, index_exit=indexed)
+        days = self.span_days(spawn_ns)
+        base = [self.sys.interpreter()[0], "-E", "-s", "-m", "betangel_research.betfair"]
+        for position, text in enumerate(days):
+            exits = []
+            for command in (["verify-day"], ["recordings", "index"]):
+                if self.signalled is not None:           # a signal mid-index: no further subprocess (DAY-3)
+                    self.log("index_skipped", code="wrapper_signalled", session_id=session_id, days=days[position:])
+                    return
+                exits.append(self.sys.run(base + command + ["--day", text], cwd=Path(self.pinned["worktree"])))
+            self.log("day_checked", day=text, verify_day_exit=exits[0], index_exit=exits[1])
 
     # -- production -----------------------------------------------------------------------------------------------
 

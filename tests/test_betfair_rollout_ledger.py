@@ -521,6 +521,32 @@ class ClassifyTests(LedgerCase):
                 failures = {(f["session_id"], f["check"]) for f in self.verify()["failures"]}
                 self.assertIn((directory.name, "receipt_shape"), failures)
 
+    def test_malformed_receipt_still_names_its_invocation_and_is_review(self):
+        """Refute wf_e360e218: a receipt that fails the shared shape check still carries its invocation id, so its
+        directory is matched and reviewed (receipt_shape), never "no_session"; as a partial-only receipt and as a final
+        receipt beside a valid partial, for both malformed shapes."""
+        shapes = (("segment not a dict", lambda r: r["segments"].append(1)),
+                  ("gaps not a list", lambda r: r.update(gaps={})))
+        for which in ("receipt.partial.json", "receipt.json"):
+            for label, change in shapes:
+                with self.subTest(receipt=which, case=label):
+                    self.setUp()
+                    directory, _ = write_session(self.writer, t("12:30:00"), "d20261021-a1-00000001", row="none")
+                    if which == "receipt.partial.json":
+                        (directory / "receipt.json").unlink()
+                    receipt = json.loads((directory / which).read_text())
+                    change(receipt)
+                    atomic_write_json(directory / which, receipt)
+                    result = self.classify("d20261021-a1-00000001", t("12:30:00"))
+                    self.assertEqual((result["outcome"], result["session_id"], result["codes"]),
+                                     ("review", directory.name, ["receipt_shape"]))
+
+    def test_valid_receipts_classify_as_before(self):
+        directory, _ = write_session(self.writer, t("12:30:00"), "d20261021-a1-00000001", row="none")
+        (directory / "receipt.json").unlink()
+        self.assertEqual(self.classify("d20261021-a1-00000001")["codes"], ["receipt_partial_only"])
+        self.assertEqual(self.classify("d20261021-a1-00000001")["outcome"], "incomplete")
+
     def test_impossible_stamp_is_attributed_never_a_value_error(self):
         """REC-5: an impossible rec-* stamp can only add review."""
         for name in ("rec-20269999T999999Z-deadbeef", "rec-20260230T120000Z-deadbeef"):

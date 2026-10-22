@@ -135,6 +135,8 @@ FORBIDDEN_BETFAIR = {
     "reconcile": "reconciles live order state against the exchange through a ReadClient",
     "recorder": "live stream recorder: esa.StreamClient, the profile's recordings dir and recorder lock",
     "recordings": "offline index and verify-day over the profile's recordings dir and run ledger; imports recorder",
+    "recording_day": ("the launchd recording wrapper (design v9 §4): spawns record children, reads the profile's "
+                      "config, admission state and login ledger, writes its day file under the state root"),
     "risk": "RiskGuard: mints order capabilities (capability._mint) and reads the KILL file (paths.kill_engaged)",
     "transport": "HTTPS and TLS-socket transports for SSO, JSON-RPC and the stream",
 }

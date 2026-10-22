@@ -805,8 +805,9 @@ def _receipt_file(path):
 def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
     """One wrapper attempt's outcome from disk (design v9 §3.3, §4.4 rules 2-6), pure read: no lock, no write.
 
-    -> {"outcome", "session_id", "codes", "stop_reason"}: outcome is "finalized" (rule 4; stop_reason is the
-    receipt's top-level stop_reason), "incomplete" (rule 3), "receipt_without_ledger_row" (rule 5), "no_session" (no
+    -> {"outcome", "session_id", "codes", "stop_reason", "receipt_sha256"}: outcome is "finalized" (rule 4;
+    stop_reason is the receipt's top-level stop_reason, receipt_sha256 its matching ledger row's, for the wrapper's
+    daily summary), "incomplete" (rule 3), "receipt_without_ledger_row" (rule 5), "no_session" (no
     receipt, partial or ledger row carries the id and no directory is attributed; the wrapper applies rule 1 (b) or
     rule 2), "partial_less_directory" (rule 2's one attribution not by id: a rec-* directory with neither receipt file
     whose name stamp is at or after spawn_wall_ns - 1 s; review even when touched) or "review" (rule 6: several
@@ -815,7 +816,8 @@ def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
     profile."""
     root = Path(config["recorder"]["root"]) if config["recorder"]["root"] is not None else Path(paths.recordings_dir)
     ledger = read_run_ledger(paths)
-    out = {"outcome": "review", "session_id": None, "codes": list(ledger["problems"]), "stop_reason": None}
+    out = {"outcome": "review", "session_id": None, "codes": list(ledger["problems"]), "stop_reason": None,
+           "receipt_sha256": None}
     matches, attributed = [], []
     try:
         entries = sorted(root.iterdir())
@@ -878,7 +880,7 @@ def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
     if codes:
         return dict(out, codes=codes)
     stop_reason = receipt.get("stop_reason")
-    return dict(out, outcome="finalized", codes=[],
+    return dict(out, outcome="finalized", codes=[], receipt_sha256=rows[0]["receipt_sha256"],
                 stop_reason=safe_code(stop_reason) if isinstance(stop_reason, str) else None)
 
 

@@ -46,8 +46,8 @@ from .esa import LOCAL_CONNECTION_CODES, ReconnectPolicy, StreamClient
 from .filters import MARKET_ID_RE, to_rest_market_filter, to_stream_market_filter
 from .paths import require_outside_worktrees
 from .receipts import (SYSTEM_CLOCK, append_jsonl, atomic_write_json, bytes_sha256, canonical_sha256, code_hashes,
-                       file_sha256, full_fsync, git_state, parse_utc_ns, strict_json_loads, utc_compact_from_ns,
-                       utc_from_ns, utc_ms_from_ns)
+                       end_torn_line, file_sha256, full_fsync, git_state, parse_utc_ns, strict_json_loads,
+                       utc_compact_from_ns, utc_from_ns, utc_ms_from_ns)
 from .secret import assert_clean
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -523,7 +523,9 @@ class _Session:
                    "receipt_sha256": receipt_sha, "segments": len(self.segments), "status": RECEIPT_STATUS}
             if self.r.invocation_id is not None:
                 row["invocation_id"] = self.r.invocation_id
-            append_jsonl(Path(self.r.paths.recordings_dir) / "run-ledger.jsonl", row)
+            ledger_path = Path(self.r.paths.recordings_dir) / "run-ledger.jsonl"
+            end_torn_line(ledger_path)           # a torn tail never swallows this row (design v9 §3.8 step 1)
+            append_jsonl(ledger_path, row)
             logout_attempted = True
             logout = self._logout()
         finally:

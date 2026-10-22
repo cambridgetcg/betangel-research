@@ -2176,10 +2176,11 @@ class Run:
         return 5
 
     def pending_line(self, pending):
-        """The pending-captures line: every bet and read still owed, and when to run pilot-capture."""
-        bets = sorted({item["bet_id"] for _, item in pending})
-        reads = ", ".join(f"{kind} {item['bet_id'] if kind != 'book' else item['market_id']}" for kind, item in pending)
-        return (f"pending captures for bets {', '.join(bets)}: {reads}; "
+        """The pending-captures line: how many reads of each kind are still owed, and when to run pilot-capture. Counts
+        only, never a bet id or market id (note §12:185): pilot-capture rebuilds its entries from the journal, and the
+        handoff lines carry the ids a person needs (note §8)."""
+        counts = {kind: sum(1 for k, _ in pending if k == kind) for kind in ("c", "book", "l")}
+        return (f"pending captures: c {counts['c']}, book {counts['book']}, l {counts['l']}; "
                 + (KILL_CAPTURE_LINE if self.abnormal == "kill" else PENDING_CAPTURE_LINE))
 
     def summary(self, projection):
@@ -2272,28 +2273,39 @@ def pilot_stop_check(paths, *, contract, session_id, clock):
 
 def capture_entries(projection, *, queue=None, session_id=None, now_ns=None):
     """What a batch reads, C first: each pilot bet with a bet id and no C read showing EXECUTION_COMPLETE (the
-    in-session queue when given, else rebuilt from the journal), then the CLOSED book of each such market with no
-    CLOSED capture yet, then L for each bet whose market a capture showed CLOSED and that has no settled L row. In a
-    session (session_id, now_ns) only that session's markets whose off has passed are read for the book and L."""
+    in-session queue when given, else rebuilt from the journal), then the CLOSED book of each market with no CLOSED
+    capture yet, then L for each bet whose market a capture showed CLOSED and that has no settled L row. In a session
+    (session_id, now_ns) only that session's markets whose off has passed are read for the book and L.
+
+    The book is read for every PLACE record's market, sent or not (contract decision-price series; P1-10 S1b). A bet's
+    market is read as before. A record that is unsent, or has no bet id, gets a book entry (bet_id None) once its off has
+    passed and until off + the BSP cutoff: after that its BSP is decided "none" and no read can change it, and with no
+    bet id it has no L to unlock."""
     state, core = projection["state"], projection["core"]
     # Any CLOSED capture_book, not only one the BSP rule used: a CLOSED read after off + 24 h decides the BSP as
     # "none" without setting closed_read, and its bets still need L (P1-10 S1).
     closed = projection["closed_markets"]
+    now = state.now_ns if now_ns is None else now_ns
     pending = {item["ref"]: item for item in projection["pending_capture"]}
     if queue is not None:
         pending = {ref: dict(item, **pending.get(ref, {})) for ref, item in queue.items() if ref in pending}
     entries = [("c", item) for item in pending.values()]
-    books, ls = [], []
+    books, ls, booked = [], [], set()
     for rec in state.place_records:
-        order = core["orders"].get(rec.ref)
-        if order is None or order["bet_id"] is None or rec.unsent:
-            continue
         if session_id is not None and (rec.session_id != session_id or now_ns is None or now_ns <= rec.off_ns):
             continue
-        item = {"ref": rec.ref, "bet_id": order["bet_id"], "market_id": rec.market_id,
+        order = core["orders"].get(rec.ref)
+        bet_id = None if order is None or rec.unsent else order["bet_id"]
+        item = {"ref": rec.ref, "bet_id": bet_id, "market_id": rec.market_id,
                 "selection_id": rec.selection_id, "off_ns": rec.off_ns}
-        if rec.market_id not in closed and rec.market_id not in {b[1]["market_id"] for b in books}:
+        if bet_id is None:
+            if (rec.market_id not in closed and rec.market_id not in booked
+                    and rec.off_ns < now <= rec.off_ns + state.contract.bsp_cutoff_s * NS):
+                books.append(("book", item))
+                booked.add(rec.market_id)
+        elif rec.market_id not in closed and rec.market_id not in booked:
             books.append(("book", item))
+            booked.add(rec.market_id)
         elif rec.market_id in closed and not any(r["row"].get("betStatus") == "SETTLED" for r in rec.l_rows):
             ls.append(("l", item))
     return entries + books + ls

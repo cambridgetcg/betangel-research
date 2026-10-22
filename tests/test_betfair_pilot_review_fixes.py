@@ -10,6 +10,7 @@ journal change that still refuses. They do not show Betfair's real behaviour, re
 """
 
 import json
+import re
 import signal
 import time
 import unittest
@@ -1222,6 +1223,9 @@ class SettleScheduleTests(RunCase):
             code, out, err = sr.arm_run(env)
         self.assertEqual(json.loads(out)["pending_c_reads"], 1)
         self.assertIn(pilot_run.PENDING_CAPTURE_LINE, err)
+        line = next(x for x in err.splitlines() if x.startswith("pending captures"))
+        self.assertRegex(line, r"^pending captures: c 1, book \d+, l \d+; " + re.escape(pilot_run.PENDING_CAPTURE_LINE)
+                         + "$")                                      # counts, never a bet id or market id (S1b)
 
     def test_sched4_no_capture_read_within_the_bound_of_the_next_open(self):
         from betangel_research.betfair.api import ReadClient

@@ -13,6 +13,7 @@ signal delivery or recorder.
 import dataclasses
 import json
 import os
+import re
 import signal
 import unittest
 from unittest.mock import patch
@@ -1708,7 +1709,9 @@ class KillCaseTests(RunCase):
         self.assertEqual(len(places(env)), 1)
         self.assertEqual(not_logout(env, seen["requests"]), [])
         self.assertIn(pilot_run.KILL_CAPTURE_LINE, err)
-        self.assertIn("pending captures for bets", err)
+        line = next(x for x in err.splitlines() if x.startswith("pending captures"))
+        self.assertRegex(line, r"^pending captures: c \d+, book \d+, l \d+; " + re.escape(pilot_run.KILL_CAPTURE_LINE)
+                         + "$")                                      # counts, never a bet id or market id (S1b)
 
     def test_the_kill_path_never_takes_the_admission_or_owner_lock(self):
         """Static pin: the kill command path never names the owner lock or admission.lock."""

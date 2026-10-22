@@ -658,9 +658,11 @@ def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on
         if config["coexistence"]["bet_angel"] == "unverified":
             _kill_line(ctx, "F67 (inferred, unverified): if a new login ends other sessions, Bet Angel and any "
                             "running gateway may be logged out; check Bet Angel after the kill.")
+    # Held before open(), as the paper branch does: a signal on any line of open() after the lock (past its protected
+    # try included) still reaches close() in _gateway's finally, so .gateway.lock never outlives the context.
+    held["gateway"] = gateway
     gateway.open(command=command, confirm_token=getattr(args, "confirm_live", None),
                  bet_angel_paused=bool(getattr(args, "bet_angel_paused", False)))
-    held["gateway"] = gateway
 
 
 def _kill_journal(paths, clock):
@@ -1439,9 +1441,10 @@ def _unresolved_line(item, flag=""):
 def _settle_during_pilot_session(args, ctx):
     """P1-08 §4.13, before the gateway: only when the live journal holds a pilot session_start, True when
     pilot_run.pilot_session_live says a second process must not settle (no ownership here, ticket None). A journal
-    that exists but cannot be read (P108-C4, OWN-1): True when the config names orders.pilot, or when the ticket=None
-    owner-lock term holds (pilot-run may still own the state); else False, so a non-pilot settle meets the gateway's
-    own journal error exactly as before P1-08."""
+    that exists but cannot be read (P108-C4, OWN-1): True when the config names orders.pilot, or when the owner lock
+    is held and ADMISSION names a pilot-session owner or cannot be read (pilot-run may still own the state); else
+    False, so a non-pilot settle meets the gateway's own journal error exactly as before P1-08. Without orders.pilot an
+    owner-lock state that cannot be read counts as free (P1-08 residual 3; refute wf_c5e7a760)."""
     from . import admission, pilot_gate, pilot_run
     from .config import pilot_enabled
     from .errors import AdmissionRefused
@@ -1453,7 +1456,7 @@ def _settle_during_pilot_session(args, ctx):
     if not read["readable"]:
         if pilot_enabled(_config(args, paths)):
             return True
-        if admission.owner_lock_state(paths, clock=ctx.clock) == "free":
+        if admission.owner_lock_state(paths, clock=ctx.clock) != "held":
             return False
         try:
             current = admission.admission_status(paths)["admission"]

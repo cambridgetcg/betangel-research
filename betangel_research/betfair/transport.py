@@ -465,8 +465,8 @@ class HttpTransport:
         last_bytes_written is this request's request bytes, summed over its attempts (0 after any refusal).
         send_by_monotonic_ns and send_gate (non-idempotent requests only): see the module docstring.
         attempt_guard (an RS-19 pilot read only, P108-R2-2; None keeps today's behaviour): asked before every attempt,
-        the idempotent retry on a fresh connection included; a non-empty answer raises ReadStopped and that attempt
-        writes no byte.
+        the idempotent retry on a fresh connection included, and again once that attempt is connected, before its first
+        request byte (P1-08 residual 4); a non-empty answer raises ReadStopped and that attempt writes no byte.
         """
         self.last_bytes_written = 0
         host, path = preflight(method, url, headers, body, allowed_hosts=self.allowed_hosts, idempotent=idempotent,
@@ -493,7 +493,8 @@ class HttpTransport:
             try:
                 outcome = self._attempt(host, path, method, final_headers, payload, context, deadline_ns,
                                         retry_allowed=idempotent and attempt + 1 < attempts,
-                                        send_by_ns=send_by_monotonic_ns, send_gate=send_gate)
+                                        send_by_ns=send_by_monotonic_ns, send_gate=send_gate,
+                                        attempt_guard=attempt_guard)
             except TransportError as failure:
                 # A retry that fails before writing still follows an attempt that did write.
                 if self.last_bytes_written > 0:
@@ -504,10 +505,18 @@ class HttpTransport:
         raise _refuse("connection_lost", "receive", self.last_bytes_written > 0)
 
     def _attempt(self, host, path, method, headers, payload, context, deadline_ns, *, retry_allowed, send_by_ns=None,
-                 send_gate=None):
-        """Returns the response, None to retry (idempotent reads only), or raises TransportError."""
+                 send_gate=None, attempt_guard=None):
+        """Returns the response, None to retry (idempotent reads only), or raises TransportError (ReadStopped when
+        attempt_guard answers after the connect)."""
         key, entry = self._connection(host, context, deadline_ns)
         conn, metered = entry["conn"], entry["metered"]
+        if attempt_guard is not None:
+            # Asked again once connected, before the first request byte, as send_refusal is for orders (P1-08
+            # residual 4): DNS, the TCP connect and the handshake can take most of the deadline.
+            reason = attempt_guard()
+            if reason:
+                self._drop(key)
+                raise ReadStopped(reason)
         metered.arm(deadline_ns)
         phase = "send"
         failure = None

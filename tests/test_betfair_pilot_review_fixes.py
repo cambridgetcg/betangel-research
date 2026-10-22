@@ -1488,7 +1488,9 @@ class TransportRetryGuardTests(unittest.TestCase):
         self.assertEqual(outcome, {"stopped": "kill"})
         self.assertGreater(len(first.sent), 0)                    # the first attempt went out before the stop
         self.assertEqual(len(second.sent), 0)                     # nothing after the stop
-        self.assertEqual(state["guard_calls"], 3)                 # the outer check and both attempts
+        # The outer check, before each attempt, and once after the first attempt's connect (P1-08 residual 4); the
+        # second attempt stops at its pre-attempt check, before any connect.
+        self.assertEqual(state["guard_calls"], 4)
 
     def test_without_a_guard_the_retry_is_unchanged(self):
         outcome, state, script, first, second = self.request(guarded=False)

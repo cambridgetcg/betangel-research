@@ -2,9 +2,10 @@
 off + 24 h, which never sets the BSP's closed_read (pilot_run.capture_entries used closed_markets_of(state)).
 
 P1-10 S1b: the CLOSED book is read for every PLACE record's market, sent or not, so the decision-price series
-(contract reporting) has each record's BSP. A record with no bet id gets a book entry once its off has passed; an
-unsent record's stops at off + the BSP cutoff, a sent one's does not (a later CLOSED read still decides void or
-removal; Astra S1b-1). The pending-captures line shows counts, never a bet id or market id (note §12:185)."""
+(contract reporting) has each record's BSP. A record with no bet id gets a book entry once its off has passed, until
+no read can change it: off + the BSP cutoff for an unsent record, its deadline for a sent one (a CLOSED read up to then
+still decides void or removal; Astra S1b-1, Codex review on PR #40). The pending-captures line shows counts, never a
+bet id or market id (note §12:185)."""
 import re
 from types import SimpleNamespace
 import unittest
@@ -16,12 +17,13 @@ import test_betfair_pilot as tp
 
 NS = pilot.NS
 CUTOFF_S = 24 * 3600
+DEADLINE_S = 7 * 86400
 OFF = 100 * NS
 
 
 def record(**changes):
     rec = dict(ref="ref-1", market_id="1.5", selection_id=7, session_id="s1", off_ns=OFF, unsent=False, l_rows=[],
-               bsp={"decided": True, "closed_read": None})
+               bsp={"decided": True, "closed_read": None}, deadline_ns=OFF + DEADLINE_S * NS)
     rec.update(changes)
     return SimpleNamespace(**rec)
 
@@ -90,11 +92,13 @@ class EveryPlaceRecordBookTests(unittest.TestCase):
                                                            now_ns=now))
                 self.assertEqual(kinds(out), expected)
 
-    def test_a_sent_record_with_no_bet_id_is_read_after_its_off_with_no_cutoff(self):
-        """Astra S1b-1: after the cutoff a CLOSED read still decides void or removal for a sent record."""
+    def test_a_sent_record_with_no_bet_id_is_read_until_its_deadline(self):
+        """Astra S1b-1: after the cutoff a CLOSED read still decides void or removal for a sent record; after its
+        deadline the record is final and nothing is read (Codex review, PR #40)."""
         rec = record()
         for now, expected in ((OFF - NS, []), (OFF + NS, ["book"]), (OFF + CUTOFF_S * NS + 1, ["book"]),
-                              (OFF + 8 * 86400 * NS, ["book"])):
+                              (OFF + DEADLINE_S * NS, ["book"]), (OFF + DEADLINE_S * NS + 1, []),
+                              (OFF + 8 * 86400 * NS, [])):
             with self.subTest(now=now - OFF):
                 out = pilot_run.capture_entries(projection(rec, closed_markets=set(),
                                                            orders={rec.ref: {"bet_id": None}}, now_ns=now))
@@ -127,8 +131,27 @@ class EveryPlaceRecordBookTests(unittest.TestCase):
 
 
 class SentNoBetIdFold(unittest.TestCase):
-    """Why the cutoff stops only an unsent record (Astra S1b-1): for a sent record with no bet id, a CLOSED read after
-    off + 24 h leaves the BSP "none" but still decides void, which no later read can repair once day 7 passes."""
+    """Why a sent record with no bet id is read past the cutoff and up to its deadline, and not after it: a CLOSED read
+    after off + 24 h leaves the BSP "none" but still decides void up to the deadline; after it the class is final."""
+
+    def removed_record(self, read_at=None):
+        journal_ = tp.Pilot(pt4=True)
+        session = journal_.arm(0)
+        p = journal_.place(session)
+        journal_.intent(p)
+        journal_.submit(p)                                     # sent, never reported: no bet id
+        journal_.reserve("1.299999", journal_.now + 300 * tp.S, session=session, open_id="open-later")
+        if read_at is not None:
+            journal_.closed(p, ours="REMOVED", sp="3.10", at=p.off + read_at)
+        rec = journal_.fold(now=p.off + 9 * tp.DAY_NS).place_records[0]
+        self.assertFalse(rec.unsent)
+        return rec.measurement["class"]
+
+    def test_a_closed_read_up_to_the_deadline_decides_void_and_not_after(self):
+        deadline = 7 * tp.DAY_NS
+        self.assertEqual({at: self.removed_record(at) for at in (None, 2 * tp.DAY_NS, deadline, deadline + 1000)},
+                         {None: "measurement_unresolved", 2 * tp.DAY_NS: "void", deadline: "void",
+                          deadline + 1000: "measurement_unresolved"})
 
     def test_a_late_closed_read_still_decides_void(self):
         outcomes = {}

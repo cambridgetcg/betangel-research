@@ -590,7 +590,8 @@ class ReservationOrderTests(unittest.TestCase):
     """The reservation order pin (IR3-19; no rule change). A reservation still ends the earlier opens after apply()
     has crossed the triggers in (J, t0], while the gateway's present fold ended them first, so the two agree only if
     no trigger lowers the ledger: the first test checks that property at every prefix. Restricted as Astra's v3 review
-    asks: only a reservation the gateway would append (admitted), since a reservation the gateway refuses may carry an
+    asks: only a reservation that passes the pilot-fold checks of the gateway's step A (admitted, which models those
+    and not all of step A), since a reservation the gateway refuses may carry an
     intended violation (session_not_armed, say) that is no ordering divergence. Then fold(prefix + reservation(Y) at t0)
     equals fold(prefix, now=t0, live_open_id=Y) in equity, pause_fired, due stops and violations. A failure is a
     candidate for S2a-r's reachable counterexample (Q20) once the checks admitted() leaves out pass too: to report, not
@@ -617,7 +618,11 @@ class ReservationOrderTests(unittest.TestCase):
         (gateway.py _pilot_decide): a due stop, placement authority, a reserved market, the end margin or the trigger
         rule (at the widest evidence deadline a config allows, so under any config); and the open must be new. Step
         A's other checks are left out: kill, HALT and manual bets (files and the core fold), the window and V10 (the
-        wall clock), and the guard's R6 and R7 (the core fold)."""
+        wall clock), and the guard's evaluate_pilot_reservation (risk.py), which reads the core fold: R1 (halted, KILL,
+        clock regression), R3 (an unresolved order anywhere), R6's windows, R8 and R9 (worst-case exposure) and R10
+        (the daily loss budget); R7's transaction limit is excluded there. Those omissions admit reservations the
+        gateway would refuse, while the strict trigger rule refuses some it would admit, so the admitted set is not
+        exactly the gateway's, and a failure is only a candidate counterexample (Astra, S2a-0 review)."""
         state = pilot.fold(list(prefix), contract=C, now_ns=at, live_open_id=open_id)
         if (state.due_stops or market_id in state.reservations or open_id in folder.opens
                 or pilot.placement_authority(state, phase="reserve", now_ns=at, session_id=session_id)):

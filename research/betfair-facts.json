@@ -1396,7 +1396,7 @@
       "published_or_updated": null,
       "accessed": "2026-10-10",
       "verification_status": "inferred",
-      "code_handling": "--bet-angel-paused required until first-live-test T3; the kill logs in a separate emergency session and prints the F67 warning while coexistence is unverified"
+      "code_handling": "--bet-angel-paused required while coexistence.bet_angel is unverified; the kill logs in a separate emergency session and prints the F67 warning while coexistence is unverified"
     },
     {
       "id": "F68",

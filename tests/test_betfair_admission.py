@@ -652,6 +652,16 @@ class BoundaryTests(unittest.TestCase):
             with self.subTest(function=function.name):
                 for word in ("admission", "inhibit", "recorder_lock", "_record"):
                     self.assertNotIn(word, source.lower())
+        # Recording rollout (design v9 §8 emergency paths): the shared gateway and the cancel path never reach the
+        # admission module or the ownership lifecycle either (kill and cancel share _gateway and _live_gateway).
+        pinned = ("_gateway", "_live_gateway", "cmd_cancel", "_order_result", "_cancel_problems", "_cancel_line",
+                  "_evidence_line", "_withheld_line", "_cleared_line", "_exit_after_send", "_stopped_line")
+        functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+        for name in pinned:
+            source = ast.unparse(functions[name])
+            with self.subTest(function=name):
+                for word in ("admission", "live_ownership", "release_own", "_manual_owned", "inhibit"):
+                    self.assertNotIn(word, source.lower())
 
     def test_ps_start_time_is_rendered_in_utc_whatever_the_system_zone(self):
         """Workflow #1: lstart is printed in TZ (else /etc/localtime), so the identity pins TZ=UTC0 and LC_ALL=C; a

@@ -779,7 +779,9 @@ class RecoveryTests(RunCase):
     def test_refuses_while_the_owner_lock_is_held_or_unknown(self):
         env = self.registered()
         with pilot_run.file_lock(env.paths.live_owner_lock, timeout_s=0, clock=env.clock):
-            self.refused(sr.end_session(env), "pilot_session_alive")
+            err = self.refused(sr.end_session(env), "owner_live")            # design v9 §3.4.6
+            self.assertIn("owner_live: another live owner holds the owner lock", err)
+            self.assertNotIn("pilot_session_alive", err)
         with patch.object(pilot_run, "file_lock", side_effect=OSError("unreadable")):
             self.refused(sr.end_session(env), "pilot_session_state_unknown")
 
@@ -2099,20 +2101,29 @@ class SettleTests(RunCase):
                     self.assertEqual([n["code"] for n in sr.notes(env, "refusal")], [refusal])
                 self.assertEqual(sr.admission_view(env)["admission"]["generation"], 1)
 
-    def standalone_settle(self, env):
-        return sr.run_cli(env, "settle-market", "--market", self.market.market_id, "--confirm-live", sr.token(env))
+    def standalone_settle(self, env, *extra):
+        return sr.run_cli(env, "settle-market", "--market", self.market.market_id, "--confirm-live", sr.token(env),
+                          *extra)
 
     def test_a_second_process_settle(self):
-        """During an armed session (here: pilot-run died before UNTIL) the cli refuses with the advice; after the
-        session's end with pilot-run exited, before UNTIL, the standalone settle is allowed (built with pilot=None)."""
+        """P1-08 §8 pins (a) and (b) (design v9 §3.4.4): pilot-run died before UNTIL and retained its generation N, so
+        a fresh settle-market is refused admission_held and names the continuation. (b) The continuation while the
+        fold is still armed (no pilot-end-session yet) takes ownership, then refuses pilot_session_armed. (a) After
+        pilot-end-session, settle-market --continue-admission N on the EXECUTION_COMPLETE pilot order in the CLOSED
+        market settles (built with pilot=None), with no owner_lock_state call, and ADMISSION and INHIBIT unchanged."""
         env = self.one_market()
         sr.settling(env, self.market)
         with sr.sigkill_after("report", when=lambda p: p.get("action") == "cancel"), self.assertRaises(sr.Death):
             sr.arm_run(env)
         env.clock.advance(600)                                       # the market is off and closed
-        err = self.refused(self.standalone_settle(env), "pilot_session_armed")
+        err = self.refused(self.standalone_settle(env), "admission_held")
+        self.assertIn("to continue it, rerun with --continue-admission 1", err)
+        never = patch.object(admission, "owner_lock_state", side_effect=AssertionError("owner_lock_state in settle"))
+        with never:
+            err = self.refused(self.standalone_settle(env, "--continue-admission", "1"), "pilot_session_armed")
         self.assertIn(cli.PILOT_SETTLE_ADVICE, err)
         self.assertEqual(sr.end_session(env)[0], 0)
+        before = sr.recording_files(env)
         built = []
         original = cli._live_gateway
 
@@ -2120,11 +2131,12 @@ class SettleTests(RunCase):
             built.append({k: kw.get(k) for k in ("pilot", "in_session_settle", "clock", "credentials")})
             return original(*args, **kw)
 
-        with patch.object(cli, "_live_gateway", spy):
-            code, out, err = self.standalone_settle(env)
+        with patch.object(cli, "_live_gateway", spy), never:
+            code, out, err = self.standalone_settle(env, "--continue-admission", "1")
         self.assertEqual(code, 0, err)
         self.assertEqual(built, [{"pilot": None, "in_session_settle": False, "clock": None, "credentials": None}])
         self.assertEqual(json.loads(out)["status"], "settled")
+        self.assertEqual(sr.recording_files(env), before)                # a continuation never releases
 
     def test_refused_while_the_owner_lock_is_held_in_the_end_path(self):
         env = self.one_market()
@@ -2134,9 +2146,13 @@ class SettleTests(RunCase):
         admission.atomic_write_json(env.paths.admission_file, {
             "schema_version": 1, "generation": 2, "owner": "pilot-session:s20270104-0a0b0c0d", "purpose": "x",
             "created_at": env.clock.utc_now(), "state": "admitted"})
+        env.runner.calls.clear()
         with pilot_run.file_lock(env.paths.live_owner_lock, timeout_s=0, clock=env.clock):
-            err = self.refused(self.standalone_settle(env), "pilot_session_armed")
-        self.assertIn(cli.PILOT_SETTLE_ADVICE, err)
+            err = self.refused(self.standalone_settle(env), "owner_live")
+        # P1-08 pin (c) (design v9 §3.4.7 item 6): a fresh settle-market while pilot-run holds the owner lock is
+        # refused owner_live when taking ownership, with no credential read.
+        self.assertIn("ADMISSION owner pilot-session:s20270104-0a0b0c0d", err)
+        self.assertEqual(sr.credential_reads(env), [])
 
     def test_an_unreadable_contract_before_until_is_refused(self):
         env = self.one_market()
@@ -2474,14 +2490,19 @@ class BoundaryTests(unittest.TestCase):
         cli_source = (sp.REPO / "betangel_research/betfair/cli.py").read_text()
         cli_tree = ast.parse(cli_source)
         kill_helpers = [node for node in cli_tree.body if isinstance(node, ast.FunctionDef)
-                        and (node.name == "cmd_kill" or node.name.startswith("_kill"))]
+                        and (node.name == "cmd_kill" or node.name.startswith("_kill")
+                             or node.name in ("_gateway", "_live_gateway", "cmd_cancel", "_order_result",
+                                              "_cancel_problems", "_cancel_line", "_evidence_line", "_withheld_line",
+                                              "_cleared_line", "_exit_after_send", "_stopped_line"))]
         self.assertTrue(kill_helpers)
+        self.assertGreaterEqual(len(kill_helpers), 13)              # design v9 §8: the emergency-path pins extended
         texts = {"gateway.py": (sp.REPO / "betangel_research/betfair/gateway.py").read_text(),
                  "killswitch.py": (sp.REPO / "betangel_research/betfair/killswitch.py").read_text()}
         texts.update({f"cli.{node.name}": ast.get_source_segment(cli_source, node) for node in kill_helpers})
         for name, text in texts.items():
             with self.subTest(source=name):
-                for word in ("admission", "live_owner_lock", "live_ownership", "release_own", "OwnerTicket"):
+                for word in ("admission", "live_owner_lock", "live_ownership", "release_own", "OwnerTicket",
+                             "_manual_owned"):
                     self.assertNotIn(word, text)
 
     def test_help_pins(self):

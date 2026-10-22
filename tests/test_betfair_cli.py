@@ -51,6 +51,12 @@ def run_main(argv, deps=None):
     return code, out.getvalue(), err.getvalue()
 
 
+def own(err):
+    """stderr without the recording lines the manual live commands add (design v9 §3.4.6): the command's own lines,
+    unchanged from before the rollout."""
+    return "\n".join(line for line in err.strip().splitlines() if not line.startswith("Betfair recording: "))
+
+
 def run_cli(*args, timeout=120):
     return subprocess.run([sys.executable, "-m", "betangel_research.betfair", *map(str, args)],
                           cwd=str(support.REPO_ROOT), capture_output=True, text=True, timeout=timeout,
@@ -136,7 +142,8 @@ class InProcessCliTests(unittest.TestCase):
                 "2.00", "--mode", "live", "--bet-angel-paused"]
         code, out, err = run_main(argv, self.deps)
         self.assertEqual(code, 2)
-        self.assertTrue(err.startswith("Betfair order refused: "), err)
+        self.assertTrue(own(err).startswith("Betfair order refused: "), err)
+        self.assertIn("Betfair recording: recording released (generation 1)", err)   # refused clean: released
         self.assertNotIn("Traceback", err + out)
         report = json.loads(out)
         self.assertFalse(report["armed"])
@@ -146,7 +153,7 @@ class InProcessCliTests(unittest.TestCase):
         self.assertEqual(self.transport.requests, [])
         self.assertFalse(self.paths.journal_path("live").exists())     # a refused live command creates nothing
         code, out, err = run_main(argv[:-1], self.deps)        # coexistence unverified, no flag
-        self.assertEqual((code, err.strip()), (2, COEXISTENCE_REFUSAL))
+        self.assertEqual((code, own(err)), (2, COEXISTENCE_REFUSAL))
 
     def test_live_book_flag_refused(self):
         code, out, err = run_main(self.place_args("--mode", "live"), self.deps)
@@ -369,6 +376,14 @@ class InProcessCliTests(unittest.TestCase):
         return ["place", "--market", "1.1", "--selection", "12345", "--side", "BACK", "--price", price, "--size",
                 "2.00", "--mode", "live", "--confirm-live", env.token]
 
+    def typed_release(self, env):
+        """Yu's typed recording-release (design v9 §3.5), the fake confirmer standing in for the typed line: a manual
+        live command that left its generation retained (a resting or unresolved bet) keeps recording off, and every
+        later fresh manual live command refused admission_held, until it."""
+        code, out, err = run_main(["recording-release", "--confirm-live", env.token],
+                                  self.live_deps(env, confirmer=gw.FakeConfirmer()))
+        self.assertEqual(code, 0, out + err)
+
     def test_live_place_end_to_end_with_fakes(self):
         env = gw.build_live_gateway(self)
         env.journal.close()
@@ -390,10 +405,14 @@ class InProcessCliTests(unittest.TestCase):
 
     def test_live_kill_while_another_live_prompt_is_pending(self):
         env = gw.build_live_gateway(self)
+        # The resting bet is placed through the gateway itself, not the CLI: a CLI place that leaves a bet resting
+        # keeps its recording admission, and every later fresh manual place is refused admission_held (design v9
+        # §3.4.7 item 1) before it reaches a prompt.
+        gw.open_live(self, env, "place", instructions=[gw.instruction()])
+        resting = env.gateway.place("1.1", [gw.instruction()], book=None, source="cli_manual",
+                                    confirm_token=env.token)["orders"][0]["bet_id"]
+        env.gateway.close()
         env.journal.close()
-        code, out, err = run_main(self.live_place(env), self.live_deps(env))
-        self.assertEqual(code, 0, err)
-        resting = json.loads(out)["orders"][0]["bet_id"]
         inner = {}
 
         class KillWhilePrompting(gw.FakeConfirmer):
@@ -420,7 +439,8 @@ class InProcessCliTests(unittest.TestCase):
         env.journal.close()
         deps = self.live_deps(env, env=dict(support.FORBID_ENV, CI="true"))
         code, out, err = run_main(self.live_place(env), deps)
-        self.assertEqual((code, err.strip()), (2, "Betfair order refused: egress_unattested_or_cloud"))
+        self.assertEqual((code, own(err)), (2, "Betfair order refused: egress_unattested_or_cloud"))
+        self.assertIn("Betfair recording: recording released (generation 1)", err)
         self.assertEqual(json.loads(out)["failures"], ["egress_unattested_or_cloud"])
         self.assertEqual(env.router.order_requests, [])
 
@@ -515,7 +535,7 @@ class InProcessCliTests(unittest.TestCase):
             code, out, err = run_main(self.live_place(env), self.live_deps(env))
         self.assertEqual((code, out, err.strip().splitlines()[-1]),
                          (5, "", "Betfair stopped after an order request was sent (RuntimeError); do not resend; run "
-                                 "status or reconcile --mode live"))
+                                 "status or reconcile --mode live --continue-admission 1"))
         self.assertEqual(len(env.router.order_requests), 1)
 
     def test_live_place_failed_exits_5(self):
@@ -550,7 +570,8 @@ class InProcessCliTests(unittest.TestCase):
                 else:
                     self.assertTrue(line.startswith(f"Betfair order sent; outcome not as requested: {ref} {tail} "),
                                     line)
-                    self.assertTrue(line.endswith("; do not resend; run status or reconcile --mode live"), line)
+                    self.assertTrue(line.endswith("; do not resend; run status or reconcile --mode live "
+                                                  "--continue-admission 1"), line)
         # A place that rests as asked still exits 0.
         env = gw.build_live_gateway(self)
         env.journal.close()
@@ -618,6 +639,10 @@ class InProcessCliTests(unittest.TestCase):
                 self.assertNotIn("order sent", err)
                 self.assertNotIn("do not resend", err)
                 self.assertEqual(env.exchange.orders[placed["bet_id"]]["status"], "EXECUTABLE")
+        # The resting bet holds the place's recording admission: cancel it fully, then Yu's typed release.
+        env.router.next_response.pop(gw.CANCEL_SUFFIX, None)
+        self.assertEqual(run_main(cancel, self.live_deps(env))[0], 0)
+        self.typed_release(env)
         # The live probe's cancel that is not processed: the per-order line and the probe line agree (cancel it).
         env.router.next_response[gw.CANCEL_SUFFIX] = [support.transport_failure("connect", code="refused")]
         code, out, err = run_main(["live-probe", "--market", "1.1", "--selection", "12345", "--confirm-live",
@@ -700,7 +725,8 @@ class InProcessCliTests(unittest.TestCase):
         order = json.loads(out)["orders"][0]
         self.assertEqual((code, order["state"], order["error_code"]),
                          (5, "EXECUTABLE", "exchange_reduction_withheld_until_settle"))
-        self.assertIn("until you settle its market with settle-market", err.strip().splitlines()[-1])
+        self.assertIn("until you settle its market with settle-market --continue-admission 1",
+                      err.strip().splitlines()[-1])
         # reconcile --mode live names the evidence in each entry.
         third = gw.build_live_gateway(self)
         third.journal.close()
@@ -720,7 +746,8 @@ class InProcessCliTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out)["orders"][0]["state"]), (5, "UNKNOWN"))
         third.exchange.read_failures.clear()
         third.exchange.orders[lost["bet"]].update(status="EXECUTION_COMPLETE", sizeLapsed=2.0, sizeRemaining=0.0)
-        code, out, err = run_main(["reconcile", "--mode", "live"], self.live_deps(third))
+        code, out, err = run_main(["reconcile", "--mode", "live", "--continue-admission", "1"],
+                                  self.live_deps(third))
         self.assertEqual(code, 0, err)
         entry = json.loads(out)["reconciled"][0]
         self.assertEqual((entry["final_state"], entry["error_code"]),
@@ -767,8 +794,11 @@ class InProcessCliTests(unittest.TestCase):
                          f"Betfair live-probe: probe bet {bet} (LAY 1.00 @ 1.01) may still be live; cancel it now: "
                          f"cancel --mode live --market 1.1 --bet-id {bet}, or on the Betfair website or in Bet Angel")
         self.assertEqual(env.exchange.orders[bet]["status"], "EXECUTABLE")
-        # A probe whose cancel works exits 0.
+        # A probe whose cancel works exits 0 (after the probe bet is cancelled and Yu's typed release).
         env.exchange.cancel_handler = None
+        self.assertEqual(run_main(["cancel", "--market", "1.1", "--bet-id", bet, "--mode", "live"],
+                                  self.live_deps(env))[0], 0)
+        self.typed_release(env)
         code, out, err = run_main(["live-probe", "--market", "1.1", "--selection", "12345", "--confirm-live",
                                    env.token], self.live_deps(env))
         self.assertEqual(code, 0, err)
@@ -788,13 +818,13 @@ class InProcessCliTests(unittest.TestCase):
         "is still live ... run cancel again now", which only looped into a consecutive_unknown_outcomes HALT. Both
         now print the cleared-row line (not resting, counted at worst case until settle-market, cancel again only
         if orders-current shows an unmatched part) and exit 5."""
-        def cleared_line(order):
+        def cleared_line(order, cont=""):
             return (f"Betfair order {order['customer_order_ref']} bet {order['bet_id']}: Betfair lists this bet only "
                     "among its cleared orders (lapsed, cancelled, voided or settled), not as a current bet "
                     "(cleared_row_bet_exists_worst_case); it is not resting; it stays counted at worst case and shows "
-                    "as EXECUTABLE until you settle its market with settle-market after the market closes; status "
-                    "and reconcile change nothing; cancel it again only if orders-current still shows an unmatched "
-                    "part")
+                    f"as EXECUTABLE until you settle its market with settle-market{cont} after the market closes; "
+                    "status and reconcile change nothing; cancel it again only if orders-current still shows an "
+                    "unmatched part")
 
         # F25: a marketVersion change answered FAILURE / BET_TAKEN_OR_LAPSED with the betId echoed; Betfair lapsed it.
         env = gw.build_live_gateway(self)
@@ -815,7 +845,7 @@ class InProcessCliTests(unittest.TestCase):
         order = json.loads(out)["orders"][0]
         self.assertEqual((code, order["state"], order["error_code"], order["size_remaining"]),
                          (5, "EXECUTABLE", "cleared_row_bet_exists_worst_case", 2.0))
-        self.assertEqual(err.strip().splitlines()[-1], cleared_line(order))
+        self.assertEqual(err.strip().splitlines()[-1], cleared_line(order, " --continue-admission 1"))
         # A resting bet lapses at the off (the journal, never refreshed in live, still says EXECUTABLE): cancel.
         env = gw.build_live_gateway(self)
         env.journal.close()
@@ -902,13 +932,15 @@ class InProcessCliTests(unittest.TestCase):
         code, out, err = run_main(printed.split(), self.live_deps(env))          # run exactly as printed
         self.assertEqual(code, 0, err)
         self.assertEqual(env.exchange.orders[bet]["status"], "EXECUTION_COMPLETE")
+        self.typed_release(env)                                   # the probe's admission, now clean (design v9 §3.5)
         # An unknown place outcome: the advice's reconcile carries the flag and works as printed.
         env.exchange.place_handler = gw.raises(TransportError("connection_lost", phase="receive"))
         code, out, err = run_main(self.live_place(env) + ["--bet-angel-paused"], self.live_deps(env))
         self.assertEqual(code, 5, err)
-        self.assertTrue(err.strip().endswith("do not resend; run status or reconcile --mode live --bet-angel-paused"),
-                        err)
-        code, out, err = run_main("reconcile --mode live --bet-angel-paused".split(), self.live_deps(env))
+        self.assertTrue(err.strip().endswith("do not resend; run status or reconcile --mode live --bet-angel-paused "
+                                             "--continue-admission 2"), err)
+        printed = err.strip().rsplit("run status or ", 1)[1]
+        code, out, err = run_main(printed.split(), self.live_deps(env))
         self.assertNotIn("bet_angel_coexistence_unverified", err)
         # The paper default: a live bet id is unknown to the paper journal, and the line says why.
         code, out, err = run_main(["cancel", "--market", "1.1", "--bet-id", bet], self.live_deps(env))
@@ -938,15 +970,25 @@ class InProcessCliTests(unittest.TestCase):
         code, out, err = run_main(self.live_place(env), self.live_deps(env))
         first = json.loads(out)["orders"][0]
         self.assertEqual((code, first["state"]), (5, "UNKNOWN"))
-        code, out, err = run_main(["reconcile", "--mode", "live"], self.live_deps(env))
+        code, out, err = run_main(["reconcile", "--mode", "live", "--continue-admission", "1"], self.live_deps(env))
         result = json.loads(out)
         self.assertEqual((code, result["status"], [u["state"] for u in result["unresolved"]]),
                          (5, "reconciled", ["UNKNOWN"]))
         self.assertTrue(err.strip().splitlines()[-1].startswith(
             f"Betfair reconcile: {first['customer_order_ref']} in market 1.1 is still UNKNOWN ("), err)
-        self.assertIn("new orders stay blocked; do not resend; run reconcile --mode live again later", err)
+        self.assertIn("new orders stay blocked; do not resend; run reconcile --mode live --continue-admission 1 again "
+                      "later", err)
         exchange.read_failures.clear()
-        # The operator types the same order again; its open() finds the first one live: refused, nothing sent.
+        # Design v9 §3.4.7 item 1: the unknown place kept its generation, so the same order typed again is refused
+        # admission_held before anything else; nothing is sent.
+        code, out, err = run_main(self.live_place(env), self.live_deps(env))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("Betfair order refused: admission_held", err)
+        self.assertEqual(len(env.router.order_requests), 1)
+        # Fixture only: without a retained admission (a journal from before the rollout, say), the place's open()
+        # finds the first one live and refuses: earlier_unknown_resolved_at_open, nothing sent.
+        env.paths.admission_file.unlink()
+        env.paths.inhibit_file.unlink()
         code, out, err = run_main(self.live_place(env), self.live_deps(env))
         result = json.loads(out)
         self.assertEqual((code, result["decision"], result["refusal"]["rule"]),
@@ -960,10 +1002,11 @@ class InProcessCliTests(unittest.TestCase):
                           "you still want it"])
         self.assertEqual(len(exchange.orders), 1)
         self.assertEqual(len(env.router.order_requests), 1)
-        # Run again on purpose: nothing earlier is unresolved now, so it is sent.
+        # The refused place kept its own generation (the earlier bet rests): the next place is refused too.
         code, out, err = run_main(self.live_place(env), self.live_deps(env))
-        self.assertEqual((code, json.loads(out)["decision"]), (0, "accepted"), err)
-        self.assertEqual(len(exchange.orders), 2)
+        self.assertEqual(code, 2)
+        self.assertIn("admission held by manual:", err)
+        self.assertEqual(len(exchange.orders), 1)
 
     def test_accept_and_resume_banners_say_nothing_is_sent(self):
         """Round 4: reconcile --accept and live resume showed LIVE_BANNER ("this sends a real order") though they
@@ -976,8 +1019,8 @@ class InProcessCliTests(unittest.TestCase):
         lost = json.loads(out)["orders"][0]
         self.assertEqual((code, lost["state"]), (5, "ABSENT_UNCONFIRMED"))
         ref = lost["customer_order_ref"]
-        code, out, err = run_main(["reconcile", "--mode", "live", "--accept", ref, "--confirm-live", env.token],
-                                  self.live_deps(env))
+        code, out, err = run_main(["reconcile", "--mode", "live", "--accept", ref, "--confirm-live", env.token,
+                                   "--continue-admission", "1"], self.live_deps(env))
         self.assertEqual(code, 0, err)
         prompt = env.confirmer.prompts[-1]
         self.assertEqual(prompt["expected"], f"ACCEPT ABSENT {ref}")
@@ -1107,10 +1150,16 @@ class InProcessCliTests(unittest.TestCase):
         code, out, err = run_main(self.live_place(env) + ["--bet-angel-paused"], self.live_deps(env))
         self.assertEqual(code, 0, err)
         bet = json.loads(out)["orders"][0]["bet_id"]
-        settle = ["settle-market", "--market", "1.1", "--confirm-live", env.token]
-        # Bet Angel coexistence is unverified until T3: the flag is required, checked before anything else.
+        # The resting bet kept the place's recording admission (generation 1): a fresh settle-market is refused
+        # admission_held first, and the continuation the refusal names runs (design v9 §3.4.3).
+        code, out, err = run_main(["settle-market", "--market", "1.1", "--confirm-live", env.token,
+                                   "--bet-angel-paused"], self.live_deps(env))
+        self.assertEqual(code, 2)
+        self.assertIn("to continue it, rerun with --continue-admission 1", err)
+        settle = ["settle-market", "--market", "1.1", "--confirm-live", env.token, "--continue-admission", "1"]
+        # Bet Angel coexistence is unverified until T3: the flag is required, checked before the gateway.
         code, out, err = run_main(settle, self.live_deps(env))
-        self.assertEqual((code, err.strip(), out), (2, COEXISTENCE_REFUSAL, ""))
+        self.assertEqual((code, own(err), out), (2, COEXISTENCE_REFUSAL, ""))
         # The market is not settled on Betfair yet: our bet is still current (refused with advice, exit 2).
         env.exchange.market_status = "CLOSED"
         code, out, err = run_main(settle + ["--bet-angel-paused"], self.live_deps(env))
@@ -1153,16 +1202,17 @@ class InProcessCliTests(unittest.TestCase):
         lost = json.loads(out)["orders"][0]
         self.assertEqual((code, lost["state"]), (5, "ABSENT_UNCONFIRMED"))
         env.exchange.market_status = "CLOSED"
-        code, out, err = run_main(["reconcile", "--mode", "live"], self.live_deps(env))
+        code, out, err = run_main(["reconcile", "--mode", "live", "--continue-admission", "1"], self.live_deps(env))
         self.assertEqual(json.loads(out)["reconciled"][0]["final_state"], "ABSENT_UNCONFIRMED")      # still absent
         prompts = len(env.confirmer.prompts)
-        code, out, err = run_main(["settle-market", "--market", "1.1", "--confirm-live", env.token],
-                                  self.live_deps(env))
+        code, out, err = run_main(["settle-market", "--market", "1.1", "--confirm-live", env.token,
+                                   "--continue-admission", "1"], self.live_deps(env))
         self.assertEqual(code, 2)
         self.assertEqual(err.strip().splitlines()[-1],
                          "Betfair order refused: settle_market_unresolved_orders; resolve them first with reconcile "
-                         "--mode live; an order still ABSENT_UNCONFIRMED after that needs reconcile --mode live "
-                         "--accept <ref> --confirm-live TOKEN; nothing was settled")
+                         "--mode live --continue-admission 1; an order still ABSENT_UNCONFIRMED after that needs "
+                         "reconcile --mode live --continue-admission 1 --accept <ref> --confirm-live TOKEN; nothing was "
+                         "settled")
         self.assertEqual(json.loads(out)["detail"], {"refs": [lost["customer_order_ref"]]})
         self.assertEqual(len(env.confirmer.prompts), prompts)          # refused before anything is typed
 

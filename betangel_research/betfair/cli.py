@@ -84,9 +84,9 @@ RESOLVED_AT_OPEN_RULE = "earlier_unknown_resolved_at_open"
 PAUSED_FLAG = " --bet-angel-paused"
 # Operator advice printed after a settle-market refusal (amendment A3 section 3.1).
 SETTLE_ADVICE = {
-    "settle_market_unresolved_orders": ("resolve them first with reconcile --mode live{flag}; an order still "
-                                        "ABSENT_UNCONFIRMED after that needs reconcile --mode live{flag} --accept "
-                                        "<ref> --confirm-live TOKEN; nothing was settled"),
+    "settle_market_unresolved_orders": ("resolve them first with reconcile --mode live{flag}{cont}; an order "
+                                        "still ABSENT_UNCONFIRMED after that needs reconcile --mode live{flag}{cont} "
+                                        "--accept <ref> --confirm-live TOKEN; nothing was settled"),
     "settle_market_journal_changed": "the journal changed after you typed; nothing was settled; run the command again",
     "settle_market_book_read_failed": "the market could not be read; nothing was settled; try again",
     "settle_market_book_missing": ("Betfair no longer returns this market; see docs: its worst case stays counted; "
@@ -136,9 +136,11 @@ HELP = {
                  "never lowers counted exposure and settles nothing (use settle-market); --accept needs live "
                  "arming and typing at a terminal",
     "settle-market": "Live only: settle one CLOSED market by hand after checking the website; books each order's "
-                     "worst case; needs --confirm-live TOKEN and --bet-angel-paused until T3",
+                     "worst case; needs --confirm-live TOKEN and --bet-angel-paused until T3; takes recording "
+                     "ownership first (--continue-admission N continues a retained admission)",
     "journal": "Offline view and hash-chain check of the order journal",
-    "status": "Offline summary: kill file, HALT, unresolved orders, rates, exposure, token inputs",
+    "status": "Offline summary: kill file, HALT, unresolved orders, rates, exposure, token inputs, and the recording "
+              "state (INHIBIT, ADMISSION, owner lock, armed session, recorder pid, live clean state) as codes",
     "kill": "Engage the global kill file and HALT, then cancel our own unmatched bets (live) without waiting for "
             "any lock, checking again for about 35 s; matched bets cannot be undone; exit 3 means cancel open bets on "
             "the Betfair website or in Bet Angel now; --scope account --confirm-account-wide also cancels Bet "
@@ -158,7 +160,17 @@ HELP = {
                           "GAP RESOLVED; never acknowledges; sends no order",
     "pilot-capture": "Live only: Yu's read-only pilot capture (C, the CLOSED book, L) after a session; needs a "
                      "terminal, never scheduled; --continue-admission N continues a retained admission",
+    "recording-release": "Live state only: Yu's typed recording-release (design v9 §3.5). Shows the ADMISSION or a "
+                         "stray INHIBIT as codes, then after RELEASE RECORDING GENERATION <N> (or RELEASE RECORDING "
+                         "INHIBIT) releases it only when the live journal and login ledger are clean and no pilot "
+                         "session is armed; needs --confirm-live TOKEN and a terminal; no login, no network, no "
+                         "credential read",
 }
+# Recording ownership for the manual live commands (design v9 §3.4.1): owner manual:<pid>, these purposes.
+MANUAL_PURPOSES = {"place": "manual place", "live-probe": "manual live-probe", "reconcile": "manual reconcile",
+                   "reconcile-accept": "manual reconcile accept", "settle-market": "manual settle-market"}
+CONTINUABLE = frozenset({"reconcile", "reconcile-accept", "settle-market"})
+RECORDING_PREFIX = "Betfair recording: "
 PILOT_SETTLE_ADVICE = "wait until pilot-run has exited; after a crash run pilot-end-session first"
 RECORDINGS_INDEX_HELP = ("Offline, read-only structural index of one UTC day's recordings; the per-market index stays "
                          "in the state root and stdout carries counts only")
@@ -253,6 +265,10 @@ class _Context:
         self.keychain_runner = runner
         self.warnings = []
         self.signals = None             # the _SignalGuard of the running gateway command (_gateway)
+        # " --continue-admission N" once _manual_owned holds its ticket N (design v9 §3.4.6): set only from that
+        # ticket, never from disk, and added only to the reconcile and settle-market commands a place, live-probe,
+        # reconcile or settle-market prints. cancel and kill never set it, so their lines stay as they are.
+        self.continue_flag = ""
 
     def order_sent(self):
         """True once the running command's gateway began an order request (its on_send hook ran)."""
@@ -422,15 +438,19 @@ def build_parser():
     replay.add_argument("--out", required=True)
     reconcile = add("reconcile")
     reconcile.add_argument("--accept")
+    reconcile.add_argument("--continue-admission", dest="continue_admission", type=int)
     _add_order_flags(reconcile)
     settle = add("settle-market")
     settle.add_argument("--market", required=True)
+    settle.add_argument("--continue-admission", dest="continue_admission", type=int)
     _add_order_flags(settle, live_only=True)          # live only: no --mode flag at all
     journal = add("journal")
     journal.add_argument("--verify", action="store_true")
     journal.add_argument("--state")
     journal.add_argument("--mode", choices=["paper", "live"], default="paper")
     add("status")
+    release_cmd = add("recording-release")
+    release_cmd.add_argument("--confirm-live", dest="confirm_live")
     kill = add("kill")
     kill.add_argument("--scope", choices=["own", "account"], default="own")
     kill.add_argument("--confirm-account-wide", action="store_true", dest="confirm_account_wide")
@@ -691,39 +711,39 @@ def _kill_journal(paths, clock):
         return UnreadableJournal("live")
 
 
-def _sent_advice(flag=""):
-    """What to do after a place whose outcome is unknown."""
-    return SENT_ADVICE + flag
+def _sent_advice(flag="", cont=""):
+    """What to do after a place whose outcome is unknown (cont: the continuation flag of a retained generation)."""
+    return SENT_ADVICE + flag + cont
 
 
-def _withheld_line(view, flag=""):
+def _withheld_line(view, flag="", cont=""):
     """An order Betfair shows (partly) cancelled, lapsed or voided while the journal keeps its worst case (D3)."""
     return (f"Betfair order {view['customer_order_ref']} bet {view['bet_id'] or 'unknown'}: Betfair shows part or all "
             f"of it cancelled, lapsed or voided ({WITHHELD_CODE}); it stays counted at worst case and shows as "
-            f"EXECUTABLE until you settle its market with settle-market{flag} after the market closes; status and "
-            f"reconcile change nothing; cancel it again only if orders-current{flag} still shows an unmatched part")
+            f"EXECUTABLE until you settle its market with settle-market{flag}{cont} after the market closes; status "
+            f"and reconcile change nothing; cancel it again only if orders-current{flag} still shows an unmatched part")
 
 
-def _cleared_line(view, flag=""):
+def _cleared_line(view, flag="", cont=""):
     """An order whose bet Betfair lists only among its cleared orders (reconcile's live evidence rule, D3): the
     bet exists but is not current, and the journal keeps its worst case until settle-market."""
     return (f"Betfair order {view['customer_order_ref']} bet {view['bet_id'] or 'unknown'}: Betfair lists this bet "
             f"only among its cleared orders (lapsed, cancelled, voided or settled), not as a current bet "
             f"({CLEARED_CODE}); it is not resting; it stays counted at worst case and shows as EXECUTABLE until you "
-            f"settle its market with settle-market{flag} after the market closes; status and reconcile change "
+            f"settle its market with settle-market{flag}{cont} after the market closes; status and reconcile change "
             f"nothing; cancel it again only if orders-current{flag} still shows an unmatched part")
 
 
-def _evidence_line(view, flag=""):
+def _evidence_line(view, flag="", cont=""):
     """The withheld or cleared-row line for an EXECUTABLE order carrying one of those codes, else None."""
     if view["state"] == "EXECUTABLE" and view["error_code"] == WITHHELD_CODE:
-        return _withheld_line(view, flag)
+        return _withheld_line(view, flag, cont)
     if view["state"] == "EXECUTABLE" and view["error_code"] == CLEARED_CODE:
-        return _cleared_line(view, flag)
+        return _cleared_line(view, flag, cont)
     return None
 
 
-def _outcome_line(view, send_exception=None, flag=""):
+def _outcome_line(view, send_exception=None, flag="", cont=""):
     """One stderr line for an order that did not end as asked (X5). send_exception: the place result's
     journaled exception codes, which say why a FAILED order was not sent."""
     ref, state, code = view["customer_order_ref"], view["state"], view["error_code"] or "none"
@@ -735,19 +755,19 @@ def _outcome_line(view, send_exception=None, flag=""):
                     f"not place again until the kill has been dealt with")
         return (f"Betfair order not live: {ref} FAILED {code}{why}; nothing is live for this order; a fresh place is "
                 f"safe")
-    evidence = _evidence_line(view, flag)
+    evidence = _evidence_line(view, flag, cont)
     if evidence is not None:
         return evidence
-    return f"Betfair order sent; outcome not as requested: {ref} {state} {code}; {_sent_advice(flag)}"
+    return f"Betfair order sent; outcome not as requested: {ref} {state} {code}; {_sent_advice(flag, cont)}"
 
 
-def _cancel_line(view, flag=""):
+def _cancel_line(view, flag="", cont=""):
     """One stderr line for a cancel target that did not end as asked. A cancel may always be sent again (it
     can only take our own bet off), so it never says "do not resend"; a bet still live says so."""
     from .schemas import UNRESOLVED_STATES
     ref, state, code = view["customer_order_ref"], view["state"], view["error_code"]
     bet = view["bet_id"] or "unknown"
-    evidence = _evidence_line(view, flag)
+    evidence = _evidence_line(view, flag, cont)
     if evidence is not None:
         return evidence
     if state == "EXECUTABLE" and view["size_remaining"] > 0:
@@ -756,17 +776,17 @@ def _cancel_line(view, flag=""):
                 f"unmatched{why}; run cancel again now, or cancel it on the Betfair website or in Bet Angel")
     if state in UNRESOLVED_STATES:
         return (f"Betfair cancel outcome unknown: {ref} bet {bet} {state} {code or 'none'}; it may still be live: "
-                f"run reconcile --mode live{flag}, then cancel it again if it is still live, or cancel it on the "
+                f"run reconcile --mode live{flag}{cont}, then cancel it again if it is still live, or cancel it on the "
                 f"Betfair website or in Bet Angel")
     return (f"Betfair cancel outcome not as requested: {ref} bet {bet} {state} {code or 'none'}; cancel it again only "
             f"if orders-current{flag} still shows an unmatched part")
 
 
-def _place_problems(views, send_exception=None, flag=""):
+def _place_problems(views, send_exception=None, flag="", cont=""):
     """X5 for place: an order FAILED, UNKNOWN or ABSENT_UNCONFIRMED (any unresolved state), or one Betfair
     already shows reduced (withheld) or lists only among its cleared orders -> its lines."""
     from .schemas import UNRESOLVED_STATES
-    return [_outcome_line(v, send_exception, flag) for v in views
+    return [_outcome_line(v, send_exception, flag, cont) for v in views
             if v["state"] == "FAILED" or v["state"] in UNRESOLVED_STATES or v["error_code"] in (WITHHELD_CODE,
                                                                                                CLEARED_CODE)]
 
@@ -786,7 +806,7 @@ def _cancel_notes(views):
             for v in views if v["state"] == "EXECUTION_COMPLETE" and v["size_matched"] > 0]
 
 
-def _stopped_line(what, command, flag, *, result_printed):
+def _stopped_line(what, command, flag, *, result_printed, cont=""):
     """The line for a command stopped (a signal, or an unexpected exception) after its gateway began an order
     request. Only a place is told not to resend; a cancel may always be sent again (the bet may still be live)."""
     shown = "; result above" if result_printed else ""
@@ -800,7 +820,7 @@ def _stopped_line(what, command, flag, *, result_printed):
                 f"website or in Bet Angel")
     if result_printed:
         return f"Betfair stopped after an order request was sent ({what}); result above; do not resend"
-    return f"Betfair stopped after an order request was sent ({what}); {_sent_advice(flag)}"
+    return f"Betfair stopped after an order request was sent ({what}); {_sent_advice(flag, cont)}"
 
 
 def _exit_after_send(ctx, lines):
@@ -845,7 +865,8 @@ def _order_result(ctx, result, *, action):
         return 0                                  # paper exit codes are unchanged (amendment A3, A9)
     views = result.get("orders") or []
     if action == "place":
-        return _exit_after_send(ctx, _place_problems(views, result.get("send_exception"), ctx.paused_flag))
+        return _exit_after_send(ctx, _place_problems(views, result.get("send_exception"), ctx.paused_flag,
+                                                     ctx.continue_flag))
     for line in _cancel_notes(views):
         ctx.err.write(line + "\n")
     return _exit_after_send(ctx, _cancel_problems(views, ctx.paused_flag))
@@ -1078,8 +1099,48 @@ def cmd_status(args, ctx):
     except ConfigError as exc:
         out["config"] = {"valid": False, "error": _safe_text(exc)}
     out["journals"] = {mode: _journal_summary(paths.journal_path(mode), mode, ctx.clock) for mode in ("paper", "live")}
+    out["recording"] = _recording_status(paths, ctx)
     ctx.print_json(out)
     return 0
+
+
+def _recording_status(paths, ctx):
+    """status's recording block (design v9 §3.6), codes only and read only: no lock held across it, nothing written.
+    owner_lock is owner_lock_state's microsecond probe (status never holds the lock); recorder_lock_held is never
+    called (it takes .recorder.lock and could collide with a starting recorder); live_state folds the live journal
+    read-only (sqlite mode=ro)."""
+    from . import admission, pilot_run
+    from .errors import AdmissionRefused
+    block = {}
+    try:
+        status = admission.admission_status(paths)
+    except AdmissionRefused:
+        status = None
+    if status is None:
+        try:
+            os.lstat(paths.inhibit_file)
+            block["inhibit"] = "present"
+        except FileNotFoundError:
+            block["inhibit"] = "absent"
+        except OSError:
+            block["inhibit"] = "admission_state_unknown"
+        block["admission"] = "admission_state_unknown"
+        block["recorder_pid"] = "admission_state_unknown"
+    else:
+        current = status["admission"]
+        block["inhibit"] = "present" if status["inhibit"] else "absent"
+        block["admission"] = ("none" if current is None else {"owner": current["owner"],
+                                                               "generation": current["generation"],
+                                                               "state": current["state"]})
+        pid = status["recorder_pid"]
+        block["recorder_pid"] = ({"present": False} if pid is None else
+                                 {"present": True, "invocation_id": pid["invocation_id"]})
+    block["owner_lock"] = admission.owner_lock_state(paths, clock=ctx.clock)
+    armed = pilot_run.armed_session_check(paths)
+    block["armed_session"] = armed[0] if armed else "absent"
+    problems = admission.live_state_problems(paths, clock=ctx.clock)
+    block["live_state"] = problems or "clean"
+    return block
 
 
 # --- read commands -----------------------------------------------------------------------------
@@ -1444,10 +1505,15 @@ def cmd_place(args, ctx):
     def confirm(gateway):
         gateway.preconfirm("place", market_id=args.market, instructions=[instruction])
 
-    with _gateway(args, ctx, command="place", mode=args.mode, confirm=confirm) as (gateway, config, paths):
-        result = gateway.place(args.market, [instruction], book=book, source="cli_manual",
-                               confirm_token=args.confirm_live)
-    return _order_result(ctx, result, action="place")
+    def body():
+        with _gateway(args, ctx, command="place", mode=args.mode, confirm=confirm) as (gateway, config, paths):
+            result = gateway.place(args.market, [instruction], book=book, source="cli_manual",
+                                   confirm_token=args.confirm_live)
+        return _order_result(ctx, result, action="place")
+
+    if args.mode != "live":
+        return body()                             # paper: no ownership (design v9 §3.4.1)
+    return _manual_owned(args, ctx, "place", continue_generation=None, cleanup=False, body=body)
 
 
 def cmd_cancel(args, ctx):
@@ -1481,31 +1547,37 @@ def cmd_replace(args, ctx):
 
 
 def cmd_live_probe(args, ctx):
-    def confirm(gateway):
-        gateway.preconfirm("live-probe", market_id=args.market, selection_id=args.selection)
+    """Live only: the one-pound probe, under recording ownership (design v9 §3.4; fresh only, owner manual:<pid>)."""
+    def body():
+        def confirm(gateway):
+            gateway.preconfirm("live-probe", market_id=args.market, selection_id=args.selection)
 
-    with _gateway(args, ctx, command="live-probe", mode="live", confirm=confirm) as (gateway, config, paths):
-        result = gateway.probe(args.market, args.selection, confirm_token=args.confirm_live)
-    ctx.print_json(result)
-    flag = ctx.paused_flag
-    if result["place"]["decision"] != "accepted":
-        raise _refused(result["place"], flag)
-    placed = result["place"]["orders"]
-    lines = _place_problems(placed, result["place"].get("send_exception"), flag)
-    cancelled = (result.get("cancel") or {}).get("orders") or []
-    final = cancelled[0] if cancelled else (placed[0] if placed else None)
-    from .schemas import UNRESOLVED_STATES
-    if final is not None and (final["state"] in UNRESOLVED_STATES or final["size_remaining"] > 0):
-        # The probe bet was not taken off (R3#15): name it and say how to cancel it.
-        lines.append(_cancel_line(final, flag) if cancelled else _outcome_line(final, flag=flag))
-        bet = final["bet_id"]
-        lines.append(f"Betfair live-probe: probe bet {bet} (LAY 1.00 @ 1.01) may still be live; cancel it now: cancel "
-                     f"--mode live{flag} --market {args.market} --bet-id {bet}, or on the Betfair website or in Bet "
-                     f"Angel"
-                     if bet else
-                     f"Betfair live-probe: probe order {final['customer_order_ref']} may still be live and its betId "
-                     f"is unknown; run reconcile --mode live{flag} and check the Betfair website or Bet Angel")
-    return _exit_after_send(ctx, lines)
+        with _gateway(args, ctx, command="live-probe", mode="live", confirm=confirm) as (gateway, config, paths):
+            result = gateway.probe(args.market, args.selection, confirm_token=args.confirm_live)
+        ctx.print_json(result)
+        flag, cont = ctx.paused_flag, ctx.continue_flag
+        if result["place"]["decision"] != "accepted":
+            raise _refused(result["place"], flag)
+        placed = result["place"]["orders"]
+        lines = _place_problems(placed, result["place"].get("send_exception"), flag, cont)
+        cancelled = (result.get("cancel") or {}).get("orders") or []
+        final = cancelled[0] if cancelled else (placed[0] if placed else None)
+        from .schemas import UNRESOLVED_STATES
+        if final is not None and (final["state"] in UNRESOLVED_STATES or final["size_remaining"] > 0):
+            # The probe bet was not taken off (R3#15): name it and say how to cancel it.
+            lines.append(_cancel_line(final, flag, cont) if cancelled
+                         else _outcome_line(final, flag=flag, cont=cont))
+            bet = final["bet_id"]
+            lines.append(f"Betfair live-probe: probe bet {bet} (LAY 1.00 @ 1.01) may still be live; cancel it now: "
+                         f"cancel --mode live{flag} --market {args.market} --bet-id {bet}, or on the Betfair website "
+                         f"or in Bet Angel"
+                         if bet else
+                         f"Betfair live-probe: probe order {final['customer_order_ref']} may still be live and its "
+                         f"betId is unknown; run reconcile --mode live{flag}{cont} and check the Betfair website or "
+                         f"Bet Angel")
+        return _exit_after_send(ctx, lines)
+
+    return _manual_owned(args, ctx, "live-probe", continue_generation=None, cleanup=False, body=body)
 
 
 def cmd_paper_step(args, ctx):
@@ -1528,88 +1600,282 @@ def cmd_reconcile(args, ctx):
         if args.accept:
             gateway.preconfirm("reconcile-accept", accept_ref=args.accept)
 
-    with _gateway(args, ctx, command=command, mode=args.mode, confirm=confirm) as (gateway, config, paths):
-        result = gateway.reconcile(accept_ref=args.accept, confirm_token=args.confirm_live)
-    ctx.print_json(result)
-    lines = ([_unresolved_line(item, ctx.paused_flag) for item in result.get("unresolved") or ()]
-             if result.get("mode") == "live" else [])          # paper exit codes are unchanged (A9)
-    if lines:
-        # Live: an order whose outcome is still not known is not a success: exit 5, one line per order (X5).
-        raise _Done(EXIT_SENT_NOT_AS_REQUESTED, "\n".join(lines))
-    return 0
+    def body():
+        with _gateway(args, ctx, command=command, mode=args.mode, confirm=confirm) as (gateway, config, paths):
+            result = gateway.reconcile(accept_ref=args.accept, confirm_token=args.confirm_live)
+        ctx.print_json(result)
+        lines = ([_unresolved_line(item, ctx.paused_flag, ctx.continue_flag) for item in result.get("unresolved") or ()]
+                 if result.get("mode") == "live" else [])          # paper exit codes are unchanged (A9)
+        if lines:
+            # Live: an order whose outcome is still not known is not a success: exit 5, one line per order (X5).
+            raise _Done(EXIT_SENT_NOT_AS_REQUESTED, "\n".join(lines))
+        return 0
+
+    if args.mode != "live":
+        if args.continue_admission is not None:
+            raise _Done(2, "Betfair input error: continue_admission_needs_mode_live; --continue-admission continues a "
+                           "live recording admission")
+        return body()                             # paper: no ownership (design v9 §3.4.1)
+    # A restricted continuation (cleanup=True: the cleanup that makes release possible), or fresh with no ADMISSION.
+    return _manual_owned(args, ctx, command, continue_generation=args.continue_admission, cleanup=True, body=body)
 
 
-def _unresolved_line(item, flag=""):
+def _unresolved_line(item, flag="", cont=""):
     """One line for an order a live reconcile left UNKNOWN or ABSENT_UNCONFIRMED."""
     ref, state = item["customer_order_ref"], item["state"]
     head = (f"Betfair reconcile: {ref} in market {item['market_id']} is still {state} "
             f"({item['error_code'] or 'none'}); new orders stay blocked; do not resend")
     if state == "ABSENT_UNCONFIRMED":
-        return (f"{head}; if the Betfair website and Bet Angel show no such bet, run reconcile --mode live{flag} "
+        return (f"{head}; if the Betfair website and Bet Angel show no such bet, run reconcile --mode live{flag}{cont} "
                 f"--accept {ref} --confirm-live TOKEN")
-    return f"{head}; run reconcile --mode live{flag} again later, and check the Betfair website or Bet Angel"
+    return f"{head}; run reconcile --mode live{flag}{cont} again later, and check the Betfair website or Bet Angel"
 
 
-def _settle_during_pilot_session(args, ctx):
-    """P1-08 §4.13, before the gateway: only when the live journal holds a pilot session_start, True when
-    pilot_run.pilot_session_live says a second process must not settle (no ownership here, ticket None). A journal
-    that exists but cannot be read (P108-C4, OWN-1): True when the config names orders.pilot, or when the owner lock
-    is held and ADMISSION names a pilot-session owner or cannot be read (pilot-run may still own the state); else
-    False, so a non-pilot settle meets the gateway's own journal error exactly as before P1-08. Without orders.pilot an
-    owner-lock state that cannot be read counts as free (P1-08 residual 3; refute wf_c5e7a760)."""
-    from . import admission, pilot_gate, pilot_run
+def _settle_during_pilot_session(args, ctx, ticket):
+    """P1-08 §4.13, run only after this process took ownership, fresh or a continuation (design v9 §3.4.4): True when
+    the pilot session is live, so a settle must not run. With no live journal (lstat ENOENT) there is no session. A
+    journal that cannot be read refuses when the config names orders.pilot, else falls through to the gateway's own
+    journal error exactly as before P1-08 (NP-1). Otherwise pilot_run.pilot_session_live with the ticket: the fold,
+    or the UNTIL window without orders.pilot; the owner lock term is dropped (this process holds the lock, so no
+    pilot-run is alive), and the owner lock is never probed here."""
+    from . import pilot_gate, pilot_run
     from .config import pilot_enabled
-    from .errors import AdmissionRefused
     paths = _paths(args, ctx)
     path = paths.journal_path("live")
-    if not path.exists():
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         return False
-    read = pilot_run.pilot_events_after(path, 0)
+    except OSError:
+        read = {"readable": False}
+    else:
+        read = pilot_run.pilot_events_after(path, 0)
     if not read["readable"]:
-        if pilot_enabled(_config(args, paths)):
-            return True
-        if admission.owner_lock_state(paths, clock=ctx.clock) != "held":
-            return False
-        try:
-            current = admission.admission_status(paths)["admission"]
-        except AdmissionRefused:
-            return True
-        return current is not None and current["owner"].startswith("pilot-session:")
+        return pilot_enabled(_config(args, paths))
     if pilot_gate.latest_note(read["events"], "session_start") is None:
         return False
     config = _config(args, paths)
     injected = ctx.deps.get("pilot_context")
-    return pilot_run.pilot_session_live(paths, config, read["events"], ctx.clock.time_ns(), ticket=None,
+    return pilot_run.pilot_session_live(paths, config, read["events"], ctx.clock.time_ns(), ticket=ticket,
                                         contract_reader=injected.read_contract if injected is not None else None,
                                         clock=ctx.clock)
 
 
 def cmd_settle_market(args, ctx):
-    """Live only: the operator settles one CLOSED market by hand (amendment A3, D3). The banner and the
-    typed line SETTLE MARKET <M> come before the lock; a settle_market_* refusal prints its JSON and the
-    advice, exit 2, and nothing is settled. While an RS-19 pilot session is live (P1-08 §4.13) it refuses
-    pilot_session_armed, here before the gateway and again under its lock."""
-    if _settle_during_pilot_session(args, ctx):
-        raise _Done(2, f"Betfair order refused: pilot_session_armed; {PILOT_SETTLE_ADVICE}")
-
+    """Live only: the operator settles one CLOSED market by hand (amendment A3, D3). It takes recording ownership
+    first, fresh or a --continue-admission N continuation with cleanup False (step 8 runs), then the pilot check with
+    its ticket (P1-08 §4.13; design v9 §3.4.4): while an RS-19 pilot session is live it refuses pilot_session_armed,
+    there and again under the gateway's lock. The banner and the typed line SETTLE MARKET <M> come before the gateway
+    lock; a settle_market_* refusal prints its JSON and the advice, exit 2, and nothing is settled."""
     def confirm(gateway):
         gateway.preconfirm("settle-market", market_id=args.market)
 
+    def body(ticket):
+        if _settle_during_pilot_session(args, ctx, ticket):
+            raise _Done(2, f"Betfair order refused: pilot_session_armed; {PILOT_SETTLE_ADVICE}")
+        try:
+            with _gateway(args, ctx, command="settle-market", mode="live", confirm=confirm) as (gateway, config,
+                                                                                                 paths):
+                result = gateway.settle_market(args.market, confirm_token=args.confirm_live)
+        except OrderRefused as exc:
+            if exc.rule == "pilot_session_armed":
+                raise _Done(2, f"Betfair order refused: pilot_session_armed; {PILOT_SETTLE_ADVICE}") from None
+            if not exc.rule.startswith("settle_market_"):
+                raise
+            ctx.print_json({"mode": "live", "status": "refused", "market_id": args.market, "rule": exc.rule,
+                            "detail": exc.detail})
+            advice = SETTLE_ADVICE.get(exc.rule)
+            raise _Done(2, f"Betfair order refused: {exc.rule}"
+                        + (f"; {advice.format(flag=ctx.paused_flag, cont=ctx.continue_flag)}" if advice else ""))
+        ctx.print_json(result)
+        return 0
+
+    return _manual_owned(args, ctx, "settle-market", continue_generation=args.continue_admission, cleanup=False,
+                         body=body, pass_ticket=True)
+
+
+# --- recording ownership for the manual live commands (design v9 §3.4) ----------------------------------------------
+
+
+def _clean_end(ctx, exc=None):
+    """§3.4.5: exit 0, or a refusal (_Done 2, NotArmed, OrderRefused) with no order request begun; never with a
+    signal pending (the gateway's finally completed, or the exception would not be one of these)."""
+    if ctx.signals is not None and ctx.signals.pending:
+        return False
+    if exc is None:
+        return True
+    if isinstance(exc, _Done):
+        return exc.code == 2 and not ctx.order_sent()
+    return isinstance(exc, OrderRefused) and not ctx.order_sent()
+
+
+def _refusal_text(exc):
+    """The line main() prints for this refusal, unchanged (release lines are added after it)."""
+    if isinstance(exc, _Done):
+        return exc.message
+    return f"Betfair order refused: {exc.rule}"
+
+
+def _ownership_refusal(exc, command, paths, ctx):
+    """§3.4.6: an OwnershipRefused as its own lines (never "Betfair input error"): the code, owner, generation and
+    state, every problem code (the login-reset line first for a login_* code); exit 2, nothing admitted or drained."""
+    from . import pilot_run
+    lines = [f"Betfair order refused: {exc.code}"]
+    if any(str(code).startswith("login_") for code in exc.problems):
+        lines.append(pilot_run.LOGIN_RESET_LINE)
+    if exc.code == "owner_live":
+        lines += pilot_run.owner_live_lines(paths)
+    elif exc.owner is not None or exc.generation is not None:
+        lines.append(f"admission held by {exc.owner}, generation {exc.generation}, state {exc.state or 'unknown'}")
+        if exc.code == "admission_held" and command in CONTINUABLE and exc.state == "admitted":
+            lines.append(f"to continue it, rerun with --continue-admission {exc.generation}")
+        elif exc.state == "pending":
+            lines.append(f"its admit never finished; a pending generation is cleared only by Yu's typed "
+                         f"recording-release (generation {exc.generation})")
+    elif exc.code == "continuation_generation_mismatch":
+        lines.append("no ADMISSION is held; run the command without --continue-admission")
+    if len(exc.problems) > 1 or exc.problems[0] != exc.code:
+        lines.append("problems: " + ", ".join(exc.problems))
+    return _Done(2, "\n".join(lines))
+
+
+def _abnormal_recording_lines(ctx, paths):
+    """§3.4.6: after an interrupt, exception or signal between the owner lock and the end. admission_status (no lock)
+    and live_state_problems (a read-only fold) choose one line; it never promises a release that would refuse."""
+    from . import admission
+    from .errors import AdmissionRefused
     try:
-        with _gateway(args, ctx, command="settle-market", mode="live", confirm=confirm) as (gateway, config, paths):
-            result = gateway.settle_market(args.market, confirm_token=args.confirm_live)
-    except OrderRefused as exc:
-        if exc.rule == "pilot_session_armed":
-            raise _Done(2, f"Betfair order refused: pilot_session_armed; {PILOT_SETTLE_ADVICE}") from None
-        if not exc.rule.startswith("settle_market_"):
+        current = admission.admission_status(paths)["admission"]
+    except AdmissionRefused:
+        return ["recording state unknown; run status before any release"]
+    if current is None:
+        return ["recording not held by this command"]
+    generation, state = current["generation"], current["state"]
+    problems = admission.live_state_problems(paths, clock=ctx.clock)
+    if not problems:
+        return [f"recording stays off until Yu's typed recording-release (generation {generation}, state {state})"]
+    codes = ", ".join(problems)
+    if state == "pending":
+        return [f"recording stays off; recording-release will refuse while {codes}; no reviewed command continues "
+                f"pending generation {generation}; stop for review (Yu, with Astra's review)"]
+    flag = ctx.paused_flag
+    return [f"recording stays off; recording-release will refuse while {codes}; run reconcile --mode live{flag} "
+            f"--continue-admission {generation} (or settle-market{flag} --continue-admission {generation} once the "
+            f"market closes), then Yu's typed recording-release (generation {generation})"]
+
+
+def _manual_owned(args, ctx, command, *, continue_generation, cleanup, body, pass_ticket=False):
+    """One manual live command under the P1-08 ownership lifecycle (design v9 §3.4): the owner lock and the admission
+    (drain and step 8) first, then body (the command's whole _gateway block and its result printing), then, only after
+    a clean end (§3.4.5), release_own, whose result is printed with release_lines; the owner lock is let go last. The
+    owner is manual:<pid>; place and live-probe are fresh only, reconcile and settle-market may continue a retained
+    generation. _gateway and _live_gateway are untouched (kill and cancel share them). The exit code is the command's.
+    """
+    from . import admission, pilot_run
+    from .errors import AdmissionRefused
+    paths = _paths(args, ctx)
+    config = _config(args, paths)
+    ctx.paused_flag = _paused_flag(config)
+    processes = ctx.deps.get("processes") or admission.SYSTEM_PROCESSES
+    owner = f"manual:{processes.current_pid()}"
+    purpose = None if continue_generation is not None else MANUAL_PURPOSES[command]
+    state = {"ticket": None, "done": False}
+
+    def released(ticket):
+        state["done"] = True
+        result = admission.release_own(ticket, paths, config=config, clock=ctx.clock)
+        return pilot_run.release_lines(result, ctx.paused_flag)
+
+    try:
+        with admission.live_ownership(paths, owner=owner, purpose=purpose, config=config,
+                                      continue_generation=continue_generation, cleanup=cleanup, clock=ctx.clock,
+                                      processes=processes) as ticket:
+            state["ticket"] = ticket
+            ctx.continue_flag = f" --continue-admission {ticket.generation}"
+            try:
+                code = body(ticket) if pass_ticket else body()
+            except (_Done, OrderRefused) as exc:
+                if not _clean_end(ctx, exc):
+                    raise
+                lines = [RECORDING_PREFIX + line for line in released(ticket)] + [_refusal_text(exc)]
+                raise _Done(2, "\n".join(lines)) from None
+            if code == 0 and _clean_end(ctx):
+                lines = released(ticket)
+            else:
+                state["done"] = True                  # never released: the command's own exit stands
+                lines = _abnormal_recording_lines(ctx, paths)
+            for line in lines:
+                ctx.err.write(RECORDING_PREFIX + line + "\n")
+            ctx.err.flush()
+            return code
+    except BaseException as exc:
+        if isinstance(exc, admission.OwnershipRefused):
+            raise _ownership_refusal(exc, command, paths, ctx) from None
+        if isinstance(exc, AdmissionRefused) and state["ticket"] is None:
+            lines = pilot_run.admit_refusal_lines(exc, paths)
+            if exc.outcome == "login_ledger_not_clean" and continue_generation is not None:
+                name = "reconcile" if command == "reconcile-accept" else command
+                lines.append(f"Yu decides on login-reset; rerun {name} --continue-admission {continue_generation} "
+                             f"after it")
+            raise _Done(2, "\n".join([f"Betfair order refused: {exc.outcome}"] + lines)) from None
+        if state["done"]:
             raise
-        ctx.print_json({"mode": "live", "status": "refused", "market_id": args.market, "rule": exc.rule,
-                        "detail": exc.detail})
-        advice = SETTLE_ADVICE.get(exc.rule)
-        raise _Done(2, f"Betfair order refused: {exc.rule}"
-                    + (f"; {advice.format(flag=ctx.paused_flag)}" if advice else ""))
-    ctx.print_json(result)
-    return 0
+        state["done"] = True
+        lines = [RECORDING_PREFIX + line for line in _abnormal_recording_lines(ctx, paths)]
+        if isinstance(exc, _Done):
+            raise _Done(exc.code, "\n".join(lines + [exc.message])) from None
+        for line in lines:
+            ctx.err.write(line + "\n")
+        raise
+
+
+# --- Yu's typed recording-release (design v9 §3.5) ------------------------------------------------------------
+
+
+def cmd_recording_release(args, ctx):
+    """recording-release: static arming (A2, A11, A13) before the owner lock; then admission.recording_release with
+    the read-only checks (the armed-session file; no pilot session armed in the lock-free fold). Prints codes only:
+    the login-reset line first for a login_* code, then released generation N, released inhibit, nothing_to_release
+    or release_refused with its codes. Exit 0 on release or nothing to release, 2 on a refusal."""
+    from . import admission, pilot_run
+    paths = _paths(args, ctx)
+    config = _config(args, paths)
+    confirmer = ctx.live_confirmer()
+    _typed_state_arming(args, ctx, paths, config, "recording-release", confirmer)
+    injected = ctx.deps.get("pilot_context")
+    reader = injected.read_contract if injected is not None else None
+
+    def no_pilot_session_armed(checked_paths):
+        return pilot_run.pilot_session_live_fold(checked_paths, config, now_ns=ctx.clock.time_ns(),
+                                                 contract_reader=reader)
+
+    try:
+        result = admission.recording_release(
+            paths, config=config, show=ctx.print_json,
+            confirm=lambda line, banner: confirmer.confirm_line(line, banner=banner),
+            extra_checks=[pilot_run.armed_session_check, no_pilot_session_armed], clock=ctx.clock)
+    except admission.OwnershipRefused as exc:
+        lines = [f"Betfair order refused: {exc.code}"]
+        if exc.code == "owner_live":
+            lines += pilot_run.owner_live_lines(paths)
+        raise _Done(2, "\n".join(lines)) from None
+    outcome, generation = result["outcome"], result["generation"]
+    if outcome == "nothing_to_release":
+        ctx.print_json({"status": "nothing_to_release"})
+        return 0
+    if outcome == "released_generation":
+        ctx.print_json({"status": "released", "generation": generation})
+        ctx.err.write(f"released generation {generation}\n")
+        return 0
+    if outcome == "released_inhibit":
+        ctx.print_json({"status": "released", "generation": None})
+        ctx.err.write("released inhibit\n")
+        return 0
+    lines = [pilot_run.LOGIN_RESET_LINE] if any(str(c).startswith("login_") for c in result["problems"]) else []
+    lines.append(f"release_refused ({', '.join(result['problems'])})"
+                 + (f"; generation {generation}" if generation is not None else "; INHIBIT-only form"))
+    ctx.print_json({"status": "release_refused", "generation": generation, "problems": result["problems"]})
+    raise _Done(2, "\n".join(lines))
 
 
 KILL_ADVICE = "cancel open bets on the Betfair website or in Bet Angel now"
@@ -2035,6 +2301,7 @@ COMMANDS = {
     "cancel": cmd_cancel, "replace": cmd_replace, "live-probe": cmd_live_probe, "paper-step": cmd_paper_step,
     "paper-replay": cmd_paper_replay, "reconcile": cmd_reconcile, "settle-market": cmd_settle_market,
     "journal": cmd_journal, "status": cmd_status, "kill": cmd_kill, "resume": cmd_resume,
+    "recording-release": cmd_recording_release,
 }
 
 
@@ -2069,8 +2336,8 @@ def main(argv=None, *, deps=None):
     except (KeyboardInterrupt, SignalStop, Exception) as exc:          # never a traceback or raw text
         if ctx.order_sent():
             # An order request went out before this stopped the command: never the "nothing sent" codes 2 or 4.
-            ctx.err.write(_stopped_line(type(exc).__name__, ctx.command, ctx.paused_flag, result_printed=False)
-                          + "\n")
+            ctx.err.write(_stopped_line(type(exc).__name__, ctx.command, ctx.paused_flag, result_printed=False,
+                                        cont=ctx.continue_flag) + "\n")
             return EXIT_SENT_NOT_AS_REQUESTED
         if isinstance(exc, OrderRefused):
             ctx.err.write(f"Betfair order refused: {exc.rule}\n")

@@ -266,9 +266,10 @@ class ContinuationTests(OwnershipCase):
 
 class ProbeAndKernelTests(OwnershipCase):
     def test_the_recovery_probe_sees_both_p108_6_gaps(self):
-        """Yu's typed recording-release (the rollout PR) takes the owner lock first; its probe sees an owner paused
-        before journaling (admitted, lock held) and one logging out after a clean result (released, lock held) as
-        held, and an unreadable lock as unknown."""
+        """Yu's typed recording-release (admission.recording_release) takes the owner lock itself with LOCK_NB, never
+        probing first (design v9 §3.5 step 1): it refuses owner_live while an owner is paused before journaling
+        (admitted, lock held) or logging out after a clean result (released, lock held). status's probe here,
+        owner_lock_state, sees both as held, and an unreadable lock as unknown."""
         with self.own() as ticket:
             self.assertEqual(owner_lock_state(self.paths), "held")               # paused before its intent
             release_own(ticket, self.paths, config=self.config, clock=self.clock)
@@ -305,9 +306,10 @@ class ProbeAndKernelTests(OwnershipCase):
 class LifecycleBoundaryTests(unittest.TestCase):
     """§9 boundary tests (LC-8): calls to admit occur only in admission.live_ownership, calls to release only in
     admission.release_own, and no module but admission.py imports either name from admission. The allowed set is a
-    literal; the rollout PR adds exactly one entry, for Yu's typed recording-release."""
+    literal; the rollout PR adds exactly one entry, for Yu's typed recording-release (design v9 §3.5)."""
 
-    ALLOWED = {("admission.py", "live_ownership", "admit"), ("admission.py", "release_own", "release")}
+    ALLOWED = {("admission.py", "live_ownership", "admit"), ("admission.py", "release_own", "release"),
+               ("admission.py", "recording_release", "release")}
 
     def test_admit_and_release_called_only_from_the_lifecycle(self):
         found = set()
@@ -329,6 +331,7 @@ class LifecycleBoundaryTests(unittest.TestCase):
                         with self.subTest(file=str(path.relative_to(REPO))):
                             self.assertFalse(names & {"admit", "release"})
         self.assertEqual(found, self.ALLOWED)
+        self.assertEqual(len(self.ALLOWED), 3)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-10-22",
+  "status": "delayed_key_first_live_tests_read_only_no_orders",
+  "scope": "Read-only first-live tests T2 and T3 on the delayed application key, run by Yu at Yu's own terminal with an explicit go-ahead for each test, from a clean checkout at 46c68cf, which is older than the main this report is committed on (see limitations). This report covers only the T2 and T3 runs of this day. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts, durations and short notes only; clock times are left out (run_date gives the day).",
+  "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory",
+  "code_revision": "46c68cf",
+  "key_type": "delayed",
+  "live_orders_placed": 0,
+  "first_live_tests_run": [
+    {
+      "test_id": "T2",
+      "receipt_sha256": "4d37475fa6e0808005b0af64aa36d2e743d2c56977336c9b2dafb51e6bab223a"
+    },
+    {
+      "test_id": "T3",
+      "receipt_sha256": "5527305f09319149525c2d279953afc59b2c38f613d3d86a5e31449fb8f2e257"
+    }
+  ],
+  "live_test_observations": {
+    "T2": {
+      "commands": [
+        "doctor",
+        "doctor --network --bet-angel-paused"
+      ],
+      "result": "pass",
+      "runs": "offline doctor before and after; doctor --network twice, first with session.sso_http_method POST, then with GET",
+      "login_method": "cert",
+      "jurisdiction": "com",
+      "by_sso_http_method": {
+        "POST": {
+          "exit": 0,
+          "stderr_empty": true,
+          "login_status": "SUCCESS",
+          "can_bet": true,
+          "keep_alive_status": "SUCCESS",
+          "keep_alive_error": null,
+          "logout_status": "SUCCESS"
+        },
+        "GET": {
+          "exit": 0,
+          "stderr_empty": true,
+          "login_status": "SUCCESS",
+          "can_bet": true,
+          "keep_alive_status": "SUCCESS",
+          "keep_alive_error": null,
+          "logout_status": "SUCCESS"
+        }
+      },
+      "login_method_note": "certlogin is POST in both runs (code at 46c68cf); only keepAlive and logout follow session.sso_http_method, so login_status is listed per run, not per method",
+      "method_switch": "set from POST to GET for the second run with the reviewed config-field helper under the config lock, then restored",
+      "config_restored_byte_identical": true,
+      "logins": 2,
+      "seconds_between_logins": 100,
+      "login_ledger_rows": 4,
+      "login_ledger_rows_coexistence_ack_true": 4,
+      "login_outcomes": "proceed SUCCESS on both, no outcome error, no ban",
+      "offline_doctor_after": {
+        "consecutive_failures": 0,
+        "banned_until": null,
+        "login_allowed": true
+      },
+      "keychain_queries_minimal_env": true,
+      "live_app_key_in_keychain": true,
+      "live_app_key_read": false,
+      "journal_anchor": "present",
+      "wire_method_recorded": false,
+      "http_status_codes_recorded": false,
+      "receipt_note": "each doctor run wrote its JSON output to a file in the receipt, with an exit file and an empty stderr file for the network runs; nothing was transcribed by hand"
+    },
+    "T3": {
+      "commands": [
+        "doctor",
+        "record --max-seconds 900 --bet-angel-paused",
+        "doctor --network --bet-angel-paused"
+      ],
+      "result": "pass",
+      "runs": "offline doctor before and after; one record run; one doctor --network run during the recording, as the second API login",
+      "procedure": "the recorder held its own delayed-key login for the whole recording; during it Yu logged in on the website once, and then a second API login (the doctor --network run) followed; the recorder's login was then watched through the rest of the recording and its logout",
+      "keepalive_interval_s_during_run": 60,
+      "keepalive_interval_change": "set from 3600 to 60 for the run with the reviewed config-field helper under the config lock, then restored",
+      "config_restored_byte_identical": true,
+      "recorder_allow_live_key": false,
+      "website_login": "once, credentials typed by Yu, in a normal Safari window",
+      "website_login_deviation": "the runbook asked for a Private Window; the normal window may still have held an earlier website session from the same day",
+      "second_api_login": {
+        "key_type": "delayed",
+        "emergency": false,
+        "exit": 0,
+        "stderr_empty": true,
+        "login_status": "SUCCESS",
+        "can_bet": true,
+        "keep_alive_status": "SUCCESS",
+        "keep_alive_error": null,
+        "logout_status": "SUCCESS"
+      },
+      "login_attempts": 2,
+      "login_ledger_rows": 4,
+      "login_ledger_rows_coexistence_ack_true": 4,
+      "login_ledger_notes": 0,
+      "failed_login_outcomes": 0,
+      "keepalive_failed": 0,
+      "disconnected": 0,
+      "auth_status_events": 1,
+      "markers_note": "Yu took the website-login marker right after the website login, which fell between the recorder's second progress line and that marker, so the durations and line counts after it are lower bounds for the time after that login; the second-API-login marker was taken about 1 s before that login, so durations measured from it are about 1 s longer than from the login itself",
+      "website_login_window_s_after_segment_open": [
+        121,
+        221
+      ],
+      "seconds_segment_open_to_website_login_marker": 221,
+      "seconds_website_login_marker_to_second_api_login_marker": 177,
+      "seconds_website_login_marker_to_close": 679,
+      "seconds_second_api_login_marker_to_close": 502,
+      "recorder_progress_lines": 14,
+      "recorder_progress_lines_after_website_login_marker": 11,
+      "recorder_progress_lines_after_second_api_login_marker": 8,
+      "stop_reason": "max_seconds_reached",
+      "segments": 1,
+      "segment_open_to_close_s": 900,
+      "gaps": 0,
+      "replay_check": "passed",
+      "verify_recording": "verified",
+      "verify_recording_checks": "11 of 11 passed",
+      "logout_status": "SUCCESS",
+      "subscription_mode": "coarse",
+      "markets_requested": 119,
+      "markets_seen": 125,
+      "markets_without_initial_definition": 0,
+      "segmentation_enabled_sent": false,
+      "heartbeat_ms_requested": 5000,
+      "heartbeat_ms_echoed": 5000,
+      "conflate_ms_requested": null,
+      "conflate_ms_echoed": 180000,
+      "data_freshness_label": "delayed_conflated",
+      "connections_available": 1,
+      "lines": 180,
+      "heartbeat_lines": 175,
+      "recorder_max_inter_line_gap_ms": 5168,
+      "order_stream_tested": false,
+      "coexistence_bet_angel": "not_running_on_account, unchanged",
+      "f50_f51_note": "the heartbeatMs and conflateMs echoes match T6; the T3 checklist row lists only F67, so F50 and F51 do not cite this receipt",
+      "receipt_note": "the doctor runs and the recorder wrote their output to files in the receipt; nothing was transcribed by hand; the website-login marker comes from Yu's shell marker and Yu's statement, and there is no website-side record"
+    }
+  },
+  "not_run": {
+    "T3_bet_angel_half": "not run: Bet Angel was not running on the account (Yu's --bet-angel-paused statement), so the other logins tested were one website login and one further API login of our own (delayed key, non-emergency)",
+    "T3_set_coexistence": "not taken: the checklist's step of then setting coexistence.bet_angel to token_survival_verified; by Yu's decision of 2026-10-22 it stays not_running_on_account, because RS-19 already forbids Bet Angel during a session and the config then stays byte-identical, so the staged pilot config stays valid",
+    "other_tests": "outside this report: it lists only the T2 and T3 runs of this day and says nothing about other first-live tests or their receipts"
+  },
+  "facts_relabelled_secondary_first_person_observation": {
+    "F08": "T2",
+    "F67": "T3"
+  },
+  "facts_not_relabelled": {},
+  "findings_for_next_register_round": {
+    "F08": "both POST and GET were accepted for keepAlive and logout on the delayed key on this day, so the receipt does not settle which method the documentation intends; it records the configured method, not the one sent on the wire; F08 stays conflicting",
+    "F67": "only the website half was observed, once: the recorder's delayed-key login stayed valid, on indirect evidence, through one website login and one further API login; the Bet Angel half, live-key and emergency logins, and whether our logins end a website session are not observed, so F67 stays inferred",
+    "F67_code_handling": "it says --bet-angel-paused is required until first-live-test T3; T3 has run, but the CLI's rule depends on config, not on T3: it requires the flag only while coexistence.bet_angel is unverified (the default); on Yu's machine it has been not_running_on_account since 2026-10-13, so in T2 and T3 the flag only set coexistence_ack in the ledger; the wording is stale"
+  },
+  "economic_result": null,
+  "limitations": [
+    "Delayed key only: in T2 and T3 the live key was not read and no order was placed; live_orders_placed counts these two tests only.",
+    "The code is 46c68cf, an ancestor of main 08e7b05 (on which this report was written) and 29 commits behind it; auth.py, cli.py, recorder.py and transport.py changed in between, so the results describe 46c68cf.",
+    "T2 records the configured session.sso_http_method, not the method sent on the wire (that keepAlive and logout use it comes from the code at 46c68cf), and no HTTP status codes or logout error detail beyond the status; each keepAlive was one call seconds after a fresh login, so nothing is shown about an aged login or keepAlives through a long session; whether POST and GET behave the same with the live key, which the live-order and kill sessions would use with the same setting, is unverified.",
+    "In T3 a successful keepAlive writes no event, so the recorder's keepAlives after the website login are inferred from the code, not seen, and their number is not recorded; that its login stayed valid rests on indirect evidence: no keepalive_failed event, no ledger note and no ledger login beyond the recorder's and the second API login (at 46c68cf a NO_SESSION keepAlive writes a ledger note and logs in again), no disconnected event, and logout returned SUCCESS; the stream reaching max_seconds says little, since an authenticated stream connection is not checked against the session again.",
+    "T3 tested only the website half of F67, once, in a normal Safari window that may have held an earlier website session; there is no website-side record, and whether our API logins ended a website session was not observed.",
+    "The second API login in T3 used the delayed key and was non-emergency, and its keepAlive and logout belong to its own new login; whether a live-key or emergency (kill) login leaves an existing login valid is unverified.",
+    "T3 recorded a market stream only; the order stream was not tested. The recording receipt's own limits apply: pt is publisher time, receipt clocks are unauthenticated, gaps are not forward-filled, delayed-key data is unsuitable for features under 180 s, and motif compatibility is checked on synthetic data only.",
+    "Coexistence was not changed, so the receipts show nothing about the CLI running under token_survival_verified.",
+    "Each observation is one run on one account on one day, jurisdiction com; it shows behaviour seen, not a documented guarantee.",
+    "Raw responses, ledgers, recordings and stream files stay private; the T3 recording is a test recording, to be handled under the current recording policy; only SHA256SUMS digests, commands without ids, codes, field names, booleans, counts and durations are here."
+  ],
+  "amendments": []
+}

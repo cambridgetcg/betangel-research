@@ -21,7 +21,7 @@
       "F73"
     ]
   },
-  "scope": "Betfair facts the betangel_research.betfair code depends on (spec section 18). Values are short paraphrases, at most one sentence each. official_* means the owner's own documentation of the thing described: Betfair's pages for the exchange (Betfair is the exchange operator), Apple's man pages for macOS tools (F68, F73, F74) and Python's own docs for its standard library (F69); vendor_* means Bet Angel only. first_person_observation is reserved for our own first-live-test receipts (T0-T10; T11 was dropped with live replace in v1), cited as a live-test:T<n>:sha256:<receipt_sha256> source that a committed reports/betfair-live-tests-<date>.json lists; after the 2026-10-13 delayed-key tests F01, F02, F03, F50, F51, F65 and F66 carry it as secondary_evidence_type. secondary_evidence_type labels a second, weaker source behind part of a value, or is null. retrieval is one label, or a list of labels in the order of the value's parts when the parts were obtained differently (F74: a man page, then a local check); every fact citing a local: source lists local_python_check.",
+  "scope": "Betfair facts the betangel_research.betfair code depends on (spec section 18). Values are short paraphrases, at most one sentence each. official_* means the owner's own documentation of the thing described: Betfair's pages for the exchange (Betfair is the exchange operator), Apple's man pages for macOS tools (F68, F73, F74) and Python's own docs for its standard library (F69); vendor_* means Bet Angel only. first_person_observation is reserved for our own first-live-test receipts (T0-T10; T11 was dropped with live replace in v1), cited as a live-test:T<n>:sha256:<receipt_sha256> source that a committed reports/betfair-live-tests-<date>.json lists; after the 2026-10-13 delayed-key tests F01, F02, F03, F50, F51, F65 and F66 carry it as secondary_evidence_type, and after the 2026-10-22 delayed-key tests T2 and T3, F08 and F67 do too. secondary_evidence_type labels a second, weaker source behind part of a value, or is null. retrieval is one label, or a list of labels in the order of the value's parts when the parts were obtained differently (F74: a man page, then a local check); every fact citing a local: source lists local_python_check.",
   "fields": [
     "id",
     "area",
@@ -76,7 +76,7 @@
     "SA": "https://support.developer.betfair.com/hc/en-us/articles/<id>"
   },
   "limitations": [
-    "Only delayed-key first-live tests T1, T4, T6, T7 and part of T8 ran (2026-10-13, reports/betfair-live-tests-2026-10-13.json); T0, T2, T3, T5, T9 and T10 are pending (T11 was dropped with live replace in v1) and no order has been placed.",
+    "Only delayed-key first-live tests T1, T4, T6, T7 and part of T8 ran (2026-10-13, reports/betfair-live-tests-2026-10-13.json), then T2 and T3 (2026-10-22, reports/betfair-live-tests-2026-10-22.json); T0, T5, T9 and T10 are pending (T11 was dropped with live replace in v1) and no order has been placed.",
     "support.betfair.com charges and T&C pages returned HTTP 403; those facts come from Wayback snapshots, and F61 also reads the live charges page through reader_proxy_read.",
     "Paraphrases are not quotations; read the cited page before relying on a value."
   ],
@@ -218,11 +218,12 @@
         "auth"
       ],
       "evidence_type": "official_documentation",
-      "secondary_evidence_type": null,
+      "secondary_evidence_type": "first_person_observation",
       "retrieval": "official_rest_api_storage_read",
       "sources": [
         "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687869",
-        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687786"
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687786",
+        "live-test:T2:sha256:4d37475fa6e0808005b0af64aa36d2e743d2c56977336c9b2dafb51e6bab223a"
       ],
       "published_or_updated": "2026-09-08",
       "accessed": "2026-10-10",
@@ -1386,10 +1387,11 @@
         "cli"
       ],
       "evidence_type": "inferred",
-      "secondary_evidence_type": null,
+      "secondary_evidence_type": "first_person_observation",
       "retrieval": "official_rest_api_storage_read",
       "sources": [
-        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687730"
+        "https://betfair-developer-docs.atlassian.net/wiki/spaces/1smk3cen4v3lu3yomq5qye0ni/pages/2687730",
+        "live-test:T3:sha256:5527305f09319149525c2d279953afc59b2c38f613d3d86a5e31449fb8f2e257"
       ],
       "published_or_updated": null,
       "accessed": "2026-10-10",

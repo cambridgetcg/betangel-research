@@ -2278,9 +2278,10 @@ def capture_entries(projection, *, queue=None, session_id=None, now_ns=None):
     (session_id, now_ns) only that session's markets whose off has passed are read for the book and L.
 
     The book is read for every PLACE record's market, sent or not (contract decision-price series; P1-10 S1b). A bet's
-    market is read as before. A record that is unsent, or has no bet id, gets a book entry (bet_id None) once its off has
-    passed and until off + the BSP cutoff: after that its BSP is decided "none" and no read can change it, and with no
-    bet id it has no L to unlock."""
+    market is read as before. A record with no bet id gets a book entry (bet_id None) once its off has passed. An unsent
+    record's entry stops at off + the BSP cutoff: its BSP is then decided "none" and definitely_unsent outranks void
+    and removal, so no read can change it. A sent record with no bet id has no such stop, because a later CLOSED read
+    still decides void or removal (Astra S1b-1)."""
     state, core = projection["state"], projection["core"]
     # Any CLOSED capture_book, not only one the BSP rule used: a CLOSED read after off + 24 h decides the BSP as
     # "none" without setting closed_read, and its bets still need L (P1-10 S1).
@@ -2299,8 +2300,8 @@ def capture_entries(projection, *, queue=None, session_id=None, now_ns=None):
         item = {"ref": rec.ref, "bet_id": bet_id, "market_id": rec.market_id,
                 "selection_id": rec.selection_id, "off_ns": rec.off_ns}
         if bet_id is None:
-            if (rec.market_id not in closed and rec.market_id not in booked
-                    and rec.off_ns < now <= rec.off_ns + state.contract.bsp_cutoff_s * NS):
+            if (rec.market_id not in closed and rec.market_id not in booked and rec.off_ns < now
+                    and not (rec.unsent and now > rec.off_ns + state.contract.bsp_cutoff_s * NS)):
                 books.append(("book", item))
                 booked.add(rec.market_id)
         elif rec.market_id not in closed and rec.market_id not in booked:

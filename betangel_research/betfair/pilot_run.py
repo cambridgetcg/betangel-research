@@ -257,7 +257,7 @@ def recovery_projection(events, *, contract, now_ns, market_hint=None):
     return {"state": state, "core": core, "handoffs": handoffs, "due_stops": state.due_stops,
             "armed": pilot.session_armed(state, now_ns=now_ns), "stop_reason": reason,
             "stop_source_seq": None if cause is None else cause["submit_seq"], "pending_capture": pending,
-            "market_hint": market_hint}
+            "market_hint": market_hint, "closed_markets": closed_markets(events)}
 
 
 def handoff_text(item):
@@ -2222,11 +2222,6 @@ class _HandedOff(Exception):
         self.original = original
 
 
-def closed_markets_of(state):
-    """Market ids whose BSP the fold decided on a CLOSED capture."""
-    return {rec.market_id for rec in state.place_records if rec.bsp.get("closed_read")}
-
-
 def closed_markets(events):
     """Market ids a capture_book note showed CLOSED."""
     found = set()
@@ -2281,7 +2276,9 @@ def capture_entries(projection, *, queue=None, session_id=None, now_ns=None):
     CLOSED capture yet, then L for each bet whose market a capture showed CLOSED and that has no settled L row. In a
     session (session_id, now_ns) only that session's markets whose off has passed are read for the book and L."""
     state, core = projection["state"], projection["core"]
-    closed = closed_markets_of(state)
+    # Any CLOSED capture_book, not only one the BSP rule used: a CLOSED read after off + 24 h decides the BSP as
+    # "none" without setting closed_read, and its bets still need L (P1-10 S1).
+    closed = projection["closed_markets"]
     pending = {item["ref"]: item for item in projection["pending_capture"]}
     if queue is not None:
         pending = {ref: dict(item, **pending.get(ref, {})) for ref, item in queue.items() if ref in pending}

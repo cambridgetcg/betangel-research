@@ -284,6 +284,7 @@ def _session(directory, start_ns):
     damaged = precount_problems(directory, receipt, final=kind == "final") if kind and problem is None else []
     return {"precount_problems": damaged, "session_id": directory.name, "dir": directory, "start_ns": start_ns, "end_ns": max(ends),
             "receipt_kind": kind, "receipt_sha256": digest, "receipt_problem": problem, "status": status,
+            "receipt": receipt,
             "segments": listed, "open_segments": open_segments, "names": names,
             "gaps": receipt.get("gaps") if isinstance(receipt.get("gaps"), list) else [],
             "conflate_ms": _int(freshness.get("conflate_ms_echoed")),
@@ -465,24 +466,27 @@ def _where(observation, line, at_ns, pt):
 
 
 def _cause(start, end, previous, following, absent):
-    """(cause, tolerated) of one uncovered stretch after the market's first observation in its window."""
-    if any(segment["mode"] == "explicit" for segment in absent):
-        return "dropped_explicit", False
+    """(cause, tolerated, evidence) of one uncovered stretch after the market's first observation in its window.
+    evidence is the explicit absent segments a dropped_explicit cause relied on (bot-33-578: the caller flags the
+    row unverified when any of them is unverified), else []."""
+    explicit = [segment for segment in absent if segment["mode"] == "explicit"]
+    if explicit:
+        return "dropped_explicit", False, explicit
     before = previous["obs"] if previous else None
     if before is not None and any(stall[0] == start for stall in before["stalls"]):
-        return "stall_in_segment", False
+        return "stall_in_segment", False, []
     if following is None:
-        return ("absent_from_segment" if absent else "recording_ended"), False
+        return ("absent_from_segment" if absent else "recording_ended"), False, []
     after = following["obs"]
     if before is None or before["session_id"] != after["session_id"]:
-        return "between_sessions", False
+        return "between_sessions", False, []
     if absent:
-        return "absent_from_segment", False
+        return "absent_from_segment", False, []
     cause = before["close_reason"] or "segment_not_closed"
     tolerated = (cause == "scheduled_refresh" and after["segment"] == before["segment"] + 1
                  and after["entry"]["first_img"] and following["from"] == after["entry"]["first_ns"]
                  and end - start <= before["tolerance_ns"])
-    return cause, tolerated
+    return cause, tolerated, []
 
 
 def _classify(flags):
@@ -520,6 +524,7 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
         flags.add("closed_without_observed_inplay")
     window, coverage, gaps, late_ns, gap_ns = None, [], [], 0, 0
     relevant = observations
+    absence_evidence = []                   # explicit absent segments a dropped_explicit flag relied on
     if anchor_ns is None:
         flags.add("no_anchor")
     else:
@@ -551,10 +556,12 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
         elif first_seen is None:                  # nothing observed inside the window at all
             flags.update(("late_start", "never_in_window"))
             late_ns = window_to - window_from
-            if any(segment["mode"] == "explicit" and segment["first_ns"] is not None
-                   and segment["first_ns"] < window_to and segment["last_ns"] > window_from
-                   and market_id not in segment["markets"] for segment in segments):
+            explicit = [segment for segment in segments if segment["mode"] == "explicit"
+                        and segment["first_ns"] is not None and segment["first_ns"] < window_to
+                        and segment["last_ns"] > window_from and market_id not in segment["markets"]]
+            if explicit:
                 flags.add("dropped_explicit")
+                absence_evidence += explicit
         else:
             for start, end in _complement([(p["from"], p["to"]) for p in inside], window_from, window_to):
                 if first_seen is None or end <= first_seen:
@@ -566,15 +573,18 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
                 absent = [segment for segment in segments if segment["first_ns"] is not None
                           and segment["first_ns"] < end and segment["last_ns"] > start
                           and market_id not in segment["markets"]]
-                cause, tolerated = _cause(start, end, previous, following, absent)
+                cause, tolerated, evidence = _cause(start, end, previous, following, absent)
                 if cause == "dropped_explicit":
                     flags.add("dropped_explicit")
+                    absence_evidence += evidence
                 if not tolerated:
                     flags.add("gap")
                     gap_ns += end - start
                 gaps.append({"from": utc_from_ns(start), "to": utc_from_ns(end), "seconds": _seconds(end - start),
                              "cause": cause, "tolerated": tolerated})
-    if any(not obs["verified"] for obs in relevant):
+    # An unverified segment is still evidence: the row stays visible (dropped_explicit) and is flagged unverified
+    # whether the evidence was an observation or an explicit absence (bot-33-578).
+    if any(not s["verified"] for s in relevant + absence_evidence):
         flags.add("unverified")
     image_obs = next((obs for obs in observations if obs["entry"]["first_img"]), None)
     for obs in observations:
@@ -700,14 +710,19 @@ def verify_day(paths, *, root, day):
     """Offline checks of every session meeting the UTC day; returns counts and failed check names only.
 
     Checks: each closed session verifies (recorder.verify_recording); its receipt.json sha256 equals the
-    one run-ledger row for it, whose receipt_path names it; events.jsonl is present; the receipt's gap list
-    equals the gaps its segment boundaries imply; its declared pre-count snapshot matches
-    (precount_problems; damaged inventory fails, a receipt from before C4 without one passes); no file but
-    the recorder's own. A session that never
-    closed (receipt.partial.json only, or no receipt) is classified, not failed: its listed segments are
-    still hash-checked and its gaps compared, and a segment on disk that no receipt lists is counted as
-    open. Leftovers of an interrupted atomic write are counted, not failed. A ledger row whose session
-    directory is missing fails, as does a ledger that cannot be read."""
+    one run-ledger row for it, whose receipt_path names it, whose invocation_id equals the receipt's (both
+    absent is a match; ledger_invocation_mismatch) and whose segments count equals the receipt's
+    (ledger_segments_mismatch); events.jsonl is present; the receipt's gap list equals the gaps its segment
+    boundaries imply; its declared pre-count snapshot matches (precount_problems; damaged inventory fails, a
+    receipt from before C4 without one passes); no file but the recorder's own; and no segment or recv file
+    beside a final receipt that the receipt does not list (segment_not_in_receipt, recv_not_in_receipt;
+    bot-33-740). A session that never closed (receipt.partial.json only, or no receipt) is classified, not
+    failed: its listed segments are still hash-checked and its gaps compared, and the one segment the
+    recorder can leave unlisted (index len(listed), the subscription open at the crash) is counted as open;
+    any other unlisted segment beside a partial receipt fails. Leftovers of an interrupted atomic write are
+    counted, not failed. A ledger row whose session directory is missing fails, as does a ledger that cannot be
+    read; a torn or bad ledger line fails run_ledger_torn_line with its line index unless a typed repair row
+    exempts exactly those bytes (section 3.8)."""
     day_start, day_end = day_bounds(day)
     sessions = sessions_between(root, day_start, day_end)
     ledger, ledger_problem = _run_ledger(paths)
@@ -744,6 +759,14 @@ def verify_day(paths, *, root, day):
             for check in verify_recording(directory)["checks"]:
                 if check["status"] != "passed":
                     fail(sid, check["check"], check.get("segment"))
+            # bot-33-740: a final receipt lists every segment the session wrote, so nothing else may sit beside it.
+            for name in session["open_segments"]:
+                fail(sid, "segment_not_in_receipt", int(SEGMENT_FILE_RE.fullmatch(name).group(1)))
+            listed_names = {meta["path"] for meta in session["segments"]}
+            for name in session["names"]:
+                match = RECV_FILE_RE.fullmatch(name)
+                if match and f"seg-{match.group(1)}.jsonl" not in listed_names:
+                    fail(sid, "recv_not_in_receipt", int(match.group(1)))
             rows = ledger.get(sid, [])
             if len(rows) != 1:
                 fail(sid, "receipt_without_ledger_row" if not rows else "ledger_rows_duplicated")
@@ -754,10 +777,21 @@ def verify_day(paths, *, root, day):
                 named = row.get("receipt_path")
                 if not isinstance(named, str) or Path(named).resolve() != (directory / "receipt.json").resolve():
                     fail(sid, "ledger_receipt_path_mismatch")
+                # R2: the row against the receipt already strict-parsed above (both ids absent is a match).
+                receipt = session["receipt"]
+                if row.get("invocation_id") != receipt.get("invocation_id"):
+                    fail(sid, "ledger_invocation_mismatch")
+                if type(row.get("segments")) is not int or row["segments"] != len(receipt["segments"]):
+                    fail(sid, "ledger_segments_mismatch")
             if not (directory / "events.jsonl").is_file():
                 fail(sid, "events_missing")
         elif kind == "partial":
             receipt = strict_json_loads((directory / "receipt.partial.json").read_text(encoding="utf-8"))
+            # The recorder leaves at most one segment unlisted after a crash: the one at index len(listed).
+            for name in session["open_segments"]:
+                index = int(SEGMENT_FILE_RE.fullmatch(name).group(1))
+                if index != len(receipt["segments"]):
+                    fail(sid, "segment_not_in_receipt", index)
             for segment in receipt["segments"]:
                 checks = []
                 _verify_segment(directory, segment, lambda name, ok, segment=None, detail=None:

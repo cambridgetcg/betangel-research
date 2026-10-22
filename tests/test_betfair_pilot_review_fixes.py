@@ -1759,7 +1759,10 @@ class FlaggedRecordedLineTests(RunCase):
         env.runner.on_credential = recorded
         code, out, err = sr.arm_run(env, "2000", "--bet-angel-paused")
         self.assertEqual(code, 2, err)
-        self.assertIn("then run reconcile --mode live --bet-angel-paused; its open refuses the order recorded", err)
+        # Recording rollout review (REL-1): ARM's own generation 1 is retained after the refusal, so the reconcile
+        # line carries --continue-admission 1 after the coexistence flag.
+        self.assertIn("then run reconcile --mode live --bet-angel-paused --continue-admission 1; its open refuses the "
+                      "order recorded", err)
         self.assertNotIn("then run reconcile --mode live;", err)        # the release lines carry the flag too
         self.assertIn("release refused", err)
 

@@ -13,6 +13,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import unittest
@@ -722,6 +723,120 @@ class EmergencyPathTests(ManualCase):
                 item.stop()
         self.assertNotIn("admission.lock", opened)
         self.assertNotIn(".live-owner.lock", opened)
+
+
+
+# --- review round 1 (Astra ROLL-5; refute wf_ef757628 EXCL-1 to EXCL-3, NP-01, NP-02) ------------------------------
+
+
+class ReleaseInterruptTests(ManualCase):
+    """ROLL-5 / EXCL-1: an interrupt inside the automatic release still reaches the abnormal-end lines, which name the
+    retained generation and the typed release."""
+
+    def test_astra_witness_sigint_at_the_release_clean_state_fold(self):
+        original = admission.live_state_problems
+        fired = []
+
+        def interrupted_fold(*args, **kwargs):
+            if not fired:
+                fired.append(True)
+                signal.raise_signal(signal.SIGINT)
+            return original(*args, **kwargs)
+        with patch.object(admission, "live_state_problems", interrupted_fold):
+            code, out, err = self.reconcile()
+        self.assertEqual(code, 4, err)
+        self.assertEqual(self.view()["admission"]["generation"], 1)
+        self.assertIn("Betfair recording: recording stays off until Yu's typed recording-release (generation 1, state "
+                      "admitted)", err)
+
+    def test_interrupt_inside_release_after_a_matched_place(self):
+        self.matched()
+        with patch.object(admission, "release", side_effect=KeyboardInterrupt):
+            code, out, err = self.place()
+        self.assertEqual(code, 5, err)
+        self.assertIn("Betfair recording: recording stays off until Yu's typed recording-release (generation 1, state "
+                      "admitted)", err)
+
+    def test_interrupt_inside_release_after_a_clean_refusal(self):
+        with patch.object(admission, "release", side_effect=KeyboardInterrupt):
+            code, out, err = self.cli("place", "--market", "1.1", "--selection", str(gw.SELECTION), "--side", "BACK",
+                                      "--price", "3.50", "--size", "2.00", "--mode", "live", "--confirm-live",
+                                      "live-000000000000-20200101")
+        self.assertEqual(code, 4, err)
+        self.assertIn("generation 1, state admitted", err)
+
+
+class GenerationParserTests(ManualCase):
+    """EXCL-2: --continue-admission takes a positive integer only; 0 or a negative value is refused by the parser,
+    before any ownership, with no recording line for a generation this command never held."""
+
+    def test_zero_and_negative_refused_before_ownership(self):
+        self.retain()
+        before = self.files()
+        for run in (lambda v: self.reconcile("--continue-admission", v),
+                    lambda v: self.settle("--continue-admission", v)):
+            for value in ("0", "-1", "-3"):
+                with self.subTest(value=value):
+                    code, out, err = run(value)
+                    self.assertEqual(code, 2)
+                    self.assertIn("continue_admission_invalid", err)
+                    self.assertNotIn("Betfair recording", err)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(admission.owner_lock_state(self.paths), "free")
+        self.assertEqual(self.env.transport.requests, [])
+
+
+class OwnershipSignalTests(ManualCase):
+    """EXCL-3: SIGTERM and SIGHUP during the ownership phase (here the drain) raise SignalStop, print the §3.4.6 line
+    and map through main() (exit 4), as SIGINT does; ADMISSION stays pending."""
+
+    def setUp(self):
+        super().setUp()
+        for signum in (signal.SIGTERM, signal.SIGHUP):          # never let a stray signal end the test run
+            self.addCleanup(signal.signal, signum, signal.signal(signum, lambda s, f: None))
+
+    def test_sigterm_and_sighup_in_the_drain(self):
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=signum.name):
+                self.setUp()
+                safety = signal.getsignal(signum)
+
+                def drain(*args, **kwargs):
+                    signal.raise_signal(signum)
+                    return "none"
+                with patch.object(admission, "_drain", side_effect=drain):
+                    code, out, err = self.place()
+                self.assertEqual(code, 4, err)
+                self.assertIn("Betfair recording: recording stays off until Yu's typed recording-release (generation "
+                              "1, state pending)", err)
+                self.assertIn("Betfair stopped: SignalStop", err)
+                self.assertEqual(self.view()["admission"]["state"], "pending")
+                self.assertIs(signal.getsignal(signum), safety)          # the command restored the handler
+
+
+class ContinuationLineTests(ManualCase):
+    """NP-01: a continuation's clean end prints one neutral line, never "release refused"."""
+
+    def test_clean_continuation(self):
+        n = self.retain()
+        code, out, err = self.reconcile("--continue-admission", str(n))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("release refused", err)
+        self.assertIn(f"Betfair recording: continuation of generation {n} never releases (continuation_never_releases);"
+                      f" recording stays off until Yu's typed recording-release (generation {n})", err)
+        self.assertEqual(self.view()["admission"]["generation"], n)
+
+
+class StatusPidTests(ManualCase):
+    """NP-02: an unreadable recorder.pid is reported as unreadable, never as absent."""
+
+    def test_garbage_pid(self):
+        self.paths.recorder_pid_file.write_text("garbage")
+        code, out, err = self.cli("status")
+        self.assertEqual(json.loads(out)["recording"]["recorder_pid"], "recorder_pid_unreadable")
+        self.paths.recorder_pid_file.unlink()
+        code, out, err = self.cli("status")
+        self.assertEqual(json.loads(out)["recording"]["recorder_pid"], {"present": False})
 
 
 if __name__ == "__main__":

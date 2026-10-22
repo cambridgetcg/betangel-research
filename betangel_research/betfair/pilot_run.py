@@ -914,8 +914,16 @@ def _arm_checks(env, *, now_ns, day, until_ns, absence):
         raise Refused("pilot_arm_login_ledger")
     problems = admission.live_state_problems(paths, clock=clock) + admission.ledger_problems(config, paths, clock=clock)
     if problems:
+        cont = ""
+        if "order_recorded" in problems:              # REL-1: a retained admitted N needs the continuation
+            try:
+                held = admission.admission_status(paths)["admission"]
+            except AdmissionRefused:
+                held = None
+            if held is not None and held["state"] == "admitted":
+                cont = f" --continue-admission {held['generation']}"
         raise Refused("pilot_arm_release_would_refuse:" + ",".join(problems),
-                      [RECORDED_LINE.format(flag=env.paused_flag, cont="")] if "order_recorded" in problems else [])
+                      [RECORDED_LINE.format(flag=env.paused_flag, cont=cont)] if "order_recorded" in problems else [])
     if absence:
         try:
             status = admission.admission_status(paths)
@@ -924,7 +932,8 @@ def _arm_checks(env, *, now_ns, day, until_ns, absence):
                           ["recording state unknown; run status before any release"]) from None
         current = status["admission"]
         if current is not None:
-            step = (f"reconcile --continue-admission {current['generation']} first" if projection["handoffs"]
+            step = (f"reconcile --mode live{env.paused_flag} --continue-admission {current['generation']} first"
+                    if projection["handoffs"]
                     else f"Yu's typed recording-release (generation {current['generation']})")
             raise Refused("admission_held", [f"admission held by {current['owner']}, generation "
                                              f"{current['generation']}, state {current['state']}; next: {step}"])

@@ -165,6 +165,20 @@ class UnlistedSegmentTests(Case):
         self.assertEqual(result["status"], "verified", result["failures"])
         self.assertEqual((result["sessions_by_status"]["crashed"], result["open_segments"]), (1, 1))
 
+    def test_padded_alias_beside_the_canonical_open_segment_fails(self):
+        """ROLL-3 / REC-1: seg-001 and seg-0001 both parse as index 1; only the recorder's own spelling
+        seg-{len(listed):03d}.jsonl may stay unlisted."""
+        directory = self.crashed()
+        for suffix in (".jsonl", ".recv.jsonl"):
+            (directory / f"seg-0001{suffix}").write_bytes((directory / f"seg-001{suffix}").read_bytes())
+        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 1)})
+
+    def test_a_lone_padded_alias_fails(self):
+        directory = self.crashed()
+        for suffix in (".jsonl", ".recv.jsonl"):
+            (directory / f"seg-001{suffix}").rename(directory / f"seg-0001{suffix}")
+        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 1)})
+
     def test_crashed_session_with_two_unlisted_segments_fails(self):
         directory = self.crashed()
         for suffix in (".jsonl", ".recv.jsonl"):

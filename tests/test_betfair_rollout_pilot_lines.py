@@ -113,7 +113,9 @@ class MessageTextTests(RunCase):
         with patch.object(pilot_run, "_view", view):
             code, out, err = sr.arm_run(env)
         self.assertEqual(code, 2)
-        self.assertIn("next: reconcile --continue-admission 6 first", err)
+        # REL-2: the advice runs as printed: --mode live (and the paused flag where coexistence is unverified).
+        flag = " --bet-angel-paused" if env.config["coexistence"]["bet_angel"] == "unverified" else ""
+        self.assertIn(f"next: reconcile --mode live{flag} --continue-admission 6 first", err)
         self.assertNotIn("continue-admission N", err)
 
     def test_owner_live_replaces_pilot_session_running_and_alive(self):
@@ -176,6 +178,38 @@ class RecordingReleasePilotTests(RunCase):
         code, out, err = self.release(env)
         self.assertEqual(code, 0, err)
         self.assertIn('"status": "nothing_to_release"', out)
+
+
+
+class RecordedLineTests(RunCase):
+    """REL-1: ARM's pilot_arm_release_would_refuse:order_recorded line names --continue-admission N while a manual
+    ADMISSION N is retained (a manual place died between its intent and its submit), and no flag without one."""
+
+    def died_after_intent(self, env):
+        with sr.sigkill_after("intent"), self.assertRaises(sr.Death):
+            sr.run_cli(env, "place", "--market", "1.300001", "--selection", "11", "--side", "BACK", "--price", "3.50",
+                       "--size", "2.00", "--mode", "live", "--confirm-live", sr.token(env))
+
+    def test_retained_manual_admission_gives_the_flag(self):
+        env = self.registered()
+        sr.add_market(env)
+        self.died_after_intent(env)
+        current = sr.admission_view(env)["admission"]
+        self.assertEqual((current["owner"], current["generation"], current["state"]), ("manual:1", 1, "admitted"))
+        code, out, err = sr.arm_run(env)
+        self.assertEqual(code, 2)
+        self.assertIn("pilot_arm_release_would_refuse:order_recorded", err)
+        self.assertIn("then run reconcile --mode live --continue-admission 1; its open refuses", err)
+
+    def test_no_admission_no_flag(self):
+        env = self.registered()
+        sr.add_market(env)
+        self.died_after_intent(env)
+        env.paths.admission_file.unlink()                      # fixture: the order RECORDED, no ADMISSION
+        code, out, err = sr.arm_run(env)
+        self.assertEqual(code, 2)
+        self.assertIn("then run reconcile --mode live; its open refuses", err)
+        self.assertNotIn("--continue-admission", err)
 
 
 if __name__ == "__main__":

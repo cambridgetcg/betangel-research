@@ -142,6 +142,14 @@ def _seconds(ns):
 # --- sessions and receipts -----------------------------------------------------------------------------
 
 
+def _receipt_shape_ok(value):
+    """The receipt shape every reader here requires: a dict with schema_version 1 and the recorder's status, segments
+    a list of dicts, and gaps a list when present (shared by _load_receipt and classify_invocation's _receipt_file)."""
+    return (isinstance(value, dict) and value.get("schema_version") == 1 and value.get("status") == RECEIPT_STATUS
+            and isinstance(value.get("segments"), list) and all(isinstance(s, dict) for s in value["segments"])
+            and isinstance(value.get("gaps", []), list))
+
+
 def _load_receipt(directory):
     """(kind "final"|"partial"|None, receipt or None, sha256 of its bytes or None, problem code or None).
     receipt.json wins when present, valid or not."""
@@ -155,9 +163,7 @@ def _load_receipt(directory):
             value = strict_json_loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return kind, None, digest, "receipt_unparseable"
-        if not (isinstance(value, dict) and value.get("schema_version") == 1 and value.get("status") == RECEIPT_STATUS
-                and isinstance(value.get("segments"), list) and all(isinstance(s, dict) for s in value["segments"])
-                and isinstance(value.get("gaps", []), list)):
+        if not _receipt_shape_ok(value):
             return kind, None, digest, "receipt_shape"
         return kind, value, digest, None
     return None, None, None, None
@@ -718,7 +724,9 @@ def run_ledger_scan(data):
         except (ValueError, UnicodeDecodeError):
             row = None
         if isinstance(row, dict) and "session_id" in row:
-            if LEDGER_ROW_KEYS <= set(row) and not set(row) - LEDGER_ROW_KEYS - {"invocation_id"}:
+            if (LEDGER_ROW_KEYS <= set(row) and not set(row) - LEDGER_ROW_KEYS - {"invocation_id"}
+                    and isinstance(row["session_id"], str)
+                    and ("invocation_id" not in row or isinstance(row["invocation_id"], str))):
                 rows.append((index, row))
                 continue
         elif _repair_row(row, index):
@@ -796,8 +804,7 @@ def _receipt_file(path):
         value = strict_json_loads(data.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return True, None, digest, "receipt_unparseable"
-    if not (isinstance(value, dict) and value.get("schema_version") == 1 and value.get("status") == RECEIPT_STATUS
-            and isinstance(value.get("segments"), list)):
+    if not _receipt_shape_ok(value):
         return True, None, digest, "receipt_shape"
     return True, value, digest, None
 
@@ -835,8 +842,13 @@ def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
         ids = {value.get("invocation_id") for _, value, _, _ in (final, partial) if isinstance(value, dict)}
         if invocation_id in ids:
             matches.append((entry, final, partial))
-        elif not final[0] and not partial[0] and _session_start_ns(match.group(1)) >= floor:
-            attributed.append(entry.name)
+        elif not final[0] and not partial[0]:
+            try:
+                stamp = _session_start_ns(match.group(1))
+            except ValueError:
+                stamp = None                  # an impossible stamp (REC-5): attributing it can only add review
+            if stamp is None or stamp >= floor:
+                attributed.append(entry.name)
     rows_with_id = ledger["by_invocation"].get(invocation_id, [])
     if len(matches) > 1:
         return dict(out, codes=out["codes"] + ["invocation_matches_several_sessions"])
@@ -978,11 +990,12 @@ def verify_day(paths, *, root, day):
                 fail(sid, "events_missing")
         elif kind == "partial":
             receipt = strict_json_loads((directory / "receipt.partial.json").read_text(encoding="utf-8"))
-            # The recorder leaves at most one segment unlisted after a crash: the one at index len(listed).
+            # The recorder leaves at most one segment unlisted after a crash: the one at index len(listed), in the
+            # recorder's own spelling (recorder.py: f"seg-{index:03d}.jsonl"), so a padded alias never passes.
+            allowed = f"seg-{len(receipt['segments']):03d}.jsonl"
             for name in session["open_segments"]:
-                index = int(SEGMENT_FILE_RE.fullmatch(name).group(1))
-                if index != len(receipt["segments"]):
-                    fail(sid, "segment_not_in_receipt", index)
+                if name != allowed:
+                    fail(sid, "segment_not_in_receipt", int(SEGMENT_FILE_RE.fullmatch(name).group(1)))
             for segment in receipt["segments"]:
                 checks = []
                 _verify_segment(directory, segment, lambda name, ok, segment=None, detail=None:

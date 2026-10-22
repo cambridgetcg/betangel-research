@@ -14,7 +14,7 @@
   "key_types": {
     "T5": "delayed_catalogue_then_live_login_and_book",
     "T9": "live",
-    "T10": "delayed"
+    "T10": "delayed, except the 0-minute read, which is T9 probe 1's own live-key read"
   },
   "live_orders_placed": 2,
   "live_orders_matched": 0,
@@ -225,10 +225,10 @@
       "files_in_receipt": 4,
       "sha256sums_verified": true,
       "probe_followed": "probe_1",
-      "run_by": "the agent's shell (session notes)",
-      "key_type": "delayed",
+      "run_by": "the 0-minute read is T9 probe 1's own read, part of Yu's terminal run; the 2-minute and 15-minute reads, the post-settle read and the retention poll ran from the agent's shell (session notes)",
+      "key_type": "mixed: the 0-minute read is the probe's own read on the live-order session (live key, at 416702f), reused T9 evidence; every later T10 read used the delayed key",
       "order_reads_command": "unknown: the README names the API methods, not the command",
-      "ids_kept_in_receipt": "none: betId and customerOrderRef were compared with the journal in memory and not stored",
+      "ids_omitted_from_receipt": "betId and customerOrderRef values were compared with the journal in memory and not stored; the private receipt does keep market and selection identifiers and the customerStrategyRef",
       "cancelled_probe_before_settlement": {
         "reads": 3,
         "minutes_after_the_cancel": [

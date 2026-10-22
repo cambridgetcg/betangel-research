@@ -2,8 +2,9 @@
 off + 24 h, which never sets the BSP's closed_read (pilot_run.capture_entries used closed_markets_of(state)).
 
 P1-10 S1b: the CLOSED book is read for every PLACE record's market, sent or not, so the decision-price series
-(contract reporting) has each record's BSP. A record with no bet id gets a book entry only between its off and
-off + the BSP cutoff, and the pending-captures line shows counts, never a bet id or market id (note §12:185)."""
+(contract reporting) has each record's BSP. A record with no bet id gets a book entry once its off has passed; an
+unsent record's stops at off + the BSP cutoff, a sent one's does not (a later CLOSED read still decides void or
+removal; Astra S1b-1). The pending-captures line shows counts, never a bet id or market id (note §12:185)."""
 import re
 from types import SimpleNamespace
 import unittest
@@ -89,9 +90,11 @@ class EveryPlaceRecordBookTests(unittest.TestCase):
                                                            now_ns=now))
                 self.assertEqual(kinds(out), expected)
 
-    def test_a_sent_record_with_no_bet_id_follows_the_same_window(self):
+    def test_a_sent_record_with_no_bet_id_is_read_after_its_off_with_no_cutoff(self):
+        """Astra S1b-1: after the cutoff a CLOSED read still decides void or removal for a sent record."""
         rec = record()
-        for now, expected in ((OFF - NS, []), (OFF + NS, ["book"]), (OFF + CUTOFF_S * NS + 1, [])):
+        for now, expected in ((OFF - NS, []), (OFF + NS, ["book"]), (OFF + CUTOFF_S * NS + 1, ["book"]),
+                              (OFF + 8 * 86400 * NS, ["book"])):
             with self.subTest(now=now - OFF):
                 out = pilot_run.capture_entries(projection(rec, closed_markets=set(),
                                                            orders={rec.ref: {"bet_id": None}}, now_ns=now))
@@ -121,6 +124,27 @@ class EveryPlaceRecordBookTests(unittest.TestCase):
         out = pilot_run.capture_entries(proj, queue={}, session_id="s1", now_ns=OFF + 60 * NS)
         self.assertEqual([(kind, item["market_id"]) for kind, item in out], [("book", "1.5")])
         self.assertEqual(pilot_run.capture_entries(proj, queue={}, session_id="s1", now_ns=None), [])
+
+
+class SentNoBetIdFold(unittest.TestCase):
+    """Why the cutoff stops only an unsent record (Astra S1b-1): for a sent record with no bet id, a CLOSED read after
+    off + 24 h leaves the BSP "none" but still decides void, which no later read can repair once day 7 passes."""
+
+    def test_a_late_closed_read_still_decides_void(self):
+        outcomes = {}
+        for with_read in (False, True):
+            journal_ = tp.Pilot(pt4=True)
+            session = journal_.arm(0)
+            p = journal_.place(session)
+            journal_.intent(p)
+            journal_.submit(p)                                 # sent, never reported: no bet id
+            journal_.reserve("1.299999", journal_.now + 300 * tp.S, session=session, open_id="open-later")
+            if with_read:
+                journal_.closed(p, ours="REMOVED", sp="3.10", at=p.off + 2 * tp.DAY_NS)
+            rec = journal_.fold(now=p.off + 8 * tp.DAY_NS).place_records[0]
+            self.assertFalse(rec.unsent)
+            outcomes[with_read] = (rec.measurement["class"], rec.bsp["decided"], rec.bsp["bsp"])
+        self.assertEqual(outcomes, {False: ("measurement_unresolved", True, None), True: ("void", True, None)})
 
 
 class PendingLineTests(unittest.TestCase):

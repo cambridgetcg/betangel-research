@@ -1035,6 +1035,27 @@ class SignalTests(WrapperCase):
         self.assertEqual(self.world.codes("stopped")[-1]["state"], "stopped_for_review")
 
 
+class IndexSignalTests(WrapperCase):
+    """A signal that lands while the index subprocesses run stops them before the next one; the remaining days are
+    logged for Yu (refute wf_e360e218, optional item)."""
+
+    def test_signal_between_verify_day_and_index(self):
+        wrapper = self.wrapper()
+        original = self.world.run
+
+        def run(argv, *, cwd):
+            code = original(argv, cwd=cwd)
+            wrapper.handler(signal.SIGTERM, None)
+            return code
+        self.world.run = run
+        self.world.plans.append({})
+        self.assertEqual(wrapper.run(), 0)
+        self.assertEqual([argv[argv.index("-m") + 2] for argv, _ in self.world.runs], ["verify-day"])
+        (skipped,) = self.world.codes("index_skipped")
+        self.assertEqual((skipped["code"], skipped["days"]), ("wrapper_signalled", ["2026-10-26"]))
+        self.assertEqual(self.day()["state"], "done")
+
+
 class NeverTouchesTests(WrapperCase):
     def test_no_lock_config_or_pinned_write_and_index_only_after_exit(self):
         guarded = {"admission.lock", ".recorder.lock", "config.json", "pinned.json", "recorder.pid"}

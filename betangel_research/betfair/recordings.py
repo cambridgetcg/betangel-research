@@ -790,23 +790,27 @@ CLASSIFY_OUTCOMES = ("finalized", "incomplete", "receipt_without_ledger_row", "n
 
 
 def _receipt_file(path):
-    """(present, value or None, sha256 of the bytes or None, problem or None) for one receipt file, read only."""
+    """(present, value or None, sha256 of the bytes or None, problem or None, invocation id or None) for one receipt
+    file, read only. A receipt that parses but fails the shared shape check (_receipt_shape_ok) still names the
+    invocation id it carries, so a malformed receipt is review evidence for its directory, never "no session"."""
     if not os.path.lexists(path):
-        return False, None, None, None
+        return False, None, None, None, None
     if path.is_symlink() or not path.is_file():
-        return True, None, None, "receipt_not_regular"
+        return True, None, None, "receipt_not_regular", None
     try:
         data = path.read_bytes()
     except OSError:
-        return True, None, None, "receipt_unreadable"
+        return True, None, None, "receipt_unreadable", None
     digest = hashlib.sha256(data).hexdigest()
     try:
         value = strict_json_loads(data.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        return True, None, digest, "receipt_unparseable"
+        return True, None, digest, "receipt_unparseable", None
+    carried = value.get("invocation_id") if isinstance(value, dict) else None
+    carried = carried if isinstance(carried, str) else None
     if not _receipt_shape_ok(value):
-        return True, None, digest, "receipt_shape"
-    return True, value, digest, None
+        return True, None, digest, "receipt_shape", carried
+    return True, value, digest, None, carried
 
 
 def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
@@ -839,7 +843,7 @@ def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
             continue
         final = _receipt_file(entry / "receipt.json")
         partial = _receipt_file(entry / "receipt.partial.json")
-        ids = {value.get("invocation_id") for _, value, _, _ in (final, partial) if isinstance(value, dict)}
+        ids = {carried for _, _, _, _, carried in (final, partial) if carried is not None}
         if invocation_id in ids:
             matches.append((entry, final, partial))
         elif not final[0] and not partial[0]:
@@ -863,7 +867,9 @@ def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
     out["session_id"] = sid = directory.name
     if out["codes"]:
         return out                                     # an unreadable or torn ledger: review, whatever else holds
-    present, receipt, digest, problem = final
+    if "receipt_shape" in (final[3], partial[3]):
+        return dict(out, codes=["receipt_shape"])      # a malformed receipt of this invocation: review evidence
+    present, receipt, digest, problem, _ = final
     if not present:
         return dict(out, outcome="incomplete", codes=["receipt_partial_only"])
     if problem is not None:

@@ -491,6 +491,26 @@ class LookNoteTests(LookCase):
         self.assertEqual(journal_.fold().looks, ())
         self.assertEqual({"pilot": good}, pilot.pilot_note("look", C.sha256, description_sha256=sha("a look")))
 
+    def test_a_look_with_a_market_or_order_ref_column_is_still_a_look(self):
+        """Neither column starts a fold action, as for a stop, an ack or an ending, so a look that carries a market_id,
+        a customer_order_ref or both is still a valid look that changes nothing (Astra, S8a review). A state_after
+        column stays refused, as above."""
+        for label in ("market_id", "customer_order_ref", "both"):
+            with self.subTest(columns=label):
+                journal_ = Pilot(pt4=True)
+                p = journal_.place(journal_.arm(0))
+                journal_.send(p)
+                columns = {"market_id": p.market, "customer_order_ref": p.ref}
+                columns = columns if label == "both" else {label: columns[label]}
+                now = journal_.now
+                seq = journal_.add("note", look_note(label), at=now + HOUR, **columns)
+                journal_.now = now
+                journal_.c_read(p)
+                state = journal_.fold()
+                self.assertEqual((state.looks, state.invalid_records), (((seq, sha(label)),), ()))
+                self.assert_looks_change_nothing(journal_.events)
+                self.assertEqual(state, replayed(journal_))
+
     def test_only_a_note_is_a_look(self):
         """A KILL or HALT whose payload is a look's {"pilot": ...} is a KILL or HALT: the journal accepts that payload
         for either kind (it checks an intent's or a settle's keys, so neither can carry it), and the fold ends the

@@ -3246,10 +3246,28 @@ def student_t_quantile(p, df):
     return (lo + hi) / 2.0
 
 
+def _cr1_p(alpha):
+    """1 - alpha as the float the t routine takes; t_p records this float exactly, not 1 - alpha itself."""
+    return float(1 - _exact(alpha))
+
+
+def _cr1_decide(m, bound):
+    """(result, near_tie) from m and bound = t*t*se2, exactly: PASS iff m >= 0 and m^2 >= bound, FAIL iff m < 0
+    and m^2 > bound; near_tie iff |m^2 - bound| <= bound/10^9, where a t error could flip the result."""
+    near_tie = abs(m * m - bound) <= Fraction(1, 10 ** 9) * bound
+    if m >= 0 and m * m >= bound:
+        return "PASS", near_tie
+    if m < 0 and m * m > bound:
+        return "FAIL", near_tie
+    return "INCONCLUSIVE", near_tie
+
+
 def cr1(bets, *, min_clusters, alpha):
     """CR1 on [(UTC date, exact x)]: m = sum(x)/N; SE^2 = G/(G-1) * sum_g (sum_{i in g} (x_i - m))^2 / N^2; t the
-    1 - alpha quantile with G - 1 df, turned into a Fraction; PASS iff m >= t*SE, FAIL iff m + t*SE < 0, both
-    decided exactly; G < min_clusters is checked before se_undefined (decision Q19)."""
+    1 - alpha quantile with G - 1 df, kept as the exact Fraction of its binary64 value, so the bound t*t*se2 it
+    returns is the one decided on (Astra #7); PASS iff m >= t*SE, FAIL iff m + t*SE < 0, both decided exactly;
+    G < min_clusters is checked before se_undefined (decision Q19). On too_few_clusters and se_undefined t, bound,
+    t_df and t_p are None; se2 is None only on too_few_clusters."""
     xs = [(day, _exact(x)) for day, x in bets]
     n = len(xs)
     groups = {}
@@ -3257,8 +3275,8 @@ def cr1(bets, *, min_clusters, alpha):
         groups.setdefault(day, []).append(x)
     g = len(groups)
     m = sum((x for _, x in xs), Fraction(0)) / n if n else None
-    result = {"N": n, "G": g, "m": m, "se2": None, "t": None, "result": "INCONCLUSIVE", "reason": None,
-              "near_tie": False}
+    result = {"N": n, "G": g, "m": m, "se2": None, "t": None, "bound": None, "t_df": None, "t_p": None,
+              "result": "INCONCLUSIVE", "reason": None, "near_tie": False}
     if g < min_clusters:
         return dict(result, reason="too_few_clusters")
     se2 = Fraction(g, g - 1) * sum((sum(x - m for x in group) ** 2 for group in groups.values()),
@@ -3266,14 +3284,11 @@ def cr1(bets, *, min_clusters, alpha):
     result["se2"] = se2
     if se2 == 0:
         return dict(result, reason="se_undefined")
-    t = student_t_quantile(float(1 - _exact(alpha)), g - 1)
-    bound = Fraction(t) ** 2 * se2
-    result.update(t=t, near_tie=abs(m * m - bound) <= Fraction(1, 10 ** 9) * bound)
-    if m >= 0 and m * m >= bound:
-        return dict(result, result="PASS")
-    if m < 0 and m * m > bound:
-        return dict(result, result="FAIL")
-    return result
+    p = _cr1_p(alpha)
+    t = Fraction(student_t_quantile(p, g - 1))
+    bound = t * t * se2
+    decided, near_tie = _cr1_decide(m, bound)
+    return dict(result, t=t, bound=bound, t_df=g - 1, t_p=Fraction(p), result=decided, near_tie=near_tie)
 
 
 def verdict(state, *, contract, now_ns):

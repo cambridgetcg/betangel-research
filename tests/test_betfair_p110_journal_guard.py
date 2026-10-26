@@ -165,7 +165,8 @@ class NotBeforeTests(unittest.TestCase):
 class AppendPilotTests(unittest.TestCase):
     def test_not_before_ns_reaches_the_journal_only_when_set(self):
         """append_pilot passes it as it passes before_ns, only when it is not None, so a journal stand-in whose append
-        takes no such argument is called exactly as before."""
+        takes no such argument is called exactly as before. A falsy value is still passed: 0 is a bound, and False must
+        reach the journal's type check rather than be dropped (Astra, S3a review)."""
         calls = []
 
         class Recording:
@@ -175,7 +176,10 @@ class AppendPilotTests(unittest.TestCase):
         pilot_run.append_pilot(Recording(), stop_note())
         pilot_run.append_pilot(Recording(), stop_note(), not_before_ns=None)
         pilot_run.append_pilot(Recording(), stop_note(), not_before_ns=7)
-        self.assertEqual(calls, [("note", {}), ("note", {}), ("note", {"not_before_ns": 7})])
+        pilot_run.append_pilot(Recording(), stop_note(), not_before_ns=0)
+        pilot_run.append_pilot(Recording(), stop_note(), not_before_ns=False)
+        self.assertEqual(calls, [("note", {}), ("note", {}), ("note", {"not_before_ns": 7}),
+                                 ("note", {"not_before_ns": 0}), ("note", {"not_before_ns": False})])
 
     def test_a_pilot_note_below_its_bound_is_refused(self):
         support.block_network(self)
@@ -187,6 +191,9 @@ class AppendPilotTests(unittest.TestCase):
         stamp = parse_utc_ns(clock.utc_now())
         with self.assertRaisesRegex(JournalError, "^journal_append_too_early$"):
             pilot_run.append_pilot(journal, stop_note(), not_before_ns=stamp + 1)
+        self.assertEqual(list(journal.events()), [])
+        with self.assertRaisesRegex(JournalError, "^not_before_ns_invalid$"):
+            pilot_run.append_pilot(journal, stop_note(), not_before_ns=False)
         self.assertEqual(list(journal.events()), [])
         event = pilot_run.append_pilot(journal, stop_note(), not_before_ns=stamp)
         self.assertEqual((event["seq"], parse_utc_ns(event["recorded_at"])), (1, stamp))

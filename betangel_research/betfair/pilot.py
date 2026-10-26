@@ -846,6 +846,9 @@ NOTE_FIELDS = {
     # row None only for the classes that are final without the execution table (Nuance R2-3).
     "finalized": {"final_at_ns": _is_ns, "row": _opt(lambda v: _is_int(v, 1) and v <= 5),
                   "class": _one_of(*CLASS_ORDER)},
+    # An unplanned look at an outcome figure (note §12:188), by the digest of the file that describes it; journaled
+    # by P1-10's pilot-look. It changes no fold input, the clock included (S8a; contract:192).
+    "look": {"description_sha256": _is_sha},
 }
 MARKET_NOTES = ("reservation", "decision", "capture_book", "capture_commission")
 ORDER_NOTES = ("capture_c", "capture_l", "finalized", "bsp_decided")
@@ -1671,6 +1674,7 @@ class PilotState:
     resolved_gaps: dict
     ending_notes: tuple
     ending: object
+    looks: tuple = ()                        # ((seq, description_sha256), ...) of the valid look notes (S8a)
 
 
 class _Rec:
@@ -1721,7 +1725,8 @@ class _Folder:
     7-day deadline) is evaluated at its own time; then the records the event names (every record, at the event where
     the commission method becomes verified: IR-25) are re-evaluated at the journal's time (the running maximum of
     recorded_at). So a record freezes at its first final computation, a deadline-final record is decided on evidence
-    recorded by its deadline only, and the pause is checked after every ledger change (note §10, §11)."""
+    recorded by its deadline only, and the pause is checked after every ledger change (note §10, §11). A valid look
+    is only listed: it moves neither the clock nor anything else (S8a)."""
 
     def __init__(self, contract, live_open_id):
         self.contract, self.live_open_id = contract, live_open_id
@@ -1752,6 +1757,7 @@ class _Folder:
         self.resolved_gaps = {}              # gap stop id -> seq of its resolution (Astra #6)
         self.at_seq = self.at_ns = None      # where in the journal the fold is: the event, or the trigger before it
         self.equity = 0
+        self.looks = []                      # (seq, description_sha256) of the valid look notes; the fold reads none
 
     # -- helpers -------------------------------------------------------------------------------------------------
 
@@ -1890,6 +1896,8 @@ class _Folder:
 
     def apply(self, event):
         seq, ns = event["seq"], event["_ns"]
+        if self.look(event, seq):
+            return
         clock = ns if self.clock is None else max(self.clock, ns)
         self.advance(clock, self.last_seq)
         self.clock, self.last_seq = clock, seq
@@ -1911,6 +1919,26 @@ class _Folder:
             self.evaluate(self.records[index], seq, self.clock)
         self.pause_check(seq)
         self.n_check(seq, None)
+
+    def look(self, event, seq):
+        """Whether the event is a valid look note, listed here. A look "cannot change the rule, inclusion, N or the
+        threshold" (contract:192), so apply() returns before anything else runs: the clock, last_seq, the triggers, the
+        records' evaluation, the commission method check, the pause and N. A look stamped past a trigger would
+        otherwise cross it early and change inclusion, and J ignores looks (S8a; IR-7). A malformed look, or one under
+        another contract, goes the way of any other note (pilot_note)."""
+        payload = event["payload"]
+        inner = payload.get("pilot") if event["kind"] == "note" else None
+        if not isinstance(inner, dict) or inner.get("type") != "look":
+            return False
+        try:
+            validate_pilot_payload(payload)
+            validate_event_columns("look", inner, event)
+        except PilotError:
+            return False
+        if inner["contract_sha256"] != self.contract.sha256:
+            return False
+        self.looks.append((seq, inner["description_sha256"]))
+        return True
 
     def pilot_note(self, event, seq, ns):
         payload = event["payload"]
@@ -2903,7 +2931,7 @@ def fold(events, *, contract, now_ns, live_open_id=None):
         due_stops=tuple(folder.due_stops()), active_stops=tuple(folder.active_stops()),
         violations=tuple(dict(item) for item in folder.violations), invalid_records=tuple(folder.invalid),
         resolved_gaps=dict(folder.resolved_gaps),
-        ending_notes=tuple(folder.ending_notes), ending=None)
+        ending_notes=tuple(folder.ending_notes), ending=None, looks=tuple(folder.looks))
     values = {name: getattr(state, name) for name in state.__dataclass_fields__}
     values["ending"] = placing_ending(state, now_ns=now)
     return PilotState(**values)

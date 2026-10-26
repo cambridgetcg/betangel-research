@@ -3932,6 +3932,9 @@ class VerdictAndCr1(unittest.TestCase):
     """The verdict order and CR1 (K:85-100, K:272-279; P:64-70)."""
 
     NOW = DAY0 + 100 * DAY_NS
+    # m -> CR1's result in the 16x25 case (se2 1/150000, t*SE about 0.0055034).
+    PINNED = {"0.02": "PASS", "-0.02": "FAIL", "0.005": "INCONCLUSIVE", "0.0055": "INCONCLUSIVE",
+              "0.0056": "PASS", "-0.0055": "INCONCLUSIVE", "-0.0056": "FAIL", "0": "INCONCLUSIVE"}
 
     def test_invalid_beats_pass_like_data(self):
         violation = {"code": "send_without_record", "seq": 9, "ns": DAY0, "ref": None}
@@ -3983,9 +3986,7 @@ class VerdictAndCr1(unittest.TestCase):
         self.assertAlmostEqual(math.sqrt(base["se2"]), 0.0025819889, places=10)
         self.assertAlmostEqual(base["t"], 2.131449546, places=9)
         self.assertAlmostEqual(base["t"] * math.sqrt(base["se2"]), 0.0055033791, places=10)
-        cases = {"0.02": "PASS", "-0.02": "FAIL", "0.005": "INCONCLUSIVE", "0.0055": "INCONCLUSIVE",
-                 "0.0056": "PASS", "-0.0055": "INCONCLUSIVE", "-0.0056": "FAIL", "0": "INCONCLUSIVE"}
-        for m, expected in cases.items():
+        for m, expected in self.PINNED.items():
             with self.subTest(m=m):
                 found = pilot.cr1(self.sixteen(Fraction(m)), min_clusters=15, alpha=Fraction(1, 40))
                 self.assertEqual(found["result"], expected)
@@ -4024,6 +4025,97 @@ class VerdictAndCr1(unittest.TestCase):
         bets = [(f"d{d}", Fraction(5, 100) + Fraction(d % 2, 100)) for d in range(15) for _ in range(27)]
         found = pilot.cr1(bets, min_clusters=C.min_clusters, alpha=C.alpha_one_sided)
         self.assertEqual((found["G"], found["result"]), (15, "PASS"))
+
+    def test_cr1_t_exact_binary64(self):
+        """t is the exact Fraction of the binary64 quantile, so the bound is the one decided on (Astra #7); t_p is the
+        float 0.975 exactly, not 39/40."""
+        found = pilot.cr1(self.sixteen(Fraction(2, 100)), min_clusters=15, alpha=Fraction(1, 40))
+        t = found["t"]
+        self.assertIs(type(t), Fraction)
+        self.assertEqual(t.denominator & (t.denominator - 1), 0)
+        self.assertEqual(Fraction(float(t)), t)
+        self.assertEqual(t, Fraction(pilot.student_t_quantile(float(1 - Fraction(1, 40)), 15)))
+        self.assertIs(type(found["t_p"]), Fraction)                      # a float would compare equal below
+        self.assertIs(type(found["t_df"]), int)
+        self.assertEqual((found["t_df"], found["t_p"]), (15, Fraction(0.975)))
+        self.assertEqual(found["t_p"], Fraction(8782019273372467, 2 ** 53))
+        self.assertNotEqual(found["t_p"], Fraction(39, 40))
+
+    def test_cr1_bound_is_t2_se2(self):
+        """bound is t*t*se2 with the returned t, the old Fraction(t) ** 2 * se2, and _cr1_decide on it gives the
+        returned result and near tie: there is one t, so nothing downstream can decide on another copy."""
+        rng = random.Random(400)
+        cases = [(self.sixteen(Fraction(m)), 15) for m in self.PINNED]
+        cases.append((self.sixteen(Fraction(pilot.student_t_quantile(0.975, 15) * math.sqrt(1 / 150000))), 15))
+        for _ in range(max(SEEDS // 2, 20)):
+            cases.append(([(f"d{rng.randrange(20)}", Fraction(rng.randrange(-50, 51), 1000))
+                           for _ in range(rng.randrange(20, 80))], 2))
+        seen = set()
+        for bets, min_clusters in cases:
+            found = pilot.cr1(bets, min_clusters=min_clusters, alpha=Fraction(1, 40))
+            t, se2 = found["t"], found["se2"]
+            self.assertEqual([type(found[key]) for key in ("t", "bound", "t_df", "t_p")],
+                             [Fraction, Fraction, int, Fraction])
+            self.assertEqual(found["bound"], t * t * se2)
+            self.assertEqual(found["bound"], Fraction(pilot.student_t_quantile(0.975, found["G"] - 1)) ** 2 * se2)
+            self.assertEqual(found["t_df"], found["G"] - 1)
+            self.assertEqual(pilot._cr1_decide(found["m"], found["bound"]), (found["result"], found["near_tie"]))
+            self.assertIsNone(found["reason"])
+            seen.add((found["result"], found["near_tie"]))
+        self.assertTrue({"PASS", "FAIL", "INCONCLUSIVE"} <= {result for result, _ in seen})
+        self.assertEqual({near for _, near in seen}, {False, True})
+
+    def test_t_perturbation_band(self):
+        """Outside the near-tie band a t error of 1e-10 never changes the result: it moves the bound by about 2e-10/t
+        of itself, well inside the band's 10^-9 for any t >= 1.96. The band's edge, |m^2 - bound| = bound/10^9, is
+        inside it; at m^2 == bound PASS holds (inclusive) but FAIL does not (strict)."""
+        delta = Fraction(1, 10 ** 10)
+        for m, expected in self.PINNED.items():
+            with self.subTest(m=m):
+                found = pilot.cr1(self.sixteen(Fraction(m)), min_clusters=15, alpha=Fraction(1, 40))
+                self.assertFalse(found["near_tie"])
+                self.assertEqual({pilot._cr1_decide(found["m"], (found["t"] + d) ** 2 * found["se2"])[0]
+                                  for d in (-delta, delta)}, {expected})
+        # m^2 = B(1 +- eps) exactly is unreachable with sixteen()'s se2 = 1/150000, so se2 = bound / t^2 here.
+        t = Fraction(pilot.student_t_quantile(0.975, 15))
+        outside, edge = Fraction(1, 10 ** 9) + Fraction(1, 10 ** 12), Fraction(1, 10 ** 9)
+        for m in (Fraction(55, 10000), -Fraction(55, 10000), Fraction(2, 100), -Fraction(2, 100)):
+            for sign in (1, -1):
+                expected = ("PASS" if m >= 0 else "FAIL") if sign > 0 else "INCONCLUSIVE"
+                with self.subTest(m=m, sign=sign):
+                    bound = m * m / (1 + sign * outside)
+                    se2 = bound / (t * t)
+                    self.assertEqual(pilot._cr1_decide(m, bound), (expected, False))
+                    self.assertEqual({pilot._cr1_decide(m, (t + d) ** 2 * se2)[0] for d in (-delta, delta)},
+                                     {expected})
+                    self.assertEqual(pilot._cr1_decide(m, m * m / (1 + sign * edge)), (expected, True))
+            with self.subTest(m=m, tie=True):
+                self.assertEqual(pilot._cr1_decide(m, m * m), ("PASS" if m > 0 else "INCONCLUSIVE", True))
+
+    def test_cr1_no_t_without_decision(self):
+        """too_few_clusters and se_undefined give no t, bound, t_df or t_p and no near tie; se2 is None only on
+        too_few_clusters and stays the computed zero on se_undefined (Astra v2 #3); verdict carries both as cr1
+        returns them. The too_few_clusters inputs have constant x, so they also pin Q19's order: G is checked
+        before se2 == 0."""
+        no_t = dict.fromkeys(("t", "bound", "t_df", "t_p"))
+        cases = {("too_few_clusters", "cr1"): pilot.cr1([("a", 1), ("b", 1)], min_clusters=15, alpha=Fraction(1, 40)),
+                 ("too_few_clusters", "verdict"): pilot.verdict(
+                     state_of(eligible_spread(400, days=14, x=Fraction(1, 10))), contract=C,
+                     now_ns=self.NOW)["inference"],
+                 ("se_undefined", "cr1"): pilot.cr1([(f"d{i % 15}", Fraction(1, 50)) for i in range(400)],
+                                                    min_clusters=15, alpha=Fraction(1, 40)),
+                 ("se_undefined", "verdict"): pilot.verdict(
+                     state_of(eligible_spread(400, x=Fraction(1, 10))), contract=C, now_ns=self.NOW)["inference"]}
+        for (reason, source), found in cases.items():
+            with self.subTest(reason=reason, source=source):
+                self.assertEqual((found["result"], found["reason"]), ("INCONCLUSIVE", reason))
+                self.assertEqual({key: found[key] for key in no_t}, no_t)
+                self.assertIs(found["near_tie"], False)
+                if reason == "too_few_clusters":
+                    self.assertIsNone(found["se2"])
+                else:
+                    self.assertIs(type(found["se2"]), Fraction)
+                    self.assertEqual(found["se2"], 0)
 
 
 class StudentT(unittest.TestCase):

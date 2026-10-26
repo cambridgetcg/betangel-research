@@ -300,7 +300,7 @@ def refusal_note(contract, *, session_id, open_id, reservation_seq, code):
                             book_sha256=None)
 
 
-def append_pilot(journal, payload, *, expect_head=None, before_ns=None, **columns):
+def append_pilot(journal, payload, *, expect_head=None, before_ns=None, not_before_ns=None, **columns):
     """Validate one pilot record (validate_pilot_payload, validate_event_columns) and append it -> the event."""
     kind = pilot.validate_pilot_payload(payload)
     if kind is None:
@@ -311,6 +311,8 @@ def append_pilot(journal, payload, *, expect_head=None, before_ns=None, **column
         extra["expect_head"] = expect_head
     if before_ns is not None:
         extra["before_ns"] = before_ns
+    if not_before_ns is not None:
+        extra["not_before_ns"] = not_before_ns
     return journal.append("note", payload, **columns, **extra)
 
 

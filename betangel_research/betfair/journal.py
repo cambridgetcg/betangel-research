@@ -525,7 +525,7 @@ class OrderJournal:
         return folder
 
     def append(self, kind, payload, *, intent_id=None, customer_order_ref=None, customer_ref=None, bet_id=None,
-               market_id=None, state_after=None, expect_head=None, before_ns=None):
+               market_id=None, state_after=None, expect_head=None, before_ns=None, not_before_ns=None):
         """Commit one event durably and return it (with seq and event_sha256).
 
         The event is first applied to a copy of the committed fold; if that raises, nothing is
@@ -537,11 +537,18 @@ class OrderJournal:
         the write lock is taken) is before it, and the wall clock read again once the lock is held and again just
         before COMMIT is too. The commit's own flush can still finish after before_ns; the pilot fold judges the
         event by its recorded_at, and the first-byte gate re-checks a submit's time. Without it nothing changes.
+        not_before_ns (a frontier note's trigger time, P1-10 S3a) is a lower bound on the stamp actually inserted:
+        JournalError journal_append_too_early, and nothing written, when recorded_at is below it; equality is
+        written. The fold sees only that stamp, which keeps microseconds, so a wall clock at or past not_before_ns
+        can still stamp below it. recorded_at is fixed before BEGIN IMMEDIATE, so the check runs before the write
+        lock is taken, with the same result. Without it nothing changes.
         A transaction an interrupted call left open on this connection is rolled back first (nothing it held was
         committed), and BEGIN IMMEDIATE sits inside the block whose handlers roll back only an open transaction.
         """
         if before_ns is not None and type(before_ns) is not int:
             raise JournalError("before_ns_invalid")
+        if not_before_ns is not None and type(not_before_ns) is not int:
+            raise JournalError("not_before_ns_invalid")
         expected = None
         if expect_head is not None:
             if not isinstance(expect_head, dict):
@@ -564,6 +571,8 @@ class OrderJournal:
             raise JournalError("pilot_intent_in_paper_journal")
         recorded_at = self.clock.utc_now()
         monotonic_ns = self.clock.monotonic_ns()
+        if not_before_ns is not None and parse_utc_ns(recorded_at) < not_before_ns:
+            raise JournalError("journal_append_too_early")      # recorded_at is already fixed: refused before the lock
         db = self._db
         if db.in_transaction:
             db.execute("ROLLBACK")

@@ -3138,10 +3138,10 @@ class Finalization(unittest.TestCase):
         removed = self.finalize(current_row(price="3.44"), cleared_row(price="3.06", reduced=True), removal=True)
         self.assertEqual((removed["row"], removed["size"], removed["P"]), (1, Decimal("2.00"), None))
 
-    def lifecycle(self, *, receipt=True):
+    def lifecycle(self, *, receipt=True, matched_p=200):
         journal_ = Pilot(pt1=receipt, pt4=receipt)
         _, placed, _ = journal_.classify(journal_.arm(0))
-        journal_.send(placed)
+        journal_.send(placed, matched_p)
         return journal_, placed
 
     def test_c_only_deadline_and_whole_number_pt(self):
@@ -3188,12 +3188,31 @@ class Finalization(unittest.TestCase):
         for order in itertools.permutations(rows):
             self.assertEqual(pilot.canonical_l(list(order))["seq"], 12)
 
+    def assert_reduction(self, rec, expected):
+        """expected is (row, size, P, unresolved), class and W's (part, value, reason): what priceReduced decides for
+        a verified L. A ledger of None is a record that is neither a removal nor unresolved: S's own gates book it,
+        not the flag, so it is only checked not to be booked as a removal."""
+        found = ((rec.execution["row"], rec.execution["size"], rec.execution["P"], rec.execution["unresolved"]),
+                 rec.measurement["class"], (rec.ledger["part"], rec.ledger["value_p"], rec.ledger["reason"]))
+        if expected[2] is None:
+            self.assertEqual(found[:2], expected[:2])
+            self.assertNotEqual(found[2][2], "removal")
+        else:
+            self.assertEqual(found, expected)
+
     def test_l_only_reduced_class(self):
-        journal_, p = self.lifecycle()
-        journal_.closed(p)
-        journal_.l_row(p, price="3.44", reduced=True)
-        rec = only(journal_.fold())
-        self.assertEqual((rec.measurement["class"], rec.execution["size"]), ("post_decision_removal", Decimal("2.00")))
+        """L only, settling 1.50 of a bet unmatched at placement (so L's size is not the stake): priceReduced true is
+        a removal, so row 4 takes L's size with no P and W books its loss for the removal. False prices the bet from
+        L; a missing flag never means false, so the size is unresolved."""
+        cases = {True: ((4, Decimal("1.50"), None, False), "post_decision_removal", ("W", -150, "removal")),
+                 False: ((4, Decimal("1.50"), Decimal("3.44"), False), "eligible", None),
+                 None: ((4, None, None, True), "measurement_unresolved", ("W", -200, "worst_case"))}
+        for reduced, expected in cases.items():
+            with self.subTest(reduced=reduced):
+                journal_, p = self.lifecycle(matched_p=0)
+                journal_.closed(p)
+                journal_.l_row(p, size="1.50", price="3.44", profit="-1.50", reduced=reduced)
+                self.assert_reduction(only(journal_.fold()), expected)
 
     def test_l_before_receipt(self):
         journal_, p = self.lifecycle(receipt=False)
@@ -3243,12 +3262,24 @@ class Finalization(unittest.TestCase):
         self.assertTrue(pilot.consistency_check(Decimal("1.00"), place_report_matched_p=None, c=None))
 
     def test_reduction_with_c_and_l(self):
-        journal_, p = self.lifecycle()
-        journal_.c_read(p, price="3.44")
-        journal_.closed(p)
-        journal_.l_row(p, price="3.30", reduced=True)
-        rec = only(journal_.fold())
-        self.assertEqual((rec.measurement["class"], rec.execution["unresolved"]), ("post_decision_removal", False))
+        """C at 3.44, then L. priceReduced true is a removal with no price comparison: equal sizes give row 1 at L's
+        size with no P although L's price is below C's; a smaller L gives row 2, still a removal (removal is classed
+        before unresolved), and contradicts C's size basis. False compares the prices, here unequal: row 2,
+        unresolved. A missing flag never means false, so even equal prices stay unresolved."""
+        unresolved = ((2, None, None, True), "measurement_unresolved", ("W", -200, "worst_case"))
+        cases = {"reduced": (True, "2.00", "3.30", ((1, Decimal("2.00"), None, False), "post_decision_removal",
+                                                    ("W", -200, "removal"))),
+                 "reduced, smaller L": (True, "1.50", "3.30", ((2, None, None, True), "post_decision_removal",
+                                                               ("W", -200, "contradiction"))),
+                 "not reduced, prices differ": (False, "2.00", "3.30", unresolved),
+                 "flag missing, prices equal": (None, "2.00", "3.44", unresolved)}
+        for label, (reduced, size, price, expected) in cases.items():
+            with self.subTest(case=label):
+                journal_, p = self.lifecycle()
+                journal_.c_read(p, price="3.44")
+                journal_.closed(p)
+                journal_.l_row(p, size=size, price=price, reduced=reduced)
+                self.assert_reduction(only(journal_.fold()), expected)
 
     def test_read_after_final_ignored(self):
         journal_, p = self.lifecycle()

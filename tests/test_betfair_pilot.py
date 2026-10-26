@@ -606,6 +606,7 @@ class Boundaries(unittest.TestCase):
         journal_.note("bsp_decided", ref_col=placed.ref, decided_at_ns=placed.off + 5 * MIN, outcome="bsp",
                       actual_sp="3.10", read_seq=1)
         journal_.note("look", description_sha256=sha("look-1"))
+        journal_.note("open_ended", open_id=placed.open_id)
         payloads = [e for e in journal_.events if e["kind"] == "note"]
         payloads.append({"payload": {"pilot": result["record"]}, "market_id": placed.market,
                          "customer_order_ref": None})
@@ -2962,7 +2963,8 @@ class AstraReviewR3(unittest.TestCase):
     def test_r3_1_an_open_end_counts_where_the_journal_shows_it(self):
         """No submit and a CLOSED book: the fold (no live open) finds the record definitely unsent, but a row-None
         note journaled before anything shows its open ended is premature, and the open's later end, journaled by
-        another open's reservation, never removes that stop. After that reservation a note round-trips."""
+        another open's reservation or by an open_ended note naming it (S2a), never removes that stop. After either a
+        note round-trips, whatever open the fold is told is live, and no new stop follows."""
         journal_ = Pilot(pt4=True)
         session = journal_.arm(0)
         _, p, _ = journal_.classify(session)
@@ -2972,13 +2974,22 @@ class AstraReviewR3(unittest.TestCase):
         early = journal_.note("finalized", at=journal_.now + S, ref_col=p.ref, final_at_ns=derived["final_at_ns"],
                               row=None, **{"class": "definitely_unsent"})
         self.assert_stopped_at(journal_.fold(), early)
-        journal_.reserve("1.299999", journal_.now + 300 * S, session=session, open_id="open-later")
-        later = journal_.note("finalized", at=journal_.now + S, ref_col=p.ref, final_at_ns=derived["final_at_ns"],
-                              row=None, **{"class": "definitely_unsent"})
-        for state in (journal_.fold(), journal_.fold(live_open_id="open-later"), replayed(journal_)):
-            self.assertEqual(only(state).measurement, derived)
-            self.assertEqual([s["stop_id"] for s in state.due_stops], [f"finalized-mismatch-{early}"])
-            self.assertNotIn(later, [s["source_seq"] for s in state.due_stops])
+        ends = {"reservation": lambda j: j.reserve("1.299999", j.now + 300 * S, session=session, open_id="open-later"),
+                # written out, not built by pilot_note, so a tree before S2a folds it too (as an invalid note)
+                "open_ended": lambda j: j.inner({"v": 1, "type": "open_ended", "contract_sha256": C.sha256,
+                                                 "open_id": p.open_id})}
+        for how, end in ends.items():
+            with self.subTest(ended_by=how):
+                ended = copy.deepcopy(journal_)
+                end(ended)
+                later = ended.note("finalized", at=ended.now + S, ref_col=p.ref, final_at_ns=derived["final_at_ns"],
+                                   row=None, **{"class": "definitely_unsent"})
+                live = "open-later" if how == "reservation" else p.open_id
+                for state in (ended.fold(), ended.fold(live_open_id=live), replayed(ended)):
+                    self.assertEqual(only(state).measurement, derived)
+                    self.assertEqual([s["stop_id"] for s in state.due_stops], [f"finalized-mismatch-{early}"])
+                    self.assertNotIn(later, [s["source_seq"] for s in state.due_stops])
+                self.assertEqual(ended.fold(), replayed(ended))
 
     def test_r3_1_bsp_decided_is_checked_where_it_is(self):
         """A bsp_decided note claiming 3.12 while the CLOSED read so far says 3.10; a later read of 3.12 never

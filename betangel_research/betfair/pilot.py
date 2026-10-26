@@ -849,6 +849,9 @@ NOTE_FIELDS = {
     # An unplanned look at an outcome figure (note §12:188), by the digest of the file that describes it; journaled
     # by P1-10's pilot-look. It changes no fold input, the clock included (S8a; contract:192).
     "look": {"description_sha256": _is_sha},
+    # The end of one placement open as a journal fact: nobody can still act for it (note §4; S2a). Journaled by P1-10's
+    # drain under .gateway.lock, from a fold of a journal read inside that hold; no column.
+    "open_ended": {"open_id": _matches(ID_RE)},
 }
 MARKET_NOTES = ("reservation", "decision", "capture_book", "capture_commission")
 ORDER_NOTES = ("capture_c", "capture_l", "finalized", "bsp_decided")
@@ -1644,6 +1647,7 @@ class RecordState:
     measurement: dict
     ledger: dict
     contradicted_seq: object
+    unsent_by_present: bool = False          # unsent only because finish() ended its open, no journal event (S2a)
 
 
 @dataclass(frozen=True)
@@ -1675,6 +1679,8 @@ class PilotState:
     ending_notes: tuple
     ending: object
     looks: tuple = ()                        # ((seq, description_sha256), ...) of the valid look notes (S8a)
+    present_ended_opens: tuple = ()          # the opens finish() ended, not the journal, in journal order (S2a)
+    live_open_id: object = None              # the live_open_id the fold was given (S2a)
 
 
 class _Rec:
@@ -1696,6 +1702,7 @@ class _Rec:
         self.failed_seq = self.failed_ns = None
         self.sent_seq = None                 # the first evidence that the order reached Betfair
         self.open_ended_ns = None
+        self.open_end = None                 # how its open ended: "journal" (a reservation, an open_ended) or "present"
         self.bet_id = None
         self.place_report = None             # {"seq", "matched_p", "status"}; matched_p None means unusable
         self.c_reads, self.l_rows = [], []
@@ -1716,6 +1723,14 @@ class _Rec:
             return False
         return self.failed_seq is not None or (self.submit_seq is None and self.open_ended_ns is not None)
 
+    @property
+    def unsent_by_present(self):
+        """Unsent only because finish() said so: no submit, no FAILED(transport_not_sent), no evidence that the
+        order reached Betfair, and its open ended by finish() alone, not by a journal event (S2a). A frontier note
+        journaled now could not rest on that end (Nuance R3-1)."""
+        return (self.submit_seq is None and self.failed_seq is None and self.sent_seq is None
+                and self.open_end == "present")
+
     def report_matched_p(self):
         return None if self.place_report is None else self.place_report["matched_p"]
 
@@ -1726,7 +1741,8 @@ class _Folder:
     the commission method becomes verified: IR-25) are re-evaluated at the journal's time (the running maximum of
     recorded_at). So a record freezes at its first final computation, a deadline-final record is decided on evidence
     recorded by its deadline only, and the pause is checked after every ledger change (note §10, §11). A valid look
-    is only listed: it moves neither the clock nor anything else (S8a)."""
+    is only listed: it moves neither the clock nor anything else (S8a). A valid open_ended note ends its open before
+    its stamp moves the clock, as finish() ends the opens that are not live (S2a)."""
 
     def __init__(self, contract, live_open_id):
         self.contract, self.live_open_id = contract, live_open_id
@@ -1735,6 +1751,7 @@ class _Folder:
         self.sessions, self.session_days = [], set()
         self.reservations, self.reservation_by_seq = {}, {}
         self.opens, self.ended_opens = [], {}
+        self.present_ended = []              # the opens finish() ended, in journal order (S2a)
         self.records, self.by_ref, self.by_market = [], {}, {}
         self.skips = []
         self.pilot_refs = {}
@@ -1850,24 +1867,39 @@ class _Folder:
     def halted(self, market_id):
         return any(market is None or market == market_id for _, market in self.halts)
 
-    def end_opens(self, keep, ns):
-        """Every open but keep has ended (one placement open at a time, note §4): its records with no submit are
-        definitely unsent and its reservations with no record are interrupted. The journal establishes this where
+    def end_open(self, open_id, ns, source):
+        """The open has ended: its records with no submit are definitely unsent and its reservations with no record
+        are interrupted. source is how the fold knows it, kept on each record as open_end: "journal" (another open's
+        reservation, or an open_ended note naming it) or "present" (finish(), for an open that is not live). Only the
+        journal's end supports a frontier note journaled after it (Nuance R3-1; S2a)."""
+        self.ended_opens[open_id] = ns
+        if source == "present":
+            self.present_ended.append(open_id)
+        affected = set()
+        for rec in self.records:
+            if rec.open_id == open_id and rec.open_ended_ns is None:
+                rec.open_ended_ns, rec.open_end = ns, source
+                affected.add(rec.index)
+        return affected
+
+    def end_opens(self, keep, ns, source):
+        """Every open but keep has ended (one placement open at a time, note §4). The journal establishes this where
         another open reserves; live_open_id adds it only at the end of the fold, as the present's knowledge, so it
         never supports a frontier note journaled earlier (Nuance R3-1)."""
         affected = set()
         for open_id in self.opens:
             if open_id != keep and open_id not in self.ended_opens:
-                self.ended_opens[open_id] = ns
-                for rec in self.records:
-                    if rec.open_id == open_id and rec.open_ended_ns is None:
-                        rec.open_ended_ns = ns
-                        affected.add(rec.index)
+                affected |= self.end_open(open_id, ns, source)
         return affected
 
     def advance(self, until_ns, label):
         """Evaluate every time trigger due by until_ns at its own time, earliest first, before the event that
-        crossed it (findings 3, 7, 10)."""
+        crossed it (findings 3, 7, 10). A trigger changes a ledger only through the execution freeze at the deadline
+        + 1, which never lowers it: it freezes the size of the first checked C read on time, which rule d already
+        counts where a place report exists and which otherwise replaces the worst case with a loss no larger; with no
+        such read the record keeps the worst case. A reservation relies on that, since it ends the earlier opens only
+        after this has crossed the triggers before it (S2a-r is not scheduled). Nothing here checks it; S2a-0's tests
+        do (IR3-19)."""
         while self.next_trigger is not None and self.next_trigger <= until_ns:
             at, due = self.next_trigger, set()
             self.at_seq, self.at_ns = label, at
@@ -1898,12 +1930,15 @@ class _Folder:
         seq, ns = event["seq"], event["_ns"]
         if self.look(event, seq):
             return
+        ended = self.open_ended(event)
         clock = ns if self.clock is None else max(self.clock, ns)
         self.advance(clock, self.last_seq)
         self.clock, self.last_seq = clock, seq
         self.at_seq, self.at_ns = seq, ns
         kind, payload = event["kind"], event["payload"]
-        if kind == "note" and "pilot" in payload:
+        if ended is not None:
+            dirty = ended
+        elif kind == "note" and "pilot" in payload:
             dirty = self.pilot_note(event, seq, ns)
         elif kind == "intent":
             dirty = self.intent(event, seq, ns)
@@ -1920,25 +1955,48 @@ class _Folder:
         self.pause_check(seq)
         self.n_check(seq, None)
 
+    def checked_note(self, event, kind):
+        """The inner payload when the event is a valid note of this kind under this contract, or None: the check for a
+        note acted on before the clock moves (a look, an open_ended). Anything else, a malformed note or one under
+        another contract included, goes the way of any other event (pilot_note)."""
+        payload = event["payload"]
+        inner = payload.get("pilot") if event["kind"] == "note" else None
+        if not isinstance(inner, dict) or inner.get("type") != kind:
+            return None
+        try:
+            validate_pilot_payload(payload)
+            validate_event_columns(kind, inner, event)
+        except PilotError:
+            return None
+        return inner if inner["contract_sha256"] == self.contract.sha256 else None
+
     def look(self, event, seq):
         """Whether the event is a valid look note, listed here. A look "cannot change the rule, inclusion, N or the
         threshold" (contract:192), so apply() returns before anything else runs: the clock, last_seq, the triggers, the
         records' evaluation, the commission method check, the pause and N. A look stamped past a trigger would
-        otherwise cross it early and change inclusion, and J ignores looks (S8a; IR-7). A malformed look, or one under
-        another contract, goes the way of any other note (pilot_note)."""
-        payload = event["payload"]
-        inner = payload.get("pilot") if event["kind"] == "note" else None
-        if not isinstance(inner, dict) or inner.get("type") != "look":
-            return False
-        try:
-            validate_pilot_payload(payload)
-            validate_event_columns("look", inner, event)
-        except PilotError:
-            return False
-        if inner["contract_sha256"] != self.contract.sha256:
+        otherwise cross it early and change inclusion, and J ignores looks (S8a; IR-7)."""
+        inner = self.checked_note(event, "look")
+        if inner is None:
             return False
         self.looks.append((seq, inner["description_sha256"]))
         return True
+
+    def open_ended(self, event):
+        """The records a valid open_ended note ends, or None when the event is not one. The note ends its open at
+        the fold clock and evaluates that open's records there, under the previous event's label, exactly as finish()
+        ends an open that is not live; only then does apply() move the clock to the note's stamp. So replaying the note
+        gives what its writer's fold gave, whatever its stamp: it carries no time, and may be written hours after a
+        crash, past other records' triggers (S2a rule 7, a deliberate choice; Astra v2 #2). One naming an open the
+        journal does not know, or one already ended, reaches note_open_ended, an invalid note; a malformed one, or one
+        under another contract, goes the way of any other note (pilot_note)."""
+        inner = self.checked_note(event, "open_ended")
+        if inner is None or inner["open_id"] not in self.opens or inner["open_id"] in self.ended_opens:
+            return None
+        self.at_seq, self.at_ns = self.last_seq, self.clock
+        affected = self.end_open(inner["open_id"], self.clock, "journal")
+        for index in sorted(affected):
+            self.evaluate(self.records[index], self.last_seq, self.clock)
+        return affected
 
     def pilot_note(self, event, seq, ns):
         payload = event["payload"]
@@ -1989,7 +2047,7 @@ class _Folder:
             self.violation("reservation_open_ended", seq, ns)
         if open_id not in self.opens:
             self.opens.append(open_id)
-        affected = self.end_opens(open_id, ns)
+        affected = self.end_opens(open_id, ns, "journal")
         problem = self.session_problem(inner["session_id"], ns, seq)
         if problem:
             self.violation(problem, seq, ns)
@@ -2000,6 +2058,13 @@ class _Folder:
                  "decision_seq": None}
         self.reservations[market] = self.reservation_by_seq[seq] = entry
         return affected
+
+    def note_open_ended(self, inner, event, seq, ns):
+        """An open_ended note that open_ended() did not take before the clock moved: its open is one the journal does
+        not know, or one already ended by another open's reservation or by an earlier note. It is an invalid note,
+        never a silent repeat: the writer's expect_head makes a legitimate duplicate unreachable (Astra, Q2)."""
+        self.invalid_note(seq)
+        return set()
 
     def note_decision(self, inner, event, seq, ns):
         reservation = self.reservation_by_seq.get(inner["reservation_seq"])
@@ -2844,7 +2909,7 @@ class _Folder:
         every record at now."""
         now = now_ns if self.clock is None else max(self.clock, now_ns)
         self.at_seq, self.at_ns = self.last_seq, self.clock
-        for index in sorted(self.end_opens(self.live_open_id, now if self.clock is None else self.clock)):
+        for index in sorted(self.end_opens(self.live_open_id, now if self.clock is None else self.clock, "present")):
             self.evaluate(self.records[index], self.last_seq, self.clock)
         self.advance(now, self.last_seq)
         self.at_seq, self.at_ns = self.last_seq, now
@@ -2898,15 +2963,18 @@ def _freeze_record(rec):
         c_reads=tuple(rec.c_reads), l_rows=tuple(rec.l_rows),
         execution=dict(rec.execution) if rec.execution else dict(_NOT_FINAL_EXECUTION),
         bsp=dict(rec.bsp) if rec.bsp else dict(_NOT_DECIDED_BSP), measurement=dict(rec.measurement),
-        ledger=dict(rec.ledger), contradicted_seq=rec.contradicted_seq)
+        ledger=dict(rec.ledger), contradicted_seq=rec.contradicted_seq, unsent_by_present=rec.unsent_by_present)
 
 
 def fold(events, *, contract, now_ns, live_open_id=None):
     """The pilot state from the journal's events (OrderJournal.events() dicts: seq gap-free from 1, mode live, the
     columns and the parsed payload), in seq order only, never by recorded_at. live_open_id names the placement
     open in progress, if any: a reservation of any other open with no record is SKIP(interrupted), and a PLACE
-    record of any other open with no submit is definitely unsent. Deterministic: re-folding the same events at
-    the same now gives an equal state. More than one contract sha256 is refused in v1 (decision Q24)."""
+    record of any other open with no submit is definitely unsent. Where only that says an open has ended, not a
+    reservation or an open_ended note, the open is in present_ended_opens and its records with no submit, no
+    FAILED(transport_not_sent) and no evidence of sending have unsent_by_present (S2a). Deterministic: re-folding
+    the same events at the same now gives an equal state. More than one contract sha256 is refused in v1 (decision
+    Q24)."""
     if not isinstance(contract, Contract) or not _is_ns(now_ns):
         raise PilotError("fold_input_invalid")
     folder = _Folder(contract, live_open_id)
@@ -2931,7 +2999,8 @@ def fold(events, *, contract, now_ns, live_open_id=None):
         due_stops=tuple(folder.due_stops()), active_stops=tuple(folder.active_stops()),
         violations=tuple(dict(item) for item in folder.violations), invalid_records=tuple(folder.invalid),
         resolved_gaps=dict(folder.resolved_gaps),
-        ending_notes=tuple(folder.ending_notes), ending=None, looks=tuple(folder.looks))
+        ending_notes=tuple(folder.ending_notes), ending=None, looks=tuple(folder.looks),
+        present_ended_opens=tuple(folder.present_ended), live_open_id=live_open_id)
     values = {name: getattr(state, name) for name in state.__dataclass_fields__}
     values["ending"] = placing_ending(state, now_ns=now)
     return PilotState(**values)

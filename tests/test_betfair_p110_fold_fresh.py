@@ -13,6 +13,13 @@ pinned shapes are the design round's pure probes (probe_adv, probe_stale, probe_
 slice's review: probe_record (a new record turns the method on) and probe_rise (a trigger that changes a ledger).
 Generated journals use test_betfair_pilot's builder. Synthetic: nothing here shows that a writer of
 commission_verified exists (P1-16).
+
+S2a adds journals with open_ended notes: probe_adv's shapes with X's open ended past A's deadline, and the generated
+journals rebuilt with a drain that writes the note where S2c's predicate would (drained). Both pins run on them too,
+so the records of an open the journal ended are checked from the note on. The drain seldom writes past another open's
+pending trigger, and in these seeds never past one that changes a ledger: that case, rule 7's, rests on
+test_betfair_p110_open_ended's pin, whose stamps are placed past such triggers. Nothing here is P1-10's drain (S3b,
+S3c).
 """
 
 import copy
@@ -259,14 +266,20 @@ def probe_gw_head():
 
 @functools.lru_cache(maxsize=None)
 def pinned():
-    """(label, events, length of the loser preamble) for each pinned shape as its probe leaves it. Shared: read
-    only."""
+    """(label, events, length of the loser preamble) for each pinned shape as its probe leaves it, and probe_adv's
+    with X's open ended by an open_ended note 1 s before Y2 reserves, past A's deadline (S2a). The note is written out
+    rather than built by pilot_note, so a tree before S2a builds these too, and folds the note as an invalid one.
+    Shared: read only."""
     journals = []
     for variant in ("late_c", "second_c", "second_closed", "control"):
         shape = probe_adv(variant)
-        shape.journal.note("reservation", at=shape.t0, market_col="1.999999", session_id=shape.session,
-                           open_id="open-Y2")
-        journals.append((f"probe_adv {variant}", shape.journal.events, shape.warm))
+        ended = copy.deepcopy(shape.journal)
+        ended.add("note", {"pilot": {"v": 1, "type": "open_ended", "contract_sha256": C.sha256,
+                                     "open_id": shape.x.open_id}}, at=shape.t0 - S)
+        for journal_, label in ((shape.journal, f"probe_adv {variant}"), (ended, f"probe_adv {variant} open_ended")):
+            journal_.note("reservation", at=shape.t0, market_col="1.999999", session_id=shape.session,
+                          open_id="open-Y2")
+            journals.append((label, journal_.events, shape.warm))
     for note_first in (True, False):
         shape = probe_stale(note_first)
         journals.append((f"probe_stale note_first={note_first}", shape.journal.events, shape.warm))
@@ -304,7 +317,14 @@ def generated(seed):
     return f"seed {seed}", events, len(preamble()[0].events) if seed % 8 == 0 else 0
 
 
-def journal(seed):
+@functools.lru_cache(maxsize=None)
+def drained(seed):
+    """(label, events, length of the loser preamble): journal(seed, drain=True)."""
+    events = journal(seed, drain=True)
+    return f"drained seed {seed}", events, len(preamble()[0].events) if seed % 8 == 0 else 0
+
+
+def journal(seed, *, drain=False):
     """A journal of two to four sessions of two to five decisions, days 1, 2 or 7 apart so BSP cutoffs and deadlines
     fall inside later sessions, from the builder in time order. Decisions are the gateway's classify or written as
     placed, each with a random fate: no submit, FAILED(transport_not_sent), or sent (fully, partly or not matched, a few
@@ -313,9 +333,16 @@ def journal(seed):
     Yu's commission_verified comes before or after a market's CLOSED read: near it, after the session for a winner
     whose CLOSED read is still to come (probe_stale's shape), or before the CLOSED read of a market whose record comes
     later. A few markets get a second record. PT receipts can come late, and Yu acknowledges the due stops before most
-    ARMs. Every eighth seed starts 70 losers in, near the first pause level."""
+    ARMs. Every eighth seed starts 70 losers in, near the first pause level.
+
+    With drain (S2a), a decision is left with no submit more often, its market's CLOSED book read as S1b reads it, and
+    a drain runs now and then: between pilot-run's opens, later that day or days later after a decision, and at a
+    session's end. It writes open_ended for each open its fold (no live open) ends with a record that has
+    unsent_by_present, the conditions of S2c's open_ended_problem. Its draws come from a stream of its own, but the
+    journal is not journal(seed) with notes added: a decision it leaves unsubmitted skips its fate's draws."""
     rng = random.Random(seed)
     unreported = random.Random(-1 - seed)            # a stream of its own, so the fates rng draws stay as they were
+    drains = random.Random(f"drain {seed}") if drain else None
     if seed % 8 == 0:
         journal_, first_day = copy.deepcopy(preamble())
     else:
@@ -342,7 +369,30 @@ def journal(seed):
             p = journal_.place(f"s{day}", off=off, market=market)
         if p is not None:
             markets.append(p.market)
-            fate(p)
+            if drains and drains.random() < 0.3:
+                unsubmitted(p)
+            else:
+                fate(p)
+            if drains:
+                drain_after(p)
+
+    def unsubmitted(p):
+        """No submit, and the CLOSED book S1b reads for every PLACE record's market, sent or not."""
+        if drains.random() < 0.7:
+            at(p.off + drains.choice((5 * MIN, 3 * HOUR, 2 * DAY_NS)), journal_.closed, p,
+               ours=drains.choice(("WINNER", "LOSER")))
+
+    def drain_after(p):
+        """A drain after the decision: between pilot-run's opens, later that day, or days later (pilot-capture)."""
+        if drains.random() < 0.7:
+            at(p.off + drains.choice((-290 * S, 2 * MIN, 3 * HOUR, 8 * DAY_NS)), drain_now)
+
+    def drain_now(*, at):
+        """open_ended for each open this fold ends, not the journal, that has a record with unsent_by_present."""
+        state = journal_.fold(now=at)
+        for open_id in state.present_ended_opens:
+            if any(rec.open_id == open_id and rec.unsent_by_present for rec in state.place_records):
+                journal_.note("open_ended", at=at, open_id=open_id)
 
     def verify_later(*, at):
         """Yu's commission_verified after the session, for a winner whose CLOSED read is still to come."""
@@ -424,6 +474,8 @@ def journal(seed):
         if rng.random() < 0.3:
             at(DAY0 + day * DAY_NS + rng.randint(9, 22) * HOUR, journal_.receipt, rng.choice(("PT1", "PT4")),
                matched=1)
+        if drains and drains.random() < 0.5:
+            at(DAY0 + day * DAY_NS + 21 * HOUR, drain_now)                    # pilot-end-session, say
         day += rng.choice((1, 1, 2, 7))
     while queue:
         ns, _, action, args, fields = heapq.heappop(queue)
@@ -511,7 +563,8 @@ class FreshnessTests(unittest.TestCase):
     journal order equal the present's at now = J, the fold clock, and so do the fold's implied stops, session ends,
     pause, N and due stops. It runs with no live open, leaving out the records of the opens finish() ends (and, when it
     ends any, the fold's state), and again with each prefix's latest open live, leaving out nothing. Every 100th prefix
-    and the last also check the observation against pilot.fold."""
+    and the last also check the observation against pilot.fold. An open an open_ended note ended is the journal's, so
+    from the note on nothing is left out for it (S2a)."""
 
     def assert_fresh(self, journals_):
         """Every prefix of every journal; a prefix another journal began with is folded once."""
@@ -543,6 +596,43 @@ class FreshnessTests(unittest.TestCase):
 
     def test_generated_journals_are_fresh_at_every_prefix(self):
         self.assert_fresh([generated(seed) for seed in range(GENERATED)])
+
+    def test_drained_journals_are_fresh_at_every_prefix(self):
+        self.assert_fresh([drained(seed) for seed in range(GENERATED)])
+
+    def test_the_drain_reaches_what_s2a_needs(self):
+        """The drained journals have open_ended notes, none of them invalid, where the inputs S2a is for occur: a note
+        stamped past a pending trigger of a record of another open (rule 7's case, which few drained notes reach and
+        none where the trigger changes a ledger), a note whose record's market was read CLOSED before it, a note before
+        a CLOSED read of its record's market, and a reservation after a note."""
+        seen, notes = set(), 0
+        for seed in range(GENERATED):
+            _, events, _ = drained(seed)
+            kinds = [(e["payload"].get("pilot") or {}).get("type") for e in events]
+            ended = {}                               # open id -> the seq of its note
+            for n, folder in journal_order(events):
+                following = events[n] if n < len(events) else None
+                if following is None or kinds[n] != "open_ended":
+                    if following is not None and kinds[n] == "reservation" and ended:
+                        seen.add("a reservation after a note")
+                    continue
+                notes += 1
+                open_id, stamp = following["payload"]["pilot"]["open_id"], pilot.parse_utc_ns(following["recorded_at"])
+                ended[open_id] = n + 1
+                if any(rec.open_id != open_id and rec.triggers and rec.triggers[0] <= stamp for rec in folder.records):
+                    seen.add("a note past another open's trigger")
+                markets = {rec.market_id for rec in folder.records if rec.open_id == open_id}
+                if any(read["status"] == "CLOSED" for market in markets for read in folder.books.get(market, [])):
+                    seen.add("a note after its market's CLOSED read")
+                if any(kind == "capture_book" and e["market_id"] in markets and e["seq"] > n + 1
+                       for kind, e in zip(kinds, events)):
+                    seen.add("a note before its market's CLOSED read")
+            state = pilot.fold(list(events), contract=C, now_ns=folder.clock)
+            self.assertEqual([seq for seq in state.invalid_records if kinds[seq - 1] == "open_ended"], [])
+            self.assertEqual(set(ended) & set(state.present_ended_opens), set())
+        self.assertGreater(notes, 0)
+        self.assertEqual(seen, {"a note past another open's trigger", "a note after its market's CLOSED read",
+                                "a note before its market's CLOSED read", "a reservation after a note"})
 
     def test_the_generator_reaches_what_ir25_needs(self):
         """The generated journals reach the inputs the pin is for, IR-25's own case among them (the method turned on
@@ -601,8 +691,16 @@ class ReservationOrderTests(unittest.TestCase):
         """Design rule 8: a trigger changes a ledger only through the execution freeze at the deadline + 1, which
         never lowers it. After every prefix, each pending trigger crossed in turn lowers no record's journal-order
         ledger, and some trigger raises one, so the check is not empty."""
+        self.assert_no_trigger_lowers(itertools.chain(pinned(), (generated(seed) for seed in range(GENERATED))))
+
+    def test_no_time_trigger_lowers_a_ledger_on_drained_journals(self):
+        """S2a: the same where the drain wrote open_ended notes."""
+        self.assert_no_trigger_lowers(drained(seed) for seed in range(RESERVED))
+
+    def assert_no_trigger_lowers(self, journals_):
+        """Every prefix of every journal; a prefix another journal began with is checked once."""
         checked, drops, moved = [], [], 0
-        for label, events, warm in itertools.chain(pinned(), (generated(seed) for seed in range(GENERATED))):
+        for label, events, warm in journals_:
             start = max((common_prefix(events, other) for other in checked), default=0)
             checked.append(events)
             for n, folder in journal_order(events):
@@ -698,6 +796,12 @@ class ReservationOrderTests(unittest.TestCase):
         ends a record unsent (a send with no place report whose deadline falls in a later session, before a
         decision there), so that case rests on probe_rise."""
         tried, _ = self.assert_reservations_fold_as_the_gateway_folded([generated(seed) for seed in range(RESERVED)])
+        self.assertGreater(tried, 0)
+
+    def test_an_admitted_reservation_folds_as_the_gateway_folded_on_drained_journals(self):
+        """S2a: the same where the drain wrote open_ended notes, so some reservations come after an open the journal
+        ended already, and end nothing."""
+        tried, _ = self.assert_reservations_fold_as_the_gateway_folded([drained(seed) for seed in range(RESERVED)])
         self.assertGreater(tried, 0)
 
 

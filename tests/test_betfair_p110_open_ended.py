@@ -409,14 +409,24 @@ class RuleSevenTests(unittest.TestCase):
         self.assertLess(folder.clock, r_deadline)
         events = pilot._check_events(with_note(events, shape.x.open_id, folder.clock + 30 * DAY_NS))
         x = next(rec for rec in folder.records if rec.ref == shape.x.ref)
-        checks, pause_check = [], folder.pause_check
+        label, clock = folder.last_seq, folder.clock      # the fold's place before the note
+        steps, pause_check, evaluate = [], folder.pause_check, folder.evaluate
 
         def observed(seq):
-            checks.append((folder.at_ns, x.open_end, x.value_p))
+            steps.append(("pause", folder.at_ns, x.open_end, x.value_p))
             pause_check(seq)
 
-        folder.pause_check = observed
+        def evaluated(rec, at_seq, at_ns):
+            if rec is x:
+                steps.append(("x", at_seq, at_ns, folder.at_seq, folder.at_ns))
+            evaluate(rec, at_seq, at_ns)
+
+        folder.pause_check, folder.evaluate = observed, evaluated
         folder.apply(events[-1])
+        checks = [step[1:] for step in steps if step[0] == "pause"]
+        # X is evaluated first, at the saved fold clock under the previous event's label, before any pause check or
+        # trigger: not at the note's seq or stamp (Astra, S2a review).
+        self.assertEqual(steps[0], ("x", label, clock, label, clock))
         self.assertEqual(checks[0][0], r_deadline)
         self.assertEqual({(open_end, value) for _, open_end, value in checks}, {("journal", 0)})
         self.assertGreater(len(checks), 2)                # R's deadline, X's own triggers and the note itself

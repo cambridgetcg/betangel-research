@@ -605,6 +605,7 @@ class Boundaries(unittest.TestCase):
         journal_.note("finalized", ref_col=placed.ref, final_at_ns=placed.off + DAY_NS, row=1, **{"class": "eligible"})
         journal_.note("bsp_decided", ref_col=placed.ref, decided_at_ns=placed.off + 5 * MIN, outcome="bsp",
                       actual_sp="3.10", read_seq=1)
+        journal_.note("look", description_sha256=sha("look-1"))
         payloads = [e for e in journal_.events if e["kind"] == "note"]
         payloads.append({"payload": {"pilot": result["record"]}, "market_id": placed.market,
                          "customer_order_ref": None})

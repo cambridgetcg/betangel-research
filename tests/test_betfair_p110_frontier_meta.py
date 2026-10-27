@@ -534,6 +534,36 @@ class EntryTests(FrontierCase):
         self.assert_one_decision(state)
         self.assert_replays(journal_)
 
+    def test_a_failed_report_moves_an_unsent_records_final_time_once(self):
+        """The one move with no class change (_frontier_current): a no-submit record whose open a reservation ended is
+        definitely_unsent, final at its last own event, and a note there is ok and current. A FAILED(transport_not_sent)
+        report the fold accepts without a submit moves its final time to that report: the entry stays ok, finalized is
+        no longer current, and a note at the new time makes it current again (Astra, S2b review)."""
+        journal_ = Pilot(pt4=True)
+        session = journal_.arm(0)
+        _, p, _ = journal_.classify(session)
+        journal_.closed(p, sp="3.10")
+        journal_.reserve("1.299999", journal_.now + 300 * S, session=session, open_id="open-later")
+        first = supported(only(journal_.fold()))["finalized"]
+        self.assertEqual(first["class"], "definitely_unsent")
+        note = write(journal_, p.ref, "finalized", first)
+        self.assertEqual(only(journal_.fold()).frontier_current, frozenset({"finalized"}))
+        failed = journal_.failed(p, at=journal_.now + S)
+        state = journal_.fold()
+        rec = only(state)
+        moved = supported(rec)["finalized"]
+        self.assertEqual((moved["class"], moved["final_at_ns"] > first["final_at_ns"]), ("definitely_unsent", True))
+        self.assertEqual(entries(rec), [("finalized", note, True, True, ())])
+        self.assertEqual((rec.frontier_current, state.due_stops), (frozenset(), ()))
+        self.assertGreater(failed, note)
+        again = write(journal_, p.ref, "finalized", moved)
+        state = journal_.fold()
+        self.assertEqual(entries(only(state)),
+                         [("finalized", note, True, True, ()), ("finalized", again, True, True, ())])
+        self.assertEqual((only(state).frontier_current, state.due_stops), (frozenset({"finalized"}), ()))
+        self.assert_one_decision(state)
+        self.assert_replays(journal_)
+
     def test_a_bsp_decided_note_then_a_differing_closed_read_stays_current(self):
         """BspFrontier.test_matching_note_then_a_correction's inputs: a note at 3.1 for a read of 3.10 (compared as a
         Decimal), then a CLOSED read of 3.12: the entry is ok and stays current, the BSP stays 3.10."""

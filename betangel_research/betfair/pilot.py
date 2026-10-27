@@ -908,6 +908,19 @@ def validate_event_columns(kind, inner, event):
         raise PilotError("pilot_record_invalid")
 
 
+def frontier_note_valid(kind, inner):
+    """Whether a bsp_decided or finalized note that validate_pilot_payload passed has a shape the fold can check
+    (S2b): outcome "bsp" exactly when it carries actualSP text, and row None only for a class that is final without
+    the execution table (Nuance R2-3). It is the fold's one check, and P1-10's writer is to use it too (S3b); a note
+    that fails it is an invalid note, with no frontier entry. An open_ended note has its own checks (S3b), so any
+    other kind is refused, never judged."""
+    if kind == "bsp_decided":
+        return (inner["outcome"] == "bsp") == (inner["actual_sp"] is not None)
+    if kind == "finalized":
+        return inner["row"] is not None or inner["class"] in UNSENT_CLASSES
+    raise PilotError("frontier_input_invalid")
+
+
 def stop_payload(contract, stop_id, scope, reason, *, level_p=None, source_seq=None):
     return {"v": 1, "type": "stop", "contract_sha256": contract.sha256, "stop_id": stop_id, "scope": scope,
             "reason": reason, "level_p": level_p, "source_seq": source_seq}
@@ -1648,6 +1661,9 @@ class RecordState:
     ledger: dict
     contradicted_seq: object
     unsent_by_present: bool = False          # unsent only because finish() ended its open, no journal event (S2a)
+    addressable: bool = True                 # by_ref[ref] is this record, so a frontier note can reach it (IR-5)
+    frontier: tuple = ()                     # an entry per valid frontier note, decided at the note's seq (S2b)
+    frontier_current: frozenset = frozenset()  # the types an ok entry still matches at now; empty fails closed
 
 
 @dataclass(frozen=True)
@@ -1681,6 +1697,7 @@ class PilotState:
     looks: tuple = ()                        # ((seq, description_sha256), ...) of the valid look notes (S8a)
     present_ended_opens: tuple = ()          # the opens finish() ended, not the journal, in journal order (S2a)
     live_open_id: object = None              # the live_open_id the fold was given (S2a)
+    journal_clock_ns: object = None          # J: the fold clock after the last event; valid looks never move it (IR-7)
 
 
 class _Rec:
@@ -1714,6 +1731,9 @@ class _Rec:
         self.last_own_ns = ns                # its decision or intent: when an unsent record was established
         self.value_p = -contract.size_p
         self.ledger = {"part": "W", "value_p": self.value_p, "basis": None, "reason": "worst_case"}
+        self.addressable = True              # by_ref[ref] is this record: frontier notes reach it (IR-5)
+        self.frontier = []                   # {type, seq, ok, frozen, claim, differs} per valid frontier note (S2b)
+        self.frontier_current = frozenset()  # set by finish(): _frontier_current at now
 
     @property
     def unsent(self):
@@ -1733,6 +1753,40 @@ class _Rec:
 
     def report_matched_p(self):
         return None if self.place_report is None else self.place_report["matched_p"]
+
+
+def _frontier_claim_matches(kind, claim, rec, clock):
+    """The names of the claim fields of a frontier note that the record (a _Rec, or a RecordState), as the fold has it
+    at clock, does not match, in a fixed order; () when the note matches. Names, never values (IR-9). The conditions
+    are the handlers' own: a finalized note needs the record final by clock ("final"), with its class, final time and
+    execution row ("row"; None only for a class final without the execution table); a bsp_decided note needs the BSP
+    decided ("decided"), with its actualSP, compared as a Decimal, its CLOSED read and its time, which must match
+    exactly (R2-5)."""
+    if kind == "finalized":
+        measurement = rec.measurement
+        if not (measurement["final"] and measurement["final_at_ns"] <= clock):
+            return ("final",)
+        row = None if rec.execution is None else rec.execution["row"]
+        row_ok = claim["row"] == row or (claim["row"] is None and measurement["class"] in UNSENT_CLASSES)
+        checks = (("class", measurement["class"] != claim["class"]),
+                  ("final_at_ns", measurement["final_at_ns"] != claim["final_at_ns"]), ("row", not row_ok))
+    else:
+        if rec.bsp is None or not rec.bsp["decided"]:          # a RecordState's undecided BSP is a dict
+            return ("decided",)
+        claimed = None if claim["actual_sp"] is None else Decimal(claim["actual_sp"])
+        checks = (("actual_sp", rec.bsp["bsp"] != claimed), ("read_seq", rec.bsp["read_seq"] != claim["read_seq"]),
+                  ("decided_at_ns", rec.bsp["decided_at_ns"] != claim["decided_at_ns"]))
+    return tuple(name for name, differs in checks if differs)
+
+
+def _frontier_current(rec, clock):
+    """The frontier types current for the record (a _Rec, or a RecordState) at clock: those with some ok entry whose
+    claim the record still matches there (S2b). finish() keeps them at now. Classes and BSPs only move one way
+    (violations only grow, unsent turns false only with a violation, execution and BSP are set once), and the final
+    time of a definitely_unsent record with no submit moves once, to a FAILED(transport_not_sent) after its open ended,
+    so this is the same as the newest ok entry matching; a wrong note written later carries its own stop."""
+    return frozenset(entry["type"] for entry in rec.frontier
+                     if entry["ok"] and not _frontier_claim_matches(entry["type"], entry["claim"], rec, clock))
 
 
 class _Folder:
@@ -2102,7 +2156,7 @@ class _Folder:
         problems += self.place_rule_problems(inner, session, ns)
         rec = _Rec(self.contract, inner, seq, ns, bool(session and session["pt4"]), len(self.records))
         self.records.append(rec)
-        self.by_ref.setdefault(rec.ref, rec)
+        rec.addressable = self.by_ref.setdefault(rec.ref, rec) is rec     # a reused ref keeps its first record
         self.by_market.setdefault(rec.market_id, []).append(rec)
         for code in problems:
             self.violation(code, seq, ns, rec)
@@ -2330,9 +2384,10 @@ class _Folder:
     def note_bsp_decided(self, inner, event, seq, ns):
         """The BSP decision's durable frontier: from here the record's BSP is frozen as the reads journaled before
         this note give it, and any later read is only logged. A note the evidence does not support (no decision yet,
-        or another outcome, actualSP or read) sets the review stop bsp_decided_mismatch; its value is never adopted."""
+        or another outcome, actualSP or read) sets the review stop bsp_decided_mismatch; its value is never adopted.
+        Either way the note is the record's frontier entry, decided here (S2b)."""
         rec = self.by_ref.get(event["customer_order_ref"])
-        if rec is None or (inner["outcome"] == "bsp") != (inner["actual_sp"] is not None):
+        if rec is None or not frontier_note_valid("bsp_decided", inner):
             self.invalid_note(seq)
             return
         if rec.bsp is None:
@@ -2340,9 +2395,8 @@ class _Folder:
                              now_ns=self.clock, cutoff_s=self.contract.bsp_cutoff_s)
             if bsp["decided"]:
                 rec.bsp = bsp
-        claimed = None if inner["actual_sp"] is None else Decimal(inner["actual_sp"])
-        if (rec.bsp is None or rec.bsp["bsp"] != claimed or rec.bsp["read_seq"] != inner["read_seq"]
-                or rec.bsp["decided_at_ns"] != inner["decided_at_ns"]):      # the time must match exactly (R2-5)
+        differs = self.frontier_entry(rec, "bsp_decided", inner, seq, frozen=rec.bsp is not None)
+        if differs:
             self.imply_review("bsp_decided_mismatch", seq)
         return {rec.index}
 
@@ -2354,19 +2408,29 @@ class _Folder:
         record not final there, or final otherwise (class, final time, and row or None for an unsent or violating
         class), sets the review stop finalized_mismatch at once, which ends the session it falls in and which no
         later evidence removes. The derived record is kept: the note's class is never adopted and the final time
-        is never moved to the note (Nuance R2-3, R2-5, R3-1)."""
+        is never moved to the note (Nuance R2-3, R2-5, R3-1). Either way the note is the record's frontier entry,
+        decided here (S2b)."""
         rec = self.by_ref.get(event["customer_order_ref"])
-        if rec is None or (inner["row"] is None and inner["class"] not in UNSENT_CLASSES):
+        if rec is None or not frontier_note_valid("finalized", inner):
             self.invalid_note(seq)
             return
         self.evaluate(rec, seq, self.clock)
-        measurement = rec.measurement
-        row = None if rec.execution is None else rec.execution["row"]
-        row_ok = inner["row"] == row or (inner["row"] is None and measurement["class"] in UNSENT_CLASSES)
-        if not (measurement["final"] and measurement["final_at_ns"] <= self.clock and row_ok
-                and measurement["class"] == inner["class"] and measurement["final_at_ns"] == inner["final_at_ns"]):
+        differs = self.frontier_entry(rec, "finalized", inner, seq, frozen=rec.measurement["final"])
+        if differs:
             self.imply_review("finalized_mismatch", seq)
         return {rec.index}
+
+    def frontier_entry(self, rec, kind, inner, seq, *, frozen):
+        """Keep a valid frontier note as an entry of its record, decided once, at its own position: ok when no claim
+        field differs from the fold, and never changed by later evidence, so a note that matched stays ok after a later
+        class change (Astra #4). frozen: the record is final, or its BSP decided, after the handler. The claim keeps the
+        note's values, a BSP among them, so output may print an entry's differs and seq, never its claim (IR-9). -> the
+        names of the fields that differ; the handler sets its mismatch stop from this one decision (S2b)."""
+        claim = {key: inner[key] for key in NOTE_FIELDS[kind]}
+        differs = _frontier_claim_matches(kind, claim, rec, self.clock)
+        rec.frontier.append({"type": kind, "seq": seq, "ok": not differs, "frozen": frozen, "claim": claim,
+                             "differs": differs})
+        return differs
 
     def note_violation(self, inner, event, seq, ns):
         rec = next((r for r in self.records if r.decision_seq == inner["source_seq"]), None)
@@ -2906,7 +2970,8 @@ class _Folder:
 
     def finish(self, now_ns):
         """Close the opens that are not live, evaluate every time trigger up to the fold's now at its own time, then
-        every record at now."""
+        every record at now, and keep the frontier types current at now (_frontier_current; S2b). Nothing here changes
+        an entry or addressability."""
         now = now_ns if self.clock is None else max(self.clock, now_ns)
         self.at_seq, self.at_ns = self.last_seq, self.clock
         for index in sorted(self.end_opens(self.live_open_id, now if self.clock is None else self.clock, "present")):
@@ -2917,6 +2982,8 @@ class _Folder:
             self.evaluate(rec, self.last_seq, now)
         self.pause_check(self.last_seq)
         self.n_check(self.last_seq, None)
+        for rec in self.records:
+            rec.frontier_current = _frontier_current(rec, now)
         return now
 
 
@@ -2963,7 +3030,8 @@ def _freeze_record(rec):
         c_reads=tuple(rec.c_reads), l_rows=tuple(rec.l_rows),
         execution=dict(rec.execution) if rec.execution else dict(_NOT_FINAL_EXECUTION),
         bsp=dict(rec.bsp) if rec.bsp else dict(_NOT_DECIDED_BSP), measurement=dict(rec.measurement),
-        ledger=dict(rec.ledger), contradicted_seq=rec.contradicted_seq, unsent_by_present=rec.unsent_by_present)
+        ledger=dict(rec.ledger), contradicted_seq=rec.contradicted_seq, unsent_by_present=rec.unsent_by_present,
+        addressable=rec.addressable, frontier=tuple(rec.frontier), frontier_current=rec.frontier_current)
 
 
 def fold(events, *, contract, now_ns, live_open_id=None):
@@ -2972,9 +3040,11 @@ def fold(events, *, contract, now_ns, live_open_id=None):
     open in progress, if any: a reservation of any other open with no record is SKIP(interrupted), and a PLACE
     record of any other open with no submit is definitely unsent. Where only that says an open has ended, not a
     reservation or an open_ended note, the open is in present_ended_opens and its records with no submit, no
-    FAILED(transport_not_sent) and no evidence of sending have unsent_by_present (S2a). Deterministic: re-folding
-    the same events at the same now gives an equal state. More than one contract sha256 is refused in v1 (decision
-    Q24)."""
+    FAILED(transport_not_sent) and no evidence of sending have unsent_by_present (S2a). Each record keeps its frontier
+    entries, decided at each note's position, and the types still current at now; journal_clock_ns is J, the fold
+    clock after the last event, None when no event moved it, as in an empty or looks-only journal (S2b).
+    Deterministic: re-folding the same events at the same now gives an equal state. More than one contract sha256 is
+    refused in v1 (decision Q24)."""
     if not isinstance(contract, Contract) or not _is_ns(now_ns):
         raise PilotError("fold_input_invalid")
     folder = _Folder(contract, live_open_id)
@@ -3000,7 +3070,7 @@ def fold(events, *, contract, now_ns, live_open_id=None):
         violations=tuple(dict(item) for item in folder.violations), invalid_records=tuple(folder.invalid),
         resolved_gaps=dict(folder.resolved_gaps),
         ending_notes=tuple(folder.ending_notes), ending=None, looks=tuple(folder.looks),
-        present_ended_opens=tuple(folder.present_ended), live_open_id=live_open_id)
+        present_ended_opens=tuple(folder.present_ended), live_open_id=live_open_id, journal_clock_ns=folder.clock)
     values = {name: getattr(state, name) for name in state.__dataclass_fields__}
     values["ending"] = placing_ending(state, now_ns=now)
     return PilotState(**values)

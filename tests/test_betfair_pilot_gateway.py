@@ -12,6 +12,7 @@ with a pilot fold showing no protocol violation. They do not show Betfair's real
 
 import contextlib
 import copy
+import io
 import hashlib
 import inspect
 import json
@@ -21,6 +22,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from betangel_research.betfair import admission
 from betangel_research.betfair import api as api_module
 from betangel_research.betfair.arming import expected_token
 from betangel_research.betfair import cli
@@ -2292,61 +2294,152 @@ class LegacyPinTests(unittest.TestCase):
                          "orders": "1bde15a23e9d778e6937f7b6f8f48a92678069b4380a9cfaf3c0158e10b80697",
                          "outputs": "8829ebadde085d33fa02cdeb26b1a1be77df4d486c8dbd638c7858440a107ae7"}
 
-    def test_non_pilot_commands_unchanged_from_base(self):
-        """§1's invariance test (NP-3): on a config without orders.pilot, place, cancel, live-probe, reconcile, place,
-        settle-market twice (refused while the market is open, then settled once it is CLOSED and our bets are no
-        longer current), kill, and resume after the KILL file is removed, through cli.main, give the same journal
-        events (without event ids, chain hashes and monotonic stamps), the same order requests and the same
-        (exit, stdout, stderr) per command as at 2d3b092. Refs, customer refs and intent ids are made deterministic."""
+    # Recording rollout (design v9 §8 NP-3, updated deliberately): the same sequence with Yu's typed recording-release
+    # N inserted where a manual command leaves its ADMISSION retained. The events and orders digests stay those of
+    # 2d3b092; the outputs with the recording lines and release steps removed are 2d3b092's too; the full outputs
+    # (release lines and the release steps' own output) are pinned here.
+    # Re-pinned after review round 1 (NP-01): the settle-market continuation's line is now the neutral one.
+    ROLLOUT_OUTPUTS = "8fcc661b1174f0418434a1e13e22a13e87aa32adbe2567756c64373cddfdd3f0"
+    ROLLOUT_EXITS = [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0]
+
+    def non_pilot_world(self):
         import io as io_module
         import itertools
         from betangel_research.betfair import cli as cli_module
-        from betangel_research.betfair.journal import OrderJournal as Journal
+        from test_betfair_admission import FakeProcesses
         env = gw.build_live_gateway(self)
         env.journal.close()
         self.assertNotIn("pilot", env.config["orders"])
         counter = itertools.count(1)
         deps = {"keychain_runner": env.runner, "http_transport": env.transport, "clock": env.clock,
-                "confirmer": env.confirmer}
+                "confirmer": env.confirmer, "processes": FakeProcesses(pid=7)}
         outputs = []
 
-        def run(*argv):
+        def run(*argv, release=False):
             out, err = io_module.StringIO(), io_module.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = cli_module.main(list(argv), deps=deps)
             root = str(env.paths.profile_dir.parent.parent)
-            outputs.append([code, out.getvalue().replace(root, "<root>"), err.getvalue().replace(root, "<root>")])
+            outputs.append([code, out.getvalue().replace(root, "<root>"), err.getvalue().replace(root, "<root>"),
+                            release])
             return code, out.getvalue()
 
+        refs = contextlib.ExitStack()
+        refs.enter_context(patch.object(gateway_module, "make_customer_order_ref", lambda now: f"ref-{next(counter):04d}"))
+        refs.enter_context(patch.object(gateway_module, "make_customer_ref", lambda now: f"cref-{next(counter):04d}"))
+        refs.enter_context(patch.object(gateway_module, "_intent_id", lambda: f"int-{next(counter):04d}"))
+        self.addCleanup(refs.close)
         place = ["place", "--market", "1.1", "--selection", str(gw.SELECTION), "--side", "BACK", "--price", "3.50",
                  "--size", "2.00", "--mode", "live", "--confirm-live", env.token]
-        with patch.object(gateway_module, "make_customer_order_ref", lambda now: f"ref-{next(counter):04d}"), \
-                patch.object(gateway_module, "make_customer_ref", lambda now: f"cref-{next(counter):04d}"), \
-                patch.object(gateway_module, "_intent_id", lambda: f"int-{next(counter):04d}"):
-            bet = json.loads(run(*place)[1])["orders"][0]["bet_id"]
-            run("cancel", "--market", "1.1", "--bet-id", bet, "--mode", "live", "--confirm-live", env.token)
-            run("live-probe", "--market", "1.1", "--selection", str(gw.SELECTION), "--confirm-live", env.token)
-            run("reconcile", "--mode", "live", "--confirm-live", env.token)
-            bet2 = json.loads(run(*place)[1])["orders"][0]["bet_id"]
-            run("settle-market", "--market", "1.1", "--confirm-live", env.token)
-            run("cancel", "--market", "1.1", "--bet-id", bet2, "--mode", "live", "--confirm-live", env.token)
-            env.exchange.market_status = "CLOSED"
-            env.exchange.hide_cancelled_unmatched = True
-            run("settle-market", "--market", "1.1", "--confirm-live", env.token)
-            run("kill", "--reason", "invariance test")
-            env.paths.kill_file.unlink()
-            run("resume", "--mode", "live", "--confirm-live", env.token)
-        self.assertEqual([o[0] for o in outputs], [0, 0, 0, 0, 0, 2, 0, 0, 0, 0])
+        return env, run, outputs, place
+
+    def journal_digests(self, env):
+        from betangel_research.betfair.journal import OrderJournal as Journal
         journal = Journal(env.paths.journal_path("live"), mode="live", clock=env.clock)
         try:
             events = [{k: v for k, v in e.items() if k not in ("event_id", "prev_sha256", "event_sha256",
                                                                "monotonic_ns")} for e in journal.events()]
         finally:
             journal.close()
-        found = {"events": canonical_sha256(events),
-                 "orders": canonical_sha256([(r["method"], r["params"]) for r in env.router.order_requests]),
-                 "outputs": canonical_sha256(outputs)}
-        self.assertEqual(found, self.NON_PILOT_DIGESTS)
+        return canonical_sha256(events), len(events)
+
+    def test_non_pilot_commands_unchanged_from_base(self):
+        """§1's invariance test (NP-3), updated by the recording rollout (design v9 §8): on a config without
+        orders.pilot, place, cancel, Yu's typed recording-release 1, live-probe, reconcile, place, settle-market
+        --continue-admission 4 (refused while the market is open), cancel, recording-release 4, settle-market (settled
+        once it is CLOSED and our bets are no longer current), kill, and resume after the KILL file is removed, through
+        cli.main. The journal events (without event ids, chain hashes and monotonic stamps) and the order requests
+        are those of 2d3b092, byte for byte (admission writes no journal event); the cancel, kill and resume outputs
+        are unchanged, and the place, live-probe, reconcile and settle-market outputs differ only by the recording
+        lines _manual_owned prints. Refs, customer refs and intent ids are made deterministic."""
+        env, run, outputs, place = self.non_pilot_world()
+        release = ["recording-release", "--confirm-live", env.token]
+        bet = json.loads(run(*place)[1])["orders"][0]["bet_id"]
+        run("cancel", "--market", "1.1", "--bet-id", bet, "--mode", "live", "--confirm-live", env.token)
+        run(*release, release=True)
+        run("live-probe", "--market", "1.1", "--selection", str(gw.SELECTION), "--confirm-live", env.token)
+        run("reconcile", "--mode", "live", "--confirm-live", env.token)
+        bet2 = json.loads(run(*place)[1])["orders"][0]["bet_id"]
+        run("settle-market", "--market", "1.1", "--confirm-live", env.token, "--continue-admission", "4")
+        run("cancel", "--market", "1.1", "--bet-id", bet2, "--mode", "live", "--confirm-live", env.token)
+        run(*release, release=True)
+        env.exchange.market_status = "CLOSED"
+        env.exchange.hide_cancelled_unmatched = True
+        run("settle-market", "--market", "1.1", "--confirm-live", env.token)
+        run("kill", "--reason", "invariance test")
+        env.paths.kill_file.unlink()
+        run("resume", "--mode", "live", "--confirm-live", env.token)
+        self.assertEqual([o[0] for o in outputs], self.ROLLOUT_EXITS)
+        self.assertIn("settle_market_not_closed", outputs[6][2])
+        self.assertNotIn("release refused", outputs[6][2])                # NP-01: a continuation never releases
+        self.assertIn("Betfair recording: continuation of generation 4 never releases (continuation_never_releases); "
+                      "recording stays off until Yu's typed recording-release (generation 4)", outputs[6][2])
+        self.assertEqual(env.confirmer.prompts[1]["expected"], "RELEASE RECORDING GENERATION 1")
+        self.assertEqual(admission.admission_status(env.paths)["admission"], None)
+        found = {"events": self.journal_digests(env)[0],
+                 "orders": canonical_sha256([(r["method"], r["params"]) for r in env.router.order_requests])}
+        self.assertEqual(found, {k: self.NON_PILOT_DIGESTS[k] for k in ("events", "orders")})
+        base = [[code, out, "".join(line for line in err.splitlines(keepends=True)
+                                    if not line.startswith("Betfair recording: "))]
+                for code, out, err, released in outputs if not released]
+        self.assertEqual(canonical_sha256(base), self.NON_PILOT_DIGESTS["outputs"])
+        for index in (1, 10, 11):                                        # cancel, kill, resume: no recording line
+            self.assertNotIn("Betfair recording", outputs[index][2])
+        self.assertEqual(canonical_sha256(outputs), self.ROLLOUT_OUTPUTS)
+
+    def test_non_pilot_resting_bet_refuses_the_next_fresh_live_command(self):
+        """NP-3's short sequence without the typed release (design v9 §3.4.7 item 1): a place that leaves its bet
+        EXECUTABLE keeps its ADMISSION, so a fresh live-probe is refused admission_held, exit 2, with no new journal
+        event and no order request."""
+        env, run, outputs, place = self.non_pilot_world()
+        run(*place)
+        events = self.journal_digests(env)[1]
+        requests = len(env.router.order_requests)
+        code, _ = run("live-probe", "--market", "1.1", "--selection", str(gw.SELECTION), "--confirm-live", env.token)
+        self.assertEqual(code, 2)
+        self.assertIn("Betfair order refused: admission_held", outputs[-1][2])
+        self.assertIn("admission held by manual:7, generation 1, state admitted", outputs[-1][2])
+        self.assertEqual((self.journal_digests(env)[1], len(env.router.order_requests)), (events, requests))
+
+    def test_non_pilot_second_concurrent_manual_command_is_owner_live(self):
+        """A second manual command during the first one's typed prompt is refused owner_live (design v9 §3.4.7 item
+        6): the first holds the owner lock through its prompt."""
+        env, run, outputs, place = self.non_pilot_world()
+        seen = []
+
+        class Second(gw.FakeConfirmer):
+            def confirm_line(confirmer, expected, *, banner):
+                if not seen:
+                    seen.append(run(*place))
+                return super().confirm_line(expected, banner=banner)
+        env.confirmer.__class__ = Second
+        run(*place)
+        self.assertEqual(seen[0][0], 2)
+        self.assertIn("Betfair order refused: owner_live", outputs[0][2])
+        self.assertEqual(len(env.router.order_requests), 1)
+
+    def test_non_pilot_drain_refusal(self):
+        """A drain refusal (a fake recorder that does not stop within the 90 s bound) refuses a manual place with
+        exit 2, before any credential read, and leaves INHIBIT set (design v9 §3.4.7 items 6 and 2)."""
+        from test_betfair_admission import FakeProcesses
+        env, run, outputs, place = self.non_pilot_world()
+        recorder = admission.recorder_admission(env.paths, invocation_id="rec-1", clock=env.clock,
+                                                processes=FakeProcesses())
+        recorder.__enter__()
+        self.addCleanup(lambda: recorder.__exit__(None, None, None))
+        stubborn = FakeProcesses(pid=7, starts={7: "start-self", 4242: "start-A"})
+        from betangel_research.betfair import cli as cli_module
+        env.runner.calls.clear()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli_module.main(place, deps={"keychain_runner": env.runner, "http_transport": env.transport,
+                                                "clock": env.clock, "confirmer": env.confirmer, "processes": stubborn})
+        self.assertEqual(code, 2)
+        self.assertIn("Betfair order refused: recorder_did_not_stop", err.getvalue())
+        self.assertEqual(stubborn.signals, [4242])
+        self.assertEqual(env.runner.calls, [])
+        status = admission.admission_status(env.paths)
+        self.assertEqual((status["admission"], status["inhibit"]), (None, True))
 
     MAIN = {"config_sha256": "08ab18b78cb15a9612f1de0d0962505ccb5458989b20b9d2904186f2d2dad921",
             "token": "live-08ab18b78cb1-20200101",

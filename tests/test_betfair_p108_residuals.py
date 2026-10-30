@@ -142,13 +142,16 @@ class NonPilotSettleProbeTests(unittest.TestCase):
             code = cli.main(["settle-market", "--market", "1.1", "--confirm-live", env.token], deps=deps)
         return code, err.getvalue()
 
-    def test_the_probe_creates_no_owner_lock_file(self):
+    def test_the_settle_path_never_probes_the_owner_lock(self):
+        """Recording rollout (design v9 §3.4.4): settle-market takes ownership first, so its pilot check never probes
+        the owner lock (the probe this residual pinned is gone from the settle path); a non-pilot unreadable journal
+        still meets the gateway's own journal error, exit 4, as before P1-08."""
         env = self.garbage_journal_env()
-        self.assertFalse(env.paths.live_owner_lock.exists())
-        code, err = self.settle(env)
+        with patch.object(admission, "owner_lock_state", side_effect=AssertionError("probe in the settle path")):
+            code, err = self.settle(env)
         self.assertEqual(code, 4, err)
         self.assertIn("Betfair stopped: DatabaseError", err)
-        self.assertFalse(env.paths.live_owner_lock.exists())
+        self.assertNotIn("pilot_session_armed", err)
 
     def test_an_unreadable_recordings_dir_reads_as_free(self):
         if os.geteuid() == 0:

@@ -81,7 +81,7 @@ ADMISSION_LOCK_TIMEOUT_S = 10
 # How long admission waits for a SIGTERMed recorder to let go of .recorder.lock (design v3: "for example 90 s").
 DRAIN_TIMEOUT_S = 90
 DRAIN_POLL_S = 0.5
-OWNER_RE = re.compile(r"[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9._-]{0,63}")   # pilot-session:<id>, arm-live:<pid>
+OWNER_RE = re.compile(r"[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9._-]{0,63}")   # pilot-session:<id>, manual:<pid>
 PURPOSE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.:,()/-]{0,119}")
 INVOCATION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
 ADMISSION_KEYS = frozenset({"schema_version", "generation", "owner", "purpose", "created_at", "state"})
@@ -266,6 +266,17 @@ def recorder_lock_held(paths, *, clock=SYSTEM_CLOCK):
             return False
     except LockBusy:
         return True
+
+
+def recorder_pid_status(paths):
+    """recorder.pid for status, in one strict read: "absent" only when the file does not exist, "unreadable" when it
+    exists but cannot be read or parsed (a symlink, the wrong shape), else its record. _read_pid's None for both stays
+    as it is for the drain."""
+    try:
+        record = _load(paths.recorder_pid_file, PID_KEYS, _check_pid)
+    except AdmissionRefused:
+        return "unreadable"
+    return "absent" if record is None else record
 
 
 def admission_status(paths):
@@ -453,7 +464,7 @@ def admit(paths, *, owner, purpose, config, generation=None, cleanup=False, cloc
     "ledger_checked", "recorder"}. The caller keeps the generation for the whole live command or session and its
     cleanup, and gives it to release() at its orderly end.
 
-    owner is "<kind>:<id>" (pilot-session:<id>, arm-live:<pid>, manual:<pid>); purpose is a short safe
+    owner is "<kind>:<id>" (pilot-session:<id>, pilot-capture:<pid>, manual:<pid>); purpose is a short safe
     text. With generation None this is a new admission: refused (admission_held) while any ADMISSION
     exists, whoever owns it; otherwise INHIBIT and a pending ADMISSION N+1 are written under the lock,
     any recorder is drained, the step 8 ledger rule must pass, and only then is ADMISSION marked
@@ -714,3 +725,85 @@ def release_own(ticket, paths, *, config, extra_checks=(), clock=SYSTEM_CLOCK):
         return dict(out, outcome=exc.outcome, problems=list(exc.problems) or [exc.detail or exc.outcome],
                     owner=exc.owner or ticket.owner)
     return dict(out, released=bool(result["released"]), outcome=result["status"])
+
+
+# --- Yu's typed recording-release (recording design v9 §3.5) -------------------------------------------------------
+
+RELEASE_GENERATION_LINE = "RELEASE RECORDING GENERATION {generation}"
+RELEASE_INHIBIT_LINE = "RELEASE RECORDING INHIBIT"
+
+
+def recording_release(paths, *, config, show, confirm, extra_checks, clock=SYSTEM_CLOCK):
+    """Yu's typed recording-release (design v9 §3.5; P1-08 spec §8 :778; ruling 9) -> {"outcome", "generation",
+    "owner", "problems"}; outcome is "released_generation", "released_inhibit", "nothing_to_release" or
+    "release_refused" (problems lists every code). The CLI runs static arming (A2, A11, A13) before calling it.
+
+    1. .live-owner.lock with LOCK_NB, held to the very end: busy refuses owner_live, an OSError owner_state_unknown
+       (OwnershipRefused); never probed and then taken.
+    2. admission_status under the held lock; unreadable refuses admission_state_unknown (OwnershipRefused).
+    3. extra_checks (read-only callables paths -> codes; the CLI passes the armed-session check and the lock-free
+       fold check) run before any prompt.
+    4. The form: ADMISSION present -> the generation form (a pending generation too), typed
+       RELEASE RECORDING GENERATION <N>; ADMISSION absent and INHIBIT present -> the INHIBIT-only form, typed
+       RELEASE RECORDING INHIBIT; neither -> nothing_to_release, no prompt.
+    5. Any check code refuses before the prompt (release_refused).
+    6. show(view) prints the codes only (owner, generation, state, INHIBIT, check codes); confirm(line, banner) takes
+       Yu's typed line and raises on any other text; then release() runs the clean-state rule, step 8, the checks
+       again and admission_unchanged (exactly the owner, generation and state shown) under admission.lock.
+    Nothing here reads a credential, logs in or touches the network."""
+    stack = ExitStack()
+    try:
+        paths.ensure()
+        stack.enter_context(file_lock(paths.live_owner_lock, timeout_s=0, clock=clock))
+    except LockBusy:
+        raise OwnershipRefused("owner_live") from None
+    except OSError:
+        raise OwnershipRefused("owner_state_unknown") from None
+    with stack:
+        try:
+            status = admission_status(paths)
+        except AdmissionRefused:
+            raise OwnershipRefused("admission_state_unknown") from None
+        current = status["admission"]
+        shown = None if current is None else (current["owner"], current["generation"], current["state"])
+        generation = None if current is None else current["generation"]
+        out = {"outcome": None, "generation": generation, "owner": None if current is None else current["owner"],
+               "problems": []}
+        if current is None and not status["inhibit"]:
+            return dict(out, outcome="nothing_to_release")
+        codes = []
+        for check in extra_checks:
+            codes += list(check(paths))
+        view = {"form": "generation" if current is not None else "inhibit_only",
+                "owner": out["owner"], "generation": generation,
+                "state": None if current is None else current["state"],
+                "inhibit": "present" if status["inhibit"] else "absent", "check_codes": list(codes)}
+        show(view)
+        if codes:
+            return dict(out, outcome="release_refused", problems=codes)
+        if current is not None:
+            line = RELEASE_GENERATION_LINE.format(generation=generation)
+            banner = (f"Release recording generation {generation} (owner {current['owner']}, state "
+                      f"{current['state']}). Release still refuses unless the live journal is clean, the login "
+                      f"ledger is clean and no pilot session is armed.")
+        else:
+            line = RELEASE_INHIBIT_LINE
+            banner = ("Release the INHIBIT left without an ADMISSION. Release still refuses unless the live journal is "
+                      "clean, the login ledger is clean and no pilot session is armed.")
+        confirm(line, banner)
+
+        def admission_unchanged(checked_paths):
+            try:
+                now = admission_status(checked_paths)["admission"]
+            except AdmissionRefused:
+                return ["admission_state_unknown"]
+            named = None if now is None else (now["owner"], now["generation"], now["state"])
+            return [] if named == shown else ["admission_changed"]
+
+        try:
+            release(paths, config=config, generation=generation, clock=clock,
+                    extra_checks=[*extra_checks, admission_unchanged])
+        except AdmissionRefused as exc:
+            return dict(out, outcome="release_refused",
+                        problems=list(exc.problems) or [exc.detail or exc.outcome])
+        return dict(out, outcome="released_generation" if current is not None else "released_inhibit")

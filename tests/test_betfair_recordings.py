@@ -456,7 +456,9 @@ class VerifyDayTests(unittest.TestCase):
         ledger.write_text("")
         self.assertEqual(self.failed(), {(self.closed.name, "receipt_without_ledger_row")})
         ledger.write_text(json.dumps(row) + "\n" + '{"torn')
-        self.assertIn((None, "run_ledger_unreadable"), self.failed())
+        # Design v9 §3.8 step 3: a torn line is named with its index, in place of the bare run_ledger_unreadable.
+        self.assertIn((None, "run_ledger_torn_line"), self.failed())
+        self.assertIn({"session_id": None, "check": "run_ledger_torn_line", "line": 1}, self.verify()["failures"])
 
     def test_events_present_gap_list_and_stray_files(self):
         (self.closed / "events.jsonl").unlink()

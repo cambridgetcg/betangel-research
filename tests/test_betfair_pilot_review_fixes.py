@@ -384,6 +384,7 @@ class SettleHeadTests(RunCase):
             return original(*a, **kw)
 
         before = len(sr.logins(env))
+        env.runner.calls.clear()                             # the settle's own Keychain calls only
         with file_lock(env.paths.live_owner_lock, timeout_s=0, clock=env.clock), \
                 patch.object(pilot_run, "pilot_events_after", side_effect=read):
             result = sr.run_cli(env, "settle-market", "--market", market.market_id, "--confirm-live", sr.token(env))
@@ -393,8 +394,11 @@ class SettleHeadTests(RunCase):
         for unreadable in (False, True):
             with self.subTest(unreadable_first_read=unreadable):
                 env, result, logins = self.held_cleanup(unreadable=unreadable)
-                err = self.refused(result, "pilot_session_armed")
-                self.assertIn(cli.PILOT_SETTLE_ADVICE, err)
+                # Design v9 §3.4.4 and P1-08 pin (c): ownership comes first, so a settle while pilot-run holds the
+                # owner lock is refused owner_live (it replaces pilot_session_armed), before any credential read.
+                err = self.refused(result, "owner_live")
+                self.assertIn("owner_live: another live owner holds the owner lock", err)
+                self.assertEqual(sr.credential_reads(env), [])
                 self.assertEqual(logins, 0)
                 self.assertEqual([e for e in sr.events(env) if e["kind"] == "settle"], [])
 
@@ -816,7 +820,15 @@ class EndPathTests(RunCase):
                     code, out, err = sr.arm_run(env)
                 self.assertEqual(code, 5, err)
                 self.assertEqual(json.loads(out)["status"], "pilot_session_ended")
-                self.assertIn("run pilot-end-session, then Yu's typed recording-release (generation 1)", err)
+                # Design v9 §3.4.6 (amending P1-08 §4.8 step 7): with the armed file kept, the pilot-end-session line
+                # comes before the reconcile and settle-market lines, and the last line has no prefix.
+                lines = err.strip().splitlines()
+                self.assertIn("run pilot-end-session --mode live first; it prints this block again", lines)
+                self.assertEqual(lines[-1], "recording stays off until Yu's typed recording-release (generation 1)")
+                settle = [i for i, line in enumerate(lines) if "settle-market" in line]
+                self.assertTrue(all(i > lines.index("run pilot-end-session --mode live first; it prints this block "
+                                                    "again") for i in settle), lines)
+                self.assertNotIn("run pilot-end-session, then", err)
                 self.assertNotIn("Betfair input error", err)
                 self.assertNotIn("Betfair stopped", err)
                 self.assertTrue(sr.armed_file(env).exists())
@@ -838,8 +850,10 @@ class EndPathTests(RunCase):
         self.assertEqual(code, 5, err)
         self.assertIn("release refused", err)
         self.assertIn("order_recorded", err)
-        self.assertIn("then run reconcile --mode live; its open refuses the order recorded before its submit", err)
-        result = sr.run_cli(env, "reconcile", "--mode", "live", "--confirm-live", sr.token(env))
+        self.assertIn("then run reconcile --mode live --continue-admission 1; its open refuses the order recorded "
+                      "before its submit", err)
+        result = sr.run_cli(env, "reconcile", "--mode", "live", "--confirm-live", sr.token(env), "--continue-admission",
+                            "1")
         self.assertEqual(result[0], 0, result[2])
         sr.typed_release(env, 1)
         self.nothing_admitted(env)
@@ -958,8 +972,9 @@ class OwnershipAdviceTests(RunCase):
                 view = sr.admission_view(env)
                 self.assertEqual((view["admission"]["generation"], view["inhibit"]), (1, True))
                 self.assertTrue(os.path.lexists(sr.armed_file(env)))
-                self.assertIn("run pilot-end-session, then Yu's typed recording-release (generation 1)",
-                              err.strip().splitlines()[-1])
+                self.assertEqual("recording stays off until Yu's typed recording-release (generation 1)",
+                                 err.strip().splitlines()[-1])                     # design v9 §3.4.6: no prefix
+                self.assertIn("run pilot-end-session --mode live first; it prints this block again", err)
 
 
 # --- SCOPE-1 to SCOPE-4 -------------------------------------------------------------------------------------------
@@ -1744,7 +1759,10 @@ class FlaggedRecordedLineTests(RunCase):
         env.runner.on_credential = recorded
         code, out, err = sr.arm_run(env, "2000", "--bet-angel-paused")
         self.assertEqual(code, 2, err)
-        self.assertIn("then run reconcile --mode live --bet-angel-paused; its open refuses the order recorded", err)
+        # Recording rollout review (REL-1): ARM's own generation 1 is retained after the refusal, so the reconcile
+        # line carries --continue-admission 1 after the coexistence flag.
+        self.assertIn("then run reconcile --mode live --bet-angel-paused --continue-admission 1; its open refuses the "
+                      "order recorded", err)
         self.assertNotIn("then run reconcile --mode live;", err)        # the release lines carry the flag too
         self.assertIn("release refused", err)
 

@@ -63,8 +63,9 @@ ARMED_KEYS = frozenset({"schema", "session_id", "contract_sha256", "registration
 UNTIL_RE = re.compile(r"([01][0-9]|2[0-3])([0-5][0-9])")
 STATIC_CODES = frozenset(code for check in STATIC_CHECKS for code in FAILURE_CODES[check])
 LOGIN_RESET_LINE = "a login attempt has no outcome or failed; Yu decides on login-reset (note:125)"
-RECORDED_LINE = ("then run reconcile --mode live{flag}; its open refuses the order recorded before its submit "
+RECORDED_LINE = ("then run reconcile --mode live{flag}{cont}; its open refuses the order recorded before its submit "
                  "(crash_before_submit)")
+OWNER_LIVE_LINE = "owner_live: another live owner holds the owner lock"
 LEDGER_LINE = ("login ledger: a login attempt from this run has no outcome (stopped mid-login). From 30 s after it, it "
                "counts as a failed or unknown login, and one more stops every caller, kill included. Release and the next "
                "PILOT ARM refuse until a later successful login or Yu's typed login-reset; Yu decides (note:125).")
@@ -480,14 +481,8 @@ def read_contract(env):
         raise Refused("pilot_contract_unreadable") from None
 
 
-def pilot_session_live(paths, config, events, now_ns, *, ticket=None, contract_reader=None, clock=None):
-    """§4.13: True when a second process must not settle. Armed is the fold's answer when orders.pilot is configured
-    and its local read-only contract parses and matches both orders.pilot and the journal's registered contract;
-    otherwise (no orders.pilot, an unreadable or different contract, a fold that raises) it is the gateway's own
-    fallback, the journal-only UNTIL window (pilot_gate.session_window_open), so the refusal ends at UNTIL (NP-1).
-    With ticket None (no ownership) also True when the owner lock is held or unknown while ADMISSION names a
-    pilot-session owner or cannot be read; with a ticket the lock term is dropped entirely (no probe, no holds(), no
-    ADMISSION read: holding the owner lock already shuts out pilot-run)."""
+def _fold_says_armed(config, events, now_ns, contract_reader):
+    """pilot_session_live's fold term, lock free (see there)."""
     armed = None
     try:
         if pilot_enabled(config):
@@ -503,7 +498,18 @@ def pilot_session_live(paths, config, events, now_ns, *, ticket=None, contract_r
             armed = pilot_gate.session_window_open(events, now_ns=now_ns)
         except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError, BetfairError):
             armed = True
-    if armed:
+    return bool(armed)
+
+
+def pilot_session_live(paths, config, events, now_ns, *, ticket=None, contract_reader=None, clock=None):
+    """§4.13: True when a second process must not settle. Armed is the fold's answer when orders.pilot is configured
+    and its local read-only contract parses and matches both orders.pilot and the journal's registered contract;
+    otherwise (no orders.pilot, an unreadable or different contract, a fold that raises) it is the gateway's own
+    fallback, the journal-only UNTIL window (pilot_gate.session_window_open), so the refusal ends at UNTIL (NP-1).
+    With ticket None (no ownership) also True when the owner lock is held or unknown while ADMISSION names a
+    pilot-session owner or cannot be read; with a ticket the lock term is dropped entirely (no probe, no holds(), no
+    ADMISSION read: holding the owner lock already shuts out pilot-run)."""
+    if _fold_says_armed(config, events, now_ns, contract_reader):
         return True
     if ticket is not None:
         return False
@@ -516,44 +522,83 @@ def pilot_session_live(paths, config, events, now_ns, *, ticket=None, contract_r
     return current is not None and current["owner"].startswith("pilot-session:")
 
 
+def pilot_session_live_fold(paths, config, *, now_ns, contract_reader=None):
+    """[] or ["pilot_session_armed"] or ["live_journal_unreadable"]: pilot_session_live's ticket branch, lock free, for
+    Yu's typed recording-release (design v9 §3.5 step 3), which holds the owner lock. A live journal that lstat
+    reports absent (ENOENT) has no session; any other lstat failure, or a journal pilot_events_after cannot read,
+    refuses live_journal_unreadable (pilot_events_after alone reads an absent file as unreadable)."""
+    path = paths.journal_path("live")
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return ["live_journal_unreadable"]
+    read = pilot_events_after(path, 0)
+    if not read["readable"]:
+        return ["live_journal_unreadable"]
+    if pilot_gate.latest_note(read["events"], "session_start") is None:
+        return []
+    return ["pilot_session_armed"] if _fold_says_armed(config, read["events"], now_ns, contract_reader) else []
+
+
+def owner_live_lines(paths):
+    """The owner_live line (design v9 §3.4.6), with the ADMISSION's owner when it can be read without a lock."""
+    try:
+        current = admission.admission_status(paths)["admission"]
+    except AdmissionRefused:
+        current = None
+    if current is None:
+        return [OWNER_LIVE_LINE]
+    return [f"{OWNER_LIVE_LINE} (ADMISSION owner {current['owner']}, generation {current['generation']}, state "
+            f"{current['state']})"]
+
+
 def before_release_lines(paths, *, handoffs, generation=None, armed_file_kept=False, flag="", login_reset=False,
                          clock=None):
     """The "before recording-release" block (§4.8; shared with pilot-end-session and ARM pre-check 7a), only the lines
     that apply, in order: (a) each handoff, unchanged; (b) reconcile for an unresolved order; (c) settle-market for an
     EXECUTABLE one; (d) resume after a kill or HALT; (e) last, the recording-release line, naming generation N whenever
     a ticket was held or a read shows ADMISSION N, the INHIBIT-only form only when a read just confirmed ADMISSION
-    absent with INHIBIT set, else that the recording state is unknown (P108-R2-3)."""
+    absent with INHIBIT set, else that the recording state is unknown (P108-R2-3). admission_status is read before
+    (b) and (c): their reconcile and settle-market commands carry --continue-admission N only when N is the ticket's or
+    a successful read shows ADMISSION N (the fresh command with ADMISSION absent; no flag when the read fails). With a
+    kept armed-session file the fold is still armed, so a settle-market continuation would refuse: the pilot-end-session
+    line then comes right after the handoffs, before (b) and (c), and the last line has no prefix (design v9 §3.4.6,
+    amending P1-08 §4.8 step 7)."""
     lines = [handoff_text(h) for h in handoffs]
-    for item in handoffs:
-        if item["state"] == "ABSENT_UNCONFIRMED":
-            lines.append(f"then run reconcile --mode live{flag}; if the Betfair website and Bet Angel show no such bet, "
-                         f"run reconcile --mode live{flag} --accept {item['ref']} --confirm-live TOKEN")
-        elif item["state"] in UNRESOLVED_STATES:
-            lines.append(f"then run reconcile --mode live{flag}")
-        elif item["state"] == "EXECUTABLE":
-            lines.append(f"it stays EXECUTABLE until you settle market {item['market_id']} with settle-market{flag} after "
-                         f"it closes")
-    extra = {"clock": clock} if clock is not None else {}
-    problems = admission.live_state_problems(paths, **extra)
-    if "order_recorded" in problems:                     # SIG-4: an intent with no submit blocks release until then
-        lines.append(RECORDED_LINE.format(flag=flag))
-    if "kill_file_engaged" in problems or "halt_active" in problems:
-        lines.append("then resume once the kill has been dealt with")
-    if login_reset:
-        lines.append(LOGIN_RESET_LINE)
     try:
         status = admission.admission_status(paths)
     except AdmissionRefused:
         status = None
-    prefix = "run pilot-end-session, then " if armed_file_kept else "recording stays off until "
     shown = generation if generation is not None else (
         status["admission"]["generation"] if status is not None and status["admission"] is not None else None)
+    cont = f" --continue-admission {shown}" if shown is not None else ""
+    if armed_file_kept:
+        lines.append("run pilot-end-session --mode live first; it prints this block again")
+    for item in handoffs:
+        if item["state"] == "ABSENT_UNCONFIRMED":
+            lines.append(f"then run reconcile --mode live{flag}{cont}; if the Betfair website and Bet Angel show no "
+                         f"such bet, run reconcile --mode live{flag}{cont} --accept {item['ref']} --confirm-live TOKEN")
+        elif item["state"] in UNRESOLVED_STATES:
+            lines.append(f"then run reconcile --mode live{flag}{cont}")
+        elif item["state"] == "EXECUTABLE":
+            lines.append(f"it stays EXECUTABLE until you settle market {item['market_id']} with "
+                         f"settle-market{flag}{cont} after it closes")
+    extra = {"clock": clock} if clock is not None else {}
+    problems = admission.live_state_problems(paths, **extra)
+    if "order_recorded" in problems:                     # SIG-4: an intent with no submit blocks release until then
+        lines.append(RECORDED_LINE.format(flag=flag, cont=cont))
+    if "kill_file_engaged" in problems or "halt_active" in problems:
+        lines.append("then resume once the kill has been dealt with")
+    if login_reset:
+        lines.append(LOGIN_RESET_LINE)
     if shown is not None:
-        lines.append(f"{prefix}Yu's typed recording-release (generation {shown})")
+        lines.append(f"recording stays off until Yu's typed recording-release (generation {shown})")
     elif status is None:
         lines.append("recording state unknown; run status before any release")
     elif status["inhibit"]:
-        lines.append(f"{prefix}Yu's typed recording-release in its INHIBIT-only form")
+        lines.append("recording stays off until Yu's typed recording-release in its INHIBIT-only form")
     return lines
 
 
@@ -572,7 +617,7 @@ def release_lines(result, flag=""):
     lines.append(f"release refused: {result['outcome']} ({', '.join(result['problems'])}); owner {result['owner']}, "
                  f"generation {result['generation']}")
     if "order_recorded" in result["problems"]:
-        lines.append(RECORDED_LINE.format(flag=flag))
+        lines.append(RECORDED_LINE.format(flag=flag, cont=f" --continue-admission {result['generation']}"))
     lines.append(f"recording stays off until Yu's typed recording-release (generation {result['generation']})")
     return lines
 
@@ -871,8 +916,16 @@ def _arm_checks(env, *, now_ns, day, until_ns, absence):
         raise Refused("pilot_arm_login_ledger")
     problems = admission.live_state_problems(paths, clock=clock) + admission.ledger_problems(config, paths, clock=clock)
     if problems:
+        cont = ""
+        if "order_recorded" in problems:              # REL-1: a retained admitted N needs the continuation
+            try:
+                held = admission.admission_status(paths)["admission"]
+            except AdmissionRefused:
+                held = None
+            if held is not None and held["state"] == "admitted":
+                cont = f" --continue-admission {held['generation']}"
         raise Refused("pilot_arm_release_would_refuse:" + ",".join(problems),
-                      [RECORDED_LINE.format(flag=env.paused_flag)] if "order_recorded" in problems else [])
+                      [RECORDED_LINE.format(flag=env.paused_flag, cont=cont)] if "order_recorded" in problems else [])
     if absence:
         try:
             status = admission.admission_status(paths)
@@ -881,7 +934,8 @@ def _arm_checks(env, *, now_ns, day, until_ns, absence):
                           ["recording state unknown; run status before any release"]) from None
         current = status["admission"]
         if current is not None:
-            step = ("reconcile --continue-admission N first" if projection["handoffs"]
+            step = (f"reconcile --mode live{env.paused_flag} --continue-admission {current['generation']} first"
+                    if projection["handoffs"]
                     else f"Yu's typed recording-release (generation {current['generation']})")
             raise Refused("admission_held", [f"admission held by {current['owner']}, generation "
                                              f"{current['generation']}, state {current['state']}; next: {step}"])
@@ -960,8 +1014,10 @@ def _armed(env, journal, view, stop, *, session_id, day, until_ns, session_end):
             return _arm_under_ownership(env, journal, view, stop, ticket, session_id=session_id, day=day,
                                         until_ns=until_ns, session_end=session_end)
     except admission.OwnershipRefused as exc:
-        if exc.code in ("owner_live", "owner_state_unknown"):
-            raise Refused("pilot_session_running") from None
+        if exc.code == "owner_live":                           # design v9 §3.4.6: a manual owner is not a pilot-run
+            raise Refused("owner_live", owner_live_lines(paths)) from None
+        if exc.code == "owner_state_unknown":
+            raise Refused("owner_state_unknown") from None
         lines = [f"admission held by {exc.owner}, generation {exc.generation}"] if exc.owner else []
         raise Refused(exc.code, lines) from None
     except AdmissionRefused as exc:
@@ -2423,7 +2479,7 @@ def end_session(env):
         lock = file_lock(paths.live_owner_lock, timeout_s=0, clock=clock)
         lock.__enter__()
     except LockBusy:
-        raise Refused("pilot_session_alive") from None
+        raise Refused("owner_live", owner_live_lines(paths)) from None       # design v9 §3.4.6
     except OSError:
         raise Refused("pilot_session_state_unknown") from None
     journal = None

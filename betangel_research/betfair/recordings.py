@@ -73,6 +73,13 @@ SESSION_FILES = frozenset({"events.jsonl", "receipt.json", "receipt.partial.json
 # What a crash during receipts.atomic_write_json can leave behind.
 CRASH_LEFTOVER_RE = re.compile(r"\.(receipt\.json|receipt\.partial\.json)\.tmp-[0-9]+-[0-9a-f]{8}")
 LEDGER_ROW_KEYS = frozenset({"created_at", "session_id", "receipt_path", "receipt_sha256", "segments", "status"})
+RUN_LEDGER_NAME = "run-ledger.jsonl"
+# The one row shape `recordings ledger-repair` appends (design v9 §3.8 step 2): no session_id, so it can never stand
+# in for a session's row. exempt_lines lists the reviewed bad lines by index with the sha256 of their bytes.
+REPAIR_ROW_KIND = "run_ledger_repair"
+REPAIR_ROW_KEYS = frozenset({"kind", "created_at", "reviewed_ledger_sha256", "exempt_lines"})
+REPAIR_LINE_KEYS = frozenset({"line", "sha256"})
+TORN_LINE = "run_ledger_torn_line"
 PRECOUNT_DECLARATION_KEYS = frozenset({"path", "rows", "sha256"})
 PRECOUNT_MARKET_KEYS = frozenset({"market_id", "market_start_time"})
 
@@ -135,6 +142,14 @@ def _seconds(ns):
 # --- sessions and receipts -----------------------------------------------------------------------------
 
 
+def _receipt_shape_ok(value):
+    """The receipt shape every reader here requires: a dict with schema_version 1 and the recorder's status, segments
+    a list of dicts, and gaps a list when present (shared by _load_receipt and classify_invocation's _receipt_file)."""
+    return (isinstance(value, dict) and value.get("schema_version") == 1 and value.get("status") == RECEIPT_STATUS
+            and isinstance(value.get("segments"), list) and all(isinstance(s, dict) for s in value["segments"])
+            and isinstance(value.get("gaps", []), list))
+
+
 def _load_receipt(directory):
     """(kind "final"|"partial"|None, receipt or None, sha256 of its bytes or None, problem code or None).
     receipt.json wins when present, valid or not."""
@@ -148,9 +163,7 @@ def _load_receipt(directory):
             value = strict_json_loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return kind, None, digest, "receipt_unparseable"
-        if not (isinstance(value, dict) and value.get("schema_version") == 1 and value.get("status") == RECEIPT_STATUS
-                and isinstance(value.get("segments"), list) and all(isinstance(s, dict) for s in value["segments"])
-                and isinstance(value.get("gaps", []), list)):
+        if not _receipt_shape_ok(value):
             return kind, None, digest, "receipt_shape"
         return kind, value, digest, None
     return None, None, None, None
@@ -284,6 +297,7 @@ def _session(directory, start_ns):
     damaged = precount_problems(directory, receipt, final=kind == "final") if kind and problem is None else []
     return {"precount_problems": damaged, "session_id": directory.name, "dir": directory, "start_ns": start_ns, "end_ns": max(ends),
             "receipt_kind": kind, "receipt_sha256": digest, "receipt_problem": problem, "status": status,
+            "receipt": receipt,
             "segments": listed, "open_segments": open_segments, "names": names,
             "gaps": receipt.get("gaps") if isinstance(receipt.get("gaps"), list) else [],
             "conflate_ms": _int(freshness.get("conflate_ms_echoed")),
@@ -465,24 +479,27 @@ def _where(observation, line, at_ns, pt):
 
 
 def _cause(start, end, previous, following, absent):
-    """(cause, tolerated) of one uncovered stretch after the market's first observation in its window."""
-    if any(segment["mode"] == "explicit" for segment in absent):
-        return "dropped_explicit", False
+    """(cause, tolerated, evidence) of one uncovered stretch after the market's first observation in its window.
+    evidence is the explicit absent segments a dropped_explicit cause relied on (bot-33-578: the caller flags the
+    row unverified when any of them is unverified), else []."""
+    explicit = [segment for segment in absent if segment["mode"] == "explicit"]
+    if explicit:
+        return "dropped_explicit", False, explicit
     before = previous["obs"] if previous else None
     if before is not None and any(stall[0] == start for stall in before["stalls"]):
-        return "stall_in_segment", False
+        return "stall_in_segment", False, []
     if following is None:
-        return ("absent_from_segment" if absent else "recording_ended"), False
+        return ("absent_from_segment" if absent else "recording_ended"), False, []
     after = following["obs"]
     if before is None or before["session_id"] != after["session_id"]:
-        return "between_sessions", False
+        return "between_sessions", False, []
     if absent:
-        return "absent_from_segment", False
+        return "absent_from_segment", False, []
     cause = before["close_reason"] or "segment_not_closed"
     tolerated = (cause == "scheduled_refresh" and after["segment"] == before["segment"] + 1
                  and after["entry"]["first_img"] and following["from"] == after["entry"]["first_ns"]
                  and end - start <= before["tolerance_ns"])
-    return cause, tolerated
+    return cause, tolerated, []
 
 
 def _classify(flags):
@@ -520,6 +537,7 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
         flags.add("closed_without_observed_inplay")
     window, coverage, gaps, late_ns, gap_ns = None, [], [], 0, 0
     relevant = observations
+    absence_evidence = []                   # explicit absent segments a dropped_explicit flag relied on
     if anchor_ns is None:
         flags.add("no_anchor")
     else:
@@ -551,10 +569,12 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
         elif first_seen is None:                  # nothing observed inside the window at all
             flags.update(("late_start", "never_in_window"))
             late_ns = window_to - window_from
-            if any(segment["mode"] == "explicit" and segment["first_ns"] is not None
-                   and segment["first_ns"] < window_to and segment["last_ns"] > window_from
-                   and market_id not in segment["markets"] for segment in segments):
+            explicit = [segment for segment in segments if segment["mode"] == "explicit"
+                        and segment["first_ns"] is not None and segment["first_ns"] < window_to
+                        and segment["last_ns"] > window_from and market_id not in segment["markets"]]
+            if explicit:
                 flags.add("dropped_explicit")
+                absence_evidence += explicit
         else:
             for start, end in _complement([(p["from"], p["to"]) for p in inside], window_from, window_to):
                 if first_seen is None or end <= first_seen:
@@ -566,15 +586,18 @@ def _observed_row(market_id, observations, segments, session_ends, catalogue):
                 absent = [segment for segment in segments if segment["first_ns"] is not None
                           and segment["first_ns"] < end and segment["last_ns"] > start
                           and market_id not in segment["markets"]]
-                cause, tolerated = _cause(start, end, previous, following, absent)
+                cause, tolerated, evidence = _cause(start, end, previous, following, absent)
                 if cause == "dropped_explicit":
                     flags.add("dropped_explicit")
+                    absence_evidence += evidence
                 if not tolerated:
                     flags.add("gap")
                     gap_ns += end - start
                 gaps.append({"from": utc_from_ns(start), "to": utc_from_ns(end), "seconds": _seconds(end - start),
                              "cause": cause, "tolerated": tolerated})
-    if any(not obs["verified"] for obs in relevant):
+    # An unverified segment is still evidence: the row stays visible (dropped_explicit) and is flagged unverified
+    # whether the evidence was an observation or an explicit absence (bot-33-578).
+    if any(not s["verified"] for s in relevant + absence_evidence):
         flags.add("unverified")
     image_obs = next((obs for obs in observations if obs["entry"]["first_img"]), None)
     for obs in observations:
@@ -664,27 +687,219 @@ def build_index(paths, *, root, day, clock):
 # --- verify-day ----------------------------------------------------------------------------------------
 
 
-def _run_ledger(paths):
-    """(rows by session_id, problem code or None) from recordings/run-ledger.jsonl (whitelisted keys)."""
-    path = paths.recordings_dir / "run-ledger.jsonl"
-    rows = {}
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return rows, None
-    except OSError:
-        return rows, "run_ledger_unreadable"
-    for line in data.split(b"\n"):
+def _repair_row(row, index):
+    """True when row is a well-formed repair row whose listed lines all precede it (index)."""
+    if not isinstance(row, dict) or set(row) != REPAIR_ROW_KEYS or row.get("kind") != REPAIR_ROW_KIND:
+        return False
+    if _ns(row["created_at"]) is None or not (isinstance(row["reviewed_ledger_sha256"], str)
+                                              and SHA_RE.fullmatch(row["reviewed_ledger_sha256"])):
+        return False
+    listed = row["exempt_lines"]
+    if not isinstance(listed, list) or not listed:
+        return False
+    seen = set()
+    for item in listed:
+        if not (isinstance(item, dict) and set(item) == REPAIR_LINE_KEYS and type(item["line"]) is int
+                and 0 <= item["line"] < index and item["line"] not in seen
+                and isinstance(item["sha256"], str) and SHA_RE.fullmatch(item["sha256"])):
+            return False
+        seen.add(item["line"])
+    return True
+
+
+def run_ledger_scan(data):
+    """Read side of the run-ledger (design v9 §3.8), pure: from the file's bytes -> {"rows", "bad", "exempt",
+    "problems"}. rows: (line index, session row) for every whitelisted session row; bad: (line index, sha256 of its
+    bytes) for every line that is neither a session row nor a well-formed repair row; exempt: the bad line indices a
+    repair row lists with the same byte hash; problems: [(line index, code)] for every bad line no repair row exempts
+    and every listed index whose bytes no longer hash to the listed value, each "run_ledger_torn_line". Line indices
+    count every \\n-separated piece from 0 (blank lines included), so they never move as rows are appended."""
+    pieces = data.split(b"\n")
+    rows, bad, repairs = [], [], []
+    for index, line in enumerate(pieces):
         if not line.strip():
             continue
         try:
             row = strict_json_loads(line.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            return rows, "run_ledger_unreadable"
-        if not isinstance(row, dict) or not LEDGER_ROW_KEYS <= set(row) or set(row) - LEDGER_ROW_KEYS - {"invocation_id"}:
-            return rows, "run_ledger_unreadable"
-        rows.setdefault(row["session_id"], []).append(row)
-    return rows, None
+            row = None
+        if isinstance(row, dict) and "session_id" in row:
+            if (LEDGER_ROW_KEYS <= set(row) and not set(row) - LEDGER_ROW_KEYS - {"invocation_id"}
+                    and isinstance(row["session_id"], str)
+                    and ("invocation_id" not in row or isinstance(row["invocation_id"], str))):
+                rows.append((index, row))
+                continue
+        elif _repair_row(row, index):
+            repairs.append(row)
+            continue
+        bad.append((index, hashlib.sha256(line).hexdigest()))
+    listed = {}
+    changed = set()
+    for row in repairs:
+        for item in row["exempt_lines"]:
+            current = hashlib.sha256(pieces[item["line"]]).hexdigest()
+            if current != item["sha256"]:
+                changed.add(item["line"])            # the reviewed bytes are gone: never exempt, fail closed
+            else:
+                listed[item["line"]] = item["sha256"]
+    exempt = sorted(index for index, digest in bad if listed.get(index) == digest and index not in changed)
+    problems = sorted({(index, TORN_LINE) for index, _ in bad if index not in exempt}
+                      | {(index, TORN_LINE) for index in changed})
+    return {"rows": rows, "bad": bad, "exempt": exempt, "problems": problems, "changed": sorted(changed)}
+
+
+def read_run_ledger(paths):
+    """The run-ledger, read only: {"rows" (by session_id), "by_invocation", "problems" (codes, a torn line as
+    "run_ledger_torn_line:<index>"), "exempt" (line indices a repair row exempts)}. A file that cannot be read is
+    run_ledger_unreadable; an absent one is empty."""
+    path = paths.recordings_dir / RUN_LEDGER_NAME
+    out = {"rows": {}, "by_invocation": {}, "problems": [], "exempt": []}
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return out
+    except OSError:
+        return dict(out, problems=["run_ledger_unreadable"])
+    scan = run_ledger_scan(data)
+    for _, row in scan["rows"]:
+        out["rows"].setdefault(row["session_id"], []).append(row)
+        if "invocation_id" in row:
+            out["by_invocation"].setdefault(row["invocation_id"], []).append(row)
+    out["problems"] = [f"{code}:{index}" for index, code in scan["problems"]]
+    out["exempt"] = scan["exempt"]
+    return out
+
+
+def run_ledger_problem(paths):
+    """The wrapper's preflight read (design v9 §4.3): "run_ledger_torn_line:<index>" for the first bad line no repair
+    row exempts, "run_ledger_unreadable", or None. Pure read: no lock, no write."""
+    problems = read_run_ledger(paths)["problems"]
+    return problems[0] if problems else None
+
+
+def _run_ledger(paths):
+    """(rows by session_id, first problem code or None) from recordings/run-ledger.jsonl (whitelisted keys)."""
+    ledger = read_run_ledger(paths)
+    return ledger["rows"], (ledger["problems"][0] if ledger["problems"] else None)
+
+
+# --- the wrapper's classification (design v9 §3.3, §4.4) ----------------------------------------------------------
+
+CLASSIFY_OUTCOMES = ("finalized", "incomplete", "receipt_without_ledger_row", "no_session", "partial_less_directory",
+                     "review")
+
+
+def _receipt_file(path):
+    """(present, value or None, sha256 of the bytes or None, problem or None, invocation id or None) for one receipt
+    file, read only. A receipt that parses but fails the shared shape check (_receipt_shape_ok) still names the
+    invocation id it carries, so a malformed receipt is review evidence for its directory, never "no session"."""
+    if not os.path.lexists(path):
+        return False, None, None, None, None
+    if path.is_symlink() or not path.is_file():
+        return True, None, None, "receipt_not_regular", None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return True, None, None, "receipt_unreadable", None
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        value = strict_json_loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return True, None, digest, "receipt_unparseable", None
+    carried = value.get("invocation_id") if isinstance(value, dict) else None
+    carried = carried if isinstance(carried, str) else None
+    if not _receipt_shape_ok(value):
+        return True, None, digest, "receipt_shape", carried
+    return True, value, digest, None, carried
+
+
+def classify_invocation(paths, config, invocation_id, spawn_wall_ns):
+    """One wrapper attempt's outcome from disk (design v9 §3.3, §4.4 rules 2-6), pure read: no lock, no write.
+
+    -> {"outcome", "session_id", "codes", "stop_reason", "receipt_sha256"}: outcome is "finalized" (rule 4;
+    stop_reason is the receipt's top-level stop_reason, receipt_sha256 its matching ledger row's, for the wrapper's
+    daily summary), "incomplete" (rule 3), "receipt_without_ledger_row" (rule 5), "no_session" (no
+    receipt, partial or ledger row carries the id and no directory is attributed; the wrapper applies rule 1 (b) or
+    rule 2), "partial_less_directory" (rule 2's one attribution not by id: a rec-* directory with neither receipt file
+    whose name stamp is at or after spawn_wall_ns - 1 s; review even when touched) or "review" (rule 6: several
+    matches, a row and receipt mismatch, an unreadable ledger, run_ledger_torn_line:<index>, complete not true).
+    Sessions are read under recorder.root, else the profile's recordings directory; the ledger always under the
+    profile."""
+    root = Path(config["recorder"]["root"]) if config["recorder"]["root"] is not None else Path(paths.recordings_dir)
+    ledger = read_run_ledger(paths)
+    out = {"outcome": "review", "session_id": None, "codes": list(ledger["problems"]), "stop_reason": None,
+           "receipt_sha256": None}
+    matches, attributed = [], []
+    try:
+        entries = sorted(root.iterdir())
+    except FileNotFoundError:
+        entries = []
+    except OSError:
+        return dict(out, codes=out["codes"] + ["recordings_root_unreadable"])
+    floor = spawn_wall_ns - _NS
+    for entry in entries:
+        match = SESSION_RE.fullmatch(entry.name)
+        if not match or entry.is_symlink() or not entry.is_dir():
+            continue
+        final = _receipt_file(entry / "receipt.json")
+        partial = _receipt_file(entry / "receipt.partial.json")
+        ids = {carried for _, _, _, _, carried in (final, partial) if carried is not None}
+        if invocation_id in ids:
+            matches.append((entry, final, partial))
+        elif not final[0] and not partial[0]:
+            try:
+                stamp = _session_start_ns(match.group(1))
+            except ValueError:
+                stamp = None                  # an impossible stamp (REC-5): attributing it can only add review
+            if stamp is None or stamp >= floor:
+                attributed.append(entry.name)
+    rows_with_id = ledger["by_invocation"].get(invocation_id, [])
+    if len(matches) > 1:
+        return dict(out, codes=out["codes"] + ["invocation_matches_several_sessions"])
+    if not matches:
+        if rows_with_id:
+            return dict(out, codes=out["codes"] + ["ledger_row_without_session"])
+        if attributed:
+            return dict(out, outcome="partial_less_directory", session_id=attributed[0],
+                        codes=out["codes"] + ["session_without_receipt"])
+        return dict(out, outcome="review" if out["codes"] else "no_session")
+    directory, final, partial = matches[0]
+    out["session_id"] = sid = directory.name
+    if out["codes"]:
+        return out                                     # an unreadable or torn ledger: review, whatever else holds
+    if "receipt_shape" in (final[3], partial[3]):
+        return dict(out, codes=["receipt_shape"])      # a malformed receipt of this invocation: review evidence
+    present, receipt, digest, problem, _ = final
+    if not present:
+        return dict(out, outcome="incomplete", codes=["receipt_partial_only"])
+    if problem is not None:
+        return dict(out, codes=[problem])
+    codes = []
+    if receipt.get("complete") is not True:
+        codes.append("receipt_not_complete")
+    if receipt.get("invocation_id") != invocation_id:
+        codes.append("receipt_invocation_mismatch")
+    rows = ledger["rows"].get(sid, [])
+    if not rows and not rows_with_id and not codes:
+        return dict(out, outcome="receipt_without_ledger_row", codes=["receipt_without_ledger_row"])
+    if len(rows) != 1:
+        codes.append("receipt_without_ledger_row" if not rows else "ledger_rows_duplicated")
+    else:
+        row = rows[0]
+        if row.get("receipt_sha256") != digest:
+            codes.append("ledger_receipt_sha256_mismatch")
+        named = row.get("receipt_path")
+        if not isinstance(named, str) or Path(named).resolve() != (directory / "receipt.json").resolve():
+            codes.append("ledger_receipt_path_mismatch")
+        if row.get("invocation_id") != invocation_id:
+            codes.append("ledger_invocation_mismatch")
+    if any(row.get("session_id") != sid for row in rows_with_id):
+        codes.append("ledger_invocation_names_another_session")
+    if codes:
+        return dict(out, codes=codes)
+    stop_reason = receipt.get("stop_reason")
+    return dict(out, outcome="finalized", codes=[], receipt_sha256=rows[0]["receipt_sha256"],
+                stop_reason=safe_code(stop_reason) if isinstance(stop_reason, str) else None)
 
 
 def expected_gaps(segments):
@@ -700,29 +915,38 @@ def verify_day(paths, *, root, day):
     """Offline checks of every session meeting the UTC day; returns counts and failed check names only.
 
     Checks: each closed session verifies (recorder.verify_recording); its receipt.json sha256 equals the
-    one run-ledger row for it, whose receipt_path names it; events.jsonl is present; the receipt's gap list
-    equals the gaps its segment boundaries imply; its declared pre-count snapshot matches
-    (precount_problems; damaged inventory fails, a receipt from before C4 without one passes); no file but
-    the recorder's own. A session that never
-    closed (receipt.partial.json only, or no receipt) is classified, not failed: its listed segments are
-    still hash-checked and its gaps compared, and a segment on disk that no receipt lists is counted as
-    open. Leftovers of an interrupted atomic write are counted, not failed. A ledger row whose session
-    directory is missing fails, as does a ledger that cannot be read."""
+    one run-ledger row for it, whose receipt_path names it, whose invocation_id equals the receipt's (both
+    absent is a match; ledger_invocation_mismatch) and whose segments count equals the receipt's
+    (ledger_segments_mismatch); events.jsonl is present; the receipt's gap list equals the gaps its segment
+    boundaries imply; its declared pre-count snapshot matches (precount_problems; damaged inventory fails, a
+    receipt from before C4 without one passes); no file but the recorder's own; and no segment or recv file
+    beside a final receipt that the receipt does not list (segment_not_in_receipt, recv_not_in_receipt;
+    bot-33-740). A session that never closed (receipt.partial.json only, or no receipt) is classified, not
+    failed: its listed segments are still hash-checked and its gaps compared, and the one segment the
+    recorder can leave unlisted (index len(listed), the subscription open at the crash) is counted as open;
+    any other unlisted segment beside a partial receipt fails. Leftovers of an interrupted atomic write are
+    counted, not failed. A ledger row whose session directory is missing fails, as does a ledger that cannot be
+    read; a torn or bad ledger line fails run_ledger_torn_line with its line index unless a typed repair row
+    exempts exactly those bytes (section 3.8)."""
     day_start, day_end = day_bounds(day)
     sessions = sessions_between(root, day_start, day_end)
-    ledger, ledger_problem = _run_ledger(paths)
+    run_ledger = read_run_ledger(paths)
+    ledger = run_ledger["rows"]
     failures = []
     counts = {"complete": 0, "crashed": 0, "receipt_invalid": 0, "no_receipt": 0, "closed_not_complete": 0}
     open_segments = leftovers = 0
 
-    def fail(session_id, check, segment=None):
+    def fail(session_id, check, segment=None, line=None):
         entry = {"session_id": session_id, "check": check}
         if segment is not None:
             entry["segment"] = segment
+        if line is not None:
+            entry["line"] = line
         failures.append(entry)
 
-    if ledger_problem:
-        fail(None, ledger_problem)
+    for problem in run_ledger["problems"]:
+        code, _, line = problem.partition(":")
+        fail(None, code, line=int(line) if line else None)
     for session in sessions:
         sid, directory = session["session_id"], session["dir"]
         kind = session["receipt_kind"]
@@ -744,6 +968,14 @@ def verify_day(paths, *, root, day):
             for check in verify_recording(directory)["checks"]:
                 if check["status"] != "passed":
                     fail(sid, check["check"], check.get("segment"))
+            # bot-33-740: a final receipt lists every segment the session wrote, so nothing else may sit beside it.
+            for name in session["open_segments"]:
+                fail(sid, "segment_not_in_receipt", int(SEGMENT_FILE_RE.fullmatch(name).group(1)))
+            listed_names = {meta["path"] for meta in session["segments"]}
+            for name in session["names"]:
+                match = RECV_FILE_RE.fullmatch(name)
+                if match and f"seg-{match.group(1)}.jsonl" not in listed_names:
+                    fail(sid, "recv_not_in_receipt", int(match.group(1)))
             rows = ledger.get(sid, [])
             if len(rows) != 1:
                 fail(sid, "receipt_without_ledger_row" if not rows else "ledger_rows_duplicated")
@@ -754,10 +986,22 @@ def verify_day(paths, *, root, day):
                 named = row.get("receipt_path")
                 if not isinstance(named, str) or Path(named).resolve() != (directory / "receipt.json").resolve():
                     fail(sid, "ledger_receipt_path_mismatch")
+                # R2: the row against the receipt already strict-parsed above (both ids absent is a match).
+                receipt = session["receipt"]
+                if row.get("invocation_id") != receipt.get("invocation_id"):
+                    fail(sid, "ledger_invocation_mismatch")
+                if type(row.get("segments")) is not int or row["segments"] != len(receipt["segments"]):
+                    fail(sid, "ledger_segments_mismatch")
             if not (directory / "events.jsonl").is_file():
                 fail(sid, "events_missing")
         elif kind == "partial":
             receipt = strict_json_loads((directory / "receipt.partial.json").read_text(encoding="utf-8"))
+            # The recorder leaves at most one segment unlisted after a crash: the one at index len(listed), in the
+            # recorder's own spelling (recorder.py: f"seg-{index:03d}.jsonl"), so a padded alias never passes.
+            allowed = f"seg-{len(receipt['segments']):03d}.jsonl"
+            for name in session["open_segments"]:
+                if name != allowed:
+                    fail(sid, "segment_not_in_receipt", int(SEGMENT_FILE_RE.fullmatch(name).group(1)))
             for segment in receipt["segments"]:
                 checks = []
                 _verify_segment(directory, segment, lambda name, ok, segment=None, detail=None:
@@ -781,4 +1025,5 @@ def verify_day(paths, *, root, day):
             fail(sid, "ledger_row_without_session")
     return {"status": "verified" if not failures else "failed", "day": day, "sessions": len(sessions),
             "sessions_by_status": counts, "open_segments": open_segments, "crash_leftovers": leftovers,
-            "checks_failed": len(failures), "failures": failures}
+            "run_ledger_exempt_lines": list(run_ledger["exempt"]), "checks_failed": len(failures),
+            "failures": failures}

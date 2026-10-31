@@ -2523,6 +2523,7 @@ class AuditTests(Workspace):
             (path("1.200000013"), bz2.compress(hidden.replace('"marketTime"', '"market\\u0054ime"').encode() + b"\n")),
             (path("1.200000014"), bz2.compress(lines(closed_market("1.200000014", ["WINNER", "LOSER"], [2.0, None])
                                                      + [heartbeat(ms(OFF + timedelta(minutes=10)))]) + b"bad\n")),
+            (path("1.200000015"), stream(closed_market("1.200000015", ["LOSER", "LOSER"], [2.0, 3.0]))),
         ]
         sha, _ = self.build(members)
         report = audit(self.root)
@@ -2531,7 +2532,10 @@ class AuditTests(Workspace):
         groups = {(g["tier"], g["month"], g["country"], g["market_type"]): g for g in report["groups"]}
         self.assertNotIn(("BASIC", "2015-06", "IE", "WIN"), groups)            # grouped by the first countryCode
         win = groups[("BASIC", "2015-06", "GB", "WIN")]
-        expected = {"bsp_market_false": 1, "bsp_market_missing": 1, "closed_dead_heat_not_assessable": 1,
+        # closed_bsp_not_reconciled: 1.200000006 and the revised 1.200000008 end CLOSED with bspReconciled false;
+        # closed_no_winner: 1.200000015.
+        expected = {"bsp_market_false": 1, "bsp_market_missing": 1, "closed_bsp_not_reconciled": 2,
+                    "closed_dead_heat_not_assessable": 1, "closed_no_winner": 1,
                     "dead_heats": 1, "markets_never_closed": 3, "markets_read_incomplete": 2,
                     "markets_never_closed_read_incomplete": 1, "markets_missing_final_bsp_read_incomplete": 1,
                     "markets_with_unusable_final_bsp": 1, "markets_with_unrecognised_runner_status": 1,
@@ -2623,6 +2627,65 @@ class AuditTests(Workspace):
                                             "markets_missing_final_bsp")):
                         self.assertLessEqual(group[subset], group[parent])
                         self.assertLessEqual(group[subset], group["markets_read_incomplete"])
+
+    def test_closed_no_winner_and_closed_bsp_not_reconciled(self):
+        """Settlement v2's two sizing counts (docs/settlement-v2.md): only a market CLOSED at the end (final_status,
+        not closed_reached) counts; closed_no_winner when no runner listed at the end is WINNER, and
+        closed_bsp_not_reconciled when the last bspReconciled is anything but true (false, null or never
+        published). Each case is (closed_no_winner, closed_bsp_not_reconciled, markets_never_closed,
+        closed_dead_heat_not_assessable): a market reopened after CLOSED is in the last, beside markets whose
+        numberOfWinners or type the dead-heat rule cannot judge. A CLOSED market with a runner listed at the end
+        ACTIVE, PLACED or null, which settlement v2 also leaves unresolved, is in no count at all (UNSIZED)."""
+        t = iso(OFF)
+        mid = "1.330000001"
+        two = [runner(1), runner(2)]
+        settled = [runner(1, "WINNER", bsp=2.0), runner(2, "LOSER", bsp=3.0)]
+        opening = md_change(mid, OFF - timedelta(hours=1), definition(t, two))
+        after = OFF + timedelta(minutes=10)
+
+        def closed(runners=settled, **extra):
+            return md_change(mid, OFF + timedelta(minutes=5),
+                             definition(t, runners, status="CLOSED", in_play=True, **extra))
+
+        unsized = "UNSIZED"
+        cases = {
+            "settled and reconciled": ([opening, closed(bspReconciled=True)], (0, 0, 0, 0)),
+            "CLOSED, bspReconciled false": ([opening, closed()], (0, 1, 0, 0)),
+            "CLOSED, bspReconciled null": ([opening, closed(bspReconciled=None)], (0, 1, 0, 0)),
+            "CLOSED, bspReconciled never published": (
+                [md_change(mid, OFF - timedelta(hours=1), drop(definition(t, two), "bspReconciled")),
+                 md_change(mid, OFF + timedelta(minutes=5),
+                           drop(definition(t, settled, status="CLOSED", in_play=True), "bspReconciled"))],
+                (0, 1, 0, 0)),
+            "reconciled only after CLOSED": ([opening, closed(), md_change(mid, after, definition(
+                t, settled, status="CLOSED", in_play=True, bspReconciled=True))], (0, 0, 0, 0)),
+            "CLOSED with no WINNER": ([opening, closed([runner(1, "LOSER", bsp=2.0), runner(2, "LOSER", bsp=3.0)],
+                                                       bspReconciled=True)], (1, 0, 0, 0)),
+            "the WINNER unlisted after CLOSED": ([opening, closed(bspReconciled=True), md_change(mid, after, definition(
+                t, settled[1:], status="CLOSED", in_play=True, bspReconciled=True))], (1, 0, 0, 0)),
+            "CLOSED, then reopened": ([opening, closed([runner(1, "LOSER"), runner(2, "LOSER")]),
+                                       md_change(mid, after, definition(t, two, in_play=True))], (0, 0, 0, 1)),
+            "never CLOSED": ([opening], (0, 0, 1, 0)),
+            "CLOSED with a runner ACTIVE at the end": ([opening, closed(
+                [runner(1, "WINNER", bsp=2.0), runner(2, bsp=3.0)], bspReconciled=True)], unsized),
+            "CLOSED with a runner PLACED at the end": ([opening, closed(
+                [runner(1, "WINNER", bsp=2.0), runner(2, "PLACED", bsp=3.0)], bspReconciled=True)], unsized),
+            "CLOSED with a runner status null at the end": ([opening, closed(
+                [runner(1, "WINNER", bsp=2.0), runner(2, None, bsp=3.0)], bspReconciled=True)], unsized),
+        }
+        names = ("closed_no_winner", "closed_bsp_not_reconciled", "markets_never_closed",
+                 "closed_dead_heat_not_assessable")
+        for name, (messages, expected) in cases.items():
+            with self.subTest(case=name):
+                root = self.new_root()
+                self.build([(path(mid), stream(messages))], root=root)
+                report = audit(root)
+                self.assertEqual(report["status"], "audited", report)
+                if expected == unsized:
+                    self.assertEqual([count for count in coverage_audit.COUNTS if report["totals"][count]],
+                                     ["bsp_market_true", "markets"])
+                else:
+                    self.assertEqual(tuple(report["totals"][count] for count in names), expected)
 
     def test_index_collapses_repeated_messages_before_archive_overlap_audit(self):
         """The index emits one market record for repeated messages in a member."""

@@ -1376,6 +1376,7 @@ completed files 一致。未齊 variants 嘅 intent 唔綁 known certificate；r
   Astra 喺 `report_d0fd896b` 同意：`ltp_to_bsp_movement_non_executable` 保留聲明，仍未實作／未報。
   呢個係 pre-freeze disposition，唔係 freeze，亦冇聲稱有 movement results；日後刪 selector 或實作要
   另行 review profile/source 改動同新 certification。
+- **2026-10-31 Yu 撤回上面嘅延後**：price-movement study 要喺 Pilot 1 第一注 live 之前做，改為 registered measurement `movement-v1`，唔改 P0 contract 同任何已 certify 嘅 source file；backtest package 多兩個 module，engine certificate key 會變，P0 再 run 要重新 certify-engine（[docs/movement-study.md](movement-study.md)）。
 
 - **首個真資料 run 嘅前置步驟已完成（2026-10-17）**：L1/L2/L3、freeze、5a/5b、lab certification、
   第 7 步通知及 Yu 同意、首次 run 已按當時（C0 e452f2e）§10.1 完成並 engineering pass；按 stop rule 已停止。

@@ -81,6 +81,10 @@ RECORDER_PROFILE = "default"         # pilot_run.RECORDER_PROFILE: the recorder'
 DAY_SCHEMA = 1
 KINDS = ("first", "restart", "resumption")
 DAY_STATES = ("open", "done", "stopped_for_review", "window_exhausted")
+DAY_KEYS = frozenset({"schema_version", "date", "state", "close_code", "close_invocation_id", "counts", "attempts",
+                      "summary"})
+SUMMARY_LISTS = ("outcomes", "finalized", "review")
+DECISIONS = ("done", "restart", "wait", "review")      # what classify() and attempt() pass to finish()
 DONE_STOPS = frozenset({"end_at_reached", "max_duration_reached", "max_seconds_reached"})
 RESTART_STOPS = frozenset({"reconnect_budget_exhausted", "market_lister_failed:connect_failed",
                            "market_lister_failed:tls_failed", "market_lister_failed:deadline_exceeded"})
@@ -385,13 +389,20 @@ class Wrapper:
             day = json.loads(data.decode("utf-8"))
             if (not isinstance(day, dict) or day.get("schema_version") != DAY_SCHEMA
                     or day.get("state") not in DAY_STATES or not isinstance(day.get("attempts"), list)
-                    or not isinstance(day.get("counts"), dict) or set(day["counts"]) != set(KINDS)):
+                    or not isinstance(day.get("counts"), dict) or set(day["counts"]) != set(KINDS)
+                    or not DAY_KEYS <= set(day) or day["date"] != path.stem
+                    or not (day["close_code"] is None or isinstance(day["close_code"], str))
+                    or not isinstance(day["summary"], dict)
+                    or any(not isinstance(day["summary"].get(key), list) for key in SUMMARY_LISTS)):
                 raise ValueError("shape")
             for entry in day["attempts"]:
                 if (not isinstance(entry, dict) or entry.get("kind") not in KINDS
                         or entry.get("state") not in ("reserved", "finished")
                         or not isinstance(entry.get("invocation_id"), str)
-                        or type(entry.get("spawn_wall_ns")) is not int or type(entry.get("kind_count")) is not int):
+                        or type(entry.get("spawn_wall_ns")) is not int or type(entry.get("kind_count")) is not int
+                        # a finished attempt is read back for its decision and outcome (next_kind_on_entry)
+                        or (not (entry.get("decision") in DECISIONS and isinstance(entry.get("outcome"), str))
+                            if entry["state"] == "finished" else entry.get("decision") is not None)):
                     raise ValueError("entry")
             for kind in KINDS:
                 if type(day["counts"][kind]) is not int or day["counts"][kind] != sum(

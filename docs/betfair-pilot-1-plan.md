@@ -40,7 +40,7 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against b
 | Caps, refusals, latches and logins | note §9 |
 | The ledger's one equity equation, the commission rate, cleared-figure checks, the −£150 pause and what an ACK covers | note §10 |
 | Final execution record, when an L row counts, its finalization table, exact C/L agreement and the NCLV price, unmatched bets pending to the deadline, BSP cutoff, capture after sessions, measurement classes | note §11 |
-| Interim allowlist, private risk view, data lock, publication | note §12 |
+| Interim allowlist, private risk view, data lock, publication, registered end-only tables | note §12 |
 | The three consents in detail (freeze, build, the go-live gate, go live, REGISTER, PT4); the gate's test receipts; what PT1-PT4 and the PT4 receipt cover; adversarial tests | note §14 |
 | Endings | note §15 |
 
@@ -75,7 +75,8 @@ For Yu and lab-Claude. Author: Nuance, 2026-10-19, revised 2026-10-21, against b
 - Reported at the end, never deciding:
   - the stake-weighted mean, Σ s_i·x_i / Σ s_i over the primary bets (s_i = final matched size), and the count of every class (attrition);
   - the decision-price series: NCLV at the decision price for every PLACE record in the same decision range, sent or not, filled or not, with its own exclusions (void, post-decision removal, missing BSP). It shows fill selection; it does not remove it from the primary;
-  - surplus bets; raw CLV by price band and country; BSP calibration by band; profit after commission and the running total, as plain tables.
+  - surplus bets; raw CLV by price band and country; BSP calibration by band; profit after commission and the running total, as plain tables;
+  - not in contract p1, registered in note §12 under Yu's yes of 2026-10-31 if merged before the first PLACE record: the profit split r = NCLV + K by price band, the late-move cells, and day types with a Wednesday placebo. They never decide and cannot change N, the rule or the verdict.
 - Afterwards: a PASS leads first to one replication contract at the same £2 flat stake, with no Kelly yet, because one pass at α = 0.025 can still be luck (Yu, 2026-10-21). Yu allows it more than 25 bets a day; its own contract then sets its total, its days and its minimum-cluster check, so the day-clustered test still has enough days. Scaling up (a bigger stake, or staking in proportion to the bankroll) comes only after that, with its own consents (RS-19, Money). A FAIL ends this rule. Either way, the measured SD sets N for Pilot 2.
 
 ## Values and why
@@ -153,6 +154,7 @@ Every test needs Yu's explicit consent, with Yu present at the terminal (facts.m
 - Yu, 2026-10-21: the pause counts from £0, not from the best point reached, and there is no other running-total loss threshold (the £50 daily code stop and the website limit remain); the 495 total bounds the worst case at −£990; as Yu put it, the most that can be lost is what Yu put in.
 - Yu, 2026-10-21: after a PASS, one replication at £2 a bet comes before any scaling up, and it may place more than 25 bets a day.
 - Yu, 2026-10-21: PT4's bets are always reported apart from the sample. This answers the Codex review of PR #29: the earlier rule let a session after PT4, chosen with PT4's outcomes already seen, decide whether they joined.
+- Yu, 2026-10-31: three never-deciding end tables registered (note §12).
 - Chosen by the principles (the reasons for their numbers are in "Values and why"):
   1. Consents: the three on RS-19 (build, go live, each session).
   2. First rule: P1-FAV-T5, the simplest rule with one plain question. Considered instead: the small-race variant, or a T−2 version (deeper book, smaller SD).

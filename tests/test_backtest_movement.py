@@ -498,6 +498,11 @@ class CellAndShareTests(unittest.TestCase):
         self.assertIsNone(window_problem(replay([[20, "OPEN"]]), 10, 100))              # not yet published at start
         self.assertEqual(window_problem(replay([[0, "SUSPENDED"], [20, "OPEN"]]), 10, 100), "suspension_in_window")
         self.assertEqual(window_problem(replay([[0, "OPEN"], [60, None]]), 10, 100), "suspension_in_window")
+        # PR #50 Codex r4432420328: a status reset to null before the window, and OPEN again inside it, is not an
+        # unpublished market; the null at the window's start is a status other than OPEN.
+        reset = [[0, "OPEN"], [40, None], [80, "OPEN"]]
+        self.assertEqual(window_problem(replay(reset), 50, 100), "suspension_in_window")
+        self.assertIsNone(window_problem(replay([[60, "OPEN"]]), 50, 100))  # first published inside: not excluded here
 
 
 class StatisticsTests(unittest.TestCase):

@@ -920,15 +920,17 @@ def window_problem(replay, start, end):
     could not be read through end; removal_in_window when a runner became REMOVED or REMOVED_VACANT in it;
     suspension_in_window when the status published by start is anything but OPEN, or any status published in it
     (an image's null reset included) is. A market not yet published at start has no status then: its view decides
-    (field_share's no_view_at_time)."""
+    (field_share's no_view_at_time). A status published by start and then reset to null is not that: it is a status
+    other than OPEN (PR #50 Codex r4432420328)."""
     if replay.unreadable_from is not None and replay.unreadable_from <= end:
         return "window_unknown"
     market = replay.market
     if any(start < item["pt"] <= end and item["status"] in REMOVED_STATUSES for item in market.removals()):
         return "removal_in_window"
     statuses = market.fields.get("status", [])
-    if _as_of(statuses, start) not in (None, "OPEN") or any(start < pt <= end and value != "OPEN"
-                                                             for pt, value in statuses):
+    published = any(pt <= start for pt, _ in statuses)
+    if (published and _as_of(statuses, start) != "OPEN") or any(start < pt <= end and value != "OPEN"
+                                                                 for pt, value in statuses):
         return "suspension_in_window"
     return None
 

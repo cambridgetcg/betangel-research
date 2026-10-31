@@ -1176,7 +1176,8 @@ class BacktestBoundaryTests(unittest.TestCase):
         self.assertEqual({item["path"] for item in descriptor["files"]},
                          {REAL.files[m][0].relative_to(REPO).as_posix() for m in closure})
         self.assertNotIn(READINESS, closure)
-        self.assertEqual(len(descriptor["files"]), 21)
+        # 21 at dda38a8, plus settlement_v2.py (research-only settlement rule v2, docs/settlement-v2.md).
+        self.assertEqual(len(descriptor["files"]), 22)
 
     def test_offline_syntax_floor_is_python_3_10(self):
         for module in sorted([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]):

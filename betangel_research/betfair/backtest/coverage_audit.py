@@ -11,7 +11,11 @@ missing is reported as missing, never as a zero rate); bspMarket true, false or 
 BSP for any runner not REMOVED, REMOVED_VACANT or HIDDEN at the end (overall and among bspMarket markets) and
 markets with a final bsp present but unusable (such as "NaN"); markets with removals and the removals before and
 after the decision cutoff; dead heats, closed markets whose dead heat cannot be judged (numberOfWinners missing or
-below 1, or a market type the rule does not cover), and results revised after CLOSED; markets never CLOSED;
+below 1, a market type the rule does not cover, or a market reopened or reset after CLOSED, which _dead_heat leaves
+None), and results revised after CLOSED; markets CLOSED at the end (final_status, as accounting and settlement v2
+read it, not closed_reached) with no runner listed at the end WINNER (closed_no_winner) or whose last bspReconciled
+is not true: false, null or never published (closed_bsp_not_reconciled); they size two groups that settlement v2
+leaves unresolved (docs/settlement-v2.md); markets never CLOSED;
 path/marketTime month, date and event id mismatches; markets whose marketTime was revised (changed to another
 value: the null an image reset records and the same value published again are not revisions); markets read from a
 member that could not be read whole, and two overlap annotations of the headline counts:
@@ -33,7 +37,8 @@ minus totals.markets).
 No outcome statistic beyond those counts is computed: no win rates, prices, BSP values or returns, so the report
 cannot be used to look at outcomes; every number in it is an integer count. The audit reads the evaluator-only part
 of each record only to count those coverage cases. There is no minimum group size: a group of one market reveals
-that market's settlement coverage (closed or not, dead heat, BSP missing), never its winners or prices
+that market's settlement coverage (closed or not, dead heat, BSP missing, whether any runner listed at the end is
+WINNER, whether BSP was reconciled), never its winners or prices
 (docs/backtest-plan.md section 10). It verifies each index head against its manifest's sha256, the markets file
 against the head's markets_sha256 and line count, and every record against the current month gate (a record whose
 path month or marketTime month the gate now refuses refuses the audit as stale_gate: an index built under an older
@@ -54,9 +59,9 @@ KNOWN_FIELDS = ("mc.con", "mc.img", "mc.marketDefinition", "mc.tv", "md.bspMarke
                 "md.marketTime", "md.numberOfWinners", "md.runners.adjustmentFactor", "md.runners.bsp",
                 "md.runners.removalDate", "md.runners.status", "md.settledTime", "md.status", "rc.atb", "rc.atl",
                 "rc.batb", "rc.batl", "rc.ltp", "rc.spb", "rc.spf", "rc.spl", "rc.spn", "rc.trd", "rc.tv")
-COUNTS = ("bsp_market_false", "bsp_market_missing", "bsp_market_true", "closed_dead_heat_not_assessable",
-          "date_mismatches", "dead_heats", "event_id_mismatches", "market_time_revised", "markets",
-          "markets_missing_final_bsp", "markets_missing_final_bsp_in_bsp_markets",
+COUNTS = ("bsp_market_false", "bsp_market_missing", "bsp_market_true", "closed_bsp_not_reconciled",
+          "closed_dead_heat_not_assessable", "closed_no_winner", "date_mismatches", "dead_heats", "event_id_mismatches",
+          "market_time_revised", "markets", "markets_missing_final_bsp", "markets_missing_final_bsp_in_bsp_markets",
           "markets_missing_final_bsp_read_incomplete", "markets_never_closed", "markets_never_closed_read_incomplete",
           "markets_read_incomplete", "markets_with_removals", "markets_with_unrecognised_runner_status",
           "markets_with_unusable_final_bsp", "month_mismatches", "multiple_sources", "removals_after_cutoff",
@@ -100,6 +105,11 @@ def _count(group, record):
     group["dead_heats"] += 1 if outcome["dead_heat"] is True else 0
     group["closed_dead_heat_not_assessable"] += 1 if outcome["closed_reached"] and outcome["dead_heat"] is None else 0
     group["results_revised_after_close"] += 1 if outcome["results_revised_after_close"] is True else 0
+    if outcome["final_status"] == "CLOSED":
+        reconciled = (outcome["outcome_definition"].get("bspReconciled") or [[None, None]])[-1][1]
+        group["closed_bsp_not_reconciled"] += 0 if reconciled is True else 1
+        group["closed_no_winner"] += 0 if any(runner["listed"] is True and runner["status"] == "WINNER"
+                                              for runner in outcome["final_runners"]) else 1
     group["markets_never_closed"] += 0 if outcome["closed_reached"] else 1
     incomplete = outcome["read_complete"] is not True
     group["markets_read_incomplete"] += 1 if incomplete else 0

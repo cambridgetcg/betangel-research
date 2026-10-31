@@ -1,0 +1,264 @@
+{
+  "blind_pass": {
+    "releases": [
+      "counts by market code and by measurement class at every decision time, which reconcile to the record count",
+      "registered-tier records, and their issued and eligible decisions by decision time, by registered month (every month listed, so a gap shows as 0), outside the registered months and without an anchor",
+      "issued and eligible counts by decision time x price band x field-size band",
+      "the diagnostics' counts (diagnostics.rule)",
+      "race-date counts of every group a statistic is given for",
+      "late-move counts: exclusions, undefined reasons, the cells and the cells by price band, and the bets and cells every control is computed on",
+      "nearest-rank quantiles of ticks P - BSP by decision time and by decision time x price band, each minus its group's nearest-rank median: their spread and shape, not their location",
+      "the sample SD of NCLV by decision time (all, price band and field-size band) and by late-move cell; with the counts, the SD of all and those of a set of bands give the between-band dispersion of the bands' mean NCLV exactly (law of total variance), though not where any mean lies"
+    ],
+    "rule": "The blind pass runs first, over the whole input, and releases only what releases lists. The registered pass runs once, after people have read the blind tables, at the same code commit and backtest sources, and only with the blind receipt of this registration and the same input sha256; nothing in this file may change between the two passes, since any change is a new sha256. The registered pass runs whatever the blind tables show. Only an engineering failure stops it: a refusal or failure code, counts that do not reconcile, an input that does not cover every registered month, or a defect found in the code or the input. The stop and its reason are recorded; what follows is a fix and a new blind pass (changed code refuses as blind_receipt:another_code), and a new registration if this file changes.",
+    "withholds": [
+      "any mean, sum, median or other location of NCLV or of ticks P - BSP, by any grouping",
+      "any contrast, p-value, interval, control effect or flag",
+      "any tick quantile by late-move cell",
+      "any per-market or per-runner row, market id or selection id"
+    ]
+  },
+  "data": {
+    "duplicates": "A record of a registered tier is keyed by its market id alone: the same id under two registered tiers (one market held as PRO and as ADVANCED under one data root) refuses the run (input:<archive sha256>:market_in_two_tiers), and one id twice in one tier refuses it too (duplicate_market), so no market is decided, measured or counted twice. Keep each tier in its own data root (docs/backtest-plan.md section 10.1: the PRO archive is in historic-pro). A record of another plan is keyed by plan and market id and is coded plan_not_registered.",
+    "end_month": "2016-04",
+    "ladders": {
+      "ADVANCED": "batb_batl",
+      "PRO": "atb_atl"
+    },
+    "month": "the UTC month of the first-published marketTime",
+    "provider": "betfair_historical_data",
+    "source": "every archive ingested and indexed under one data root (archive.py, market_index.py), each market from its index record's primary member, replayed with the index's own fold and checked against the record at every view (replay.view_from_fold); no other source stands in",
+    "start_month": "2015-05",
+    "tiers": [
+      "ADVANCED",
+      "PRO"
+    ]
+  },
+  "decided_by": "Yu, 2026-10-31: reverse the 2026-10-16 deferral of the price-movement diagnostic, so that this study runs before Pilot 1's first live bet; the approach (a standalone registered measurement, not a backtest contract, changing no existing source file) is the lead's",
+  "diagnostics": {
+    "min_stake_p": 200,
+    "rule": "Counts only, in both passes, at every decision time: issued decisions whose market status at t is not OPEN (the ladder fold carries quotes through a suspension, which book.py would clear, and pilot.py has no status predicate); issued decisions in play at t; and decisions that reach a unique favourite whose best back size is below min_stake_p pence. 200 is the 2026-10-31 review's figure for the 2015-16 minimum stake, not verified here; it matters if Pilot 1's EX_BEST_OFFERS book, requested without exBestOffersOverrides (api.py), is rolled up at the minimum stake while these files are not, which is not verified either. Also the replayed markets in which a ladder key had a null value before the off (which changes nothing). The diagnostics change no code, class or statistic."
+  },
+  "doc": "docs/movement-study.md",
+  "id": "movement-v1",
+  "late_move": {
+    "cells": {
+      "DRIFT": "M <= -threshold",
+      "FLAT": "otherwise",
+      "STEAM": "M >= +threshold"
+    },
+    "decision_offset_s": -300,
+    "exclusions": [
+      "window_unknown",
+      "removal_in_window",
+      "suspension_in_window",
+      "cell_undefined"
+    ],
+    "from_offset_s": -1800,
+    "max_selected_spread_ticks": 3,
+    "measure": "M = ln(q(t) / q(off + from_offset_s)), t = off + decision_offset_s, for the runner the decision at t selected, from the views and quotes at exactly those two times",
+    "population": "eligible bets of the decision at decision_offset_s only; a market excluded here keeps its NCLV in every other table and is counted apart by its first exclusion",
+    "q": "the runner's field-normalised implied probability from back/lay midpoints: m_i = (best back_i + best lay_i) / 2 and q = (1 / m_runner) / sum over every runner ACTIVE and listed at that time of (1 / m_j)",
+    "threshold": "0.05",
+    "undefined": "the cell is undefined at either time when there is no view, a malformed ladder entry was published by then, the runner is not ACTIVE and listed, the runner or any other ACTIVE listed runner lacks a two-sided quote (a best back and a best lay, best back below best lay), the runner's quotes are off the CLASSIC ladder, or its best lay is more than max_selected_spread_ticks ticks above its best back",
+    "undefined_reasons": [
+      "no_view_at_time",
+      "ladder_malformed",
+      "runner_not_active",
+      "runner_not_two_sided",
+      "other_runner_not_two_sided",
+      "runner_off_ladder",
+      "runner_spread_too_wide"
+    ],
+    "window": "(off + from_offset_s, off], off the first-published scheduled off: window_unknown when the member could not be read through the window; removal_in_window when any runner of the market became REMOVED or REMOVED_VACANT in it; suspension_in_window when the market status published by the window's start, or any status published in it (an image's null reset included), is anything but OPEN; a market not yet published at the window's start is left to undefined (no_view_at_time). A runner added in the window is not an exclusion (the rule names removals and suspensions only), though it changes the field q is normalised over. inPlay is not one of its own: a market turning in play is normally suspended first, which suspension_in_window then catches (an inference, not checked), and the diagnostics count issued decisions in play at t."
+  },
+  "measurement": {
+    "P": "the selected runner's best back at t, assumed filled in full at exactly that price (delay 0): Pilot 1's decision-price series (p1-fav-t5.json reporting), not its fill-conditional primary",
+    "bsp_valid_if": [
+      "the market's final status is CLOSED and its last bspReconciled is true",
+      "the runner is listed at the end with final status WINNER or LOSER",
+      "its final bsp is a finite number above 1 (the index keeps none below 1.01)"
+    ],
+    "classes": [
+      "outcome_unknown",
+      "void_own_runner_removed",
+      "post_decision_removal",
+      "result_revised_after_close",
+      "missing_bsp",
+      "eligible"
+    ],
+    "classes_rule": "Each issued decision ends in exactly one class, the first that applies, mirroring contract p1's class order where history can see it: outcome_unknown when the member was not read whole or a runner's later state cannot be assessed (outcome._removed_after); void_own_runner_removed when the selected runner was removed after t (Pilot 1's void); post_decision_removal when another runner ACTIVE and listed at t was removed after t; result_revised_after_close when the index's results_revised_after_close is true (a runner status, bsp or listing, or numberOfWinners, changed after the market first reached CLOSED), because Pilot 1 freezes BSP from the first read that shows CLOSED and ignores later corrections, which these final values cannot reproduce; missing_bsp when bsp_valid_if fails, a market without BSP included; otherwise eligible. Market-level void cannot be seen in these files and is never inferred. Only eligible bets enter NCLV.",
+    "commission_rate": "0.02",
+    "nclv": "(1 + (P - 1) * (1 - c)) / BSP - 1, c = commission_rate, computed exactly from the file's numbers (p1-fav-t5.json metric)",
+    "ticks": "tick_position(P) - tick_position(BSP) on the CLASSIC ladder, where tick_position is a price's index from 1.01 and runs linearly between the two ladder prices around a price that is not on the ladder; positive when P is above BSP"
+  },
+  "population": {
+    "best_back_max_h": 400,
+    "best_back_min_h": 150,
+    "betting_type": "ODDS",
+    "codes": [
+      "plan_not_registered",
+      "no_view",
+      "month_not_registered",
+      "anchor_not_known_by_decision",
+      "view_ended_before_decision",
+      "member_unreadable_before_decision",
+      "schedule_revised_before_decision",
+      "country_not_allowed",
+      "event_type_not_allowed",
+      "market_type_not_allowed",
+      "betting_type_not_odds",
+      "number_of_winners_not_1",
+      "too_few_active_runners",
+      "ladder_malformed",
+      "no_priced_active_runner",
+      "favourite_tie",
+      "best_back_off_ladder",
+      "best_back_out_of_range",
+      "depth_below_min",
+      "best_lay_missing",
+      "book_crossed",
+      "best_lay_off_ladder",
+      "spread_too_wide"
+    ],
+    "codes_rule": "At every decision time, every index record gets exactly one code, the first that applies in this order, or issued. The first seven are what history needs before Pilot 1's predicates can be read: the record's plan is not a registered tier; the index holds no view; the first-published marketTime's month is outside the months; it was published after t; the view stopped at or before t (an outcome-bearing definition, or the member could not be read from then); the marketTime was revised to another value at or before t (Pilot 1 would time its decision from the revised off). Then Pilot 1's predicates in pilot.py's order and with its codes, from what was published at or before t: countryCode, eventTypeId, marketType, bettingType, numberOfWinners, at least min_active_runners runners ACTIVE and listed; ladder_malformed when a ladder entry or runner id published by t could not be read; then the selection over ACTIVE listed runners with a best back.",
+    "countries": [
+      "GB",
+      "IE"
+    ],
+    "event_type_id": "7",
+    "market_type": "WIN",
+    "max_best_lay_ticks_above_best_back": 2,
+    "min_active_runners": 5,
+    "min_available_at_best_back_p": 1000,
+    "not_checked": "Pilot 1's book_delayed, off_missing and window codes have no historical counterpart; bspMarket is not a predicate, so a market without BSP is issued and counted as missing_bsp, as Pilot 1 would; market status and inPlay are not predicates either, as in pilot.py, and the diagnostics count issued decisions whose status is not OPEN or that are in play",
+    "number_of_winners": 1,
+    "price_ladder": "CLASSIC assumed for GB and IE horse-racing WIN markets: index v1 does not track priceLadderDefinition, so Pilot 1's ladder_not_classic cannot be checked, and every price is checked against the CLASSIC ladder instead",
+    "quotes": "The tier's ladders folded by the stream cache rules that betangel_research/betfair/book.py documents and implements (F54): PRO's atb and atl are price-keyed [price, size] deltas, where a size of 0 deletes that price and an empty list empties that ladder; ADVANCED's batb and batl are level-keyed [level, price, size] deltas, where a size of 0 at level k empties level k and every deeper level and an empty list changes nothing; a null value changes nothing (counted, diagnostics); an image (img true) replaces every runner's ladders, and a runner it does not carry has none. A runner's best back is the highest price of its PRO back ladder, or level 0 of the contiguous prefix of its ADVANCED back ladder that is strictly ordered by price (book.py _level_prefix); its best lay the lowest PRO lay price, or level 0 of the ADVANCED lay prefix; each with its size, as the file wrote them. Unlike book.py, quotes are not cleared while the market is not OPEN, since pilot.py has no status predicate; the diagnostics count such decisions.",
+    "selection_rule": "Pilot 1's rule P1-FAV-T5: the only ACTIVE listed runner with the lowest best back (a tie is favourite_tie); its best back on the CLASSIC ladder, from best_back_min_h to best_back_max_h hundredths; at least min_available_at_best_back_p pence available at it, the files' sizes read as GBP; a best lay present, above the best back, on the ladder and 1 to max_best_lay_ticks_above_best_back ticks above it",
+    "source": "research/pilots/p1-fav-t5.json rule (market, selection) and betangel_research/betfair/pilot.py evaluate_predicates"
+  },
+  "registered_on": "2026-10-31",
+  "registered_pass": {
+    "contrasts": [
+      "STEAM-FLAT",
+      "DRIFT-FLAT"
+    ],
+    "contrasts_rule": "Each contrast A-B is the difference of the two cells' mean NCLV at the decision offset, m_A - m_B, two-sided, with the CR1 variance of that difference clustered by race date: Var = G / (G - 1) * sum over race dates g of (sum over bets i of A in g of (x_i - m_A) / n_A - sum over bets i of B in g of (x_i - m_B) / n_B)^2, with no (N - 1) / (N - K) factor, and t = (m_A - m_B) / sqrt(Var) on G - 1 degrees of freedom, G the race dates holding a bet of either cell. A contrast is tested only when each of its cells holds at least min_cell_bets bets and min_cell_race_dates race dates; otherwise it is underpowered, never tested, and counts as not rejected. Every control's contrast, and every main contrast over a control's bets, uses the same formula (shuffled_m its weighted form), the same gates and t(G - 1).",
+    "controls": {
+      "earlier_window": {
+        "from_offset_s": -3300,
+        "rule": "The same cell rule and window exclusions over (off + from_offset_s, off + to_offset_s], for the runner the decision at the late-move decision offset selected, on the late-move population; the contrasts are of that population's NCLV by these cells, over the bets whose earlier cell is defined, and the kill rule compares them with the main contrasts over those same bets.",
+        "to_offset_s": -1800
+      },
+      "names": [
+        "earlier_window",
+        "shuffled_m",
+        "random_runner"
+      ],
+      "random_runner": "In each late-move market, one runner drawn with seeds.random_runner and the label movement-v1/random-runner/<market id>: the candidates are the ACTIVE listed runners at the decision offset other than the selected one whose cell is defined by the late-move rule and whose BSP is valid, in selection-id order, and the draw is a uniform index into that order (metrics.HashStream); its NCLV at its own best back and its own cell replace the selected runner's; a market with no candidate is counted apart (no_candidate). The kill rule compares it with the main contrasts over the markets that have a random runner. An outsider's NCLV is far noisier than a favourite's, which the kill rule's alpha allows for.",
+      "shuffled_m": "The expectation of each main contrast over every permutation of the late-move cells among the bets of each race date, computed exactly, so that no seed decides it (it is what the mean over ever more seeded within-date shuffles of M approaches): a permutation keeps each date's cell counts, so the estimate is sum over race dates d of (n_d,A / n_A - n_d,B / n_B) * mean_d, mean_d the mean NCLV of every late-move bet of d. It is the difference of two weighted means of NCLV, and its variance is the CR1 variance of that difference: Var = G / (G - 1) * sum over d of (n_d,A / n_A * (mean_d - m_A) - n_d,B / n_B * (mean_d - m_B))^2, m_A and m_B the two weighted means, G the race dates holding a bet of A or B. It shows how much of a main contrast the race dates' mix of cells and NCLV levels alone explains; it is compared with the main contrasts over the whole late-move population."
+    },
+    "discovery": {
+      "min_cell_mean_nclv": "0.005",
+      "rule": "A STEAM or DRIFT cell is flagged tradable_flag only when all four hold: its mean NCLV is at least min_cell_mean_nclv; its contrast with FLAT is positive (its mean NCLV above FLAT's); that contrast is rejected under Holm; and no control blocks it (kill_rule). A flag is for people to read, never a decision, and nothing here changes contract p1."
+    },
+    "holm": {
+      "alpha_familywise": "0.05",
+      "family": "the two contrasts, family size 2 whatever is testable"
+    },
+    "kill_rule": {
+      "alpha": "0.05",
+      "fraction_of_main": "0.5",
+      "rule": "For each contrast, each control is compared with the main contrast over the same bets (the control's own bets: earlier_window and random_runner name theirs; shuffled_m's are the whole late-move population). The control blocks that contrast's flag when it has no estimate (underpowered), when the main contrast over the same bets has none, or when its absolute estimate is at least fraction_of_main times the absolute main estimate over the same bets and its own two-sided p (unadjusted) is below alpha or undefined (se_undefined: its noise cannot be judged). A control that large but within its own noise does not block, so a noisy control does not kill a real effect by chance alone as often as a comparison of point estimates would (docs/movement-study.md)."
+    },
+    "min_cell_bets": 200,
+    "min_cell_race_dates": 15,
+    "releases": "everything the blind pass releases, with the tick quantiles as they are (not minus the median); mean NCLV with its CR1 interval for every group the blind pass gives an SD for (unadjusted and descriptive: only the two contrasts are under Holm); the contrasts with their Holm decisions; each control's contrasts beside the main contrasts over the same bets; the kill rule and the flags"
+  },
+  "schema": "betangel.study-registration/v1",
+  "seeds": {
+    "random_runner": 2
+  },
+  "statistics": {
+    "min_bets_for_statistics": 100,
+    "quantile_method": "nearest_rank",
+    "quantiles": [
+      "0.05",
+      "0.1",
+      "0.25",
+      "0.5",
+      "0.75",
+      "0.9",
+      "0.95"
+    ],
+    "rule": "A group with fewer than min_bets_for_statistics bets reports its counts only; from 100 bets on, no released quantile is a group's minimum or maximum. Nothing is merged: no group is pooled with another, before or after the blind pass. Quantiles are by nearest rank: with n sorted values, the q quantile is value ceil(q * n), counted from 1 (metrics.percentile_interval's rank). The SD is the sample SD, with n - 1."
+  },
+  "status": "registered",
+  "strata": {
+    "field_size_bands": [
+      [
+        "F1",
+        5,
+        7
+      ],
+      [
+        "F2",
+        8,
+        10
+      ],
+      [
+        "F3",
+        11,
+        14
+      ],
+      [
+        "F4",
+        15,
+        null
+      ]
+    ],
+    "field_size_rule": "the number of runners ACTIVE and listed at the decision time, inclusive bounds; null is no upper bound",
+    "price_band_rule": "the selected runner's best back at the decision time, in hundredths, inclusive bounds on the CLASSIC ladder; set by hand, not fitted to data",
+    "price_bands_h": [
+      [
+        "B1",
+        150,
+        199
+      ],
+      [
+        "B2",
+        200,
+        248
+      ],
+      [
+        "B3",
+        250,
+        298
+      ],
+      [
+        "B4",
+        300,
+        400
+      ]
+    ]
+  },
+  "summary": "Registered offline measurement, not a backtest contract. On Pilot 1's exact population rebuilt from the free 2015-05..2016-04 Betfair Historical Data files, it measures how the executable best back at off -30, -10, -5 and -2 minutes compares with BSP after commission (NCLV, as contract p1 defines it), and whether the favourite's late move (STEAM, FLAT or DRIFT from off -30 to off -5 minutes) tells anything, with negative controls. Its registered pass tests only the two late-move contrasts, under Holm; every other interval is descriptive. Every figure is a prior for Pilot 1, never proof of a current edge: these months count as inspected from P0's first run, and the market has changed since. It changes no existing source file, nor contract p1 (its N, its rule or its verdict), nor backtest-p0-bsp-v1. Adding movement.py and movement_study.py to the backtest package changes the engine's source descriptor and certificate key, so P0's dda38a8 certificate no longer matches and any later run-backtest needs certify-engine.",
+  "timing": {
+    "anchor": "first_published_scheduled_off",
+    "decision_offsets_s": [
+      -1800,
+      -600,
+      -300,
+      -120
+    ],
+    "rule": "t = the first-published scheduled marketTime + offset; each offset is an independent decision with Pilot 1's rule, never a re-entry; the view at t holds every message published at or before t, the batch at t included and nothing after it (timer_after_equal_pt_batch). Pilot 1 observes its decision book from off -300 s to off -285 s; history uses t exactly."
+  },
+  "uncertainty": {
+    "cluster": "race_date_europe_london",
+    "confidence_level": "0.95",
+    "method": "cr1_t_g_minus_1",
+    "min_clusters": 15,
+    "rule": "As contract p1's inference: m = sum(x) / N, SE^2 = G / (G - 1) * sum over race dates g of (sum over bets i in g of (x_i - m))^2 / N^2, and the interval m +/- t * SE with t the (1 + confidence_level) / 2 quantile of Student's t with G - 1 degrees of freedom; fewer than min_clusters race dates give the mean without an interval (too_few_clusters). The race date is the Europe/London calendar date of the first-published off (accounting.race_day_of); contract p1 clusters by the UTC date of its decision, which is the same date for every GB and IE race not run within 30 minutes after midnight UTC."
+  }
+}

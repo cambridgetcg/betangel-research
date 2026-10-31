@@ -1176,7 +1176,8 @@ class BacktestBoundaryTests(unittest.TestCase):
         self.assertEqual({item["path"] for item in descriptor["files"]},
                          {REAL.files[m][0].relative_to(REPO).as_posix() for m in closure})
         self.assertNotIn(READINESS, closure)
-        self.assertEqual(len(descriptor["files"]), 21)
+        # 21 at dda38a8, plus movement.py and movement_study.py (registered measurement movement-v1).
+        self.assertEqual(len(descriptor["files"]), 23)
 
     def test_offline_syntax_floor_is_python_3_10(self):
         for module in sorted([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]):

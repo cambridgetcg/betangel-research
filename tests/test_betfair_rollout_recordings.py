@@ -171,19 +171,22 @@ class UnlistedSegmentTests(Case):
         directory = self.crashed()
         for suffix in (".jsonl", ".recv.jsonl"):
             (directory / f"seg-0001{suffix}").write_bytes((directory / f"seg-001{suffix}").read_bytes())
-        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 1)})
+        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 1),
+                                         (directory.name, "recv_not_in_receipt", 1)})
 
     def test_a_lone_padded_alias_fails(self):
         directory = self.crashed()
         for suffix in (".jsonl", ".recv.jsonl"):
             (directory / f"seg-001{suffix}").rename(directory / f"seg-0001{suffix}")
-        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 1)})
+        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 1),
+                                         (directory.name, "recv_not_in_receipt", 1)})
 
     def test_crashed_session_with_two_unlisted_segments_fails(self):
         directory = self.crashed()
         for suffix in (".jsonl", ".recv.jsonl"):
             (directory / f"seg-002{suffix}").write_bytes((directory / f"seg-001{suffix}").read_bytes())
-        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 2)})
+        self.assertEqual(self.failed(), {(directory.name, "segment_not_in_receipt", 2),
+                                         (directory.name, "recv_not_in_receipt", 2)})
 
 
 class LedgerRowTests(Case):

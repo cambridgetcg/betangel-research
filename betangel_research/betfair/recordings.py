@@ -1002,6 +1002,14 @@ def verify_day(paths, *, root, day):
             for name in session["open_segments"]:
                 if name != allowed:
                     fail(sid, "segment_not_in_receipt", int(SEGMENT_FILE_RE.fullmatch(name).group(1)))
+            # A recv file is created only after its data file (recorder.py _SegmentWriter.__init__), so beside a
+            # partial receipt each one needs a listed segment or the canonical open segment as its mate.
+            listed_names = {meta["path"] for meta in session["segments"]}
+            for name in session["names"]:
+                match = RECV_FILE_RE.fullmatch(name)
+                mate = f"seg-{match.group(1)}.jsonl" if match else None
+                if match and mate not in listed_names and not (mate == allowed and mate in session["open_segments"]):
+                    fail(sid, "recv_not_in_receipt", int(match.group(1)))
             for segment in receipt["segments"]:
                 checks = []
                 _verify_segment(directory, segment, lambda name, ok, segment=None, detail=None:

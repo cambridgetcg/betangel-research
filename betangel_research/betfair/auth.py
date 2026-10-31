@@ -384,6 +384,7 @@ class SessionManager:
         self._relogin_active = False
         self._login_guard = None
         self._login_observer = None
+        self._reserve_check = None
 
     # -- properties and accessors --
 
@@ -429,7 +430,7 @@ class SessionManager:
 
     # -- login --
 
-    def guard_logins(self, guard, on_outcome=None):
+    def guard_logins(self, guard, on_outcome=None, on_reserve=None):
         """Install guard (None removes it, and its on_outcome with it): a callable checked at the start of every
         login, lazy logins and every relogin included (stream session errors, the REST retry, keepAlive's
         NO_SESSION), before any attempt is reserved or sent. A non-empty return refuses that login with
@@ -437,13 +438,19 @@ class SessionManager:
         session reserved, right after its outcome row is written (the recorder's per-run login stop, design v9 §3.7
         R3: its run refuses every later login after one failed or unknown outcome). The recorder installs both for
         its run (its stop flag and wall-clock end); logout, keepAlive itself and every caller that installs none
-        are unchanged."""
+        are unchanged. on_reserve, when given, is called inside _reserve with the ledger lock held, before the
+        attempt row is written: a non-empty return refuses that login with LoginStopped(<return>) and nothing is
+        reserved, so a check it makes cannot be overtaken by another process's reservation (the recorder's step 8
+        recheck, PR #41 Codex r4351297987)."""
         if guard is not None and not callable(guard):
             raise TypeError("login guard must be callable or None")
         if on_outcome is not None and (guard is None or not callable(on_outcome)):
             raise TypeError("login outcome observer must be callable and needs a guard")
+        if on_reserve is not None and (guard is None or not callable(on_reserve)):
+            raise TypeError("login reserve check must be callable and needs a guard")
         self._login_guard = guard
         self._login_observer = on_outcome
+        self._reserve_check = on_reserve
 
     def _url(self, host_kind, path_name):
         return f"https://{self._hosts[host_kind]}{SSO_PATHS[path_name]}"
@@ -466,6 +473,10 @@ class SessionManager:
         self.paths.ensure()
         session_cfg = self.config["session"]
         with _ledger_lock(self.paths, self.clock):
+            if self._reserve_check is not None:
+                reason = self._reserve_check()
+                if reason:
+                    raise LoginStopped(reason)
             now_ns = self.clock.time_ns()
             summary = _summarise(_read_ledger(self.paths.login_ledger), now_ns, _pending_s(self.config))
             if summary["banned_until_ns"] is not None and summary["banned_until_ns"] > now_ns:

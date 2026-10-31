@@ -118,7 +118,8 @@ class ReproductionTests(R3Case):
         session, transport = self.session([login_ok(), no_session(), support.transport_failure("receive"),
                                            support.transport_failure("receive")])
         with patch.object(recorder_module._Session, "_login_outcome", lambda self, outcome: None), \
-                patch.object(recorder_module._Session, "_login_guard", lambda self: self._stop_reason()):
+                patch.object(recorder_module._Session, "_login_guard", lambda self: self._stop_reason()), \
+                patch.object(recorder_module._Session, "_ledger_stop", lambda self: None):
             receipt = self.record(session, self.probe_script(session))
         self.assertEqual([r["url"] for r in transport.requests], [LOGIN, KEEPALIVE, LOGIN, LOGIN])
         self.assertEqual(self.outcomes(), ["proceed", "unknown", "unknown"])

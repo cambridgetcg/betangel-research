@@ -495,11 +495,13 @@ class _Session:
         before the run's first lazy login (the precount's included): once any stop condition holds, no login or
         relogin starts, whoever asks for it. R3: the guard also refuses while the login ledger is not clean
         (login_ledger_not_clean), and after any failed or unknown login of this run every later login is refused and
-        the run stops with login_failed_this_run:<outcome>, so one recorder run can never take the ledger to the
-        two-failure state that refuses kill's emergency login."""
+        the run stops with login_failed_this_run:<outcome>. So a run starts a login only on a clean ledger (rechecked under
+        the ledger lock as it reserves, PR #41 Codex r4351297987) and adds at most one failure to it; one more failure
+        from any other process, during or after the run's attempt, still reaches the two-failure state that refuses
+        kill's emergency login until login-reset."""
         guard = getattr(self.r.session, "guard_logins", None)
         if callable(guard):
-            guard(self._login_guard, on_outcome=self._login_outcome)
+            guard(self._login_guard, on_outcome=self._login_outcome, on_reserve=self._ledger_stop)
         try:
             return self._run()
         finally:
@@ -512,6 +514,12 @@ class _Session:
         reason = self._stop_reason()
         if reason:
             return reason
+        return self._ledger_stop()
+
+    def _ledger_stop(self):
+        """login_ledger_not_clean (sticky) when step 8's ledger rule refuses, else None. The guard calls it unlocked,
+        as an early refusal; SessionManager._reserve calls it again under the ledger lock (on_reserve), so no other
+        process's attempt can land between this check and the run's own reservation."""
         problems = ledger_problems(self.r.config, self.r.paths, clock=self.clock)
         if problems:
             self.login_stop = "login_ledger_not_clean"

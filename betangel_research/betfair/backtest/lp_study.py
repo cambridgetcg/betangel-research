@@ -223,14 +223,13 @@ def decide_record(reg, record, root, manifest, tally, limits=DEFAULT_LIMITS):
         tally.months[month]["records"] += 1
     codes = {offset: market_code(reg, record, offset) for offset in reg.decision_offsets_s}
     walked = [offset for offset in reg.decision_offsets_s if codes[offset] is None]
-    walk = None
-    if walked:
+    walk = cancel = None
+    if walked:                                       # only a record with an anchor reaches the book predicates
         walk = _walk(root, manifest, record, reg, walked, limits)
         tally.replayed += 1
         for key, count in zip(MARKET_DIAGNOSTICS, (walk.null_ladder_updates, walk.trd_zeroing, walk.trd_decreases)):
             tally.diagnostics[key] += bool(count)
-    off = decision_time(record, 0)
-    cancel = off + reg.cancel_offset_s * 1000
+        cancel = decision_time(record, 0) + reg.cancel_offset_s * 1000
     for offset in reg.decision_offsets_s:
         code, selection, t = codes[offset], None, decision_time(record, offset)
         if code is None:

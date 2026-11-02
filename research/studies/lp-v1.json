@@ -1,0 +1,314 @@
+{
+  "blind_pass": {
+    "releases": [
+      "counts by market code and by class at every decision time, which reconcile to the record count",
+      "registered-tier records, and their issued and eligible decisions by decision time, by registered month (every month listed, so a gap shows as 0), outside the registered months and without an anchor",
+      "eligible decisions by decision time x spread bucket x price band x matched-volume tercile, with the tercile cut points (strata.volume_rule)",
+      "per decision time and for the main and the join legs: filled legs by side and fill kind, the fill rate of each leg and of both (round-trip completion), inventory-state counts, touched_before_fill and touched_never_filled, fills by kind within each diagnostics.latency_s of t and in the first diagnostics.after_the_hour_s seconds after a weekday hour (with the count expected if fill times were uniform over their windows), and nearest-rank quantiles of the seconds from t to each fill, as they are",
+      "per decision time, for the issued decisions of each class but eligible, their main and join legs' fills by kind (counts only), and the selected runners' trd counts over the eligible decisions' windows (diagnostics.rule), with the counted and the not-counted rises expected in the after-the-hour seconds if each rise's time were uniform over its window",
+      "commission rounding effects, by count",
+      "over decisions with at least one fill, never over every eligible decision (the unfilled ones are exactly 0 and would locate the rest): the sample SD of net per decision and its symmetric ranges (statistics.rule); by inventory state (lay_only, back_only, round_trip), counts only",
+      "for every mark-out series and horizon over the main legs (all, by side, by fill kind, and those touched before their fill) and the join and null legs, for the edge at fill over the main legs only (the same groups; never the join or null legs), and for the realised spread at the secondary's horizon over the main legs, both sides pooled (registered_pass.realised_spread): values, race dates, undefined reasons, the sample SD and the symmetric ranges (statistics.rule); the by-side groups (LAY, BACK) in ticks only, their points series and points edges as counts only (rule), and every group pooling both sides in both units",
+      "the minimum detectable effect of the primary and the secondary at every decision time, computed from the released SDs and counts alone (power_note)",
+      "the diagnostics' counts (diagnostics.rule)"
+    ],
+    "rule": "The blind pass runs first, over the whole input, and releases only what releases lists. The registered pass runs once, after people have read the blind tables, at the same code commit and backtest sources, and only with the blind receipt of this registration and the same input sha256; nothing in this file may change between the two passes, since any change is a new sha256. The registered pass runs whatever the blind tables show. Only an engineering failure stops it: a refusal or failure code, counts that do not reconcile, an input that does not cover every registered month, or a defect found in the code or the input. The stop and its reason are recorded; what follows is a fix and a new blind pass, and a new registration if this file changes. Of an outcome (net, a mark-out, an edge, a realised spread) it releases only statistics that a shift leaves as they are and a change of sign leaves as they are but for nearest-rank ties: the sample SD and the symmetric ranges q(1 - a) - q(a). They keep a group's spread but neither its location nor its direction. Inference: when many values sit exactly at 0 (an unchanged mid), the spread itself depends in part on how far the rest lie from 0, so it can carry the size of a group's mean, never its sign. Quantiles less their median are not released: a group with an atom at its median (a mark-out of exactly 0, an unchanged mid, is common) would make them its raw quantiles, and so its direction. With the counts, the SDs of a group and of its parts give the dispersion between the parts' locations (law of total variance), which says where none lies unless a part's location is known beforehand. A round trip's net is such a part (a known positive function of its prices), so net by inventory state is released as counts only; and no SD is released over every eligible decision, whose unfilled part sits exactly at 0. The groups of mark-outs, edges and realised spreads give the dispersion between their parts' locations (by side, by fill kind, touched before the fill), not where any lies. By side the two units would say more, so the by-side groups (LAY, BACK) of mark-outs and edges are released in ticks only, their points as counts only, and every group pooling both sides (all, each fill kind, touched before the fill, the join and null legs, the realised spread) in both units. The reason: within each tick band of the ladder a tick is worth more points the shorter the price (100 / price is convex), so on average a shortening is worth more points per tick than a lengthening, and since a shortening hurts a LAY and a lengthening a BACK, the LAY group's points SD over its ticks SD, beside the BACK group's, tracks the sign of the side-specific mark-out (Inference, from a synthetic probe only: that ratio of ratios was about 1.00 to 1.05 when the mid moved 2 to 5 ticks against the legs on average and about 0.95 to 1.00 when it moved as far in their favour, on 800 legs a side).",
+    "withholds": [
+      "any mean, sum, median or other location of net per decision, of a mark-out, of the edge at fill or of the realised spread",
+      "any quantile of them, or a quantile less a median: only the symmetric ranges (statistics.rule)",
+      "any points statistic of a by-side group (LAY, BACK) of mark-outs or edges: by side, ticks only (rule)",
+      "any statistic of net per decision over every eligible decision, or by inventory state, other than counts",
+      "any test, p-value, interval, control effect or flag",
+      "any per-market or per-runner row, market id or selection id"
+    ]
+  },
+  "controls": {
+    "join": {
+      "failure": "If it does not show adverse selection, or cannot be tested, either the mark-out code is wrong (a sign or timing error) or these files cannot show adverse selection at that horizon; either way a main mark-out that is not adverse is no evidence that our fills are benign, and no flag is raised at that decision time. Its success is partly mechanical: a join leg filled by a trade-through or a quote cross is marked from the quote before its batch, and the batch that consumes or crosses the touch moves the mid itself, so it shows a move against us almost by construction. It checks the signs and timing of the mark-out code, not that the main legs could detect a small effect.",
+      "rule": "The positive control. At every eligible decision, for the same runner, two more legs of stake_p pence that join the best prices instead of improving them: a LAY at the best back b and a BACK at the best lay l, each queued behind the size displayed at t at its price on its own side. The fill rule, the mark-outs and their reasons are the main legs' (orders.fill_rule, measurement.markouts); they never enter the net. It shows adverse selection at a decision time when its mean move against us at the secondary's horizon, in mid points, over its filled legs with a defined value, is above 0 with a two-sided p (unadjusted, CR1 by race date, t(G - 1), the tests' gates) below kill_rule's alpha. Orders joining the touch behind a queue fill mostly when the price comes through them, so a measure that can see adverse selection should see it here."
+    },
+    "names": [
+      "join",
+      "null"
+    ],
+    "null": {
+      "failure": "A null away from 0 means the selected runners' mids drift (for example shortening into the off) in a way that helps or hurts the legs that fill; the main mark-out then mixes that drift with selection and cannot be read as adverse selection or its absence, so the flag is blocked. It blocks when it cannot be tested, when the main mark-out over the same legs cannot be, or when its absolute mean is at least kill_rule.fraction_of_main times the absolute main mean over the same legs and its own two-sided p (unadjusted) is below kill_rule.alpha or undefined (se_undefined).",
+      "label": "lp-v1/null/{market_id}/{offset_s}/{side}",
+      "rule": "The null control. For every filled main leg, a time u drawn uniformly from the whole milliseconds in (t, C] with metrics.HashStream(seeds.null, label), and the moves of the mid against that leg from u to u + each horizon and to BSP, with the main mark-outs' definitions and reasons, the start being the quote at u (every message published at or before u), a start at which the member is unreadable, the market not OPEN or in play undefined for that reason, and a start or end quote too wide to be a market spread_above_max. It is not tied to any fill, so with no drift it averages 0. The kill rule compares its mean at the secondary's horizon, in points, with the main mark-out over the same legs (both defined). Beside it the registered pass reports, descriptively and never deciding, the null's mean move at BSP and the main mark-out at BSP over the same legs (both defined), each with its CR1 interval from statistics.min_bets_for_statistics values."
+    }
+  },
+  "data": {
+    "duplicates": "A record of a registered tier is keyed by its market id alone; one id twice in that tier refuses the run (input:<archive sha256>:duplicate_market), so no market is decided, measured or counted twice. Keep the PRO archive in its own data root (docs/backtest-plan.md section 10.1: historic-pro). A record of another plan is keyed by plan and market id and is coded plan_not_registered.",
+    "end_month": "2016-04",
+    "ladders": {
+      "PRO": "atb_atl"
+    },
+    "month": "the UTC month of the first-published marketTime",
+    "provider": "betfair_historical_data",
+    "source": "every archive ingested and indexed under one data root (archive.py, market_index.py), each market from its index record's primary member, replayed with the index's own fold, checked against the record at every decision time (replay.view_from_fold) and read on, message by message, to C + the longest mark-out horizon; no other source stands in",
+    "start_month": "2015-05",
+    "tiers": [
+      "PRO"
+    ],
+    "traded_volume": {
+      "basis": "backers_stake_x2",
+      "divisor": 2,
+      "key": "trd",
+      "rule": "PRO rc.trd holds price-keyed [price, volume] deltas of each runner's cumulative traded volume at that price, folded by the rules betangel_research/betfair/book.py documents and implements (_apply_traded, F54): an entry replaces that price's volume and a volume of 0 deletes the point; an update that would empty or zero every existing point is the documented settlement artefact (SA/4802553453457), counted and ignored; a null value changes nothing; an image (img true) replaces every runner's points with those it carries. The files count traded volume as backer's stake x 2 (F60): SA/360002401937 says 'Traded volume (tv) is calculated as backers stake x 2', and in its worked example a runner's tv of 43.5 is the sum of the update's trd amounts (2.38 + 41.12), which carries the basis to trd, so a matched backer's stake of s appears as divisor x s. The same article gives atb and atl sizes as absolute: displayed sizes are backer's stake, with no divisor. Not every change of trd is a trade. SA/360006560978 and SA/360002401937 both say 'Some traded volume updates ('trd') are sent due to changes in the underlying foreign currency exchange rates', which may send 'a new traded update ... for a nominal amount' or 'a decrease in the initial reported traded amount'; the rates are 'updated once every hour a few seconds after the hour (Monday-Friday)' (SA/360006560978). So each price keeps its last published value above 0, which a deletion or an image never resets: a rise is the amount a published value exceeds it, and a value below it is counted (diagnostics) and becomes the new last value, so a currency decrease cannot hide a later trade. Messages sharing a pt are one batch. A rise counts as traded volume only when its batch also carries an atb or atl entry at that price for that runner (either side, any size, 0 included). Inference, not checked on real files: a trade consumes the resting order it matched, so the level it traded at changes in the same pt batch as the trd delta that reports it, while a restatement at a price nobody is trading changes no level. If a trade's trd delta and its ladder change arrive in different batches, the rule drops that trade. The blind check that decides it is rises_not_counted_at_touch_outside_the_hour (diagnostics.rule): rises not counted at a price that was the best back or best lay just before their batch, outside the after-the-hour seconds, where currency restatements should be rare; many of them beside rises_counted would mean the rule drops trades and the fill counts understate. A trade whose level is refilled to the same size within its batch, or created and matched inside one batch with no entry sent, is missed this way too. The diagnostics also split the counted rises by what the batch's entries at their price did to that level (lowered or deleted it, else raised or created it, else left it as shown): a trade lowers the level it matched unless it is refilled, so many counted rises that only raise their level would be restatements the rule lets through. Fills read counted volume only (orders.fill_rule). An entry that is not a [price, volume] pair of finite numbers with a volume of at least 0 and a price above 1 unless the volume is 0 (a price is needed even then: it names the point) is malformed."
+    }
+  },
+  "decided_by": "Yu, 2026-11-01: asked whether providing liquidity in thin, wide-spread markets (greyhounds, thin racing) can pay. Stage 0 runs on the PRO horse-racing files the lab already holds, so the horse-racing focus (Yu, 2026-10-14) is unchanged. The approach (a standalone registered measurement modelled on movement-v1, changing no existing source file) is the lead's; its sources are the lab's verified research round of 2026-11-01 (maker evidence, costs and rules, test design), whose verifier's corrections override its researcher's text.",
+  "diagnostics": {
+    "after_the_hour_s": 60,
+    "latency_s": [
+      1,
+      2
+    ],
+    "rule": "Counts only, in both passes; they change no code, class or statistic, and one that shows a rule wrong leads to a fix, a new registration and a new blind pass (blind_pass.rule). Per decision time and role: filled legs whose opposite best quote reached or crossed their price (any size) in an earlier batch than their fill (touched_before_fill: the fill came later than the touch, and its mark-out starts after part of the move) and unfilled legs it reached (touched_never_filled: someone would have matched part of our order); fills by kind within each of latency_s seconds of t (fills a slower connection could change); and fills by kind whose pt lies in the first after_the_hour_s seconds after a whole UTC hour on a Monday to Friday, beside the count expected if each fill's time were uniform over its window (t, C]. Betfair updates its currency rates 'once every hour a few seconds after the hour (Monday-Friday)' (SA/360006560978); fill times are not uniform, so this is a flag, not a test. Per decision time, summed over its eligible decisions, the selected runner's trd changes in (t, C]: rises counted as trades, split by what the batch's atb and atl entries at their price did to the level shown there on that side (rises_counted_level_lowered when one lowered or deleted it, else rises_counted_level_raised when one raised or created it, else rises_counted_level_unchanged; each entry against the level's size just before its message, 0 when none was shown); rises not counted (data.traded_volume.rule), by where their price was just before their batch (at the best back or best lay, at another displayed price, at no displayed price), with those at the best back or best lay outside the after-the-hour seconds apart (rises_not_counted_at_touch_outside_the_hour, the blind check data.traded_volume.rule names); how many counted and not-counted rises fell in those after-the-hour seconds, each beside the count expected if each rise's time were uniform over its window (t, C]; values below their price's last published value; and rc entries raising three or more prices that are not one run of adjacent CLASSIC ticks (a restatement can raise scattered prices at once, a trade sweeping the book raises adjacent ones). Not-counted rises far above their share of time in those seconds are restatements, as the rule assumes; not-counted rises spread like the counted ones, especially at the touch, would be trades the rule drops, so the fill counts understate. Per decision time, for the issued decisions of each class but eligible, the main and join legs' fills by kind: the exclusions condition on what happened after t (a removal, a suspension, an early off), which is when informed traders act, and these counts show how many fills, of which kind, they remove. Per pass, the replayed markets with a null ladder update, with a trd settlement-zeroing frame and with a trd value below its price's last published value."
+  },
+  "doc": "docs/lp-study.md",
+  "id": "lp-v1",
+  "measurement": {
+    "bsp_valid_if": [
+      "the market's final status is CLOSED and its last bspReconciled is true",
+      "the runner is listed at the end with final status WINNER or LOSER",
+      "its final bsp is a finite number above 1 (the index keeps none below 1.01)"
+    ],
+    "classes": [
+      "outcome_unknown",
+      "void_own_runner_removed",
+      "post_decision_removal",
+      "result_revised_after_close",
+      "missing_bsp",
+      "window_unknown",
+      "removal_in_window",
+      "suspension_in_window",
+      "in_play_in_window",
+      "schedule_revised_in_window",
+      "stream_malformed_in_window",
+      "eligible"
+    ],
+    "classes_rule": "Each issued decision ends in exactly one class, the first that applies. The first five are movement-v1's (movement.measure), for the selected runner and the runners ACTIVE and listed at t: outcome_unknown when the member was not read whole or a runner's later state cannot be assessed; void_own_runner_removed when the selected runner was removed after t; post_decision_removal when another runner ACTIVE and listed at t was; result_revised_after_close when the index's results_revised_after_close is true; missing_bsp when bsp_valid_if fails. Then the window classes (window_rule), then eligible. Market-level void cannot be seen in these files and is never inferred. Only eligible decisions enter any statistic.",
+    "commission_rate": "0.02",
+    "commission_rounding": "nearest_penny_half_up",
+    "edge_at_fill": "how far the leg's own price lies from the start mid in the leg's favour, in ticks and points: for a BACK at B, tick_position(B) - tick_position(mid) and 100 / mid - 100 / B; for a LAY, their negatives. It is undefined, start_not_two_sided, without a start mid, and spread_above_max when the start quote is too wide to be a market (measurement.markouts). The realised spread at a horizon is this edge less the move of the mid against us, in the same unit, over the legs with both defined (registered_pass.realised_spread).",
+    "inventory_rule": "By the main legs filled by C: no_fill, lay_only, back_only (one leg filled: inventory carried to the off) or round_trip (both filled)",
+    "inventory_states": [
+      "no_fill",
+      "lay_only",
+      "back_only",
+      "round_trip"
+    ],
+    "markouts": {
+      "horizons_s": [
+        10,
+        30,
+        60
+      ],
+      "rule": "For each filled leg, from its start, the runner's quote just before the batch that filled it (every message published before the fill's pt), to each horizon, the runner's quote at the fill's pt + horizon (every message published at or before then), and to BSP. The mid is (best back + best lay) / 2 of a two-sided quote (a best back below the best lay); the opposite quote is the best price on the other side of the book from the leg (the best back for a BACK, the best lay for a LAY). The move against us is signed so that a positive value hurts the leg: for a BACK, ticks tick_position(end) - tick_position(start) and points 100 / start - 100 / end; for a LAY, their negatives. At BSP the end is BSP, for the mid series only. A value is undefined for the first reason that applies: start_not_two_sided (no two-sided quote at the start, or for the opposite series no price on that side); spread_above_max at the start (the start quote's best lay lies more than population.max_spread_ticks CLASSIC ticks above its best back, by tick_position: quotes too far apart to be a market, as population.selection_rule's cap, which would otherwise dominate the mark-outs, their SDs and the power note; it is judged on the quote, so it applies to every series); member_unreadable (the member could not be read through the horizon); market_not_open (the status at the horizon is not OPEN); in_play (inPlay true at the horizon); not_two_sided (no two-sided quote at the horizon, or no price on the opposite side); spread_above_max at the horizon (the same test of the horizon quote). For the null control's start (controls.null), a start time at which the member could not be read, the market is not OPEN or is in play gives that reason (member_unreadable, market_not_open, in_play) instead of start_not_two_sided, and a start quote too wide spread_above_max. The BSP horizon is defined whenever the start is, since only eligible decisions are measured.",
+      "series": [
+        "mid_ticks",
+        "mid_points",
+        "opposite_ticks",
+        "opposite_points"
+      ],
+      "undefined_reasons": [
+        "start_not_two_sided",
+        "member_unreadable",
+        "market_not_open",
+        "in_play",
+        "not_two_sided",
+        "spread_above_max"
+      ]
+    },
+    "points": "implied-probability points: 100 / price",
+    "rounding_effects": [
+      "no_positive_outcome",
+      "exact",
+      "rounded_up",
+      "rounded_down",
+      "rounded_to_zero"
+    ],
+    "rounding_rule": "Per eligible decision, the rounded commission against commission_rate x the net of its one outcome with a positive net (a decision has at most one): no_positive_outcome when neither outcome's net is positive (no fill included); exact when rounding changes nothing; rounded_to_zero when the unrounded commission is positive and the rounded one 0; otherwise rounded_up or rounded_down. Counts in both passes; the registered pass adds the mean net with unrounded commission beside the rounded one.",
+    "ticks": "tick_position as movement-v1 defines it: a price's index on the CLASSIC ladder from 1.01, linear between the two ladder prices around a price that is not on the ladder",
+    "valuation": "For each eligible decision, the market P&L of its filled main legs in each outcome of the selected runner, at stake s: a filled BACK at B gives s(B - 1) if the runner wins and -s if it loses; a filled LAY at L gives -s(L - 1) if it wins and +s if it loses; a decision with no fill is exactly 0. Commission is commission_rate x an outcome's net when that net is positive, rounded to the nearest penny with a half penny rounded up (Exchange General Rules, Results and market settlement: GBP 3.335 settles as 3.34), so a net under GBP 0.25 pays nothing. The decision's net is the expectation of the two outcomes' nets after commission under p = 1 / BSP, BSP the selected runner's valid BSP, as contract p1's NCLV assumes. Unrounded, a lone BACK is s((1 + (B - 1)(1 - c)) / BSP - 1), contract p1's NCLV times s; a lone LAY is s((1 - c) - (L - c) / BSP), its lay analogue (docs/lp-study.md derives it); a completed round trip, a BACK at B above a LAY at L, pays s(B - L) if the runner wins and nothing if it loses, so it is worth s(B - L)(1 - c) / BSP. Each decision is one market for commission, as if its legs were our only bets in it. The registered pass also reports, descriptively and never deciding, the mean net with p normalised by the market's book at BSP: p = (1 / BSP) / the sum of 1 / BSP over the market's runners with a valid BSP (bsp_valid_if; the index record holds every runner's final BSP), which takes out the BSP overround. No outcome-based (settled) valuation is made: no settlement rule is merged.",
+    "window_rule": "The window is (t, C]: window_unknown when the member could not be read through C; removal_in_window when any runner became REMOVED or REMOVED_VACANT in it; suspension_in_window when the status published by t, or any status published in it (an image's null reset included), is anything but OPEN; in_play_in_window when inPlay is true at t or is published true in it; schedule_revised_in_window when marketTime is published in it with a value other than the first-published one (a revision at or before t is schedule_revised_before_decision); stream_malformed_in_window when a ladder entry, a trd entry or an rc runner id published in it could not be read. The first three are movement.window_problem's."
+  },
+  "orders": {
+    "fill_kinds": [
+      "trade_through",
+      "quote_cross",
+      "volume_at_price"
+    ],
+    "fill_rule": "Conservative, in full or not at all, judged when each pt batch (every message published at that pt) after t up to and including C is complete, from counted traded volume (data.traded_volume) and the replayed ladders (population.quotes). Three kinds, listed in fill_kinds in precedence order, so a batch that meets two is the first's: (1) trade_through: the batch counts a rise at any price beyond the leg's (below a LAY's price, above a BACK's), because best-price matching would have matched us first, at our price. It fills whatever its size: the files show what traded beyond us, not the size of the order that traded (its remainder may have matched at other prices or rested), so in this all-or-nothing model filling in full errs toward the adverse fills, where requiring the stake would err the other way. (2) quote_cross: after the batch, the leg's opposite side (the lay side, atl, for a LAY; the back side, atb, for a BACK) shows size at prices at or through the leg's price (at or below a LAY's, at or above a BACK's) summing, as displayed (backer's stake, no divisor), to at least queue + stake: those orders rest where they would have matched ours on arrival, and their size is known. (3) volume_at_price: the counted volume at the leg's own price has risen since t by at least divisor x (queue + stake), queue being the size displayed at t at that price on the leg's own side (0 for the main legs, whose levels are empty at t). The leg fills at its own price (no price improvement) at that batch's pt, and its start (measurement.markouts) is the runner's quote just before that batch. Nothing published at or before t can fill a leg (the batch at t is in the view, so in the counted volume and the queue at t), cancellations ahead never help, nothing fills in part, and a leg that meets none by C is cancelled unfilled. The diagnostics count legs whose opposite best quote reached or crossed their price (any size) in an earlier batch than their fill, and unfilled legs it reached.",
+    "improve_ticks": 1,
+    "legs": [
+      "LAY",
+      "BACK"
+    ],
+    "not_modelled": "latency (the orders rest from the batch at t; the diagnostics count the fills within diagnostics.latency_s of t, which a slower connection could change), partial fills, our own orders' effect on other traders, traders improving in front of us, virtual (cross-matched) prices, which the files' ladders exclude, and live minimum-stake, liability and rate caps",
+    "rule": "At t, for the selected runner with best back b and best lay l: a LAY of stake_p pence at the CLASSIC price improve_ticks ticks above b and a BACK of stake_p pence at the CLASSIC price improve_ticks ticks below l, each stake being the backer's stake, as the API's size is. A LAY rests on the back side of the book (backers can take it) and a BACK on the lay side. With a spread of at least min_spread_ticks ticks the LAY rests below the BACK, and both prices are new, empty levels: the files show no size at them on either side at t, so each order is first in its price's queue and anyone who joins later is behind it.",
+    "stake_p": 200
+  },
+  "population": {
+    "best_back_max_h": 1000,
+    "best_back_min_h": 150,
+    "betting_type": "ODDS",
+    "codes": [
+      "plan_not_registered",
+      "no_view",
+      "month_not_registered",
+      "anchor_not_known_by_decision",
+      "view_ended_before_decision",
+      "member_unreadable_before_decision",
+      "schedule_revised_before_decision",
+      "country_not_allowed",
+      "event_type_not_allowed",
+      "market_type_not_allowed",
+      "betting_type_not_odds",
+      "number_of_winners_not_1",
+      "too_few_active_runners",
+      "ladder_malformed",
+      "no_runner_in_band",
+      "spread_below_min",
+      "spread_above_max"
+    ],
+    "codes_rule": "At every decision time, every index record gets exactly one code, the first that applies in this order, or issued. The first thirteen are movement-v1's, with its meanings and order: the seven gates history needs (a registered tier, a view, a registered month, an anchor known by t, a view still running at t, a member readable at t, a marketTime not revised at or before t), then countryCode, eventTypeId, marketType, bettingType, numberOfWinners and at least min_active_runners runners ACTIVE and listed, from what was published at or before t. Then ladder_malformed when a ladder entry, a trd entry or an rc runner id published at or before t could not be read; then the selection (selection_rule): no_runner_in_band, spread_below_min, spread_above_max.",
+    "countries": [
+      "GB",
+      "IE"
+    ],
+    "event_type_id": "7",
+    "market_type": "WIN",
+    "max_spread_ticks": 20,
+    "min_active_runners": 5,
+    "min_spread_ticks": 3,
+    "not_checked": "bspMarket, market status and inPlay are not predicates at t: a market without BSP is issued and classed missing_bsp, and a market not OPEN or in play at t is classed by measurement.window_rule. There is no depth predicate: the orders rest on new, empty levels, so no displayed size is needed.",
+    "number_of_winners": 1,
+    "price_ladder": "CLASSIC assumed for GB and IE horse-racing WIN markets, as movement-v1 assumes: index v1 does not track priceLadderDefinition, so every quote a decision reads is checked against the CLASSIC ladder instead",
+    "quotes": "PRO's atb and atl, folded as movement-v1 folds them (movement.LadderFold, book.py's F54 rules): price-keyed [price, size] deltas, where a size of 0 deletes that price and an empty list empties that ladder; a null value changes nothing (counted, diagnostics); an image (img true) replaces every runner's ladders, and a runner it does not carry has none. A runner's best back is the highest price of its back ladder and its best lay the lowest of its lay ladder, each with its size, as the file wrote them. Quotes are not cleared while the market is not OPEN; a decision whose window holds a status other than OPEN is classed suspension_in_window instead (measurement.window_rule).",
+    "runners_per_market": "shortest_eligible",
+    "selection_rule": "A runner is in band when it is ACTIVE and listed at t and has a best back below its best lay, both on the CLASSIC ladder, with the best back from best_back_min_h to best_back_max_h hundredths; it is eligible when its best lay is from min_spread_ticks to max_spread_ticks ticks above its best back. The cap, set by hand before any data, keeps out quotes too far apart to be a market (a placeholder lay at 1000 is hundreds of ticks from a best back of 6.0), whose mid would dominate the mark-outs, their SDs and the power note; after t the same cap makes a mark-out undefined (measurement.markouts). One runner per market and decision time (runners_per_market shortest_eligible): the eligible runner with the lowest best back, then the lowest best lay, then the lowest selection id (an arbitrary order fixed before any data). It is the shortest-priced eligible runner, rarely the market favourite, whose spread is usually narrower. One runner keeps one decision per market and time, which limits the dependence between decisions; CR1 by race date covers what remains, the same market's decision times included. no_runner_in_band when no runner is in band; spread_below_min when some are and none has a spread of at least min_spread_ticks; spread_above_max when some do and each of those is above max_spread_ticks.",
+    "source": "Yu's question of 2026-11-01 and the lab research round of that date (docs/lp-study.md); not a pilot contract"
+  },
+  "power_note": "Computed blind, from assumptions and from blind-pass quantities only, never from a location. For a mean of N decisions with per-decision SD sd on G race dates, the minimum detectable effect at Holm's first step (two-sided alpha_familywise / 3) and statistics.power is (t(1 - alpha / 6; G - 1) + t(power; G - 1)) x sd / sqrt(N), under independence; clustering by race date makes it larger. The blind pass prints it for the primary with sd = sqrt(f) x SD over decisions with a fill, f the share of eligible decisions with one (it leaves out f(1 - f) times the square of those decisions' own mean, small next to the SD unless the effect is large), and for the secondary with the SD of its own values, the +60 s mid mark-out in points over every filled main leg with one (both sides pooled, so released in points in the blind pass too), each only where that SD is released (statistics.rule: the secondary's from the tests' gates). Inference, an illustration with assumed inputs, not data: N = 2,000 decisions on G = 300 race dates, f = 0.4 and an SD of GBP 0.25 per filled decision (a GBP 2 leg whose price ends about 12% from BSP) give sd = 0.158 and an effect of 3.25 x 0.158 / sqrt(2000) = GBP 0.0115 per decision, 0.6% of the stake; 1,600 legs with a +60 s SD of 1 point give 3.25 / 40 = 0.081 points. A one-tick round trip at 5.0 is worth about 4p of GBP 2 in expectation, so an effect a fraction of that size is detectable only if fills are common.",
+  "registered_on": "2026-11-01",
+  "registered_pass": {
+    "discovery": {
+      "rule": "A decision time is flagged discovery_flag only when all of these hold: the primary is rejected under Holm with a positive mean; its CR1 interval's lower bound is above 0; the realised spread is not significantly negative (realised_spread); the positive control shows adverse selection; and the null control does not block. The flag answers the study's question, whether the spread pays for adverse selection, so the secondary does not enter it: a flag without adverse_selection_detected fits story (a), the spread is rent; a flag with it is a fourth reading, picked off but paid for it (docs/lp-study.md). A flag is for people to read, never a decision: it licenses no live order, and a live test needs a new contract and changes to RS-19 (docs/lp-study.md)."
+    },
+    "holm": {
+      "alpha_familywise": "0.05",
+      "families": "two families, each of the three decision times and each at alpha_familywise: the primary and the secondary; a hypothesis not tested still counts in its family's size. The realised spread and the controls are judged unadjusted, never under Holm."
+    },
+    "kill_rule": {
+      "alpha": "0.05",
+      "fraction_of_main": "0.5",
+      "rule": "controls.null.failure says when the null blocks; controls.join says when the positive control shows adverse selection; both use alpha, unadjusted."
+    },
+    "primary": {
+      "measure": "net_per_decision",
+      "population": "every eligible decision of the decision time, a decision without a fill counting 0",
+      "rule": "The mean net per decision (measurement.valuation, GBP, rounded commission) at each decision time, two-sided against 0, CR1 by race date with t(G - 1) (uncertainty.rule), tested only when it holds at least tests.min_bets decisions on tests.min_race_dates race dates (otherwise underpowered, never tested, and not rejected). The three decision times are its family under Holm."
+    },
+    "realised_spread": {
+      "measure": "edge_less_markout_mid_points",
+      "rule": "The realised spread at the secondary's horizon_s: the edge at fill less the move of the mid against us (measurement.edge_at_fill, measurement.markouts), in points, over the filled main legs with both defined at each decision time (both legs of a round trip count), two-sided against 0, CR1 by race date with t(G - 1) and the tests' gates. It decides only the flag's condition, judged unadjusted so that no multiplicity correction can help a flag: the condition holds when the two-sided p is at least kill_rule.alpha or the mean is not below 0; a realised spread that cannot be tested (underpowered), or whose SE is 0 with a mean below 0, fails it. It asks whether what the spread paid us outlasted the move against us; the secondary asks who fills us."
+    },
+    "releases": "everything the blind pass releases, with every quantile as it is in place of the symmetric ranges, and net by inventory state and the by-side groups' points with their SDs and quantiles; from statistics.min_bets_for_statistics values (a smaller group reports its counts only, reason counts_only) and, for a group over exactly a test's decisions or legs, from the tests' gates as well (statistics.rule: below them it reports its counts only, reason underpowered, as the test does), the mean with its CR1 interval for every group the blind pass gives an SD for, for net by inventory state and the by-side groups' points, for net per decision over every eligible decision (the primary) and, descriptive, for that net with unrounded commission and with p normalised by the market's book (measurement.valuation); the primary and secondary tests with their Holm decisions, adverse_selection_detected and the secondary's CR1 upper bound; beside the secondary, descriptive, the mean mark-out at BSP over the same filled main legs; the realised spread's test; the controls' tests and checks, with the null control and the main mark-out over its legs at BSP (descriptive); and the flags. A test below its gates reports counts only, and so does every descriptive group over exactly its decisions or legs (net over every eligible decision, the mid mark-outs at the secondary's horizon over all the main or join legs, the realised spread). Only the primary and secondary are under Holm; only the tests' and controls' results named in discovery decide anything, and every other interval is descriptive.",
+    "secondary": {
+      "horizon_s": 60,
+      "measure": "mid_points",
+      "rule": "The mean move of the mid against us at horizon_s, in points, over the filled main legs with a defined value at each decision time (both legs of a round trip count), two-sided against 0, CR1 by race date with t(G - 1) and the tests' gates. The three decision times are its family under Holm. A rejection with a positive mean is reported as adverse_selection_detected: the study's answer to who fills us. It decides no flag (discovery). At each decision time the registered pass reports its CR1 interval's upper bound: a secondary not detected means only that the mean move against us is plausibly below that bound (95%, unadjusted); it never supports story (a) on its own. Fills after about off - 70 s often have no +60 s value (market_not_open, in_play), so the secondary leaves out the latest fills and leans benign, most at off - 120 s; beside it the registered pass reports, descriptively and never deciding, the mean move of the mid against us at BSP over the same filled main legs (defined whenever the start is), in points, with its CR1 interval and not under Holm."
+    },
+    "tests": {
+      "min_bets": 200,
+      "min_race_dates": 15,
+      "rule": "Every test here (primary, secondary, the realised spread, the positive control and the null control with the main mark-out over its legs) is the CR1 mean of uncertainty.rule with t = mean / SE on G - 1 degrees of freedom, gated by min_bets values and min_race_dates race dates; a test below either gate is underpowered, is not tested and reports its counts only (no mean, SE or interval), and so does every descriptive group over exactly its decisions or legs (statistics.rule); an SE of 0 is se_undefined and gives no p."
+    }
+  },
+  "schema": "betangel.study-registration/v1",
+  "scope": "Event type, countries, market type, betting type, number of winners and the minimum field are this file's values, read by the code. A greyhound registration (eventTypeId 4339) would be a new file with a new sha256 and needs no code change when its data are like these: PRO files (full atb/atl and tick-level trd; data.traded_volume.rule assumes, as an inference the blind pass checks, that a trade's trd delta arrives in the same pt batch as the level change it made; F60 documents the backer's stake x 2 basis for PRO historical data, not per sport), ingested and indexed under their own data root, on the CLASSIC ladder (assumed, as here, with every price checked against it), carrying bspMarket, bspReconciled and runner bsp, with at least min_active_runners runners ACTIVE (GB races have at most six traps, so 5 drops races with two vacant traps). The lab holds no greyhound files and the archive and index code has never read one, so the backtest plan's capability audit (section 2.7) comes first; Yu deprioritised greyhounds on 2026-10-14. Greyhound rules void every bet matched before a non-runner or reserve update: a removal after t already classes the decision void_own_runner_removed or post_decision_removal, so no fill made before such an update is ever valued as standing.",
+  "seeds": {
+    "null": 3
+  },
+  "statistics": {
+    "min_bets_for_statistics": 100,
+    "power": "0.8",
+    "quantile_method": "nearest_rank",
+    "quantiles": [
+      "0.05",
+      "0.1",
+      "0.25",
+      "0.5",
+      "0.75",
+      "0.9",
+      "0.95"
+    ],
+    "rule": "A group with fewer than min_bets_for_statistics values reports its counts only, in either pass: no SD, quantile, range, mean or interval. A group of an outcome over exactly the decisions or legs of a test (registered_pass.tests: net per decision over every eligible decision, with either commission and with p normalised; the mid mark-outs at the secondary's horizon over all the main legs or all the join legs; the realised spread; or any other group that happens to hold the same ones, such as an opposite series or a fill kind that holds every leg) needs the tests' gates as well, in either pass, and below them reports its counts only in the same way, in the registered pass with the test's reason, underpowered: no descriptive copy of a test gives what the test does not. From 100 on, no released quantile is a group's minimum or maximum. Nothing is merged: no group is pooled with another, before or after the blind pass. Quantiles are by nearest rank: with n sorted values, the q quantile is value ceil(q * n), counted from 1. The blind pass releases the quantiles of an outcome only as the symmetric ranges q(1 - a) - q(a), one for each registered quantile a below 0.5, so quantiles must hold 1 - a beside every a; the registered pass releases them as they are. Every released quantile and range is rounded to 4 decimal places, SDs and means to 6. The SD is the sample SD, with n - 1. power is the power of the blind pass's minimum detectable effects (power_note)."
+  },
+  "status": "registered",
+  "strata": {
+    "price_band_rule": "the selected runner's best back at t, in hundredths, inclusive bounds on the CLASSIC ladder; set by hand, not fitted to data",
+    "price_bands_h": [
+      [
+        "B1",
+        150,
+        298
+      ],
+      [
+        "B2",
+        300,
+        490
+      ],
+      [
+        "B3",
+        500,
+        1000
+      ]
+    ],
+    "spread_bucket_rule": "the selected runner's best lay minus best back at t in CLASSIC ticks, inclusive bounds, from population.min_spread_ticks to population.max_spread_ticks",
+    "spread_buckets_ticks": [
+      [
+        "S1",
+        3,
+        4
+      ],
+      [
+        "S2",
+        5,
+        7
+      ],
+      [
+        "S3",
+        8,
+        20
+      ]
+    ],
+    "volume_rule": "the market's matched volume at t: the sum over every runner of its trd points as published at t, divided by data.traded_volume.divisor (GBP of backer's stake). Terciles per decision time over its eligible decisions, cut at their nearest-rank 1/3 and 2/3 quantiles: V1 at or below the first, V2 at or below the second, V3 above it. The cut points are decision-time quantities, released in both passes from statistics.min_bets_for_statistics eligible decisions, rounded to 2 significant figures so that none gives one market's own volume exactly; the cells use them unrounded.",
+    "volume_terciles": [
+      "V1",
+      "V2",
+      "V3"
+    ]
+  },
+  "summary": "Registered offline measurement, not a backtest contract. It asks who fills a patient resting order in a wide spread: an impatient counterparty (the spread pays us) or an informed one (we are picked off). On GB and IE horse-racing WIN markets rebuilt from the free 2015-05..2016-04 Betfair Historical Data PRO files, at off -600, -300 and -120 s it picks one runner whose best lay is 3 to 20 CLASSIC ticks above its best back and rests two simulated GBP 2 orders inside that spread until off -10 s: a LAY one tick above the best back and a BACK one tick below the best lay. A leg fills, in full, when anything trades through its price, when orders that would match it rest at or through its price for at least its stake, or when traded volume at its price rises after placement by its stake on the files' backer's stake x 2 basis; a rise of traded volume counts as a trade only when its price level also changes in the same batch, because Betfair also restates traded volume when currency rates change. It measures the move of the runner's midpoint against each filled leg at +10, +30 and +60 s and at BSP (the adverse-selection measure) and the net value of each decision at BSP after 2% commission rounded per market to the penny. Its registered pass tests the mean net per decision and the mean +60 s mark-out at each decision time under Holm, with a positive control (the same orders joining the best prices) and a null control (midpoint moves from seeded random times in the same windows); a discovery flag also needs the realised spread at +60 s, the edge at fill less the move against us, not significantly negative. Every figure is discovery material from 2015-16 history, never proof of a current edge. It changes no existing source file, nor contract p1, backtest-p0-bsp-v1 or movement-v1; adding lp.py and lp_study.py to the backtest package changes the engine's source descriptor and certificate key again (movement-v1 already changed it once), so any later run-backtest needs certify-engine.",
+  "timing": {
+    "anchor": "first_published_scheduled_off",
+    "cancel_offset_s": -10,
+    "decision_offsets_s": [
+      -600,
+      -300,
+      -120
+    ],
+    "rule": "t = the first-published scheduled marketTime + offset and C = that marketTime + cancel_offset_s. Each decision time is an independent trial (trials independent): its orders are evaluated as if they were our only orders in the market, never as a re-entry, a re-quote or a book shared with another decision time's orders, which in a live market they would be. The view at t holds every message published at or before t, the batch at t included (timer_after_equal_pt_batch); the orders are placed after that batch with no delay, rest through every message published after t up to and including C, and are then cancelled. No order is re-priced, replaced or exited before C.",
+    "trials": "independent"
+  },
+  "uncertainty": {
+    "cluster": "race_date_europe_london",
+    "confidence_level": "0.95",
+    "method": "cr1_t_g_minus_1",
+    "min_clusters": 15,
+    "rule": "As movement-v1 and contract p1: m = sum(x) / N, SE^2 = G / (G - 1) * sum over race dates g of (sum over values i in g of (x_i - m))^2 / N^2, and the interval m +/- t * SE with t the (1 + confidence_level) / 2 quantile of Student's t with G - 1 degrees of freedom; fewer than min_clusters race dates give the mean without an interval (too_few_clusters). The race date is the Europe/London calendar date of the first-published off (accounting.race_day_of). The three decision times of one market share a race date, and so do the two legs of a decision, so their dependence stays inside one cluster."
+  }
+}

@@ -589,6 +589,14 @@ class SelectionAndCodeTests(LpCase):
         self.assertEqual(outcome_of(self.one(lp_market(eventTypeId="4339"))),
                          dict.fromkeys(OFFSETS, "event_type_not_allowed"))
 
+    def test_a_record_with_no_anchor_is_counted_not_fatal(self):
+        # No market definition, so no first-published marketTime: no_view at every time, never a crash (Codex, #53).
+        messages = [message for message in lp_market()
+                    if not (isinstance(message, dict) and any("marketDefinition" in change for change in message["mc"]))]
+        tally = self.one(messages)
+        self.assertEqual(outcome_of(tally), dict.fromkeys(OFFSETS, "no_view"))
+        self.assertEqual((tally.replayed, tally.months["no_anchor"]["records"]), (0, 1))
+
 
 class FillTests(LpCase):
     def test_volume_at_our_price_after_placement_fills(self):

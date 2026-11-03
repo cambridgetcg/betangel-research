@@ -1,6 +1,6 @@
 # Movement study v1: Pilot 1's question on 2015-16 history
 
-Status: Registered measurement `movement-v1`, proposed for review. Nothing has run on real data. Yu decided on 2026-10-31 to reverse the 2026-10-16 deferral of the price-movement diagnostic ([backtest plan §13](backtest-plan.md#13-open-questions)), so that this study runs before Pilot 1's first live bet.
+Status: Registered measurement `movement-v1`, run once: the blind pass finished on 2026-11-02 and the registered pass the same evening, both at 147f807. See [Results of the registered pass](#results-of-the-registered-pass-2026-11-02). Yu decided on 2026-10-31 to reverse the 2026-10-16 deferral of the price-movement diagnostic ([backtest plan §13](backtest-plan.md#13-open-questions)), so that this study runs before Pilot 1's first live bet.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-10-31, against betangel-research main dda38a8, revised the same day after review.
 
@@ -65,6 +65,49 @@ These are this study's three stories for the T−5 mean NCLV, not an edit to the
 - (c) **Late money drifts favourites.** BSP ends above the T−5 midpoint, so NCLV is below about −2%.
 
 A result between 0 and about −1% fits none of the three cleanly, and the page will say so rather than pick one. The boundaries are not registered, so these are readings for people, not tests. Because the cost line and the half-spread depend on P, the late-move contrasts can carry a price-level effect when the cells' band mixes differ; the blind pass releases the cells' counts by price band so that is visible before any mean is read.
+
+## Results of the registered pass (2026-11-02)
+
+Yu agreed on 2026-11-03 to record these aggregates here. The full summary stays on the lab.
+
+- **Run.**
+  - Code 147f807, registration sha256 `08cf0c75…52cf9`, input sha256 `c6a987b9…fbe3de`, summary sha256 `d79fc27e…44b2`, receipt sha256 `f3b09d4a…7b00`.
+  - The blind pass ended at 18:02Z. People read it. The registered pass then ran once, 18:05–23:04Z, and exited 0.
+  - 12,208 index records over all 12 registered months; 11,278 markets replayed; 20 records with no anchor.
+- **Mean NCLV of the favourite's best back**, over eligible bets, CR1 by race date, 95% interval:
+
+  | decision time | bets | race dates | mean NCLV | interval | median ticks P − BSP |
+  |---|---|---|---|---|---|
+  | off −30 min | 6,187 | 362 | −1.40% | −1.78% to −1.01% | −0.4 |
+  | off −10 min | 6,964 | 362 | −1.96% | −2.28% to −1.63% | −0.5 |
+  | off −5 min | 7,239 | 362 | −2.34% | −2.60% to −2.08% | −1.0 |
+  | off −2 min | 7,292 | 362 | −1.37% | −1.55% to −1.19% | 0.0 |
+
+- **The T−5 result fits story (c), late money drifts favourites.** The whole interval lies below −2%. The median best back sits a tick under BSP, so the favourite usually drifts out after T−5.
+- **T−2 is near the cost line.** Its median tick is 0, so its mean is about commission alone: −1.33% at 3.00 by the formula above. *Inference.*
+- **Late-move cells at T−5** (move from T−30 to T−5, 4,631 bets):
+
+  | cell | bets | mean NCLV |
+  |---|---|---|
+  | STEAM | 2,062 | −2.86% |
+  | FLAT | 1,842 | −1.91% |
+  | DRIFT | 727 | −0.81% |
+
+  - STEAM − FLAT = −0.95% (Holm p 0.019) and DRIFT − FLAT = +1.10% (Holm p 0.025). Holm rejects both.
+  - The kill rule blocks both:
+    - The earlier window gives −1.27% (p 0.005) and −1.63% (p 0.007) over the same bets, against −0.81% and +1.39% for the main contrasts.
+    - The random non-favourite runner gives DRIFT − FLAT = +3.53% (p 3e−5).
+    - The exact shuffle blocks neither.
+  - So `tradable_flag` is no for both cells. No cell reaches the +0.5% minimum either, since all three are negative.
+- **Reading.** A price that has moved partly moves back, for any runner and in an earlier window too. That is a general feature of how prices settle towards BSP. It is not a late, favourite-specific move that the registered rule could trade. *Inference.*
+- **Limits beyond [What it cannot show](#what-it-cannot-show).**
+  - 1,994 of the 7,239 T−5 bets (27%) are excluded from the cells as `suspension_in_window`.
+  - The power figures follow from the measured SDs, 0.111 at T−5 and 0.074 at T−2.
+  - Pilot 1's N = 400 detects about 1.6% at T−5, or about 1.05% at T−2. *Inference* from those SDs.
+- **For Pilot 1, a reading and not a change to the frozen plan.**
+  - On this history, the T−5 rule's expected value against BSP is about −2.3% per bet. That is about −£23 over 495 × £2 bets, before luck. *Inference.*
+  - So the pilot tests execution and fills, not an edge.
+  - Whether the T−5 versus T−2 gap matters is for Yu and Nuance to decide.
 
 ## What it cannot show
 

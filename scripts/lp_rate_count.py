@@ -647,16 +647,19 @@ def own_sha256():
 
 
 def tally(count):
-    """Every column per UTC date of the off and pooled, before anything is withheld."""
+    """Every column per UTC date of the off and pooled, before anything is withheld; the not-usable reasons and
+    revised-marketTime counts per date too, so a summary can pool them over the same dates as the columns."""
     days = {}
-    not_usable = {code: 0 for code in NOT_USABLE}
-    revised = 0
+    not_usable = {}                                    # why markets were not usable at -300 s, per date
+    revised = {}                                       # usable markets with a revised marketTime, per date
     for market_id in sorted(count.offs):
-        row = days.setdefault(utc_date(count.offs[market_id]), {column: 0 for column in COLUMNS})
+        day = utc_date(count.offs[market_id])
+        row = days.setdefault(day, {column: 0 for column in COLUMNS})
         row["recorded"] += 1
         decision_pt, decision = count.at(market_id, DECISION_S)
         if decision[0] != USABLE:
-            not_usable[decision[0]] += 1
+            reasons = not_usable.setdefault(day, {code: 0 for code in NOT_USABLE})
+            reasons[decision[0]] += 1
             continue
         earlier_pt, earlier = count.at(market_id, PERSISTENCE_S)
         _, start = count.at(market_id, WINDOW_S[0])
@@ -669,7 +672,7 @@ def tally(count):
         row["window"] += (start[0] == USABLE and start[1]) or market_id in count.window
         row["price_lever"] += decision[2]
         row["width_lever"] += decision[3]
-        revised += market_id in count.revised
+        revised[day] = revised.get(day, 0) + (market_id in count.revised)
     pooled = {column: sum(row[column] for row in days.values()) for column in COLUMNS}
     racing_days = sum(1 for row in days.values() if row["usable_300"] > 0)
     return {"days": days, "pooled": pooled, "racing_days": racing_days, "not_usable_300": not_usable,
@@ -718,8 +721,9 @@ def summarise(count):
         "days": [{"date": day, "racing_day": days[day]["usable_300"] > 0, "in_gate_a": day in pooled_days,
                   **shown(days[day])} for day in sorted(days)],
         "pooled": {**shown(pooled), "racing_days": racing_days},
-        "not_usable_300": counted["not_usable_300"],
-        "schedule_revised_by_300": counted["schedule_revised_by_300"],
+        "not_usable_300": {code: sum(counted["not_usable_300"].get(day, {}).get(code, 0) for day in pooled_days)
+                           for code in NOT_USABLE},
+        "schedule_revised_by_300": sum(counted["schedule_revised_by_300"].get(day, 0) for day in pooled_days),
         "gate_a": gate,
         "limits": LIMITS,
     }

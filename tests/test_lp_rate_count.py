@@ -223,7 +223,11 @@ class Case(unittest.TestCase):
         """Every column, as tallied before the printed result withholds them below 10 racing days."""
         count = lp.Count().read_root(lp.check_root(str(self.root)))
         self.assertEqual(count.segments["unreadable"], 0)
-        return lp.tally(count)
+        counted = lp.tally(count)                                           # reasons and revisions over all dates
+        counted["not_usable_300"] = {code: sum(day[code] for day in counted["not_usable_300"].values())
+                                     for code in lp.NOT_USABLE}
+        counted["schedule_revised_by_300"] = sum(counted["schedule_revised_by_300"].values())
+        return counted
 
     def pooled(self):
         return self.counted()["pooled"]
@@ -620,6 +624,24 @@ class GateTests(Case):
         self.assertEqual([row["in_gate_a"] for row in later["days"]], [True] * 10 + [False] * 5)
         self.assertEqual(sum(row["primary"] for row in later["days"]), 154)    # later dates shown, not pooled
         self.assertIn("pooled and Gate A cover the dates through 2026-11-10; the 5 later dates are descriptive only",
+                      self.run_tool()[1])
+
+    def test_side_counts_cover_the_same_dates_as_the_pool(self):
+        """Revised and not-usable markets after Gate A's last date are not set against its usable markets."""
+        self.days(10, 4)
+        off = timestamp_ms("2026-11-11T14:35:00.000Z")
+        revised = definition(off_text=_iso(at(300, off)), version=2)
+        self.rec.session([seg(image(at(-900, off), (MARKET, definition(off_text=_iso(off)), quotes(3.0, 3.1)),
+                                    ("1.999123402", definition(off_text=_iso(off), country="FR"), quotes(3.0, 3.1))),
+                              delta(at(-600, off), md=revised), delta(at(-360, off), rc=quotes(3.0, 3.1)),
+                              beats(-900, 300, off))])
+        everything = self.counted()
+        self.assertEqual((everything["schedule_revised_by_300"], everything["not_usable_300"]["out_of_population"]),
+                         (1, 1))
+        summary = self.summary()
+        self.assertEqual((summary["gate_a"]["through"], summary["schedule_revised_by_300"]), ("2026-11-10", 0))
+        self.assertEqual(summary["not_usable_300"], {code: 0 for code in lp.NOT_USABLE})
+        self.assertIn("marketTime revised at or before off -300 s (counted, not excluded): 0 of 300 usable",
                       self.run_tool()[1])
 
     def test_until_gate_a_can_be_read_nothing_about_qualifying_markets_is_printed(self):

@@ -104,7 +104,11 @@ Yu agreed on 2026-11-03 to record these aggregates here. The full summary stays 
     - The random non-favourite runner gives DRIFT − FLAT = +3.53% (p 3e−5).
     - The exact shuffle blocks neither.
   - So `tradable_flag` is no for both cells. No cell reaches the +0.5% minimum either, since all three are negative.
-- **Reading.** A price that has moved partly moves back, for any runner and in an earlier window too. That is a general feature of how prices settle towards BSP. It is not a late, favourite-specific move that the registered rule could trade. *Inference.*
+- **Reading.** The registered specificity checks fail.
+  - Cells formed from an earlier window's move predict the same T−5 NCLV at least as strongly as the late move does. For DRIFT − FLAT the earlier window's contrast points the opposite way.
+  - For DRIFT − FLAT, a random non-favourite runner's cells show a larger contrast than the favourite's.
+  - The kill rule compares absolute sizes, so it blocks even when a control points the other way.
+  - So the study cannot attribute either contrast to a late, favourite-specific move. It does not show what mechanism produces them, and does not establish a general reversal of moved prices. *Inference.*
 - **Limits beyond [What it cannot show](#what-it-cannot-show).**
   - 1,994 of the 7,239 T−5 bets (27%) are excluded from the cells as `suspension_in_window`.
   - The power figures follow from the measured SDs, 0.111 at T−5 and 0.074 at T−2.

@@ -67,8 +67,8 @@ The script prints these per racing day and pooled. Every column counts markets u
 - The −460 s and −300 s snapshots are 160 s apart, but delayed batches come every 180 s, so both can be the same batch seen twice. The two-batch count leaves those out.
 
 It also prints:
-- why markets were not usable at −300 s (no snapshot, invalid, out of population, not open or in play, under 5 ACTIVE);
-- the revised-marketTime line;
+- why markets were not usable at −300 s (no snapshot, invalid, out of population, not open or in play, under 5 ACTIVE), over the same dates as the pooled row;
+- the revised-marketTime line, over the same dates;
 - the sessions and segments it read and skipped, and how many sessions it read from a partial receipt (still running, or crashed);
 - the sha256 of the script's own bytes.
 

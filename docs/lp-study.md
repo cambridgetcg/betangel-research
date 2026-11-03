@@ -1,6 +1,6 @@
 # LP study v1: who fills a patient order in a wide spread
 
-Status: Registered measurement `lp-v1`, proposed for review. Nothing has run on real data. Yu asked on 2026-11-01 whether providing liquidity in thin, wide-spread markets (greyhounds, thin racing) can pay. This is stage 0 of that question, on the free 2015-05..2016-04 PRO horse-racing files the lab already holds, so the horse-racing focus (Yu, 2026-10-14, [backtest plan §2.7](backtest-plan.md#27-greyhounds-and-soccer-not-now-yu-2026-10-14)) is unchanged.
+Status: Registered measurement `lp-v1`, merged 2026-11-03 (#53). Both passes ran once on 2026-11-03; every test was underpowered ([results](#results-of-the-registered-pass-2026-11-03)). Yu asked on 2026-11-01 whether providing liquidity in thin, wide-spread markets (greyhounds, thin racing) can pay. This is stage 0 of that question, on the free 2015-05..2016-04 PRO horse-racing files the lab already holds, so the horse-racing focus (Yu, 2026-10-14, [backtest plan §2.7](backtest-plan.md#27-greyhounds-and-soccer-not-now-yu-2026-10-14)) is unchanged.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-01, against betangel-research main 147f807; revised 2026-11-02 after the lab's review (currency restatements of traded volume, fills when a quote reaches our price, a cap on the spread, diagnostics), and again the same day after its safety and statistics reviews (counts only below the size gates, blind ranges in place of quantiles less the median, wide quotes after t, a flag that asks whether the spread pays, descriptive rows at BSP and for the overround), and once more after a confirmer's probes (ticks only by side in the blind pass, the tests' gates for descriptive copies of a test).
 
@@ -119,6 +119,51 @@ The research round put (c) first and (a) last, on Whelan's finding that makers a
 - A flag without `adverse_selection_detected` fits (a), the spread is rent. Even then the secondary's "not detected" means only that the mean move against us is plausibly below its upper bound (95%, unadjusted); it is not proof that fills are benign.
 - A flag with `adverse_selection_detected` is a fourth reading, (d) **picked off but paid for it**: informed traders do fill us and the mid does move against us, but the spread we earned outlasts the move. It is neither (a) nor (c).
 - Without a flag, the tables, not the flag, say whether (b) or (c) fits better.
+
+## Results of the registered pass (2026-11-03)
+
+Yu agreed on 2026-11-03 to a short results note. These aggregates are recorded here, and the full summaries stay on the lab.
+
+- **Run.**
+  - Code 6a2648a, registration sha256 `76edf3da…0d3c`, input sha256 `c6a987b9…fbe3de`.
+  - The blind pass ran 11:43–14:19Z (summary.json sha256 `f335b029…a736`, receipt sha256 `22dd0fa4…3fed`). The lab read it before starting the registered pass, which by the registration runs whatever the blind tables show. There was no refusal, every count reconciled to the 12,208 records, and nothing stopped the study.
+  - The traded-volume rule's blind check found 21, 20 and 8 uncounted rises at the touch outside the after-the-hour seconds, against 56,999, 30,763 and 10,778 counted rises.
+  - The registered pass then ran once, 14:21–16:54Z, and exited 0 (summary.json sha256 `527e0012…f11c`, receipt sha256 `9c281258…9739`). Its counts equal the blind pass's.
+  - 12,208 index records: 12,188 across all 12 registered months and 20 with no anchor. 11,268 markets replayed.
+- **A spread of 3 to 20 ticks on any runner priced 1.50 to 10.0 is rare before the off.** A decision takes the shortest such runner. The second column counts markets where no runner in band had a spread of 3 ticks or more.
+
+  | decision time | no runner in band with 3+ ticks | issued | eligible | race dates | main legs filled: LAY / BACK / both | join legs filled: both | round trip / lay only / back only |
+  |---|---|---|---|---|---|---|---|
+  | off −10 min | 11,063 | 119 | 85 | 66 | 83 / 79 / 77 | 51 | 77 / 6 / 2 |
+  | off −5 min | 11,090 | 94 | 63 | 49 | 56 / 59 / 52 | 31 | 52 / 4 / 7 |
+  | off −2 min | 11,121 | 67 | 39 | 34 | 38 / 38 / 37 | 18 | 37 / 1 / 1 |
+
+  - The eligible decisions are about 0.7%, 0.5% and 0.3% of the records.
+  - The modelled fill rates are high, 89–98% per main leg. They are optimistic: the model puts each main leg first at an empty level, places it with no delay and fills a trade-through in full ([What it cannot show](#what-it-cannot-show)). 20%, 35% and 59% of main-leg fills came within 1 s of t.
+- **No test could run.** Every test is below the gate of 200 values; each has 15 or more race dates.
+  - The primary has 85, 63 and 39 decisions.
+  - The secondary and the realised spread have 162, 115 and 76 main legs.
+  - The positive control has 134, 94 and 55 join legs, and the null control was not computed.
+
+  So there is no flag and no `adverse_selection_detected`. The study neither supports nor rules out any of (a) to (d).
+- **The only statistics released: the positive control at off −10 min.**
+  - Ten groups got a mean and an interval. All are over the same 136 join legs (orders queued at the best price shown, on 66 race dates), so they are not independent.
+  - Measured from the quote just before the filling batch, the mid moved against the leg by a mean of:
+    - 0.54 ticks at +10 s (95% CR1 interval 0.22 to 0.85);
+    - 0.55 ticks at +30 s (0.21 to 0.90);
+    - 1.08 ticks by BSP (0.20 to 1.96).
+  - This is not the positive control's test (+60 s, in points, 134 legs, underpowered), so the control neither passed nor failed.
+  - The registration expects such a move partly by construction: 76 of the 136 fills were trade-throughs or quote crosses. With no null control, drift is not excluded.
+  - These rows say nothing about the main legs one tick inside the spread, which stay counts only.
+  - They were released because two join legs have no +60 s value (the market was in play), so these groups do not hold exactly the control test's 134 legs (statistics.rule). Over the same legs they would have been counts only.
+- **What powering it would take.** *Inference.*
+  - At these rates, 200 eligible decisions would need about 28, 38 and 62 months of PRO GB/IE WIN data at off −10, −5 and −2 min. That is 16, 26 and 50 months more than the 12 free months held.
+  - PRO horse racing costs £230 a month, or £2,299 for a bundled year (historicdata.betfair.com rate card, read 2026-11-03; Developer Support SA/360019984158, updated 2026-09-24).
+  - The SD of net was not released (underpowered), so the effect detectable at 200 is unknown. The registration's illustrative £0.25 per filled decision would give about £0.06 per decision. But that SD assumes lone legs, and most decisions here are round trips.
+- **Reading.** *The lab's reading.*
+  - On 2015–16 history, the question cannot be answered offline at a sensible cost.
+  - History cannot show what a live order meets: its queue position, virtual prices and latency. With 39 to 85 wide-spread decisions a year, it can say who fills us only at a high cost.
+  - On 2026-11-03 Yu chose a small automated live pilot as the next step. It needs its own contract, Yu's confirmed money numbers for lays, two resting orders per race and an RS-19 change ([What it cannot show](#what-it-cannot-show), Live caps). It is being drafted separately, and nothing here changes contract p1.
 
 ## What it cannot show
 

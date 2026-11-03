@@ -83,8 +83,13 @@ Yu agreed on 2026-11-03 to record these aggregates here. The full summary stays 
   | off −5 min | 7,239 | 362 | −2.34% | −2.60% to −2.08% | −1.0 |
   | off −2 min | 7,292 | 362 | −1.37% | −1.55% to −1.19% | 0.0 |
 
-- **The T−5 result fits story (c), late money drifts favourites.** The whole interval lies below −2%. The median best back sits a tick under BSP, so the favourite usually drifts out after T−5.
-- **T−2 is near the cost line.** Its median tick is 0, so its mean is about commission alone: −1.33% at 3.00 by the formula above. *Inference.*
+- **The T−5 result lies below the −2% line drawn for story (c), but it does not separate (b) from (c).**
+  - P is the best back, not the midpoint, and contract p1 admits a best lay up to two ticks above the best back (`max_best_lay_ticks_above_best_back`).
+  - With a two-tick spread and BSP exactly at the T−5 midpoint, P sits a tick under BSP with no drift at all. For example, a 3.00 / 3.10 book with BSP 3.05 gives NCLV −2.95% (Codex review on #54).
+  - So the median of −1 tick and the interval below −2% fit late drift (c) and spread plus commission (b) alike.
+  - What the run does show: backing the favourite's best back at T−5 costs about 2.3% against BSP after commission, roughly a tick.
+  - Telling drift from spread needs a measure relative to the midpoint, which would be a new registration. *Inference.*
+- **T−2 is near the cost line.** Its median tick is 0, so its mean is about commission alone: −1.33% at 3.00 by the formula above. Narrower spreads near the off, less drift, or both could explain the gap to T−5; the run cannot tell which. *Inference.*
 - **Late-move cells at T−5** (move from T−30 to T−5, 4,631 bets):
 
   | cell | bets | mean NCLV |

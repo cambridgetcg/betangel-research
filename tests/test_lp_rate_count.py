@@ -544,7 +544,7 @@ class GateTests(Case):
     def days(self, count, qualifying, per_day=30, first=1, **session):
         """`count` days of `per_day` markets each, with `qualifying` qualifying markets spread over them."""
         for n in range(count):
-            off = timestamp_ms(f"2026-11-{first + n:02d}T14:35:00.000Z")
+            off = timestamp_ms(f"2026-12-{first + n:02d}T14:35:00.000Z")
             markets = []
             for k in range(per_day):
                 index = n * per_day + k
@@ -600,16 +600,16 @@ class GateTests(Case):
                 if result == "RECORDING_OPEN":
                     gate = self.assert_withheld()
                     self.assertEqual((gate["result"], gate["recording_open"], gate["through"]),
-                                     (result, True, "2026-11-10"))
+                                     (result, True, "2026-12-10"))
                 else:
                     self.assertEqual(self.summary()["gate_a"]["result"], result)
         self.reset()
         self.days(10, 300)
-        (self.root / "rec-20261110T200000Z-fffffff0").mkdir()                  # resumed that day, no receipt yet
+        (self.root / "rec-20261210T200000Z-fffffff0").mkdir()                  # resumed that day, no receipt yet
         self.assertEqual(self.assert_withheld()["result"], "RECORDING_OPEN")
-        (self.root / "rec-20261111T060000Z-fffffff1").write_text("x")          # not a session: ignored
+        (self.root / "rec-20261211T060000Z-fffffff1").write_text("x")          # not a session: ignored
         self.assertEqual(self.summary()["gate_a"]["result"], "RECORDING_OPEN")
-        (self.root / "rec-20261111T070000Z-fffffff2").mkdir()                  # a session started on a later date
+        (self.root / "rec-20261211T070000Z-fffffff2").mkdir()                  # a session started on a later date
         gate = self.summary()["gate_a"]
         self.assertEqual((gate["result"], gate["recording_open"], gate["primary"]), ("PASS", False, 300))
 
@@ -620,16 +620,39 @@ class GateTests(Case):
         later = self.summary()
         self.assertEqual(later["gate_a"], first["gate_a"])
         self.assertEqual((later["gate_a"]["result"], later["gate_a"]["through"], later["pooled"]["primary"]),
-                         ("FAIL", "2026-11-10", 4))
+                         ("FAIL", "2026-12-10", 4))
         self.assertEqual([row["in_gate_a"] for row in later["days"]], [True] * 10 + [False] * 5)
         self.assertEqual(sum(row["primary"] for row in later["days"]), 154)    # later dates shown, not pooled
-        self.assertIn("pooled and Gate A cover the dates through 2026-11-10; the 5 later dates are descriptive only",
+        self.assertIn("pooled and Gate A cover the dates through 2026-12-10; the 5 later dates are descriptive only",
                       self.run_tool()[1])
+
+    def test_sessions_recorded_before_the_rule_was_fixed_are_not_read(self):
+        """Amendment 1: a session that started before 2026-11-03 23:05:00 UTC adds no market, no date and no ended
+        day, and its receipt is not read; read, these four would give 3 racing days of qualifying markets and a PASS."""
+        for index, date in enumerate(("2026-10-13", "2026-10-19", "2026-10-19", "2026-10-22")):
+            off = timestamp_ms(f"{date}T14:35:00.000Z")
+            markets = [(f"1.98{index}{k:05d}", definition(off_text=_iso(off)), quotes(3.0, 3.15)) for k in range(30)]
+            self.rec.session([[image(at(-400, off), *markets)] + beats(-400, 0, off)],
+                             stop_reason="max_seconds_reached")
+        gate = self.days(10, 4)                                                # December: 4 of 300
+        self.assertEqual((gate["result"], gate["through"], gate["primary"], gate["usable_300"]),
+                         ("FAIL", "2026-12-10", 4, 300))
+        summary = self.summary()
+        self.assertEqual([row["date"] for row in summary["days"]], [f"2026-12-{n:02d}" for n in range(1, 11)])
+        self.assertEqual((summary["inputs"]["sessions"]["recorded_before_registration"],
+                          summary["inputs"]["sessions"]["read"]), (4, 10))
+        (self.root / "rec-20261103T230459Z-0000000a").mkdir()                  # one second early: not read
+        (self.root / "rec-20261103T230500Z-0000000b").mkdir()                  # on time: read, and has no receipt
+        summary = self.summary()
+        self.assertEqual(summary["gate_a"], gate)
+        self.assertEqual((summary["inputs"]["sessions"]["recorded_before_registration"],
+                          summary["inputs"]["sessions"]["no_receipt"]), (5, 1))
+        self.assertIn("recorded_before_registration 5", self.run_tool()[1])
 
     def test_side_counts_cover_the_same_dates_as_the_pool(self):
         """Revised and not-usable markets after Gate A's last date are not set against its usable markets."""
         self.days(10, 4)
-        off = timestamp_ms("2026-11-11T14:35:00.000Z")
+        off = timestamp_ms("2026-12-11T14:35:00.000Z")
         revised = definition(off_text=_iso(at(300, off)), version=2)
         self.rec.session([seg(image(at(-900, off), (MARKET, definition(off_text=_iso(off)), quotes(3.0, 3.1)),
                                     ("1.999123402", definition(off_text=_iso(off), country="FR"), quotes(3.0, 3.1))),
@@ -639,7 +662,7 @@ class GateTests(Case):
         self.assertEqual((everything["schedule_revised_by_300"], everything["not_usable_300"]["out_of_population"]),
                          (1, 1))
         summary = self.summary()
-        self.assertEqual((summary["gate_a"]["through"], summary["schedule_revised_by_300"]), ("2026-11-10", 0))
+        self.assertEqual((summary["gate_a"]["through"], summary["schedule_revised_by_300"]), ("2026-12-10", 0))
         self.assertEqual(summary["not_usable_300"], {code: 0 for code in lp.NOT_USABLE})
         self.assertIn("marketTime revised at or before off -300 s (counted, not excluded): 0 of 300 usable",
                       self.run_tool()[1])
@@ -659,7 +682,7 @@ class GateTests(Case):
         self.assertIsNone(lp.rate_bp(0, 0))
 
     def test_a_date_with_no_usable_market_is_not_a_racing_day(self):
-        off = timestamp_ms("2026-11-20T14:35:00.000Z")
+        off = timestamp_ms("2026-12-20T14:35:00.000Z")
         self.rec.session([[image(at(-900, off), (MARKET, definition(off_text=_iso(off)), quotes(3.0, 3.15)))]])
         summary = self.summary()
         self.assertEqual((summary["pooled"]["recorded"], summary["pooled"]["racing_days"]), (1, 0))
@@ -687,7 +710,8 @@ class SessionTests(Case):
         (self.root / "index").mkdir()                                       # not a session
         summary = self.summary()
         self.assertEqual(summary["inputs"]["sessions"],
-                         {"found": 12, "read": 4, "read_partial": 1, "not_a_directory": 2, "no_receipt": 1,
+                         {"found": 12, "read": 4, "read_partial": 1, "recorded_before_registration": 0,
+                          "not_a_directory": 2, "no_receipt": 1,
                           "receipt_unreadable": 0, "not_delayed_key": 1, "conflation_not_registered": 2,
                           "subscription_not_registered": 2})
         self.assertEqual(summary["inputs"]["segments"],

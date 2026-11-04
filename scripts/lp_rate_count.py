@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Stage 0 rate count for Pilot 2, registered in docs/lp-rate-count.md (fixed at the merge commit of its amendment 1,
-before any qualifying count is printed).
+"""Stage 0 rate count for Pilot 2, registered in docs/lp-rate-count.md: first merged at 9e69b73 before any recording
+was read, and amended once (amendment 1, 2026-11-04) before any qualifying count was printed.
 
 It counts how often GB/IE horse-racing WIN markets in the #41 recorder's delayed-key recordings show the spreads
 Pilot 2 would quote in, per racing day (UTC date of the off) and pooled, and prints Gate A. It decides nothing else.
@@ -9,7 +9,7 @@ which the running totals reach 10 racing days and 300 usable markets, and is rea
 has ended. Until then the script prints only how many markets were recorded and usable, never what qualified.
 
 Offline and read only. It reads the session directories (rec-*) under the one recordings root it is given that
-started at or after 2026-11-03 23:05:00 UTC (amendment 1: none recorded before the rule was fixed), and in each only
+started at or after 2026-11-03 23:05:00 UTC (amendment 1: none from before that first merge), and in each only
 the closed segments its receipt lists (sha256 checked), plus its own bytes for the sha256 it prints. It writes no
 file. Output is counts, rates, UTC dates and that sha256 only: never a market id, selection id, event name, venue,
 price or time of day. Errors print a fixed code.
@@ -515,9 +515,10 @@ def session_date(name):
 
 
 class Count:
-    """Every session under one root, read in session-name order (rec-<UTC start>, so time order: one recorder runs
-    at a time on a profile) and each session's segments in index order. A market's off is the first parseable
-    marketTime met in that order; a later revision moves nothing and is only counted."""
+    """Every session under one root that started at or after FIRST_START, read in session-name order (rec-<UTC
+    start>, so time order: one recorder runs at a time on a profile) and each session's segments in index order. A
+    market's off is the first parseable marketTime met in that order; a later revision moves nothing and is only
+    counted."""
 
     def __init__(self):
         self.offs = {}
@@ -528,7 +529,7 @@ class Count:
         self.sessions = {"found": 0, "read": 0, "read_partial": 0, **{code: 0 for code in SESSION_SKIPS}}
         self.starts = []                                   # UTC start date of every session directory, in order
         self.latest_ended = False                          # the latest session directory ended its recording day
-        # (both from FIRST_START on: a session recorded before the rule was fixed adds no date and closes no day)
+        # (both from FIRST_START on: a session that started before it adds no date and closes no day)
         self.segments = {"listed": 0, "read": 0, "unlisted": 0, "listing_failed": 0,
                          **{code: 0 for code in SEGMENT_SKIPS}}
 

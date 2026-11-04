@@ -626,7 +626,7 @@ class GateTests(Case):
         self.assertIn("pooled and Gate A cover the dates through 2026-12-10; the 5 later dates are descriptive only",
                       self.run_tool()[1])
 
-    def test_sessions_recorded_before_the_rule_was_fixed_are_not_read(self):
+    def test_sessions_started_before_the_first_merge_are_not_read(self):
         """Amendment 1: a session that started before 2026-11-03 23:05:00 UTC adds no market, no date and no ended
         day, and its receipt is not read; read, these four would give 3 racing days of qualifying markets and a PASS."""
         for index, date in enumerate(("2026-10-13", "2026-10-19", "2026-10-19", "2026-10-22")):
@@ -643,11 +643,22 @@ class GateTests(Case):
                           summary["inputs"]["sessions"]["read"]), (4, 10))
         (self.root / "rec-20261103T230459Z-0000000a").mkdir()                  # one second early: not read
         (self.root / "rec-20261103T230500Z-0000000b").mkdir()                  # on time: read, and has no receipt
-        summary = self.summary()
+        with mock.patch.object(lp, "load_receipt", wraps=lp.load_receipt) as reader:
+            summary = self.summary()
+        opened = [call.args[0].name for call in reader.call_args_list]
+        self.assertEqual(min(opened), "rec-20261103T230500Z-0000000b")          # no earlier receipt is even opened
+        self.assertEqual(len(opened), 11)
         self.assertEqual(summary["gate_a"], gate)
         self.assertEqual((summary["inputs"]["sessions"]["recorded_before_registration"],
                           summary["inputs"]["sessions"]["no_receipt"]), (5, 1))
         self.assertIn("recorded_before_registration 5", self.run_tool()[1])
+
+    def test_this_registration_names_the_sha256_that_decides(self):
+        """The page names the deciding script's sha256, so the script cannot change without a new amendment there."""
+        page = (ROOT / "docs" / "lp-rate-count.md").read_text(encoding="utf-8")
+        decides = next(line for line in page.splitlines() if line.startswith("- **Which run decides.**"))
+        script = hashlib.sha256((ROOT / "scripts" / "lp_rate_count.py").read_bytes()).hexdigest()
+        self.assertEqual(re.findall(r"`([0-9a-f]{64})`", decides), [script])
 
     def test_side_counts_cover_the_same_dates_as_the_pool(self):
         """Revised and not-usable markets after Gate A's last date are not set against its usable markets."""

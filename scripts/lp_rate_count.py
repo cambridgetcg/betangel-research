@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Stage 0 rate count for Pilot 2, registered in docs/lp-rate-count.md (fixed at its merge commit, before any
-recording is read).
+"""Stage 0 rate count for Pilot 2, registered in docs/lp-rate-count.md (fixed at the merge commit of its amendment 1,
+before any qualifying count is printed).
 
 It counts how often GB/IE horse-racing WIN markets in the #41 recorder's delayed-key recordings show the spreads
 Pilot 2 would quote in, per racing day (UTC date of the off) and pooled, and prints Gate A. It decides nothing else.
@@ -8,10 +8,11 @@ Gate A is fixed by the data, not by when the script runs: it pools the racing da
 which the running totals reach 10 racing days and 300 usable markets, and is read only once that date's recording
 has ended. Until then the script prints only how many markets were recorded and usable, never what qualified.
 
-Offline and read only. It reads the session directories (rec-*) under the one recordings root it is given, and in
-each only the closed segments its receipt lists (sha256 checked), plus its own bytes for the sha256 it prints. It
-writes no file. Output is counts, rates, UTC dates and that sha256 only: never a market id, selection id, event
-name, venue, price or time of day. Errors print a fixed code.
+Offline and read only. It reads the session directories (rec-*) under the one recordings root it is given that
+started at or after 2026-11-03 23:05:00 UTC (amendment 1: none recorded before the rule was fixed), and in each only
+the closed segments its receipt lists (sha256 checked), plus its own bytes for the sha256 it prints. It writes no
+file. Output is counts, rates, UTC dates and that sha256 only: never a market id, selection id, event name, venue,
+price or time of day. Errors print a fixed code.
 
 Limits: delayed (1-180 s) and conflated (180 s) data, best three levels, no virtual prices. The count is an upper
 bound, not live recall.
@@ -36,7 +37,7 @@ import re
 import stat
 import sys
 
-SCHEMA = "lp-rate-count/v1"
+SCHEMA = "lp-rate-count/v2"
 REGISTRATION = "docs/lp-rate-count.md"
 
 # --- the registered count (docs/lp-rate-count.md); changing any of these is a new registration ---------------
@@ -63,13 +64,14 @@ REQUIRED_FIELDS = ("EX_BEST_OFFERS", "EX_MARKET_DEF")
 VIRTUAL_FIELD = "EX_BEST_OFFERS_DISP"
 MAX_LADDER_LEVELS = 3
 SESSION_RE = re.compile(r"rec-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
+FIRST_START = "20261103T230500Z"            # UTC start in the name; earlier sessions are not read (amendment 1)
 SEGMENT_RE = re.compile(r"seg-[0-9]{3,6}\.jsonl")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 USABLE = "usable"
 NOT_USABLE = ("no_snapshot", "invalid", "out_of_population", "not_open_or_in_play", "under_5_active")
-SESSION_SKIPS = ("not_a_directory", "no_receipt", "receipt_unreadable", "not_delayed_key",
-                 "conflation_not_registered", "subscription_not_registered")
+SESSION_SKIPS = ("recorded_before_registration", "not_a_directory", "no_receipt", "receipt_unreadable",
+                 "not_delayed_key", "conflation_not_registered", "subscription_not_registered")
 SEGMENT_SKIPS = ("missing", "unreadable", "hash_mismatch", "replay_check_not_passed")
 COLUMNS = ("recorded", "usable_300", "primary", "flagged_460", "persistence", "persistence_two_batches", "window",
            "price_lever", "width_lever")
@@ -526,6 +528,7 @@ class Count:
         self.sessions = {"found": 0, "read": 0, "read_partial": 0, **{code: 0 for code in SESSION_SKIPS}}
         self.starts = []                                   # UTC start date of every session directory, in order
         self.latest_ended = False                          # the latest session directory ended its recording day
+        # (both from FIRST_START on: a session recorded before the rule was fixed adds no date and closes no day)
         self.segments = {"listed": 0, "read": 0, "unlisted": 0, "listing_failed": 0,
                          **{code: 0 for code in SEGMENT_SKIPS}}
 
@@ -537,6 +540,9 @@ class Count:
         for name in names:
             directory = root / name
             self.sessions["found"] += 1
+            if name[len("rec-"):len("rec-") + len(FIRST_START)] < FIRST_START:
+                self.sessions["recorded_before_registration"] += 1     # not read at all, not even its receipt
+                continue
             if not _is_directory(directory):                 # a file, or a symlink (never followed)
                 self.sessions["not_a_directory"] += 1
                 continue

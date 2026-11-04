@@ -1,8 +1,8 @@
 # LP rate count: Stage 0 for Pilot 2
 
-Status: Draft registration, written 2026-11-03. It is fixed at its merge commit, and it must be merged before any recording is read for this count. Nobody has read a recording for it, and the lab holds none. On 2026-11-03 Yu chose "Count first": before any Pilot 2 code is built, count for free how often today's GB/IE horse-racing WIN markets show the spreads Pilot 2 would quote in. Later the same day Yu also settled which run decides Gate A, a minimum number of markets, and that qualifying counts stay hidden until then ([Yu's choices](#yus-choices-2026-11-03)).
+Status: Registration, written 2026-11-03 and merged that day (9e69b73, 23:04:56Z), then amended once on 2026-11-04 ([amendment 1](#amendment-1-2026-11-04)). The rule is fixed at amendment 1's merge commit, and the counter is not run again before that merges. No qualifying count has been printed: the only run so far, on the Air on 2026-11-04, could print no more than NOT_ENOUGH_DAYS. On 2026-11-03 Yu chose "Count first": before any Pilot 2 code is built, count for free how often today's GB/IE horse-racing WIN markets show the spreads Pilot 2 would quote in. Later the same day Yu also settled which run decides Gate A, a minimum number of markets, and that qualifying counts stay hidden until then ([Yu's choices](#yus-choices-2026-11-03)).
 
-For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, against betangel-research main 35da293.
+For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, against betangel-research main 35da293; amendment 1 on 2026-11-04, against main b36c215.
 
 - The code is `scripts/lp_rate_count.py`, tested by `tests/test_lp_rate_count.py` on synthetic recordings only.
 - The definition comes from the Pilot 2 design (lab note, 2026-11-03, sections expected_rate, go_live_gates and code_stages PR2). This page fixes the details that design left open. It changes nothing in Pilot 1.
@@ -13,7 +13,7 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, agai
 
 The input is the delayed-key recordings the #41 recorder writes on Yu's Air: GB/IE, event type 7, WIN, with EX_BEST_OFFERS at 3 levels. The delayed key is 1–180 s late and conflated to 180 s (`betangel_research/betfair/recorder.py:14-15`, facts F44 and F51). The T6 live test recorded Betfair echoing that conflation, 180000 ms (`reports/betfair-live-tests-2026-10-13.json:129`). It is not licensed historical data.
 
-- **Sessions.** It reads every directory under the recordings root named as the recorder names sessions (`rec-YYYYMMDDTHHMMSSZ-` plus 8 hex digits, the UTC start); other names are ignored. A session is read only if its receipt (`receipt.json`, or `receipt.partial.json` while it is still running or after a crash) gives:
+- **Sessions.** It reads every directory under the recordings root named as the recorder names sessions (`rec-YYYYMMDDTHHMMSSZ-` plus 8 hex digits, the UTC start); other names are ignored. A session that started before 2026-11-03 23:05:00 UTC is not read ([amendment 1](#amendment-1-2026-11-04)). A session is read only if its receipt (`receipt.json`, or `receipt.partial.json` while it is still running or after a crash) gives:
   - key_type `delayed` and label `delayed_conflated`;
   - `conflate_ms_echoed` exactly 180000;
   - a subscription that asks for EX_BEST_OFFERS and EX_MARKET_DEF but not EX_BEST_OFFERS_DISP (virtual prices), with ladderLevels 1 to 3.
@@ -104,6 +104,15 @@ Yu took the lab's three suggestions ("Lets go with what you recommeded"):
 
 Record the first PASS or FAIL with the run's script sha256 and the date it pools through.
 
+### Amendment 1 (2026-11-04)
+
+- **What was missed.** When this page was registered, the Air's recordings root already held four delayed-key test sessions from before the recorder rollout. They started on 2026-10-13, 2026-10-19 (two) and 2026-10-22, and each is complete, stopped at its `max_seconds` cap. The lab did not know about them, and this page did not mention them. Under the rule as merged at 9e69b73, any of them that passed the session checks would be read. A racing day is any UTC date with one market usable at −300 s, so each short test run could count as a whole racing day: up to 4 of the 10.
+- **What has been seen.** On 2026-11-04 the Air's Claude ran the merged counter once on that root. With at most four dates it could print only NOT_ENOUGH_DAYS, with the qualifying counts withheld, and its output was not shared with the lab. No qualifying count has been printed for this registration.
+- **Yu's choice.** Yu was asked: "Should the count use only recordings made after the counting rule was fixed (from 3 Nov, 23:05 UTC), leaving out the four short October test recordings?" Yu chose "Only new recordings" (2026-11-04).
+- **The rule.** A session counts only if the UTC start in its name is at or after 2026-11-03 23:05:00, just after this page's first merge at 23:04:56Z (`FIRST_START`). An earlier session is not read at all, not even its receipt. It is counted under the skip code `recorded_before_registration` and adds no market, no date and no ended recording day.
+- **Unchanged.** Everything else, including the markets, the runner rule, the columns, Gate A's 10 racing days, 300 usable markets and 1.4%, and Yu's three choices. The output schema is now `lp-rate-count/v2`, because the sessions line has the new code.
+- **Which run decides.** A run of amendment 1's merge commit, whose printed sha256 matches that commit's script. A run of 9e69b73 decides nothing.
+
 ## What it cannot show
 
 - **Delay.** The data is delayed by 1–180 s and conflated to 180 s, so a "−300 s" state can describe the exchange as early as about −660 s (*inference*: up to 180 s of age plus up to 180 s of delay).
@@ -115,7 +124,7 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 ## Who runs it, and how
 
 - Yu runs it, or the Air's Claude with Yu's OK, on the Air. The recordings never leave the Air. Only the printed counts are shared, and only with Yu's OK.
-- Run it from a checkout of the merge commit that registered this page, not from Pilot 1's registered checkout or the recording_day pinned worktree. Those stay at their own commits.
+- Run it from a checkout of amendment 1's merge commit, which fixed the current rule, not from Pilot 1's registered checkout or the recording_day pinned worktree. Those stay at their own commits.
 - The printed script sha256 must match that commit's `scripts/lp_rate_count.py`. A Gate A result is read only from a run whose sha256 matches.
 - Running it early does no harm. Until Gate A can be read it prints NOT_ENOUGH_DAYS, NOT_ENOUGH_MARKETS or RECORDING_OPEN and withholds the qualifying counts. An open segment is never read, and the sessions line shows how many sessions were read from a partial receipt.
 - The command (Python 3.10 or later):

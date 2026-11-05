@@ -58,7 +58,7 @@
       "to_offset_s": -460,
       "flag": "isMarketDataDelayed is true and some ACTIVE runner meets rule.selection",
       "book_not_delayed": "discarded; never evidence and never a reason to read the live key",
-      "unflagged": "never opened or reserved",
+      "unflagged": "never opened or reserved, except a probe session's drill race",
       "use": "timing only, never evidence"
     },
     "evidence": "After the reservation, one fresh live-key catalogue row and one decision book with isMarketDataDelayed false and virtual prices on; classified once into one PLACE or SKIP record; no second fetch.",
@@ -92,7 +92,7 @@
     "send_deadline_offset_s": -240,
     "cancel": {
       "offset_s": -60,
-      "off": "the PLACE record's off",
+      "off": "the PLACE or drill record's off",
       "late": "a process that finds the wall clock more than one poll past the cancel point pulls at once; at or after the off it is a failed cancel",
       "procedure": "read both legs by bet id; whole-cancel each leg still EXECUTABLE, the LAY first, one instruction per request; read both legs again",
       "matched": "rides to the result; nothing is hedged, exited, re-priced, replaced or retried",
@@ -122,6 +122,9 @@
       "before_any_place": "every probe drill has a passing receipt; a failed drill stops Pilot 2 until Astra has reviewed it and Yu decides again",
       "max_loss_per_race_p": 100,
       "max_races": 8,
+      "counts": "only races in which a probe order was sent; a drill whose probe was never sent is run again and does not count",
+      "market": "the session's first market on Pilot 1's scheduler list that meets rule.market, with no pre-filter flag needed; reserved at off - 300 s",
+      "runner": "the lowest best back in the decision book, then the lowest selection id",
       "ledger": "outside Pilot 2's ledger, inside the overall budget"
     },
     "website_loss_limit_per_day_p": 5000,

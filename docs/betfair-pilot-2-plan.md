@@ -50,11 +50,22 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
   - Until Yu says so, "Count first" stands as registered.
 - **Yu, 2026-11-04, relayed: "2.是",** keeping Pilot 1 first. PR4 waits for Astra's acceptance of Pilot 1's go-live commit, and PR5 waits for Pilot 1's PT4.
 - **Yu, 2026-11-05, relayed: "可以 let lab go ahead. 得".** This is the go-ahead for the lab to draft this PR (stage PR1: documents and one small test of the draft contract). It is not the build consent. The Air's Claude's proposals for the open questions remain proposals (Open for Yu, below).
+- **Yu, 2026-11-05, to lab-Claude: "Lets run live trading here actually".** Yu typed this on the lab Mac (the MacBook Pro). In a multiple-choice prompt the same day, Yu chose:
+  - **"All of it":** the credentials, Pilot 1, Pilot 2, the manual £1 drills and the delayed-key price recorder all move from the Air to the lab Mac. The Air stops live work, so only one Mac trades.
+  - **"This account (user)":** the credentials live in the lab Mac's existing macOS account `user`, not in a separate trading user. Yu was told that every agent on the lab Mac, and the Air's Claude over SSH, could then reach them.
+  - **"Move it here too",** for the recorder and Gate A: the Gate A count starts again from the lab Mac's recordings, and a written amendment names the lab Mac before any count is read (Stage 0 and Gate A, below). Recordings are never copied between Macs.
+  - **"A note: means this Mac",** for contract p1: where it says the analysis and Yu's private risk view are "on the Air" (p1-fav-t5.json:188, :190), Yu decided this means the Mac Pilot 1 trades from, now the lab Mac. Contract p1's bytes and sha256 (4dbccb5a…) stay unchanged.
+  - **Backup:** Yu sets up an encrypted local backup of the lab Mac, covering the state root and the Keychain, before the first order.
+
+  Yu also approved rules for the lab Mac, kept in the lab's own instructions, not in the repo. Those that bear on Pilot 2 are on the page (Who does what).
+  - What follows for Pilot 2 is on the page (What it allows, Who does what, How it ends), in the note (§2, §8, §15) and below (Before Pilot 2, Stage 0 and Gate A, Timeline, Risks).
+  - Not decided, and open for Yu: where Astra's acceptance and the data-lock recomputation run, and how Astra reaches the lab Mac's journal, since the lab's Astra is tool-free (Open for Yu, below); whether the Air's helper scripts (arm-live.py, disarm-live.py, the config-field helper and livekey-check.py) come to the lab Mac; and which first-live gate items, beyond the T0, T1, T2, T5 and T9 redone on the lab Mac, Yu and Astra choose to repeat.
 
 ## Before Pilot 2: attended manual drills
 Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all good" (relayed, 2026-11-04) and "用寬鬆版" (relayed, 2026-11-05). They are not part of Pilot 2.
 - **The shape.**
-  - Yu types every line through the existing typed `place` and `cancel`, under Pilot 1's config on the Air, armed for the drills and disarmed after.
+  - Yu types every line through the existing typed `place` and `cancel`, under Pilot 1's config on the lab Mac, at its own keyboard, armed for the drills and disarmed after.
+  - They run on the lab Mac only after Yu's encrypted backup of it (Decided) and its attended first-live tests, each with Yu present and a receipt: T0, T1, T2, T5 and the T9 live probe.
   - Each race gets one £1 order, alternating BACK and LAY. Each order is at most 2 ticks from the price V13 compares it with: the best back for a BACK, the best lay for a LAY.
   - A lay is at no more than 3.0. Pilot 1's £2 liability cap then allows the £1 stake, and the worst race is −£2.
   - At most 5 races and −£10 in all, then the disarm.
@@ -62,15 +73,16 @@ Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all
   - There is no contract, ledger or verdict.
   - The drills come out of the same account, so they count against the overall budget (page, Money).
   - Every drill order must be cancelled, lapsed, or matched and settled before any Pilot 1 session.
-  - Arming changes Pilot 1's config, so after the disarm it must be back to exactly the bytes Pilot 1's go-live consent will name.
+  - Arming changes Pilot 1's config, so after the disarm it must be back to exactly the bytes Pilot 1's go-live consent will name. That is the lab Mac's own config, written with init-config and Yu's values, with a new config_sha256 for Astra to accept; the Air's config is not carried over. Whether the Air's arm and disarm helpers come to the lab Mac is open (Decided).
 - **What reading the code showed, before any order:**
   - A typed live `place` takes its own recording admission and is refused while one is held (cli.py:1518-1527; admission.py:667-670). Release is refused while any order is still open (admission.py:410-435), so typed drills rest only one order at a time. The executor holds one admission for its whole session (note §7).
   - Contract p1 and Pilot 1's config set V13 at 2 ticks. A 4-tick spread's inside BACK sits 3 ticks above the best back, so config-p2.json's V13 of 3 is a Pilot 2-only relaxation (page, What it relaxes).
-- Their receipts stay on the Air. Nothing from them enters Git without Yu's OK.
+  - A typed live `place` needs A19 (arming.py:53, :477-478), and only the live probe sets it (gateway.py:2673-2674). The lab Mac's journal is fresh (note §2), so the drills wait for the lab Mac's own T9.
+- Their receipts stay on the lab Mac, and no agent reads them (Yu's lab rule, 2026-11-05). Nothing from them enters Git without Yu's OK.
 
 ## Stage 0 and Gate A
 - The count is registered in [docs/lp-rate-count.md](lp-rate-count.md) (PR #56, amended in PR #57), not here.
-  - It reads only the Air's delayed-key recordings from sessions started at or after 2026-11-03 23:05 UTC.
+  - As registered, it reads only the Air's delayed-key recordings from sessions started at or after 2026-11-03 23:05 UTC. Yu chose on 2026-11-05 to start the count again from the lab Mac's recordings (Decided). Amendment 2, which a separate PR adds, names the lab Mac before any count is read, and Gate A then counts only the lab Mac's recordings root. Recordings are never copied between Macs.
   - It prints counts only.
   - Each run needs Yu's OK.
   - It can be read once 10 racing days and 300 usable markets are recorded.
@@ -149,7 +161,7 @@ None of these needs an answer before the build consent, except Gate B, which nee
 | Final date | 2027-06-30 |
 | If decisions are too rare: stop, or the lab brings the levers with their counts (deciding from −600 to −300 s, a later final date, lays above 6.0 at a smaller stake, other markets) | the levers; Yu decides then |
 | Gate B (PR3) | yes, but only if Gate A passes and only if it does not delay Pilot 1 |
-| Reviews: Astra on the Air accepts; the lab's tool-free gpt-6-astra may pre-review, but that is not Astra's acceptance | as stated |
+| Reviews: Astra on the Air accepts; the lab's tool-free gpt-6-astra may pre-review, but that is not Astra's acceptance. Since the move (Decided, 2026-11-05), also: where Astra's acceptance and the data-lock recomputation run, and how Astra reaches the lab Mac's journal | as stated, proposed before the move; where Astra runs is open for Yu |
 
 Also for Yu, before go-live:
 - send the [G1 follow-up](betfair-pilot-2-g1-question.md) to Betfair, or record a decision to go ahead without an answer;
@@ -157,7 +169,7 @@ Also for Yu, before go-live:
 - confirm the £50 website loss limit is set.
 
 ## Timeline (*Inference*)
-- **November 2026:** this PR and Astra's review, after Pilot 1's review queue. The attended manual drills. Recording starts on the Air when Yu loads the recorder.
+- **November 2026:** this PR and Astra's review, after Pilot 1's review queue. The move to the lab Mac and its attended first-live tests (Decided). Then the attended manual drills, after the lab Mac's T9 probe. Recording starts on the lab Mac when Yu loads the recorder there.
 - **Once 10 racing days and 300 usable markets are recorded:** Gate A can be read. If it fails, no Pilot 2 code is built unless Yu decides to go on anyway; Yu then chooses between stopping at £0 and the levers with their counts.
 - **December:** the build consent when Yu is ready. PR4 is drafted once Gate A has passed, or once Yu has said at the build consent to go on without it. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
 - **January to February 2027:** PR4 merges once Astra has accepted Pilot 1's go-live commit. After Pilot 1's PT4 receipt, PR5 to PR8 follow with Codex and Astra rounds, about 4–6 weeks, with review dominating.
@@ -180,5 +192,7 @@ Also for Yu, before go-live:
 - **Auto-kill stops Pilot 1 too,** until Yu types RESUME LIVE. That is safe, but it costs Pilot 1 sessions.
 - **Shared order-path code.** PR5 touches gateway.py and risk.py, the only order path. After it merges, any Pilot 1 fix taken from main carries Pilot 2's code (page, What it relaxes, item 18). Hence the merge order, Pilot 1's pinned checkout, Pilot 1's unchanged tests and the cross-version check.
 - **Two configs and two worktrees in one profile.** Every mismatch refuses (PA1–PA3 fail closed), so the cost is lost sessions, not money.
+- **One Mac only.** Every exclusion (the KILL file, `.gateway.lock`, accounts.json, the journal and its caps, the login ledger) is per state root, so per Mac (note §2). Nothing in the code stops the Air and the lab Mac trading one account at once; only the move's order and Yu's rule that the Air runs no live command do.
+- **A busy lab Mac.** Pilot 2's legs rest, and its rest loop must pull them at off −60 s (note §8). *Inference:* heavy work could delay that loop. The drift check sees a sleep or a clock jump, not a stalled process, and case 7 acts only once the loop runs again. Yu's lab rule keeps heavy work off the lab Mac while a session is armed or an order rests. The bound is still that race's £10.
 - **The budget overlap** (page, Money). If the account balance is the joint bound, whichever pilot runs later can be starved by R11.
 - **Commission.** The 2026 rate is unconfirmed; 2% is assumed until Yu checks it.

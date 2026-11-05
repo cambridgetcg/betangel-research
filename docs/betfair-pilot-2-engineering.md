@@ -19,6 +19,9 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
   - Its own config file, `STATE_ROOT/profiles/default/config-p2.json`, read only by Pilot 2's commands. Pilot 1's config.json and its exact-equality PA3 check (pilot_gate.py:221-257) do not change.
   - Its own worktree at its own registered commit.
 - **Shared with Pilot 1, on purpose.** One Keychain credential set, one live journal and hash chain, one KILL file, one `.gateway.lock` (paths.py:73-74), and one recording admission and live-owner lock (paths.py:90-98). Every R-rule folds the whole journal, so each pilot's R6, R9, R10 and R12 see the other's orders. R12 at £0 does not misfire, because both pilots' orders are in the journal.
+- **One Mac.** All of these exist once per Mac. The journal, the KILL file, the locks and the admission live under the state root, as do accounts.json (A15) and the login ledger, and both the state root and the Keychain belong to one macOS user on one Mac (paths.py:1-5, :73-81, :103-106). Nothing in the code stops two Macs trading one account: each would pass A13 and A15 on its own, and neither journal would see the other's orders. The sharing above holds because everything moves together: Yu chose on 2026-11-05 to move the credentials, Pilot 1, Pilot 2, the manual £1 drills and the recorder from the Air to the lab Mac (the MacBook Pro), and the Air stops live work ([plan](betfair-pilot-2-plan.md), Decided).
+  - The lab Mac starts a fresh journal. The Air's state root and journal anchor are never copied to it: A13 lets a journal take its first anchor only while it holds no order (arming.py:136-153), and a copied state root and anchor would be a paired restore, which the order path allows only as recovery (betfair-order-path.md:403-411).
+  - The Air's journal is archived read-only. Its final head seq and sha256, and its anchor value, mark the end of the Air lineage; they will be added when the Air reports them.
 - **What the executor may send:**
   - for one PLACE record, before the send deadline: a BACK of exactly £2.00 at the best lay minus one tick, then a LAY of exactly £2.00 at the best back plus one tick, never above 6.00. Both are LIMIT and LAPSE, one instruction per request, each with its own customer order ref;
   - whole cancels of its own legs only, named by this open's bet ids;
@@ -101,7 +104,7 @@ Unchanged, and applied to each leg.
   3. Run Pilot 2's own-scope kill as a child process. It takes no lock, sweeps refs and bet ids, and re-sweeps at T0 + 20 s and + 35 s. Meanwhile the executor makes no Betfair call.
   4. Print the handoff with the kill's result, and end the session. The kill journals a HALT, so Yu types RESUME LIVE before either pilot places again.
 - **Suspended market at the cancel point.** *Inference, to check against Betfair's documentation:* cancels are refused while a market is suspended, and nothing can match then. The code is `cancel_market_suspended`, with no auto-kill. The executor reads the market status and our legs by bet id every 5 s. If the market reopens before the off, it sends one more whole cancel. If that is refused, or the market turns in play, LAPSE acts. The handoff is printed meanwhile, and these cases are counted apart.
-- **Process gone** (SIGKILL, a crash, power loss, or a sleep with no wake): nothing on the Air cancels. The legs rest until the off, at most about 4–5 minutes, and lapse. A leg can still match until then, bounded at £10. Yu runs `plp-end-session`, which prints both handoffs, then Pilot 2's kill or the phone app. Crash recovery hands off any leg still EXECUTABLE, and arming refuses until it is resolved, as Pilot 1's does (pilot_run.py:232-261, :897-899).
+- **Process gone** (SIGKILL, a crash, power loss, or a sleep with no wake): nothing on the lab Mac cancels. The legs rest until the off, at most about 4–5 minutes, and lapse. A leg can still match until then, bounded at £10. Yu runs `plp-end-session`, which prints both handoffs, then Pilot 2's kill or the phone app. Crash recovery hands off any leg still EXECUTABLE, and arming refuses until it is resolved, as Pilot 1's does (pilot_run.py:232-261, :897-899).
 - **Network drop:** the cancel fails, so auto-kill runs. The kill fails too, giving `kill_incomplete` and a HALT. The handoff then says to cancel in the Betfair phone app over mobile data now, or LAPSE acts at the off.
 - **Login failure with legs resting:** auto-kill. The emergency login skips the success cap but not the failure cap.
 - **The lock.** During the rest a typed `cancel` waits order_deadline_s + 5 s and then fails with `lock_busy` (eng §8). The arming banner names the stops that work: Ctrl-C, the KILL file, Pilot 2's kill (lock-free), and the website or app.
@@ -187,7 +190,7 @@ eng §13's bans stay, except that this executor may send lays. Still: more than 
 - **P2-PT4:** the armed sessions after the probe sessions, at most 5 decisions each, until a P2-PT4 receipt shows a matched, settled LAY checked on the website.
 
 ## 15. How it ends
-As on the page. Then the data lock (eng §12). The verdict and the tables run once on the Air, in the terminal, and Astra recomputes them there.
+As on the page. Then the data lock (eng §12). The verdict and the tables run once on the lab Mac, in the terminal. Where Astra recomputes them is open for Yu ([plan](betfair-pilot-2-plan.md), Open for Yu).
 
 ## 16. Deferred
 - A dead-man or watchdog.

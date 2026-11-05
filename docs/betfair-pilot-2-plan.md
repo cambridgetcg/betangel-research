@@ -102,7 +102,7 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 | Suspended-market poll | every 5 s | often enough to send one more cancel if the market reopens before the off |
 | Finalization deadline; BSP cutoff | off + 7 days; off + 24 h | as Pilot 1 |
 | Verdict | operations only: PASS at 10 PLACE records with no failure | each safety fact can fail on one event; money can answer nothing at this N |
-| P2-PT4 | at most 5 decisions a session until a matched, settled LAY is checked | tests the lay bookkeeping (profit sign and basis, F37) before any LAY enters the ledger's settled part |
+| P2-PT4 | at most 5 decisions a session until a matched, settled LAY is checked | tests the lay bookkeeping (profit sign and basis, F37) before any LAY enters the ledger's settled part. It equals the 5-a-day cap, so its protection is Yu's check of each decision and the receipt the settled ledger needs; a lower number is Yu's choice at the build consent |
 | Final date | 2027-06-30 (*proposed*) | the same horizon as RS-19; a later date is the cheapest way to more decisions |
 
 ## Expected rate (*Inference*)
@@ -124,7 +124,7 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 | PR2 (done) | The Stage 0 counter, [scripts/lp_rate_count.py](../scripts/lp_rate_count.py) (#56; amendment 1 in #57) | merged | S |
 | PR3 (optional) | Gate B: a counts-only table over Pilot 1's stored decision books | only with Yu's yes, and merged before Pilot 1's first PLACE record | S |
 | PR4 | The pure module pilot_lp.py: the contract loader, predicates, leg prices, passive check, two-leg record, fold, ledger, classes, value, verdict and tables | the build consent, and Gate A passed unless Yu says then to go on without it; merged only after Astra accepts Pilot 1's go-live commit | L |
-| PR5 | The gateway path for `pilot_lp`: two sends under one reservation, the passive check, read-cancel-read, the suspended-market rule, virtual prices on Pilot 2's books only, and the in-session halts | merged only after Pilot 1's PT4 receipt, after the cross-version check, and after Gate B if PR3 exists | L, highest scrutiny |
+| PR5 | The gateway path for `pilot_lp`: two sends under one reservation, the passive check, read-cancel-read, the suspended-market rule, virtual prices on Pilot 2's books only, the in-session halts, and the drill probe's path (R13 to a drill record and its exemptions, for the fixed probe shape only) | merged only after Pilot 1's PT4 receipt, after the cross-version check, and after Gate B if PR3 exists | L, highest scrutiny |
 | PR6 | The executor and the `plp-*` commands: pre-filter, rest loop, pull, auto-kill, arming refusals | after PR5 | L |
 | PR7 | Capture, the data lock and the terminal report | after PR6 | M |
 | PR8 | P2-PT2's dry day, P2-PT3's stand-in transport for the fault drills, and the probe-session mode | after PR7 | M |
@@ -132,7 +132,7 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 Each code PR is reviewed by Codex and Astra and merged by Yu. The full offline suite passes, including every Pilot 1 test unchanged.
 
 ## Open for Yu, at the build consent
-None of these needs an answer before the build consent. The Air's Claude made its proposals on 2026-11-04, under Yu's "全部ok, follow what you think is sensible" (relayed). They are shown as proposals, not as Yu's words.
+None of these needs an answer before the build consent, except Gate B, which needs Yu's answer in time for PR3 to merge before Pilot 1's first PLACE record. The Air's Claude made its proposals on 2026-11-04, under Yu's "全部ok, follow what you think is sensible" (relayed). They are shown as proposals, not as Yu's words.
 
 | Question | The Air's Claude's proposal |
 |---|---|
@@ -159,9 +159,9 @@ Also for Yu, before go-live:
 ## Timeline (*Inference*)
 - **November 2026:** this PR and Astra's review, after Pilot 1's review queue. The attended manual drills. Recording starts on the Air when Yu loads the recorder.
 - **Once 10 racing days and 300 usable markets are recorded:** Gate A can be read. If it fails, no Pilot 2 code is built unless Yu decides to go on anyway; Yu then chooses between stopping at £0 and the levers with their counts.
-- **December:** the build consent when Yu is ready. PR4 is drafted. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
+- **December:** the build consent when Yu is ready. PR4 is drafted once Gate A has passed, or once Yu has said at the build consent to go on without it. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
 - **January to February 2027:** PR4 merges once Astra has accepted Pilot 1's go-live commit. After Pilot 1's PT4 receipt, PR5 to PR8 follow with Codex and Astra rounds, about 4–6 weeks, with review dominating.
-- **February to March:** P2-PT2, P2-PT3, the G1 answer or Yu's recorded decision, the commission check, Astra's acceptance, Yu's go-live consent and registration. Then up to 8 probe sessions, each on a day with no Pilot 1 session, and P2-PT4.
+- **February to March:** P2-PT2, P2-PT3, the G1 answer or Yu's recorded decision, the commission check, Astra's acceptance, Yu's go-live consent and registration. Then about 8 probe sessions, each on a day with no Pilot 1 session, and P2-PT4.
 - **March or April at the earliest, to 2027-06-30:** Pilot 2 sessions on days without Pilot 1.
 - Going on without Gate A would not bring this forward: the dates are set by the Pilot 1-first order and by review time. If Pilot 1 slips, Pilot 2 slips by the same amount.
 

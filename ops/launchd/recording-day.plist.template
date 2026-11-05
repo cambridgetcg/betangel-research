@@ -9,7 +9,8 @@
       mkdir -m 0700 -p "{{STATE_ROOT}}/recording-wrapper/logs"
   Yu loads the installed copy in ~/Library/LaunchAgents once (§7 step 8). Agents never load, unload, kickstart or
   edit an installed plist. No EnvironmentVariables: no secret ever goes into the environment or argv.
-  launchd's 07:00 is Mac-local time; the Air's TZ is expected to be Europe/London (an assumption, not a guard).
+  launchd's 07:00 is Mac-local time; the lab Mac's (the MacBook Pro's) TZ is expected to be Europe/London (an
+  assumption, not a guard).
 -->
 <plist version="1.0">
 <dict>

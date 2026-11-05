@@ -210,7 +210,7 @@ class RecorderControlTests(unittest.TestCase):
     # --- C8: --end-at --------------------------------------------------------------------------------
 
     def test_end_at_stops_after_a_wall_clock_jump(self):
-        """The Air's monotonic clock stops during sleep, so a 16 h --max-seconds cannot bound the day: a wall-clock
+        """macOS's monotonic clock stops during sleep, so a 16 h --max-seconds cannot bound the day: a wall-clock
         jump of two hours (the Mac asleep) with almost no monotonic time passing must still end the run."""
         end_at = self.clock.time_ns() + HOUR_NS
         mono_start = self.clock.mono_ns

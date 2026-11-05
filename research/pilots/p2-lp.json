@@ -3,18 +3,26 @@
   "id": "p2-lp",
   "status": "draft",
   "frozen_on": null,
-  "money_set_by_yu_on": "2026-11-03",
+  "money_chosen_by_yu_on": "2026-11-03",
+  "money_status": "chosen in a question offered for a hand trial; Yu confirms them for this automated pilot at the build consent",
+  "gate_a": "open: whether this code may be built without waiting for Gate A (docs/lp-rate-count.md) is Yu's to say at the build consent",
   "pending_yu_at_build_consent": [
+    "gate_a",
     "money.stake_per_leg_p",
     "money.max_lay_price_h",
     "money.day_stop_p",
     "money.day_stop_reading",
     "money.pilot_stop_p",
+    "money.pilot_stop_reading",
     "money.max_open_worst_case_p",
     "money.drill",
     "money.overall_budget",
     "placement_limits.place_records_per_utc_day",
     "placement_limits.lifetime_place_records",
+    "placement_limits.place_records_per_pt4_session",
+    "placement_limits.races_in_flight",
+    "ledger.pause",
+    "verdict.population",
     "caps",
     "endings.final_date"
   ],
@@ -76,12 +84,15 @@
       "instructions_per_request": 1,
       "send_book": "each leg on its own fresh live-key send book with virtual prices on; V0-V14 and V9b, with V13 at most 3 ticks",
       "passive_check": "on the leg's send book, best back < leg price < best lay, our own resting BACK included; otherwise leg_not_passive, the leg is not sent and the market is latched",
-      "incomplete_pair": "BACK sent and LAY not sent (not passive, refused, late, FAILED or UNKNOWN): whole-cancel the BACK at once with KILL cases 1-4; the decision is pair_incomplete",
+      "incomplete_pair": "BACK sent and LAY not sent (not passive, refused, late or FAILED): whole-cancel the BACK at once with KILL cases 1-4; the decision is pair_incomplete",
+      "unknown_place_outcome": "an UNKNOWN place outcome on either leg triggers auto-kill",
       "back_not_sent": "nothing is sent"
     },
     "send_deadline_offset_s": -240,
     "cancel": {
       "offset_s": -60,
+      "off": "the PLACE record's off",
+      "late": "a process that finds the wall clock past the cancel point pulls at once; at or after the off it is a failed cancel",
       "procedure": "read both legs by bet id; whole-cancel each leg still EXECUTABLE, the LAY first, one instruction per request; read both legs again",
       "matched": "rides to the result; nothing is hedged, exited, re-priced, replaced or retried",
       "failed": "auto-kill: KILL file, close the open, Pilot 2's own-scope kill as a child process, then the handoff",
@@ -102,12 +113,15 @@
     "max_open_worst_case_p": 2000,
     "drill": {
       "probe": "LAY 1.00 @ 1.01 plus BACK 1.00 @ 1000 on one runner",
+      "when": "only in the probe session, the first armed session after registration; before go-live the fault drills use a stand-in transport and send nothing",
+      "exempt_from": ["V13", "the passive check", "rule.selection"],
+      "records": "drill records, not PLACE records; outside the ledger and the verdict",
       "max_loss_per_race_p": 100,
       "max_races": 8,
       "ledger": "outside Pilot 2's ledger, inside the overall budget"
     },
     "website_loss_limit_per_day_p": 5000,
-    "overall_budget": "open: Yu decides at the build consent (Pilot 1 -99000p + Pilot 2 -10000p + drills -800p against 100000p)",
+    "overall_budget": "open: Yu decides at the build consent (Pilot 1 -99000p + Pilot 2 -10000p + drill probes -800p + the November 2026 manual drills -1000p = -110800p, against 100000p)",
     "separate_from_pilot_1": "Pilot 2's ledger starts at 0p; nothing of Pilot 2 enters Pilot 1's slots, pause or running total"
   },
   "placement_limits": {
@@ -122,7 +136,7 @@
     "sessions": "at most one pilot session a UTC day across both pilots; never on a day with a Pilot 1 session; arming refused while any Pilot 1, manual or Bet Angel bet of ours is open or unsettled"
   },
   "caps": {
-    "config_names": "orders.caps.<name without its unit suffix>, and orders.rules.external_exposure_tolerance, in config-p2.json",
+    "config_names": "orders.caps.<name without its unit suffix>, max_book_age_s in seconds, and orders.rules.external_exposure_tolerance, in config-p2.json",
     "external_exposure_tolerance_p": 0,
     "max_book_age_ms": 2000,
     "max_daily_loss_p": 2000,
@@ -159,7 +173,7 @@
     "unit": "one PLACE record: one market, one runner, up to two legs",
     "order": ["protocol_violation", "definitely_unsent", "void", "post_decision_removal", "measurement_unresolved", "missing_bsp", "eligible"],
     "rule": "each PLACE record ends in exactly one class; the first that applies wins; a decision with no fill is eligible and worth 0",
-    "post_decision_removal": "includes a non-runner whose reduction factor of 2.5% or more cancels unmatched lays"
+    "post_decision_removal": "includes a non-runner removal that cancels our unmatched orders (inference, to check against Betfair's Exchange Horse Racing Rules: a reduction factor of 2.5% or more does so)"
   },
   "value_at_bsp": {
     "inputs": "final matched sizes mB at price B and mL at price L",

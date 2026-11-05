@@ -147,7 +147,7 @@ HELP = {
             "Angel's orders",
     "resume": "Clear the HALT after the kill file was removed by hand; live needs --mode live --confirm-live TOKEN, "
               "then typing RESUME LIVE",
-    # RS-19's registered pilot executor (P1-08; docs/betfair-pilot-engineering.md): Yu's commands, at the Air.
+    # RS-19's registered pilot executor (P1-08; docs/betfair-pilot-engineering.md): Yu's commands, at the lab Mac.
     "pilot-register": "Live only: Yu registers the frozen RS-19 pilot contract by typing REGISTER PILOT; writes the "
                       "receipt and one note; sends no order; needs A2, A11 and A13",
     "pilot-run": "Live only: one attended RS-19 pilot session after Yu types PILOT ARM; --until HHMM is required; "

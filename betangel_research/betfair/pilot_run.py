@@ -267,7 +267,7 @@ def handoff_text(item):
     selection = item.get("selection_id") if item.get("selection_id") is not None else "unknown selection"
     market = item.get("market_id") or "unknown market"
     return (f"pilot order {who} (BACK £2.00 on {selection} in {market}) may still have an unmatched part; run "
-            f"own-scope kill on the Air, or cancel it on the Betfair website, now.")
+            f"own-scope kill on the lab Mac, or cancel it on the Betfair website, now.")
 
 
 def case_one_handoff(events, *, seen_seq, market_id):

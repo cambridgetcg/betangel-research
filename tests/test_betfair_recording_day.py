@@ -1354,11 +1354,15 @@ class RolloutDocTests(unittest.TestCase):
     def test_integration_section_9_carries_the_seal_rule(self):
         text = (REPO / "docs" / "betfair-integration.md").read_text()
         section = text[text.index("## 9. Stream recorder"):text.index("## 10.")]
-        self.assertIn("> All recordings, of any year, stay on the Air in clear until the P1 data lock. Their only "
-                      "second copy is the Air's Time Machine backup on Yu's encrypted, directly attached disk. Only "
-                      "fixed counts, codes and hashes go anywhere else. The seal applies to every copy.", section)
-        self.assertIn("> On the Air the seal is a workflow control, not access control: any process running as this "
-                      "user can read the clear recordings and the archive.", section)
+        self.assertIn("> All recordings, of any year, stay in clear on the Mac that recorded them until the P1 data "
+                      "lock, and are never copied between Macs. After the move (order-path §7), the recorder runs on "
+                      "the lab Mac (the MacBook Pro); its recordings never leave the lab Mac except to their only "
+                      "second copy, the lab Mac's encrypted local backup, which Yu sets up before the first order. The "
+                      "Air's recordings stay on the Air; their only second copy is the Air's Time Machine backup on "
+                      "Yu's encrypted, directly attached disk. Only fixed counts, codes and hashes go anywhere else. "
+                      "The seal applies to every copy.", section)
+        self.assertIn("> On each Mac the seal is a workflow control, not access control: any process running as that "
+                      "Mac's user can read the clear recordings and the archive.", section)
 
 
 if __name__ == "__main__":

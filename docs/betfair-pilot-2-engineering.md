@@ -22,8 +22,9 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
 - **What the executor may send:**
   - for one PLACE record, before the send deadline: a BACK of exactly £2.00 at the best lay minus one tick, then a LAY of exactly £2.00 at the best back plus one tick, never above 6.00. Both are LIMIT and LAPSE, one instruction per request, each with its own customer order ref;
   - whole cancels of its own legs only, named by this open's bet ids;
-  - in P2-PT3 only, the fixed drill probe (§14).
+  - in its probe session only, the fixed drill probe (§14).
 - **The BACK goes first.** If the second send fails, the leg left resting can lose £2, not £10.
+- **The one exception is the kill.** Pilot 2's own-scope kill, and so its auto-kill, cancels every open order of ours, Pilot 1's and manual ones included, as Pilot 1's kill does (gateway.py:3088-3095).
 
 ## 3. Who starts, stops and changes it
 - Commands: `plp-register`, `plp-run`, `plp-capture`, `plp-end-session` and `plp-kill`, all in cli.py, which stays the only module that imports the gateway.
@@ -31,6 +32,8 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
   - on a UTC day with a Pilot 1 session;
   - while any Pilot 1, manual or Bet Angel bet of ours is open or unsettled;
   - on battery power.
+- During a session the same checks run again at each open. A Pilot 1, manual or Bet Angel bet of ours that is open or unsettled HALTs it, as manual_bet_open_during_session does for Pilot 1 (pilot_gate.py:318-334; gateway.py:1422-1425). Sends are refused while any Pilot 1 session's window is open (pilot_gate.py:337-342).
+- Pilot 1's code is unchanged, so nothing on Pilot 1's side refuses a Pilot 1 session after a Pilot 2 session on the same UTC day. That half of "one pilot session a day" is Yu's rule.
 - It holds a caffeinate assertion tied to its pid. Yu attends, and the lid stays open.
 - Typed lines are Yu's, as in eng §3.
 
@@ -47,12 +50,13 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
   - Choice: the lowest b, then the lowest l, then the lowest selection id. A tie is never a SKIP.
   - No depth predicate: both legs rest on new, empty levels.
   - New SKIP codes: `no_runner_in_band` and `spread_out_of_band`.
-  - Why 3–4 ticks: below 3, the two inside legs land on one price, which V8 refuses (validate.py:257-268); wider spreads need V13 above 3 (validate.py:230-239).
+  - Why 3–4 ticks: at 2 ticks the two inside legs land on one price, and at 1 tick they cross; V8 refuses both (validate.py:257-268). A wider spread puts the inside BACK more than 3 ticks from the best back, which V13 at 3 refuses (validate.py:230-239, :289-290).
 - **Legs.**
   - Each leg is sent on its own fresh send book (A18, virtual prices on). It must pass A1–A19, Pilot 2's PA checks against Pilot 2's receipt, V0–V14 and V9b with V13 at most 3, R1–R13 with R13 per leg against the decision record, and the first-byte gate (eng §5).
   - Both legs are sent before the send deadline, off −240 s.
   - **Passive check, per leg.** It only refuses, never re-decides. On that leg's send book, best back < leg price < best lay. Our own resting BACK counts: it is the LAY's best lay at l − 1, and b + 1 is still inside the spread. Otherwise `leg_not_passive`: that leg is not sent, and the market is latched.
-  - **Incomplete pair.** If the BACK was sent and the LAY is not (not passive, refused, late, FAILED or UNKNOWN), the BACK is whole-cancelled at once, with KILL cases 1–4, as Pilot 1's remainder cancel does (pilot_run.py:1749-1793). The decision is recorded as `pair_incomplete`. If the BACK was not sent, nothing is sent.
+  - **Incomplete pair.** If the BACK was sent and the LAY is not (not passive, refused, late or FAILED), the BACK is whole-cancelled at once, with KILL cases 1–4, as Pilot 1's remainder cancel does (pilot_run.py:1749-1793). The decision is recorded as `pair_incomplete`. If the BACK was not sent, nothing is sent.
+  - **An unknown place outcome** on either leg triggers auto-kill (§8). An UNKNOWN LAY may be resting with £10 of liability, and an UNKNOWN BACK is neither sent nor unsent.
 
 ## 5. The first-byte gate
 Unchanged, and applied to each leg.
@@ -60,20 +64,20 @@ Unchanged, and applied to each leg.
 ## 6. Capacity, durable stops and carryover
 - One decision per market for the contract's life. R13 enforces it, as in eng §6. Every reservation uses up its market, SKIP included.
 - **One race in flight:** no reservation while any Pilot 2 leg is EXECUTABLE or unresolved.
-- **Slots:** at most 5 PLACE records per UTC day, and 10 for the contract's life. Both numbers are Yu's (the 10 is proposed).
-- **Room:** a PLACE is allowed only if (the day's worst-case equity − £10) ≥ −£20 and (the pilot's worst-case equity − £10) ≥ −£100. This is checked before the reservation and again at classification. The gateway's R10 at £20 checks the day once more (risk.py:327-348).
+- **Slots:** at most 5 PLACE records per UTC day, and 10 for the contract's life. The 5 is Yu's 2026-11-03 number; the 10 is proposed. Both are Yu's to confirm at the build consent.
+- **Room:** a PLACE is allowed only if (the day's worst-case equity − £10) ≥ −£20 and (the pilot's worst-case equity − £10) ≥ −£100. This is checked before the reservation and again at classification. The gateway's R10 at £20 checks the day once more (risk.py:327-348, :378-379).
 - **SKIP streak:** five live-key SKIPs in a row end the session (F46).
 - Stops are folded from the journal, as in eng §6. Carryover is keyed by contract p2-lp's sha256.
 
 ## 7. Registration and identity
-- `plp-register` writes Pilot 2's receipt in `STATE_ROOT/profiles/default/pilot-lp/`. It binds the contract sha256, the code commit and tree, the code-hash digest and config-p2.json's sha256. Pilot 2's daily arming token is keyed by config-p2.json's sha256 (arming.py:82), so arming one pilot never arms the other.
+- `plp-register` writes Pilot 2's receipt in `STATE_ROOT/profiles/default/pilot-lp/`. It binds the contract sha256, the code commit and tree, the code-hash digest and config-p2.json's sha256. Pilot 2's daily arming token is keyed by config-p2.json's sha256 (arming.py:92-96), so arming one pilot never arms the other.
 - **What Pilot 1's unchanged code does with Pilot 2's records.** Read on main; to be pinned by the cross-version check before PR5 merges (§14).
   - Pilot 1's fold handles only notes keyed `pilot` (pilot.py:1941). So its "another contract" refusals (pilot.py:2010-2016; pilot_run.py:758-762; pilot_gate.py:291-306) never fire on `pilot_lp` notes.
   - An intent whose source is not `pilot` sets a review stop if a Pilot 1 session is armed, and is otherwise ignored (pilot.py:2376-2383).
   - An open or unsettled bet whose source is not `pilot` halts a Pilot 1 placement open as `manual_bet_open_during_session` (pilot_gate.py:318-334; gateway.py:1422-1425). So an unsettled Pilot 2 bet stops Pilot 1 rather than mixing with it.
   - Pilot 1's own-scope kill sweeps Pilot 2's legs through journal bet ids and the refs it has seen (gateway.py:3095). With an untrusted journal it sweeps by Pilot 1's config refs only (gateway.py:3088-3091).
   - Journal payloads are validated on append only (journal.py:199-219, :296), so Pilot 1's code can read `pilot_lp` intents (*Inference*).
-- **Recording admission.** The executor holds one recording admission for its whole session, as `pilot-run` does (pilot_run.py:61, :453-461), so both legs rest under it. A typed live `place` instead takes a fresh admission and is refused while one is held (cli.py:1518-1527; admission.py:667-670). That is why the attended manual drills of November 2026 rest one order at a time ([plan](betfair-pilot-2-plan.md), Before Pilot 2).
+- **Recording admission.** The executor holds one recording admission for its whole session, as `pilot-run` does (pilot_run.py:1005-1015, :453-468), so both legs rest under it. A typed live `place` instead takes a fresh admission and is refused while one is held (cli.py:1518-1527; admission.py:667-670), and release is refused while any order is still open (admission.py:410-435). That is why the attended manual drills of November 2026 rest one order at a time ([plan](betfair-pilot-2-plan.md), Before Pilot 2).
 - **Code identity.** code_hashes covers every betangel_research/*.py and betangel_research/betfair/*.py file (receipts.py:121-125). Pilot 2's code therefore changes the digest of any later Pilot 1 checkout taken from main. Hence the merge order in §14.
 - **Fallback.** If Astra rules the separate record name unsafe, an explicit tolerance in Pilot 1's fold replaces it. It would merge after Pilot 1's PT4, with Pilot 1 re-registering (eng §14) and a fresh yes from Yu.
 
@@ -85,18 +89,19 @@ Unchanged, and applied to each leg.
   4. Any other event appended by another process, such as a HALT or a stop: pull.
   5. The stop flag (SIGINT, SIGTERM or SIGHUP; pilot_run.py:141): pull. Pilot 1 prints a handoff after a submit (pilot_run.py:1913-1982); Pilot 2 pulls instead.
   6. Wall and monotonic clocks more than 2 s apart (a sleep or a clock jump): pull.
-  7. Off −60 s: the scheduled cancel.
+  7. Off −60 s, by the PLACE record's off: the scheduled cancel.
+  8. The wall clock already past the cancel point, for example after a SIGSTOP or a missed poll, which the drift check cannot see: pull at once. At or after the off, treat it as a failed cancel.
 - **A pull** reads both legs by bet id, whole-cancels each leg still EXECUTABLE (the LAY first, one instruction per request), reads both legs again, and journals a session stop. The scheduled cancel does the same but lets the session go on.
   - A leg that filled while resting is resolved by these reads instead of being left UNKNOWN (lifecycle.py:283-297).
   - Matched parts ride to the result. Nothing is hedged, exited, re-priced, replaced or retried.
-  - Why −60 s: a failed cancel still leaves the kill's re-sweeps at T0 + 20 s and + 35 s (killswitch.py:43) before the off, and it avoids the last minute, where late fills are most likely to be informed ([lp-study](lp-study.md), What it cannot show).
+  - Why −60 s: a failed cancel still leaves the kill's re-sweeps at T0 + 20 s and + 35 s (killswitch.py:43) before the off. *Inference:* it also avoids the last minute, where late fills are most likely to be informed ([lp-study](lp-study.md), What it cannot show).
 - **Failed cancel** (refused, an error, a timeout, an UNKNOWN the second read does not resolve, or a leg still EXECUTABLE): auto-kill.
   1. Write the KILL file.
   2. Close the open, which releases the lock.
   3. Run Pilot 2's own-scope kill as a child process. It takes no lock, sweeps refs and bet ids, and re-sweeps at T0 + 20 s and + 35 s. Meanwhile the executor makes no Betfair call.
   4. Print the handoff with the kill's result, and end the session. The kill journals a HALT, so Yu types RESUME LIVE before either pilot places again.
 - **Suspended market at the cancel point.** *Inference, to check against Betfair's documentation:* cancels are refused while a market is suspended, and nothing can match then. The code is `cancel_market_suspended`, with no auto-kill. The executor reads the market status and our legs by bet id every 5 s. If the market reopens before the off, it sends one more whole cancel. If that is refused, or the market turns in play, LAPSE acts. The handoff is printed meanwhile, and these cases are counted apart.
-- **Process gone** (SIGKILL, a crash, power loss, or a sleep with no wake): nothing on the Air cancels. The legs rest until the off, at most about 4–5 minutes, and lapse. A leg can still match until then, bounded at £10. Yu runs `plp-end-session`, which prints both handoffs, then Pilot 2's kill or the phone app. Crash recovery hands off any leg still EXECUTABLE, and arming refuses until it is resolved, as pilot_run.py:232-261 does for Pilot 1.
+- **Process gone** (SIGKILL, a crash, power loss, or a sleep with no wake): nothing on the Air cancels. The legs rest until the off, at most about 4–5 minutes, and lapse. A leg can still match until then, bounded at £10. Yu runs `plp-end-session`, which prints both handoffs, then Pilot 2's kill or the phone app. Crash recovery hands off any leg still EXECUTABLE, and arming refuses until it is resolved, as Pilot 1's does (pilot_run.py:232-261, :897-899).
 - **Network drop:** the cancel fails, so auto-kill runs. The kill fails too, giving `kill_incomplete` and a HALT. The handoff then says to cancel in the Betfair phone app over mobile data now, or LAPSE acts at the off.
 - **Login failure with legs resting:** auto-kill. The emergency login skips the success cap but not the failure cap.
 - **The lock.** During the rest a typed `cancel` waits order_deadline_s + 5 s and then fails with `lock_busy` (eng §8). The arming banner names the stops that work: Ctrl-C, the KILL file, Pilot 2's kill (lock-free), and the website or app.
@@ -105,7 +110,7 @@ Unchanged, and applied to each leg.
 - **Pilot 2's kill** sweeps `p1-fav-t5`, `p2-lp` and `bar-manual` from code constants plus the journal, so it finds both pilots' orders even when the journal cannot be read.
 
 ## 9. Caps in config-p2.json
-Proposed values. The £ ones are Yu's, and all are inside constants.py's ceilings.
+Proposed values. The £ ones are derived from Yu's money numbers and are Yu's to set at the build consent. All are inside constants.py's ceilings.
 
 | Cap | Value | Why |
 |---|---|---|
@@ -119,7 +124,7 @@ Proposed values. The £ ones are Yu's, and all are inside constants.py's ceiling
 | Instructions per request | 1 | as Pilot 1 |
 | max_price_deviation_ticks (V13) | 3 | admits a 4-tick spread's legs and nothing wider; Pilot 1's stays 2 |
 | max_book_age_s | 2.0 s | as Pilot 1 |
-| max_minutes_before_off | 10 | covers −540 s with room |
+| max_minutes_before_off | 10 | as Pilot 1; V9b checks it at each leg's send |
 
 Pilot 1's config.json is unchanged.
 
@@ -137,7 +142,7 @@ For safety only. It is separate from the R-rules and can only bring a stop earli
 
 ## 11. Final execution, classes and value
 - **Per leg,** Pilot 1's final execution record is unchanged: C and L reads per bet id, exact Decimal agreement, deadline off + 7 days (eng §11). C rows also keep placedDate and matchedDate (*Inference*: listCurrentOrders returns them). BSP is frozen by Pilot 1's rule.
-- **Classes per decision,** the first that applies: protocol_violation; definitely_unsent (no leg sent); void; post_decision_removal, including a non-runner whose reduction factor of 2.5% or more cancels unmatched lays; measurement_unresolved (any sent leg); missing_bsp; eligible.
+- **Classes per decision,** the first that applies: protocol_violation; definitely_unsent (no leg sent); void; post_decision_removal, including a non-runner removal that cancels our unmatched orders (*Inference, to check against Betfair's Exchange Horse Racing Rules:* a reduction factor of 2.5% or more does so); measurement_unresolved (any sent leg); missing_bsp; eligible.
 - A decision with no fill is eligible and worth 0. Pilot 1's unmatched class and its 80% fill-rate gate do not apply: they would make any liquidity pilot INVALID by design.
 - **Value at BSP, reported and never deciding.** With final matched sizes mB at price B and mL at price L: if the runner wins, net = mB(B − 1) − mL(L − 1); if it loses, net = mL − mB. 2% comes off whichever net is positive. Value = p·net_win + (1 − p)·net_lose, with p = 1/BSP.
 
@@ -147,7 +152,7 @@ For safety only. It is separate from the R-rules and can only bring a stop earli
   - FAIL, if any of these happens: a leg ends measurement_unresolved; a sent leg is still EXECUTABLE at the off, so LAPSE removes it (cancels refused because the market was suspended are counted apart); more than one PLACE record needed an auto-kill or a handoff to Yu, suspended-market cases apart.
   - PASS: 10 PLACE records with none of the above.
   - INCOMPLETE: placing ended earlier with none of the above, reported as "no failure in k decisions", never as PASS.
-- **Descriptive tables,** registered before the first PLACE record, computed once after the data lock and never deciding. Groups under 30 values are listed without intervals. P2-PT4 decisions are shown apart.
+- **Descriptive tables,** registered before the first PLACE record, computed once after the data lock and never deciding. Groups under 30 values are listed without intervals; with the few decisions expected, D1–D4 will be short lists, not estimates. P2-PT4 decisions are shown apart.
   - D1, fills: per leg none, partial or full; inventory state (no fill, LAY only, BACK only, round trip, partial, pair_incomplete); legs matched in their own place report (taker fills); shown beside lp-v1's modelled fills at off −5 min and labelled not like for like.
   - D2, time to fill: matchedDate − placedDate.
   - D3, adverse selection with no read after the decision: per sent leg, m = the move from the decision-book mid to BSP against the leg, in points; adverse selection = mean m over filled legs minus mean m over unfilled sent legs on the same side.
@@ -158,12 +163,12 @@ For safety only. It is separate from the R-rules and can only bring a stop earli
 - **Data lock and publication** as in eng §12. Nothing enters Git without Yu's approval of the exact fields.
 
 ## 13. Still forbidden
-eng §13's bans stay, except that this executor may send lays. Still: more than one instruction per request (cancels included), a partial cancel, Heartbeat, PERSIST, BSP orders, a second decision in a market, a replace, any action on Pilot 1's or manual bets, and agents typing any line.
+eng §13's bans stay, except that this executor may send lays. Still: more than one instruction per request in the executor's own sends and cancels (the kill's existing sweep, killswitch.py:182-185, is the exception), a partial cancel, Heartbeat, PERSIST, BSP orders, a second decision in a market, a replace, any action on Pilot 1's or manual bets, and agents typing any line.
 
 ## 14. Stages, gates and tests
-- **Merge order (Yu, 2026-11-04).**
+- **Merge order (Yu, 2026-11-04, relayed: "2.是").**
   - No Pilot 2 code merges into betangel_research/ before Astra has accepted Pilot 1's go-live commit.
-  - The order path (PR5) merges only after Pilot 1's PT4 receipt exists, so the shared placement path is first proven live on Pilot 1's simpler shape.
+  - The order path (PR5) merges only after Pilot 1's PT4 receipt exists, so the shared placement path is first proven live on Pilot 1's simpler shape, and after Gate B if PR3 exists.
   - Every Pilot 1 test passes unchanged at every Pilot 2 commit, and contract p1's sha256 (4dbccb5a…) is unchanged.
 - **The cross-version check,** a harness run before PR5 merges: Pilot 1's registered commit folds a journal written by Pilot 2's code to the identical Pilot 1 state, with the expected review stop and HALT.
 - **PR5's reservation pre-check** models the pair at the contract bound, a LAY £2 @ 6.0 plus a BACK £2. Today's evaluate_pilot_reservation models one BACK (risk.py:544-566).
@@ -172,9 +177,10 @@ eng §13's bans stay, except that this executor may send lays. Still: more than 
   - PR5: eng §14's list rerun for two legs; the LAY refused, not passive, late, FAILED or UNKNOWN after the BACK was sent, so the BACK is cancelled at once; the spread narrowing between decision and send; R5 at 6.00 and 6.20; a cancel naming another open's, Pilot 1's or a manual bet id refused; a fill racing the cancel resolved through reconcile, with R3 blocking placing meanwhile; arming Pilot 2 never arms Pilot 1.
   - PR6: Ctrl-C while idle, mid-send and while resting; a KILL file during the rest; case 4's 30 s wait; a network error at the cancel triggering one auto-kill; no Betfair call during the rest; the pre-filter refusing a non-delayed book; arming refused on battery, on a Pilot 1 day, or with a Pilot 1 bet open; 5 live SKIPs ending the session.
   - PR7: exact C/L agreement per leg; partial fills; the lay's profit sign and basis; commission per market; the verdict identical with and without the tables.
-  - PR8: the probe shape pinned (any other price, size or side refused); a dry day that sends nothing.
+  - PR8: the probe shape pinned (any other price, size or side refused); a dry day that sends nothing; the stand-in transport asserting zero order calls in P2-PT3.
 - **P2-PT2:** a delayed-key dry day of the scheduler, pre-filter and predicates, with no gateway and no order. It produces a counts receipt and is a pipeline test, not a rate estimate.
-- **P2-PT3, live drills with Yu present,** using only the fixed probe (LAY £1.00 @ 1.01 plus BACK £1.00 @ 1000), each with a receipt: Ctrl-C, the KILL file and Pilot 2's kill during the rest; the scheduled cancel; a network cut at the cancel point; SIGKILL, then Yu's kill; a sleep and a clock jump. A leg fully matched before the cancel, and a market suspended at the cancel point, are tested offline only.
+- **P2-PT3, before go-live, with no live order:** fault drills against a stand-in transport that sends nothing, each with a receipt: Ctrl-C, the KILL file and Pilot 2's kill during the rest; the scheduled cancel; a network cut at the cancel point; SIGKILL, then Yu's kill; SIGSTOP past the cancel point; a sleep and a clock jump. A leg fully matched before the cancel, and a market suspended at the cancel point, are tested offline only.
+- **The probe session,** the first armed session after registration: the same faults injected by Yu on real resting orders, using only the fixed probe (LAY £1.00 @ 1.01 plus BACK £1.00 @ 1000), each with a receipt. The probe is exempt from V13, the passive check and the runner rule, and its orders are drill records outside the ledger and the verdict.
 - **P2-PT4:** the first armed sessions, at most 5 decisions each, until a P2-PT4 receipt shows a matched, settled LAY checked on the website.
 
 ## 15. How it ends

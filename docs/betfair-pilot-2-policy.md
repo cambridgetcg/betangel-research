@@ -8,7 +8,7 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
 - **Companions.** The [engineering note](betfair-pilot-2-engineering.md) says how the code keeps these promises. The [plan](betfair-pilot-2-plan.md) gives the reasons for each value, the stages and the timeline. The draft contract is [research/pilots/p2-lp.json](../research/pilots/p2-lp.json), and the [G1 follow-up](betfair-pilot-2-g1-question.md) is the question for Yu to send to Betfair. This page wins on any difference.
 
 ## What it allows
-One registered Pilot 2 contract may place small live orders through the existing order gateway. It runs on Yu's Air, only in sessions Yu starts and watches. In one race it sends one £2 BACK and one £2 LAY on one runner, both priced inside the spread so they wait to be filled. It cancels whatever is still unmatched 60 seconds before the off.
+One registered Pilot 2 contract may place small live orders through the existing order gateway. It runs on the lab Mac (the MacBook Pro), only in sessions Yu starts and watches. Yu chose on 2026-11-05 to move all live work there from the Air, so only one Mac trades ([plan](betfair-pilot-2-plan.md), Decided). In one race it sends one £2 BACK and one £2 LAY on one runner, both priced inside the spread so they wait to be filled. It cancels whatever is still unmatched 60 seconds before the off.
 
 It runs in Pilot 1's Betfair profile and live journal, because A15 allows one profile per account. Inside them it is a separate lineage, with its own contract, records, counts, ledger, stops, config file and checkout. Nothing of Pilot 2 enters Pilot 1's 495 bets, its −£150 pause or its running total.
 
@@ -53,15 +53,17 @@ Yu chose the first five numbers on 2026-11-03, in a question that offered them f
 - **Losses pay no commission.** Commission is Basic 2% on each market's net, checked per market and never per bet, because both orders of one decision are in one market.
 
 ## Who does what
-- Only Yu starts a session, in person at the Air terminal, and stays for the whole session. There is at most one pilot session a UTC day across both pilots.
+- Only Yu starts a session, in person at the lab Mac's own keyboard, never over SSH, and stays for the whole session. There is at most one pilot session a UTC day across both pilots.
   - Pilot 2's code refuses to arm on a day with a Pilot 1 session, and refuses to send while a Pilot 1 session's window is open.
   - Pilot 1's code is unchanged and does not know about Pilot 2's days. So not starting Pilot 1 after a Pilot 2 session on the same day is Yu's rule on Pilot 1's side.
-- Pilot 2 arms only when no Pilot 1 bet, manual bet or Bet Angel bet of ours is open or unsettled. If the code finds one during a session, it halts. The Air is on mains power with the lid open, and the Betfair phone app is logged in as the stop outside the Air.
-- Anyone on the Air can stop it with Ctrl-C, the KILL file or Pilot 2's own-scope kill. From anywhere else, use the Betfair website or phone app.
+- Pilot 2 arms only when no Pilot 1 bet, manual bet or Bet Angel bet of ours is open or unsettled. If the code finds one during a session, it halts. The lab Mac is on mains power with the lid open, and the Betfair phone app is logged in as the stop away from the lab Mac. Nothing heavy (backtests, model studies, large downloads) runs on the lab Mac while a session is armed or an order rests (Yu's lab rule, 2026-11-05).
+- Anyone at the lab Mac can stop it with Ctrl-C, the KILL file or Pilot 2's own-scope kill. Under Yu's lab rules (below), lab-Claude runs `kill` only with Yu's OK, and any other agent may only create the KILL file. The Betfair website and phone app stop it from anywhere.
+  - From the Air over SSH, creating the lab Mac's KILL file stops new sends but itself cancels nothing; a running executor pulls its own resting legs when it sees the file ([note](betfair-pilot-2-engineering.md) §8). A kill run on the Air engages only the Air's KILL file, so the lab Mac can keep sending. While the Air still holds credentials, that kill's sweep reads the account by the Air's strategy refs, so it may also cancel the lab Mac's resting legs if they carry one of them (*Inference*: order-path §9, step 8; config.py:444-449; killswitch.py:134-160; gateway.py:3095).
   - While orders rest, a typed `cancel` waits for the gateway lock and fails. The session's start banner names the stops that work.
   - Pilot 2's kill, including the automatic one after a failed cancel or an unknown place outcome, cancels every open order of ours, Pilot 1's and manual ones included, as Pilot 1's kill does.
-- Every line the code asks a person to type belongs to Yu, as on RS-19: register, arm, settle a market, resume and an account-wide kill. Agents and scripts never type one and never supply a terminal for one.
+- Every line the code asks a person to type belongs to Yu, as on RS-19: register, arm, settle a market, resume and an account-wide kill. Yu types each one at the lab Mac's own keyboard, never over SSH (Yu's lab rule, 2026-11-05). Agents and scripts never type one and never supply a terminal for one.
 - Agents build, test, review and summarise. The lab may write Pilot 2's pages and code as PRs, Astra reviews and Yu merges. Yu chose "Yes, PRs only" on 2026-11-03.
+- Yu's lab rules of 2026-11-05 also bind: agents never arm; lab-Claude runs only the commands the repo's documents give to an agent, each time with Yu's OK; other agents on the lab Mac, and the Air's Claude over SSH, run no live command but may create the KILL file; the Air runs no live command; no agent reads the state root, recordings, receipts or certificate directory; and nobody runs `git init` or clones a repo into ~, ~/Library or ~/.config, which would make every live command refuse, while the kill would still engage the KILL file but cancel nothing (arming.py:62, :278; config.py:246, :294-295; cli.py:2079).
 - Only Yu approves a new contract or changes who may type a line.
 
 ## What it relaxes
@@ -125,7 +127,7 @@ Not weakened: Pilot 1's contract, config, caps, its one BACK per race, its immed
   - Yu ends the pilot in writing (stopping one session does not end it);
   - something this page forbids happens.
 - Stopping early is always allowed. It gives INCOMPLETE ("no failure in k decisions"), never a pass.
-- After placing stops, open orders are cancelled or settled as usual. The verdict and the tables run once on the Air, after the data lock, and Astra recomputes them there. Nothing enters Git without Yu's approval of the exact fields.
+- After placing stops, open orders are cancelled or settled as usual. The verdict and the tables run once on the lab Mac, after the data lock. Where Astra recomputes them, and how Astra reaches the lab Mac's journal, are open for Yu ([plan](betfair-pilot-2-plan.md), Open for Yu). Nothing enters Git without Yu's approval of the exact fields.
 - The lines added to Pilot 1's documents at Pilot 2's go-live are removed when Pilot 2 ends, except where Pilot 1 still needs them.
 
 ## Changes to Pilot 1's documents at Pilot 2's go-live

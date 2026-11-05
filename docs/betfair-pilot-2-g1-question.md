@@ -1,6 +1,6 @@
 # G1 follow-up for Pilot 2 (draft for Yu)
 
-Status: draft, not sent. Written by lab-Claude on 2026-11-05 for the [Pilot 2 page](betfair-pilot-2-policy.md). The lab never contacts Betfair: Yu sends it, or decides not to. It contains no account name, ID, key, IP address or secret.
+Status: draft, not sent. Written by lab-Claude on 2026-11-05 for the [Pilot 2 page](betfair-pilot-2-policy.md). Yu sends it, or decides not to; lab-Claude never contacts Betfair Developer Support. It contains no account name, ID, key, IP address or secret.
 
 ## Note for Yu
 - **Why a follow-up.** The first G1 question, drafted for Pilot 1, described only Pilot 1's shape: back the favourite, one bet per race, any unmatched part cancelled at once. Whatever Betfair answered to it, Pilot 2 is a new shape, with resting lays as well as backs, cancelled 60 seconds before the off. So the page's go-live consent needs Betfair's answer to this follow-up, or Yu's recorded decision to go ahead without one.
@@ -8,7 +8,7 @@ Status: draft, not sent. Written by lab-Claude on 2026-11-05 for the [Pilot 2 pa
 - **Numbers in the message.** All of them wait for Yu's build consent: £2, the lay cap of 6.0 and "5 markets a day" are Yu's 2026-11-03 numbers, to be confirmed, and "10 in all" and "ending by 30 June 2027" are proposals. If Yu changes any, change the message before sending it.
 - **The form may ask for your App Key or account details.** Those go in the form's own fields, at your discretion, never in the message text and never in any repo copy.
 - **What counts as an answer** is Yu's to decide. *Lab suggestion:* if Betfair says any part is not allowed, nothing goes live until Yu decides again. A written reply that answers Q1 and Q3 directly counts. A reply that only points to the general read-only article counts as no answer for Q2.
-- **Keep the reply off the repo,** on the Air, because it may quote account details. Any repo record holds only the date and the gist.
+- **Keep the reply off the repo,** outside every Git clone, because it may quote account details. Which Mac keeps it is Yu's choice; on the lab Mac (the MacBook Pro) every agent runs as the same user, and Yu's lab rule protects only the state root, recordings, receipts and certificate directory. Any repo record holds only the date and the gist.
 
 ---
 

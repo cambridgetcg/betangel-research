@@ -191,7 +191,11 @@
         "- [Betfair client setup report：離線測試、限制同 merge gate](reports/betfair-setup-2026-10-10.md)",
         "- [Betfair RS-19（proposed）：一頁原則、Yu 嘅錢數同三次同意](docs/betfair-pilot-policy.md)",
         "- [Betfair RS-19 engineering note（proposed）：pilot executor 點樣守住 RS-19](docs/betfair-pilot-engineering.md)",
-        "- [Betfair Pilot 1 plan（proposed）：P1-FAV-T5、樣本同判決、工作同時間表](docs/betfair-pilot-1-plan.md)"
+        "- [Betfair Pilot 1 plan（proposed）：P1-FAV-T5、樣本同判決、工作同時間表](docs/betfair-pilot-1-plan.md)",
+        "- [Betfair Pilot 2 page（proposed）：P2-LP 兩邊掛單、Yu 嘅錢數、放寬咗啲乜同三次同意](docs/betfair-pilot-2-policy.md)",
+        "- [Betfair Pilot 2 engineering note（proposed）：P2-LP executor 點樣守住 Pilot 2 page](docs/betfair-pilot-2-engineering.md)",
+        "- [Betfair Pilot 2 plan（proposed）：已決定、數值理由、階段同時間表](docs/betfair-pilot-2-plan.md)",
+        "- [Betfair Pilot 2 G1 follow-up（draft）：畀 Yu 寄去 Betfair 嘅問題](docs/betfair-pilot-2-g1-question.md)"
       ],
       "local_verification_heading": "## Local verification",
       "local_verification_line": "Betfair client: **all offline tests passed** with `BETANGEL_BETFAIR_FORBID_NETWORK=1` (counts, the property-test run and the log sha256 are in the [setup report](reports/betfair-setup-2026-10-10.md)). No credentials are configured and no live connection or order has been made.",

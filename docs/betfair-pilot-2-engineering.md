@@ -22,7 +22,7 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
 - **What the executor may send:**
   - for one PLACE record, before the send deadline: a BACK of exactly £2.00 at the best lay minus one tick, then a LAY of exactly £2.00 at the best back plus one tick, never above 6.00. Both are LIMIT and LAPSE, one instruction per request, each with its own customer order ref;
   - whole cancels of its own legs only, named by this open's bet ids;
-  - in its probe session only, the fixed drill probe (§14).
+  - in its probe sessions only, the fixed drill probe (§14).
 - **The BACK goes first.** If the second send fails, the leg left resting can lose £2, not £10.
 - **The one exception is the kill.** Pilot 2's own-scope kill, and so its auto-kill, cancels every open order of ours, Pilot 1's and manual ones included, as Pilot 1's kill does (gateway.py:3088-3095).
 
@@ -32,7 +32,7 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
   - on a UTC day with a Pilot 1 session;
   - while any Pilot 1, manual or Bet Angel bet of ours is open or unsettled;
   - on battery power.
-- During a session the same checks run again at each open. A Pilot 1, manual or Bet Angel bet of ours that is open or unsettled HALTs it, as manual_bet_open_during_session does for Pilot 1 (pilot_gate.py:318-334; gateway.py:1422-1425). Sends are refused while any Pilot 1 session's window is open (pilot_gate.py:337-342).
+- During a session the same checks run again at each open. A Pilot 1, manual or Bet Angel bet of ours that is open or unsettled HALTs it, as manual_bet_open_during_session does for Pilot 1 (pilot_gate.py:318-334; gateway.py:1422-1425). Sends are refused while any Pilot 1 session's window is open (pilot_gate.py:337-343).
 - Pilot 1's code is unchanged, so nothing on Pilot 1's side refuses a Pilot 1 session after a Pilot 2 session on the same UTC day. That half of "one pilot session a day" is Yu's rule.
 - It holds a caffeinate assertion tied to its pid. Yu attends, and the lid stays open.
 - Typed lines are Yu's, as in eng §3.
@@ -89,8 +89,8 @@ Unchanged, and applied to each leg.
   4. Any other event appended by another process, such as a HALT or a stop: pull.
   5. The stop flag (SIGINT, SIGTERM or SIGHUP; pilot_run.py:141): pull. Pilot 1 prints a handoff after a submit (pilot_run.py:1913-1982); Pilot 2 pulls instead.
   6. Wall and monotonic clocks more than 2 s apart (a sleep or a clock jump): pull.
-  7. Off −60 s, by the PLACE record's off: the scheduled cancel.
-  8. The wall clock already past the cancel point, for example after a SIGSTOP or a missed poll, which the drift check cannot see: pull at once. At or after the off, treat it as a failed cancel.
+  7. The wall clock more than one poll past the cancel point, for example after a SIGSTOP, which the drift check cannot see: pull at once. At or after the off, treat it as a failed cancel.
+  8. Off −60 s, by the PLACE record's off: the scheduled cancel.
 - **A pull** reads both legs by bet id, whole-cancels each leg still EXECUTABLE (the LAY first, one instruction per request), reads both legs again, and journals a session stop. The scheduled cancel does the same but lets the session go on.
   - A leg that filled while resting is resolved by these reads instead of being left UNKNOWN (lifecycle.py:283-297).
   - Matched parts ride to the result. Nothing is hedged, exited, re-priced, replaced or retried.
@@ -163,7 +163,7 @@ For safety only. It is separate from the R-rules and can only bring a stop earli
 - **Data lock and publication** as in eng §12. Nothing enters Git without Yu's approval of the exact fields.
 
 ## 13. Still forbidden
-eng §13's bans stay, except that this executor may send lays. Still: more than one instruction per request in the executor's own sends and cancels (the kill's existing sweep, killswitch.py:182-185, is the exception), a partial cancel, Heartbeat, PERSIST, BSP orders, a second decision in a market, a replace, any action on Pilot 1's or manual bets, and agents typing any line.
+eng §13's bans stay, except that this executor may send lays. Still: more than one instruction per request in the executor's own sends and cancels (the kill's existing sweep, killswitch.py:182-185, is the exception), a partial cancel, Heartbeat, PERSIST, BSP orders, a second decision in a market, a replace, any action on Pilot 1's or manual bets other than the kill's sweep of all our refs (§2), and agents typing any line.
 
 ## 14. Stages, gates and tests
 - **Merge order (Yu, 2026-11-04, relayed: "2.是").**
@@ -174,14 +174,15 @@ eng §13's bans stay, except that this executor may send lays. Still: more than 
 - **PR5's reservation pre-check** models the pair at the contract bound, a LAY £2 @ 6.0 plus a BACK £2. Today's evaluate_pilot_reservation models one BACK (risk.py:544-566).
 - **Adversarial tests,** by stage:
   - PR4: each predicate left out in turn; edges at 1.49/1.50/5.90/6.00; 2-, 3-, 4- and 5-tick spreads; the tie order; the passive check with our own BACK resting; room at −£10.00 and −£10.01; the 11th PLACE refused; the pinned ledger examples; the verdict truth table; restart determinism.
-  - PR5: eng §14's list rerun for two legs; the LAY refused, not passive, late, FAILED or UNKNOWN after the BACK was sent, so the BACK is cancelled at once; the spread narrowing between decision and send; R5 at 6.00 and 6.20; a cancel naming another open's, Pilot 1's or a manual bet id refused; a fill racing the cancel resolved through reconcile, with R3 blocking placing meanwhile; arming Pilot 2 never arms Pilot 1.
-  - PR6: Ctrl-C while idle, mid-send and while resting; a KILL file during the rest; case 4's 30 s wait; a network error at the cancel triggering one auto-kill; no Betfair call during the rest; the pre-filter refusing a non-delayed book; arming refused on battery, on a Pilot 1 day, or with a Pilot 1 bet open; 5 live SKIPs ending the session.
+  - PR5: eng §14's list rerun for two legs; the LAY refused, not passive, late or FAILED after the BACK was sent, so the BACK is cancelled at once; an UNKNOWN place outcome on either leg triggering one auto-kill; a Pilot 1, manual or Bet Angel bet open at a Pilot 2 open HALTing it; sends refused while a Pilot 1 session's window is open; probes bound by R13 to their drill record; the spread narrowing between decision and send; R5 at 6.00 and 6.20; a cancel naming another open's, Pilot 1's or a manual bet id refused; a fill racing the cancel resolved through reconcile, with R3 blocking placing meanwhile; arming Pilot 2 never arms Pilot 1.
+  - PR6: Ctrl-C while idle, mid-send and while resting; a KILL file during the rest; case 4's 30 s wait; a wake more than one poll past the cancel point pulling at once, and at or after the off counting as a failed cancel; a network error at the cancel triggering one auto-kill; no Betfair call during the rest; the pre-filter refusing a non-delayed book; arming refused on battery, on a Pilot 1 day, or with a Pilot 1 bet open; 5 live SKIPs ending the session.
   - PR7: exact C/L agreement per leg; partial fills; the lay's profit sign and basis; commission per market; the verdict identical with and without the tables.
   - PR8: the probe shape pinned (any other price, size or side refused); a dry day that sends nothing; the stand-in transport asserting zero order calls in P2-PT3.
 - **P2-PT2:** a delayed-key dry day of the scheduler, pre-filter and predicates, with no gateway and no order. It produces a counts receipt and is a pipeline test, not a rate estimate.
-- **P2-PT3, before go-live, with no live order:** fault drills against a stand-in transport that sends nothing, each with a receipt: Ctrl-C, the KILL file and Pilot 2's kill during the rest; the scheduled cancel; a network cut at the cancel point; SIGKILL, then Yu's kill; SIGSTOP past the cancel point; a sleep and a clock jump. A leg fully matched before the cancel, and a market suspended at the cancel point, are tested offline only.
-- **The probe session,** the first armed session after registration: the same faults injected by Yu on real resting orders, using only the fixed probe (LAY £1.00 @ 1.01 plus BACK £1.00 @ 1000), each with a receipt. The probe is exempt from V13, the passive check and the runner rule, and its orders are drill records outside the ledger and the verdict.
-- **P2-PT4:** the first armed sessions, at most 5 decisions each, until a P2-PT4 receipt shows a matched, settled LAY checked on the website.
+- **P2-PT3, before go-live, with no live order:** the eight fault drills, each with a receipt: the scheduled cancel; Ctrl-C; the KILL file; Pilot 2's kill; a network cut at the cancel point; SIGKILL, then Yu's kill; SIGSTOP past the cancel point; a sleep or a clock jump. They run against a stand-in transport that sends nothing, in a scratch STATE_ROOT with its own journal and KILL file, no Keychain and no network, and the kill in them goes to the stand-in too, so nothing touches Pilot 1's live state. A leg fully matched before the cancel, and a market suspended at the cancel point, are tested offline only.
+- **The probe sessions,** the first armed sessions after registration: one drill race each, with Yu injecting one of the eight faults on real resting orders, using only the fixed probe (LAY £1.00 @ 1.01 plus BACK £1.00 @ 1000), each with a receipt. Most faults end the session, so this takes up to 8 sessions, each on a day with no Pilot 1 session; one race is two orders, inside the order caps. The probe is exempt from V13, the passive check and the runner rule. R13 binds each probe to its drill record instead of a decision record, a drill race uses up its market, and its orders are outside the ledger and the verdict.
+- **No PLACE record** is made until every probe drill has a passing receipt. A failed drill stops Pilot 2 until Astra has reviewed it and Yu decides again.
+- **P2-PT4:** the armed sessions after the probe sessions, at most 5 decisions each, until a P2-PT4 receipt shows a matched, settled LAY checked on the website.
 
 ## 15. How it ends
 As on the page. Then the data lock (eng §12). The verdict and the tables run once on the Air, in the terminal, and Astra recomputes them there.

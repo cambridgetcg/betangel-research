@@ -17,6 +17,7 @@
     "money.max_open_worst_case_p",
     "money.drill",
     "money.overall_budget",
+    "placement_limits.counts",
     "placement_limits.place_records_per_utc_day",
     "placement_limits.lifetime_place_records",
     "placement_limits.place_records_per_pt4_session",
@@ -92,7 +93,7 @@
     "cancel": {
       "offset_s": -60,
       "off": "the PLACE record's off",
-      "late": "a process that finds the wall clock past the cancel point pulls at once; at or after the off it is a failed cancel",
+      "late": "a process that finds the wall clock more than one poll past the cancel point pulls at once; at or after the off it is a failed cancel",
       "procedure": "read both legs by bet id; whole-cancel each leg still EXECUTABLE, the LAY first, one instruction per request; read both legs again",
       "matched": "rides to the result; nothing is hedged, exited, re-priced, replaced or retried",
       "failed": "auto-kill: KILL file, close the open, Pilot 2's own-scope kill as a child process, then the handoff",
@@ -113,9 +114,12 @@
     "max_open_worst_case_p": 2000,
     "drill": {
       "probe": "LAY 1.00 @ 1.01 plus BACK 1.00 @ 1000 on one runner",
-      "when": "only in the probe session, the first armed session after registration; before go-live the fault drills use a stand-in transport and send nothing",
+      "when": "only in the probe sessions, the first armed sessions after registration, one drill race each; before go-live the same faults run against a stand-in transport in a scratch state root and send nothing",
+      "faults": ["the scheduled cancel", "Ctrl-C", "the KILL file", "Pilot 2's kill", "a network cut at the cancel point", "SIGKILL, then Yu's kill", "SIGSTOP past the cancel point", "a sleep or a clock jump"],
       "exempt_from": ["V13", "the passive check", "rule.selection"],
+      "r13": "binds each probe to its drill record instead of a decision record; a drill race uses up its market",
       "records": "drill records, not PLACE records; outside the ledger and the verdict",
+      "before_any_place": "every probe drill has a passing receipt; a failed drill stops Pilot 2 until Astra has reviewed it and Yu decides again",
       "max_loss_per_race_p": 100,
       "max_races": 8,
       "ledger": "outside Pilot 2's ledger, inside the overall budget"
@@ -133,7 +137,8 @@
     "skip_streak_ends_session": 5,
     "reservations": "every reservation uses up its market, SKIP included; no reservation is ever released",
     "when_full": "SKIP(cap)",
-    "sessions": "at most one pilot session a UTC day across both pilots; never on a day with a Pilot 1 session; arming refused while any Pilot 1, manual or Bet Angel bet of ours is open or unsettled"
+    "sessions": "at most one pilot session a UTC day across both pilots; never on a day with a Pilot 1 session; arming refused while any Pilot 1, manual or Bet Angel bet of ours is open or unsettled",
+    "in_session": "a Pilot 1, manual or Bet Angel bet of ours open or unsettled at a Pilot 2 open HALTs the session; no send while any Pilot 1 session window is open"
   },
   "caps": {
     "config_names": "orders.caps.<name without its unit suffix>, max_book_age_s in seconds, and orders.rules.external_exposure_tolerance, in config-p2.json",

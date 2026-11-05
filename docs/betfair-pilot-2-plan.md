@@ -7,7 +7,7 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
 - "The page" means [docs/betfair-pilot-2-policy.md](betfair-pilot-2-policy.md). "The note" means [docs/betfair-pilot-2-engineering.md](betfair-pilot-2-engineering.md). "Contract p2-lp" means [research/pilots/p2-lp.json](../research/pilots/p2-lp.json), a draft until the build consent.
 - The page holds the policy and the money. The note holds the engineering detail, and the page wins on any difference. This plan keeps only its own content: the goal, what has been decided, the reason for each value, the expected rate, the stages and the timeline.
 - *Estimate* and *Inference* mark numbers that have not been measured.
-- **Yu's words** are quoted with their date and where they were said. "To lab-Claude" means Yu's own answer in the lab's session. "Relayed" means Yu said it in chat with the Air's Claude, which passed it on through the Air–lab mailbox. Yu confirms relayed answers, or corrects them, by merging this plan or asking for a change.
+- **Yu's words** are quoted with their date and where they were said. "To lab-Claude" means Yu's own answer in the lab's session. "Relayed" means Yu said it in chat with the Air's Claude, which passed it on through the Air–lab mailbox. By merging this plan, Yu confirms only that the quoted words are accurate, or asks for a correction. Merging decides nothing that is still open, approves no page and accepts no proposal.
 
 ## Goal
 - Find out, with real money at micro stakes, whether an attended executor can do all of this:
@@ -20,7 +20,7 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
 - **Honest prior.**
   - No mispricing is known.
   - The research round's judgement, which is not evidence, leans to "we are picked off" ([lp-study](lp-study.md), Predictions). lp-v1 could neither support nor rule that out.
-  - Its one released statistic is descriptive only. In lp-v1's positive control at off −10 min, the mid moved against queued orders by 0.54 ticks at +10 s and 1.08 ticks by BSP. That is partly by construction, drift is not excluded, and it says nothing about orders one tick inside the spread ([lp-study](lp-study.md), Results).
+  - Its only released statistics are descriptive. In lp-v1's positive control at off −10 min, the mid moved against queued orders by 0.54 ticks at +10 s and 1.08 ticks by BSP. That is partly by construction, drift is not excluded, and it says nothing about orders one tick inside the spread ([lp-study](lp-study.md), Results).
   - Pilot 2's legs improve the price rather than join it. Whether that is less adverse is unmeasured.
   - *Inference:* per decision, expect a few pence negative. A one-tick round trip, BACK 5.1 over LAY 5.0, is worth about +4p at BSP 5.0. A lone LAY at 5.0 that BSP moves one tick against is worth about −7p. Realised money is luck, dominated by any lone LAY whose runner wins: about −£8 at 5.0 and −£10 at 6.0.
   - Decisions will be rare (Expected rate, below). The verdict will be about operations. It is never a claim of an edge.
@@ -44,12 +44,12 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
   - **"Let it run":** a lone matched leg rides to the result after the unmatched side is cancelled before the off, and is scored against BSP.
   - **"Yes, PRs only":** the lab may draft the page, the plan and the executor code as PRs. Astra reviews, Yu merges, and nothing goes live without Yu's three consents.
 - **Yu, 2026-11-03, to lab-Claude: "Count first".** Before any Pilot 2 code, count for free how often today's markets show the spreads Pilot 2 would quote in. Build the pilot only if at least 1.4% of usable markets qualify over 10 or more racing days. This is registered in [docs/lp-rate-count.md](lp-rate-count.md), with Yu's choices on which run decides, and was amended once on 2026-11-04 on Yu's choice "Only new recordings".
-- **Yu, 2026-11-04, relayed:** "We can start now ah😂 no need record 10 days. And we can start small."
+- **Yu, 2026-11-04, relayed, said but not decided:** "We can start now ah😂 no need record 10 days. And we can start small."
   - The Air's Claude read this as a decision to go on without waiting for Gate A, and asked Yu to confirm that reading.
   - Yu has since confirmed only the drafting of this PR (below). Whether Pilot 2's code may be built without Gate A is still open for Yu (Open for Yu, below).
   - Until Yu says so, "Count first" stands as registered.
 - **Yu, 2026-11-04, relayed: "2.是",** keeping Pilot 1 first. PR4 waits for Astra's acceptance of Pilot 1's go-live commit, and PR5 waits for Pilot 1's PT4.
-- **Yu, 2026-11-05, relayed: "可以 let lab go ahead. 得".** This is the go-ahead for the lab to draft this PR (stage PR1, documents only). It is not the build consent. The Air's Claude's proposals for the open questions remain proposals (Open for Yu, below).
+- **Yu, 2026-11-05, relayed: "可以 let lab go ahead. 得".** This is the go-ahead for the lab to draft this PR (stage PR1: documents and one small test of the draft contract). It is not the build consent. The Air's Claude's proposals for the open questions remain proposals (Open for Yu, below).
 
 ## Before Pilot 2: attended manual drills
 Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all good" (relayed, 2026-11-04) and "用寬鬆版" (relayed, 2026-11-05). They are not part of Pilot 2.
@@ -74,7 +74,7 @@ Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all
   - It prints counts only.
   - Each run needs Yu's OK.
   - It can be read once 10 racing days and 300 usable markets are recorded.
-- As registered, Gate A decides whether Pilot 2's code is built. Whether Yu now waives that is open (Decided, above).
+- As registered, Gate A decides whether Pilot 2's code is built. Whether Yu now waives that is open (Open for Yu, below).
 - Either way, its pooled rate is the best estimate of how many decisions to expect. *Inference:* it is mostly an upper bound, because it uses delayed, conflated data with no virtual prices, and virtual prices close some spreads. They could also bring a few wider spreads into 3–4 ticks ([docs/lp-rate-count.md](lp-rate-count.md), What it cannot show).
 - **Gate B** is optional and needs Yu's yes (Open for Yu; note §16).
 
@@ -123,7 +123,7 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 | PR1 (this PR) | The page, the note, this plan, the draft contract p2-lp and the G1 follow-up. Docs only, plus a small test of the draft contract. Pilot 1's documents are unchanged | Astra's review; Yu merges | M |
 | PR2 (done) | The Stage 0 counter, [scripts/lp_rate_count.py](../scripts/lp_rate_count.py) (#56; amendment 1 in #57) | merged | S |
 | PR3 (optional) | Gate B: a counts-only table over Pilot 1's stored decision books | only with Yu's yes, and merged before Pilot 1's first PLACE record | S |
-| PR4 | The pure module pilot_lp.py: the contract loader, predicates, leg prices, passive check, two-leg record, fold, ledger, classes, value, verdict and tables | the build consent; merged only after Astra accepts Pilot 1's go-live commit | L |
+| PR4 | The pure module pilot_lp.py: the contract loader, predicates, leg prices, passive check, two-leg record, fold, ledger, classes, value, verdict and tables | the build consent, and Gate A passed unless Yu says then to go on without it; merged only after Astra accepts Pilot 1's go-live commit | L |
 | PR5 | The gateway path for `pilot_lp`: two sends under one reservation, the passive check, read-cancel-read, the suspended-market rule, virtual prices on Pilot 2's books only, and the in-session halts | merged only after Pilot 1's PT4 receipt, after the cross-version check, and after Gate B if PR3 exists | L, highest scrutiny |
 | PR6 | The executor and the `plp-*` commands: pre-filter, rest loop, pull, auto-kill, arming refusals | after PR5 | L |
 | PR7 | Capture, the data lock and the terminal report | after PR6 | M |
@@ -137,14 +137,14 @@ None of these needs an answer before the build consent. The Air's Claude made it
 | Question | The Air's Claude's proposal |
 |---|---|
 | May Pilot 2's code be built without waiting for Gate A (Decided, above)? | its reading of Yu's "We can start now": yes |
-| Overall budget: raise it, or keep £1,000 with the account balance as the joint stop (page, Money) | raise it to £1,100 (made before the manual drills' −£10 was counted; −£1,108 needs at least that much) |
+| Overall budget: raise it, or keep £1,000 with the account balance as the joint stop (page, Money) | raise it to £1,100 (made before the manual drills' −£10 was counted; covering −£1,108 needs a budget of at least £1,108) |
 | Day stop: a hard ceiling (a race only if losing its full £10 still leaves the day at or above −£20), or stop once −£20 is reached | hard ceiling |
 | Confirm the 2026-11-03 money numbers for the automated pilot, with "5 a day" counting PLACE decisions | confirmed as given |
 | A lifetime cap of 10 decisions | yes |
 | One race with resting orders at a time; at most £20 of worst case open | (not asked; the design's proposal) |
 | No pause: the hard stops and the 10-decision cap replace it | (not asked; the design's proposal) |
 | config-p2.json's £ caps (note §9) | as derived |
-| Drill money: at most £1 a race and at most 8 drill races | yes |
+| Drill probes in the probe sessions: at most £1 a race and at most 8 drill races | yes |
 | P2-PT4's decisions counting in the verdict (page, What it relaxes) | (not asked; the design's proposal) |
 | Final date | 2027-06-30 |
 | If decisions are too rare: stop, or the lab brings the levers with their counts (deciding from −600 to −300 s, a later final date, lays above 6.0 at a smaller stake, other markets) | the levers; Yu decides then |
@@ -158,9 +158,10 @@ Also for Yu, before go-live:
 
 ## Timeline (*Inference*)
 - **November 2026:** this PR and Astra's review, after Pilot 1's review queue. The attended manual drills. Recording starts on the Air when Yu loads the recorder.
+- **Once 10 racing days and 300 usable markets are recorded:** Gate A can be read. If it fails, no Pilot 2 code is built unless Yu decides to go on anyway; Yu then chooses between stopping at £0 and the levers with their counts.
 - **December:** the build consent when Yu is ready. PR4 is drafted. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
 - **January to February 2027:** PR4 merges once Astra has accepted Pilot 1's go-live commit. After Pilot 1's PT4 receipt, PR5 to PR8 follow with Codex and Astra rounds, about 4–6 weeks, with review dominating.
-- **February to March:** P2-PT2, P2-PT3, the G1 answer or Yu's recorded decision, the commission check, Astra's acceptance, Yu's go-live consent, registration, the probe session and P2-PT4.
+- **February to March:** P2-PT2, P2-PT3, the G1 answer or Yu's recorded decision, the commission check, Astra's acceptance, Yu's go-live consent and registration. Then up to 8 probe sessions, each on a day with no Pilot 1 session, and P2-PT4.
 - **March or April at the earliest, to 2027-06-30:** Pilot 2 sessions on days without Pilot 1.
 - Going on without Gate A would not bring this forward: the dates are set by the Pilot 1-first order and by review time. If Pilot 1 slips, Pilot 2 slips by the same amount.
 
@@ -177,7 +178,7 @@ Also for Yu, before go-live:
   - a Pilot 2 UNKNOWN blocks Pilot 1's placing too (R3), and counts toward the three-UNKNOWN HALT (journal.py:932-933);
   - R10 books a loss on the UTC day its settle is typed. A Pilot 2 settle typed on a Pilot 1 day uses Pilot 1's £50 of room, which is the safe direction. The reverse can end a Pilot 2 session early.
 - **Auto-kill stops Pilot 1 too,** until Yu types RESUME LIVE. That is safe, but it costs Pilot 1 sessions.
-- **Shared order-path code.** PR5 touches gateway.py and risk.py, the only order path. After it merges, any Pilot 1 fix taken from main carries Pilot 2's code (page, What it relaxes, item 17). Hence the merge order, Pilot 1's pinned checkout, Pilot 1's unchanged tests and the cross-version check.
+- **Shared order-path code.** PR5 touches gateway.py and risk.py, the only order path. After it merges, any Pilot 1 fix taken from main carries Pilot 2's code (page, What it relaxes, item 18). Hence the merge order, Pilot 1's pinned checkout, Pilot 1's unchanged tests and the cross-version check.
 - **Two configs and two worktrees in one profile.** Every mismatch refuses (PA1–PA3 fail closed), so the cost is lost sessions, not money.
 - **The budget overlap** (page, Money). If the account balance is the joint bound, whichever pilot runs later can be starved by R11.
 - **Commission.** The 2026 rate is unconfirmed; 2% is assumed until Yu checks it.

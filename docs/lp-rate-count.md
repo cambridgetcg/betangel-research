@@ -1,8 +1,8 @@
 # LP rate count: Stage 0 for Pilot 2
 
-Status: Registration, written 2026-11-03 and first merged that day (PR #56, commit 9e69b73, stamped 23:04:55Z) before any recording was read for it. Amended once on 2026-11-04, before any qualifying count was printed ([amendment 1](#amendment-1-2026-11-04)); the amendment changes only which sessions are read and which code decides. The counter is not run again until amendment 1 has merged. The only run so far, on the Air on 2026-11-04, could print no more than NOT_ENOUGH_DAYS. On 2026-11-03 Yu chose "Count first": before any Pilot 2 code is built, count for free how often today's GB/IE horse-racing WIN markets show the spreads Pilot 2 would quote in. Later the same day Yu also settled which run decides Gate A, a minimum number of markets, and that qualifying counts stay hidden until then ([Yu's choices](#yus-choices-2026-11-03)).
+Status: Registration, written 2026-11-03 and first merged that day (PR #56, commit 9e69b73, stamped 23:04:55Z) before any recording was read for it. Amended once on 2026-11-04, before any qualifying count was printed ([amendment 1](#amendment-1-2026-11-04)); the amendment changes only which sessions are read and which code decides. Amended again on 2026-11-05, also before any qualifying count could be printed ([amendment 2](#amendment-2-2026-11-05)): the recorder and the deciding run move to the lab Mac (the MacBook Pro), and no code changes. The counter is not run again until amendment 1 has merged, nor on the lab Mac until amendment 2 has merged. The only run so far, on the Air on 2026-11-04, could print no more than NOT_ENOUGH_DAYS. On 2026-11-03 Yu chose "Count first": before any Pilot 2 code is built, count for free how often today's GB/IE horse-racing WIN markets show the spreads Pilot 2 would quote in. Later the same day Yu also settled which run decides Gate A, a minimum number of markets, and that qualifying counts stay hidden until then ([Yu's choices](#yus-choices-2026-11-03)).
 
-For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, against betangel-research main 35da293; amendment 1 on 2026-11-04, against main b36c215.
+For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, against betangel-research main 35da293; amendment 1 on 2026-11-04, against main b36c215; amendment 2 on 2026-11-05, against main c86764a.
 
 - The code is `scripts/lp_rate_count.py`, tested by `tests/test_lp_rate_count.py` on synthetic recordings only.
 - The definition comes from the Pilot 2 design (lab note, 2026-11-03, sections expected_rate, go_live_gates and code_stages PR2). This page fixes the details that design left open. It changes nothing in Pilot 1.
@@ -11,7 +11,7 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, agai
 
 ## What it counts
 
-The input is the delayed-key recordings the #41 recorder writes on Yu's Air: GB/IE, event type 7, WIN, with EX_BEST_OFFERS at 3 levels. The delayed key is 1–180 s late and conflated to 180 s (`betangel_research/betfair/recorder.py:14-15`, facts F44 and F51). The T6 live test recorded Betfair echoing that conflation, 180000 ms (`reports/betfair-live-tests-2026-10-13.json:129`). It is not licensed historical data.
+The input is the delayed-key recordings the #41 recorder writes on the lab Mac ([amendment 2](#amendment-2-2026-11-05)): GB/IE, event type 7, WIN, with EX_BEST_OFFERS at 3 levels. The delayed key is 1–180 s late and conflated to 180 s (`betangel_research/betfair/recorder.py:14-15`, facts F44 and F51). The T6 live test recorded Betfair echoing that conflation, 180000 ms (`reports/betfair-live-tests-2026-10-13.json:129`). It is not licensed historical data.
 
 - **Sessions.** It reads every directory under the recordings root named as the recorder names sessions (`rec-YYYYMMDDTHHMMSSZ-` plus 8 hex digits, the UTC start); other names are ignored. A session that started before 2026-11-03 23:05:00 UTC is not read ([amendment 1](#amendment-1-2026-11-04)). A session is read only if its receipt (`receipt.json`, or `receipt.partial.json` while it is still running or after a crash) gives:
   - key_type `delayed` and label `delayed_conflated`;
@@ -34,10 +34,10 @@ The input is the delayed-key recordings the #41 recorder writes on Yu's Air: GB/
   - The recorder's replay check makes sure every market's first change carries a marketTime (`betangel_research/betfair/recorder.py:125-131`).
 
   A later revision does not move the off. Markets whose marketTime was revised at or before off −300 s are counted on their own line but not excluded, because the registered rule has no such exclusion.
-- **Racing day.** A racing day is a UTC date of the off on which at least one market is usable at −300 s. A short day, such as one where the Air slept or the recorder crashed early, counts as a full racing day.
+- **Racing day.** A racing day is a UTC date of the off on which at least one market is usable at −300 s. A short day, such as one where the lab Mac slept or the recorder crashed early, counts as a full racing day.
 - **Snapshot at X.** This is the last recorded state at or before off + X. It holds every message with publish time pt ≤ off + X, so the batch published at off + X is included. Across segments, the latest such state is used.
   - A segment says nothing about a moment after its last line. Heartbeats count here: they arrive every 5 s, so a segment's last line is about when it stopped. If off + X falls after a segment's last line, that segment gives no snapshot at X. A state is never carried into a gap, as the recorder's own rule says. The gap of a few seconds between one segment and the next (a refresh every 30 minutes) can therefore lose a few snapshots, which show as no snapshot.
-  - Times are always Betfair's pt, the same clock as marketTime. The Air's `received_at` is never used, because nothing verifies it.
+  - Times are always Betfair's pt, the same clock as marketTime. The lab Mac's `received_at` is never used, because nothing verifies it.
 - **Data age.** The age is off + X minus the pt of the last non-heartbeat line (image or delta) at or before off + X, in the segment that holds the state.
   - A snapshot is usable only if its age is at most 180 s, it was taken outside a 503 ("data possibly stale") window, and it carries no non-finite number.
   - Otherwise the market counts as no snapshot (or invalid) at X. An older state is never used instead.
@@ -98,8 +98,8 @@ Gate A is fixed by the recordings, not by when the script is run:
 
 Yu took the lab's three suggestions ("Lets go with what you recommeded"):
 
-1. **The first decisive result decides.** The lab's suggestion was the first run after the 10th racing day's recording has closed. The script builds that in: Gate A pools a fixed set of dates and is read only after the last of them has ended, so the result does not depend on when anyone runs it. It cannot be re-run until it passes. The decisive run is a run of the deciding code (amendment 1's), on the Air, with `--root` set to the recorder's recordings directory (the command below). A run on a copy, a subset or test data decides nothing.
-2. **At least 300 usable markets,** pooled, as well as 10 racing days. A short day, such as one where the Air slept, still counts as a racing day, but 10 thin days cannot decide the gate. In 2025 there were about 36.5 GB/IE WIN markets a day (`docs/betfair-pilot-1-plan.md:190`), but that counts all markets, not markets usable at −300 s in these recordings. lp-v1 replayed about 31 a date in 2015-16. So 300 usable markets may take a few days more than 10 (*inference*).
+1. **The first decisive result decides.** The lab's suggestion was the first run after the 10th racing day's recording has closed. The script builds that in: Gate A pools a fixed set of dates and is read only after the last of them has ended, so the result does not depend on when anyone runs it. It cannot be re-run until it passes. The decisive run is a run of the deciding code (amendment 1's), on the lab Mac ([amendment 2](#amendment-2-2026-11-05)), with `--root` set to the recorder's recordings directory (the command below). A run on a copy, a subset or test data decides nothing.
+2. **At least 300 usable markets,** pooled, as well as 10 racing days. A short day, such as one where the lab Mac slept, still counts as a racing day, but 10 thin days cannot decide the gate. In 2025 there were about 36.5 GB/IE WIN markets a day (`docs/betfair-pilot-1-plan.md:204`), but that counts all markets, not markets usable at −300 s in these recordings. lp-v1 replayed about 31 a date in 2015-16. So 300 usable markets may take a few days more than 10 (*inference*).
 3. **Qualifying counts stay hidden until Gate A can be read.**
 
 Record the first PASS or FAIL with the run's script sha256 and the date it pools through.
@@ -113,6 +113,21 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 - **Unchanged.** Everything else, including the markets, the runner rule, the columns, Gate A's 10 racing days, 300 usable markets and 1.4%, and Yu's three choices. The output schema is now `lp-rate-count/v2`, because the sessions line has the new code.
 - **Which run decides.** A run whose printed sha256 is `a8c5a0ec99df9ab40b6edfaf0a153f09eb530dbba2d3e3c2505e3ae58ba6aace`: `scripts/lp_rate_count.py` as amended here, on main from the commit that lands amendment 1. `tests/test_lp_rate_count.py` checks that this line names the script's current sha256, so any change to the script fails the tests until this line names its new sha256, and changing this line takes a new amendment. A run of 9e69b73, or of any other version, decides nothing.
 
+### Amendment 2 (2026-11-05)
+
+- **What changed.** On 2026-11-05 Yu moved live trading from the MacBook Air ("the Air") to the lab Mac: "Lets run live trading here actually" (Yu, 2026-11-05). Yu chose "All of it": the credentials, Pilot 1, Pilot 2, the manual £1 drills and the delayed-key recorder all move, and the Air stops live work, so only one Mac trades. As registered, the decisive run was on the Air's root (Yu's choice 1 above, as worded before this amendment), so a run on the lab Mac's recordings would have been "a subset" and could decide nothing. *Inference:* a recorder left on the Air would be outside the lab Mac's recording admission ("no recorder while live work is admitted", `betangel_research/betfair/admission.py:1`), which, with the live-owner lock, lives in one Mac's state root (`betangel_research/betfair/paths.py:88-98`).
+- **Yu's choice.** For the recorder and Gate A, Yu chose "Move it here too" (2026-11-05): the Gate A count starts again from the lab Mac's recordings, a written amendment names the lab Mac before any count is read, and recordings are never copied between Macs. This is that amendment.
+- **What has been seen.** Nothing new. The lab does not know whether the Air recorded any session after `FIRST_START`. The lab Mac has recorded nothing (*inference*: it held no Betfair credentials before 2026-11-05, [backtest plan](backtest-plan.md) §12). No qualifying count can have been printed (*inference* from the rules above): Gate A needs 10 racing days, and until it can be read the script withholds the qualifying counts. From `FIRST_START` to 2026-11-05 there are at most three UTC dates, and the four October sessions that 9e69b73 also read add at most three more. So any run of either version could print only NOT_ENOUGH_DAYS.
+- **The rule.**
+  - Gate A counts only the lab Mac's recordings root: `recordings` under the lab Mac's state root (the command below), or the directory the lab Mac's config names in `recorder.root`.
+  - The deciding run is a run on the lab Mac, with `--root` set to that directory. A run on the Air, or on a copy anywhere, decides nothing.
+  - Sessions recorded on the Air are not counted, whenever they started. Leaving them out is blind: no qualifying count can have been printed from them (above).
+  - The recordings never leave the lab Mac, apart from the lab Mac's encrypted local backup, which Yu sets up. They are never copied between Macs.
+  - So the count starts again: Gate A's 10 racing days and 300 usable markets build up from the lab Mac's own sessions, from the first one its recorder makes. `FIRST_START` still applies, but every such session starts after it (*inference*).
+  - The script cannot tell which Mac recorded a session: neither it nor anything under `betangel_research/` reads the machine's name. That the root holds only the lab Mac's own sessions rests on the rule that recordings are never copied between Macs.
+- **The code.** `scripts/lp_rate_count.py` does not change. Its sha256 stays `a8c5a0ec…`, so amendment 1's [Which run decides](#amendment-1-2026-11-04) line stands as written, and the deciding run is a run of that script, now made on the lab Mac. Its `--root` help already names no machine ("the recorder's recordings directory on this Mac", `scripts/lp_rate_count.py:828`). Its docstring still says it was amended once (`scripts/lp_rate_count.py:2-3`); that stays, because any change to its bytes changes the deciding sha256.
+- **Unchanged.** Everything else, including amendment 1's `FIRST_START`, the markets, the runner rule, the columns, Gate A's 10 racing days, 300 usable markets and 1.4%, Yu's three choices of 2026-11-03, and the output schema `lp-rate-count/v2`.
+
 ## What it cannot show
 
 - **Delay.** The data is delayed by 1–180 s and conflated to 180 s, so a "−300 s" state can describe the exchange as early as about −660 s (*inference*: up to 180 s of age plus up to 180 s of delay).
@@ -123,7 +138,8 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 
 ## Who runs it, and how
 
-- Yu runs it, or the Air's Claude with Yu's OK, on the Air. The recordings never leave the Air. Only the printed counts are shared, and only with Yu's OK.
+- Yu runs it, on the lab Mac ([amendment 2](#amendment-2-2026-11-05)). Yu's lab rules of 2026-11-05 (in the lab Mac's own instructions, outside Git) say no agent reads the recordings or receipts, and the count reads both, so this page gives the run to no agent (*inference* from those rules). Whether an agent may run it with Yu's OK is open for Yu.
+- The recordings never leave the lab Mac, apart from its encrypted local backup, and are never copied between Macs. Only the printed counts are shared, and only with Yu's OK.
 - Run it from a checkout of main that includes amendment 1, not from Pilot 1's registered checkout or the recording_day pinned worktree. Those stay at their own commits.
 - The printed script sha256 must be the one named under [Which run decides](#amendment-1-2026-11-04). A Gate A result is read only from a run whose sha256 matches.
 - Running it early does no harm. Until Gate A can be read it prints NOT_ENOUGH_DAYS, NOT_ENOUGH_MARKETS or RECORDING_OPEN and withholds the qualifying counts. An open segment is never read, and the sessions line shows how many sessions were read from a partial receipt.
@@ -135,7 +151,7 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
   ```
 
   - Add `--json` for one JSON object instead of the table.
-  - If the Air's config sets `recorder.root`, pass that directory instead.
+  - If the lab Mac's config sets `recorder.root`, pass that directory instead.
 - What it does and does not do:
   - It uses the standard library only.
   - It needs no network, credentials or login, and writes nothing.
@@ -146,4 +162,4 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 
 - Nothing under `betangel_research/` changes. The script sits in `scripts/`, outside `receipts.code_hashes` (`betangel_research/betfair/receipts.py:121-125`). So Pilot 1's code identity, contract and registration do not change, and Pilot 1 does not re-register.
 - Scripts may not import `betangel_research.betfair` (`tests/test_betfair_boundaries.py`). The script's line reader, best-offer fold and CLASSIC ladder are therefore small copies. Tests check them against `stream.messages`, `book.MarketBookCache` and `ticks.LADDER_CLASSIC`. The copies do not follow a later change to those modules by themselves; the tests are what catch one.
-- Two dated lines are added in [backtest plan](backtest-plan.md) §13: the registration (2026-11-03) and amendment 1 (2026-11-04).
+- Three dated lines are added in [backtest plan](backtest-plan.md) §13: the registration (2026-11-03), amendment 1 (2026-11-04) and the move to the lab Mac with amendment 2 (2026-11-05).

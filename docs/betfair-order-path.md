@@ -11,7 +11,7 @@ live 安全靠以下七樣嘢，冇一樣係靠 app key 類型：
 1. 預設 paper。live 要每個命令都明確寫 `--mode live`，**同時** config 要 arm 咗。
 2. 只有一個 choke point：`gateway.py`。每個 capability 綁定準確 request body bytes 嘅 sha256；transport 拒絕任何唔係讀取、又冇對應 digest 嘅 JSON-RPC call。
 3. 每張 live 單，Yu 都要喺 `/dev/tty` 打返一次。RS-19 pilot 單例外：Yu 喺自己揀嘅 racing day 喺 `/dev/tty` 最多打一次 `PILOT ARM` 行，每張 pilot 單由 [engineering note](betfair-pilot-engineering.md) §4 嘅 decision record 代替逐張打（E1）；只喺 [RS-19](betfair-pilot-policy.md) 之下、Yu 畀咗 go-live 同意之後先適用；之前行為照舊。
-4. 每部 Mac 一個固定 state root，喺所有 worktree 以外；kill file 同 gateway lock 係全域；journal anchor 放 Keychain；每次 live 開始都同 exchange 對數。
+4. 每部 Mac 一個固定 state root，喺所有 worktree 以外；kill file 同 gateway lock 係全域（即係成部 Mac 入面；兩部 Mac 之間冇任何互斥，所以只可以有一部 live 機，§7）；journal anchor 放 Keychain；每次 live 開始都同 exchange 對數。
 5. Journal 只可以加、唔可以改，有 hash chain；每條紀錄喺任何 byte 出網之前用 `F_FULLFSYNC` commit。
 6. 未知結果永遠唔當零。UNKNOWN、ABSENT_UNCONFIRMED（同 paper 嘅 provisional replace child）用全額不利 exposure 計，未解決之前唔准再落新單；永遠唔會自動重發。Live 嘅 exchange 證據只可以證明一張 bet 存在、提高已知 matched size，永遠唔會降低計住嘅 worst case；冇任何嘢會自動 settle 一張 live 單（§8）。
 7. live mode 下 gateway 自己用 live key 攞 market data，喺風險檢查之前一刻先攞；唔信 caller 畀嘅 book。
@@ -116,7 +116,7 @@ Exit 5 嘅情況同訊息（JSON 照印，之後先 exit）：
 | A16 | `get_account_details()["currencyCode"] == "GBP"`；冇呢個值都當失敗（F66） | `account_currency_not_gbp_or_unknown` |
 | A17 | startup reconcile 冇 foreign order、冇同 journal 矛盾嘅 bet（§7），fold 冇任何 unresolved 狀態嘅單 | `unresolved_or_foreign_orders` |
 | A18 | 自己攞嘅 book：`fetched_by="gateway_self_fetch"`、`app_key_slot="live"`、`is_market_data_delayed is False`、`catalogue_present`，而且用 `monotonic_ns` 同 `observed_at`（wall clock）兩個時鐘都計 `0 <= age <= max_book_age_s`（F47；macOS 嘅 monotonic clock 喺部機瞓覺時停，所以單靠佢會將瞓覺之前嘅價當新） | `market_data_delayed_or_stale` |
-| A19 | journal fold 有 `ref_roundtrip_verified` event（只可以由 `live-probe` 產生，§13） | `ref_roundtrip_unverified` |
+| A19 | journal fold 有 `ref_roundtrip_verified` event（只可以由 `live-probe` 產生，§13；新開嘅 journal 冇，例如搬 live 機之後，§7） | `ref_roundtrip_unverified` |
 
 **Acknowledgements。** `orders.live.acknowledgements` 一定要包齊以下八個（載入 config 唔要求齊，arming 先要求）：
 
@@ -153,7 +153,7 @@ Exit 5 嘅情況同訊息（JSON 照印，之後先 exit）：
 | `pilot-capture`（RS-19，只讀） | session 入面由 executor 喺 placement open 之間跑；session 之後 Yu 喺終端機自己跑，永遠唔排程（[engineering note](betfair-pilot-engineering.md) §11）：Yu 自己跑要 A2、A11、A13 同 tty（冇要打嘅行）；唔使 arming 行、乜都唔送、唔郁單嘅狀態或者 exposure；有 session arm 住嗰陣 Yu 自己跑會被拒 |
 | `PILOT ACK` 行（RS-19） | Yu 打：A2、A11、A13；清一個 review stop，包括 RS-19 嘅 −£150 停頓（[engineering note](betfair-pilot-engineering.md) §10） |
 | `PILOT GAP RESOLVED` 行（RS-19，`pilot-gap-resolved`） | 淨係 Yu 打，要附寫低嘅原因：A2、A11、A13；記低一個 ledger gap stop 已經解決，唔當 ACK，之後 Yu 仲要打 `PILOT ACK`（[engineering note](betfair-pilot-engineering.md) §10） |
-| `pilot-end-session`（RS-19） | pilot-run 死咗之後，Air 上面邊個都可以跑；好似 kill 咁冇要打嘅行、冇 token：唔 login、唔讀 Keychain credential、唔讀 Betfair、唔落單、唔 release；pilot-run 仲攞住 owner lock 就拒絕；只 journal 返 journal 推得出嘅 session stop（同到期嘅 stop），印晒 handoff 同 recording-release 之前要做嘅嘢（[engineering note](betfair-pilot-engineering.md) §8） |
+| `pilot-end-session`（RS-19） | pilot-run 死咗之後，lab 機（MacBook Pro，2026-11-05 起嘅 live 機，§7）上面邊個都可以跑（agent 照 §7 Yu 嘅 lab 規則）；好似 kill 咁冇要打嘅行、冇 token：唔 login、唔讀 Keychain credential、唔讀 Betfair、唔落單、唔 release；pilot-run 仲攞住 owner lock 就拒絕；只 journal 返 journal 推得出嘅 session stop（同到期嘅 stop），印晒 handoff 同 recording-release 之前要做嘅嘢（[engineering note](betfair-pilot-engineering.md) §8） |
 
 RS-19 嗰幾行（`pilot-*` 同 `PILOT …`）嘅代碼喺 RS-19 嘅 build 同意之後先寫同 merge；Yu 畀 go-live 同意、再跑 `pilot-register` 之前冇 registration receipt，PA1–PA3 會拒絕所有 pilot 落單。表入面其他行照舊。
 
@@ -409,6 +409,30 @@ v1 冇 override。**還原（restore）一律只係 recovery（recording design 
 5. **救唔返嘅 pilot 歷史就一直停。** 嗰個 pilot 一直停：佢嘅計數永遠唔會 reset、唔會由還原咗嘅 journal 重新推算、亦唔會重新 register 由頭嚟；再做乜都係 Yu 嘅新決定，要 Astra review。
 
 Backup 之後錄嘅 recording 就冇咗，嗰啲日子唔會重建。呢度以前寫嘅「將 `journal-live.sqlite` 搬去一邊、人手刪 Keychain anchor、開新 journal」唔係復原步驟，已經拎走：佢得出一個冇本地落單、計數同 stop 紀錄嘅 journal，正正係 anchor 想防止嘅風險。開新 journal 永遠唔會用嚟恢復一個 pilot；真係要做，都只可以喺上面第 3 步之後、由 Yu 同 reviewer 決定，冇新工具。
+
+**搬 live 機（Yu 2026-11-05 決定）。** Yu 2026-11-05 喺 lab 機對 lab-Claude 打：「Lets run live trading here actually」。同日 Yu 喺一條多項選擇揀咗「All of it」：credentials、Pilot 1、Pilot 2、人手 £1 drill 同 delayed-key price recorder 全部由 Air 搬去 lab 機，Air 停晒 live 工作，所以只有一部 Mac 落單；亦揀咗「This account (user)」：credentials 放喺 lab 機現有嘅 macOS account `user`，唔另開 trading user（Yu 知道咁樣 lab 機上每個 agent、同經 SSH 嘅 Air Claude 都掂得到佢哋）。Yu 喺第一張單之前設好 lab 機嘅加密本地 backup，包 state root 同 Keychain。代碼擋唔到兩部 Mac 用同一個 account 落單：KILL file、`.gateway.lock`、`accounts.json`、journal 同佢計嘅 cap、login ledger 全部係每個 state root 一份，即係每部 Mac 一份（`paths.py:1-5`；[接入指南 §6](betfair-integration.md#6-state-root)）。所以：
+
+- **lab 機用新 journal。** 永遠唔好將 Air 嘅 state root 或者 journal anchor 抄去 lab 機：抄過去就係上面講嘅還原，只可以當 recovery。Journal 要一張單都冇、亦冇 `ref_roundtrip_verified`，先可以攞第一個 Keychain anchor（A13，`arming.py:136-153`）；Air 嘅 journal 已經有 2026-10-21 嘅 live probe（§13），所以淨係抄 journal 會 `journal_anchor_missing`。新 journal 唔係用嚟恢復 pilot：下面第 1 步要先確認 Air 冇 PLACE 紀錄或者 pilot note；有嘅話就停，之後點做係 Yu 同 Astra 嘅新決定（上面第 5 步）。
+- **Air lineage 嘅終點。** Air 嘅 journal 唯讀封存；佢最後嘅 head `seq` 同 sha256，同 Keychain anchor 嘅值，記做 Air lineage 嘅終點。呢幾個值要喺 Air 讀到先會加入呢度。
+- **喺 lab 機做嘅 test。** Yu 喺度、每項一份新收據：T0（Keychain；唔喺真 item 試 Always Allow，見第 4 步；改用一個用完即刪嘅 test item 定唔試，未決定，等 Yu 同 Astra）、T1 同 T2（`doctor --network`）、T5（live key）、T9（`live-probe`，LAY £1.00 @ 1.01）。新 journal 冇 `ref_roundtrip_verified`，所以 T9 一定要喺任何 `place` 或者 `pilot-place` 之前做（A19，`arming.py:477-478`）。PT3 嘅 drill 喺 lab 機嘅硬件上做（[engineering note](betfair-pilot-engineering.md) §14）。lab 機嘅 config 有新嘅 `config_sha256`：Astra 要 accept 佢，go-live 同意要寫明佢。
+
+搬嘅次序：
+
+1. 喺 Air 確認冇任何 open 或者 unresolved 單、冇 PLACE 紀錄或者 pilot note、冇 load 住嘅 recorder plist（Yu unload；agent 永遠唔 load、unload 任何 plist）。
+2. Engage Air 嘅 KILL file，一直留住。
+3. 記低 Air lineage 嘅終點，將 Air 嘅 state root 唯讀封存。
+4. Yu 親手將現有嘅 certificate 同 key 帶去 lab 機（永遠唔經 Git、chat、SSH 或者 agent），再本人喺 lab 機輸入 Keychain item：live key 用 `-T ""`，彈 dialog 就撳 Allow，永遠唔撳 Always Allow（[接入指南 §5](betfair-integration.md#5-keychain-setup)）。
+5. 喺 lab 機跑 `init-config`，再由 Yu 填佢嘅值，包括 contract p1 嘅 `orders.pilot` 同 `coexistence.bet_angel`（新 config 係 `unverified`，A12 會擋）。
+6. Yu 設好加密本地 backup。由佢還原一樣只係 recovery（上面）。
+7. 上面嘅 test；T9 要等到一個新嘅 UTC 日先做，Air 任何一張單落單、取消、lapse 或者 settle 嘅日子都要早過嗰日：startup reconcile 讀當日我哋 strategy ref 同 live key 嘅單，新 journal 唔識嘅 bet 會 HALT `foreign_strategy_order`（推斷：`gateway.py:888-901`、`reconcile.py:510-556`）。
+8. 之後先做人手 £1 drill，再到 Pilot 1 嘅 acceptance。
+9. 最後，Yu 刪 Air 嘅 `betangel-research.betfair.*` Keychain item 同 client key。之前唔好刪：Air 自己嘅 own-scope kill 要 A4，即係要嗰啲 item 在（`arming.py:62`、`:232-239`）。喺呢步之前兩部 Mac 都有 live credentials，擋住 Air 落單嘅淨係 Air 嘅 KILL file 同 Yu「Air 唔跑任何 live 命令」嘅規則。Yu 可唔可以喺呢段時間親身喺 Air 跑 own-scope kill（即係嗰條規則嘅例外），同第 9 步係咪要等到 Pilot 1 嘅 acceptance，未決定，等 Yu。
+
+**搬咗之後點停。** 喺 lab 機前面，任何人都可以用 KILL file 或者 own-scope `kill` 停。Yu 2026-11-06 對 lab-Claude 揀咗「Yes, without asking」：lab-Claude 見到唔妥就可以即刻跑 own-scope `kill`，唔使先問，跑完即刻話畀 Yu 知；佢永遠唔跑 account-wide kill、唔刪 KILL file、唔 resume。其他 agent 淨係可以建立 KILL file。KILL file 即刻停新單，但 kill 嘅 cancel 要等佢讀 Keychain：macOS 問嘅話，每次讀最多等 120 秒畀 lab 機前面嘅人撳 Allow（§9 第 7 步；會唔會問未驗證，F73）。由 Air 經 SSH 建立 lab 機嘅 KILL file 會停新單，但乜都唔取消（§9）。喺 Air 跑嘅 `kill` 只會 engage Air 嘅 KILL file，lab 機照樣可以落新單；不過 Air 仲有 credentials 嗰陣（第 9 步之前），佢個 sweep 用 Air 嘅 strategy ref（預設 `bar-manual`）讀成個 account，所以可能會取消 lab 機帶住嗰啲 ref 嘅未 match 單（推斷：§9 第 8 步；`config.py:444-449`、`killswitch.py:134-160`、`gateway.py:3095`）。Betfair 網站同手機 app 喺邊度都停得到。
+
+**邊個做乜。** Yu 同日批准咗 lab 規則（寫喺 lab 機自己嘅指示，唔喺 repo）：每句同意行（REGISTER、ARM、PROBE、SETTLE、ACK、RESUME、ACCEPT）都由 Yu 喺 lab 機自己嘅鍵盤打，永遠唔經 SSH；agent 永遠唔 arm；lab-Claude 淨係跑 repo 文件畀 agent 做嘅命令，每次都要 Yu OK（2026-11-06 起 own-scope `kill` 除外，見上）；lab 機上其他 agent 同經 SSH 嘅 Air Claude 唔跑任何 live 命令，但都可以建立 KILL file；Air 唔跑任何 live 命令；冇 agent 讀、列或者抄 state root、recordings、收據或者 certificate 目錄；冇人喺 `~`、`~/Library` 或者 `~/.config` 跑 `git init` 或者 clone repo：咁 state root（喺 `~/Library`）或者 certificate 同 key（喺 `~/.config`）就會喺 Git worktree 入面，所有 live 命令都會拒絕，kill 照樣 engage KILL file 但乜都唔取消（`arming.py:62`、`:278`；`config.py:246`、`:294-295`；`cli.py:2079`、`:2118-2123`）。由呢啲規則推斷（等 Astra 同 Yu 核對）：文件以前畀 Nuance（Air 嘅 Claude）做嘅只讀 test 同 session 支援，而家由 lab-Claude 做；Nuance 保留佢喺 repo 嘅角色（freeze commit、照現有規則寫同 merge code）。
+
+**未決定，等 Yu：** Astra 嘅 acceptance 同 data-lock 重算喺邊度做、Astra 點樣讀 lab 機嘅 journal（lab 嘅 Astra 冇工具）；Air 嘅 helper script（`arm-live.py`、`disarm-live.py`、config-field helper、`livekey-check.py`）搬唔搬過嚟；除咗上面嗰幾項，Yu 同 Astra 仲揀邊啲 first-live gate item 重做；`pilot-end-session --mode live` 算唔算 Yu 規則入面其他 agent 唔可以跑嘅 live 命令；Yu 可唔可以喺第 2 至第 9 步之間親身喺 Air 跑 own-scope kill；第 9 步係咪要等到 Pilot 1 嘅 acceptance。
 
 **Startup reconcile（每次 live `open()`，`since_utc` = 今日 00:00Z）。** `iter_current_orders(customerStrategyRefs=<config ref ∪ 見過嘅 ref>, orderProjection="ALL", dateRange={"from": since}, includeSourceId=True)`、`iter_cleared_orders(SETTLED|LAPSED|CANCELLED, ...)`，再加 `sourceIdKey == live key` 嗰條腿（F71）。
 

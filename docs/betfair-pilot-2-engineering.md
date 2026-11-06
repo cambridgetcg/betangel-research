@@ -169,7 +169,7 @@ For safety only. It is separate from the R-rules and can only bring a stop earli
 eng §13's bans stay, except that this executor may send lays. Still: more than one instruction per request in the executor's own sends and cancels (the kill's existing sweep, killswitch.py:182-185, is the exception), a partial cancel, Heartbeat, PERSIST, BSP orders, a second decision in a market, a replace, any action on Pilot 1's or manual bets other than the kill's sweep of all our refs (§2), and agents typing any line.
 
 ## 14. Stages, gates and tests
-- **Merge order (Yu, 2026-11-04, relayed: "2.是").**
+- **Merge order (Yu, 2026-11-04, relayed: "2.是"; confirmed by Yu to lab-Claude on 2026-11-06).**
   - No Pilot 2 code merges into betangel_research/ before Astra has accepted Pilot 1's go-live commit.
   - The order path (PR5) merges only after Pilot 1's PT4 receipt exists, so the shared placement path is first proven live on Pilot 1's simpler shape, and after Gate B if PR3 exists.
   - Every Pilot 1 test passes unchanged at every Pilot 2 commit, and contract p1's sha256 (4dbccb5a…) is unchanged.

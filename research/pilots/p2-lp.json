@@ -5,9 +5,8 @@
   "frozen_on": null,
   "money_chosen_by_yu_on": "2026-11-03",
   "money_status": "chosen in a question offered for a hand trial; Yu confirms them for this automated pilot at the build consent",
-  "gate_a": "open: whether this code may be built without waiting for Gate A (docs/lp-rate-count.md) is Yu's to say at the build consent",
+  "gate_a": "decided: this code is built only after Gate A passes (docs/lp-rate-count.md); Yu, 2026-11-06, to lab-Claude: Count first (Recommended)",
   "pending_yu_at_build_consent": [
-    "gate_a",
     "money.stake_per_leg_p",
     "money.max_lay_price_h",
     "money.day_stop_p",

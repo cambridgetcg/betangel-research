@@ -1,0 +1,216 @@
+{
+  "schema": "betangel.pilot-contract-lp/v1",
+  "id": "p2-lp",
+  "status": "draft",
+  "frozen_on": null,
+  "money_chosen_by_yu_on": "2026-11-03",
+  "money_status": "chosen in a question offered for a hand trial; Yu confirms them for this automated pilot at the build consent",
+  "gate_a": "decided: this code is built only after Gate A passes (docs/lp-rate-count.md); Yu, 2026-11-06, to lab-Claude: Count first (Recommended)",
+  "pending_yu_at_build_consent": [
+    "money.stake_per_leg_p",
+    "money.max_lay_price_h",
+    "money.day_stop_p",
+    "money.day_stop_reading",
+    "money.pilot_stop_p",
+    "money.pilot_stop_reading",
+    "money.max_open_worst_case_p",
+    "money.drill",
+    "money.overall_budget",
+    "placement_limits.counts",
+    "placement_limits.place_records_per_utc_day",
+    "placement_limits.lifetime_place_records",
+    "placement_limits.place_records_per_pt4_session",
+    "placement_limits.races_in_flight",
+    "ledger.pause",
+    "verdict.population",
+    "caps",
+    "endings.final_date"
+  ],
+  "policy": "docs/betfair-pilot-2-policy.md",
+  "engineering_note": "docs/betfair-pilot-2-engineering.md",
+  "plan": "docs/betfair-pilot-2-plan.md",
+  "units": "Money in integer pence (_p), prices in integer hundredths (_h), durations in the unit their key names; rates and shares are decimal strings, read with Decimal.",
+  "customer_strategy_ref": "p2-lp",
+  "intent_source": "pilot_lp",
+  "journal_note_key": "pilot_lp",
+  "profile": "default",
+  "config_file": "STATE_ROOT/profiles/default/config-p2.json",
+  "commission_rate": "0.02",
+  "rule": {
+    "id": "P2-LP",
+    "summary": "In a flagged GB or IE horse-racing WIN market with at least 5 active runners, at off - 300 s, take the shortest runner whose best back is 1.50 to 5.90 with a best lay exactly 3 or 4 CLASSIC ticks above it; send a 2.00 BACK at the best lay - 1 tick, then a 2.00 LAY at the best back + 1 tick; let both rest; at off - 60 s cancel whatever is unmatched; a matched part rides to the result.",
+    "market": {
+      "betting_type": "ODDS",
+      "country_codes": ["GB", "IE"],
+      "country_source": "event.countryCode in the fresh catalogue row",
+      "event_type_id": "7",
+      "market_type": "WIN",
+      "min_active_runners_in_decision_book": 5,
+      "number_of_winners": 1,
+      "price_ladder": "CLASSIC"
+    },
+    "off": "marketStartTime in the fresh catalogue row; the event's openDate is never the off",
+    "prefilter": {
+      "key": "delayed",
+      "read": "one listMarketBook with EX_BEST_OFFERS and virtual prices on, per market on Pilot 1's scheduler list",
+      "from_offset_s": -540,
+      "to_offset_s": -460,
+      "flag": "isMarketDataDelayed is true and some ACTIVE runner meets rule.selection",
+      "book_not_delayed": "discarded; never evidence and never a reason to read the live key",
+      "unflagged": "never opened or reserved, except a probe session's drill race",
+      "use": "timing only, never evidence"
+    },
+    "evidence": "After the reservation, one fresh live-key catalogue row and one decision book with isMarketDataDelayed false and virtual prices on; classified once into one PLACE or SKIP record; no second fetch.",
+    "window": {
+      "decision_book_observed_from_offset_s": -300,
+      "length_s": 15,
+      "outside": "SKIP(window)"
+    },
+    "selection": {
+      "in_band": "ACTIVE; best back b and best lay l both on the CLASSIC ladder; b < l",
+      "best_back_from_h": 150,
+      "best_back_to_h": 590,
+      "spread_ticks": [3, 4],
+      "choice": "the lowest b, then the lowest l, then the lowest selection id; a tie is never a SKIP",
+      "depth": "no depth predicate",
+      "skip_codes": ["no_runner_in_band", "spread_out_of_band"]
+    },
+    "legs": {
+      "order": ["BACK", "LAY"],
+      "back": {"limit_price": "the decision book's best lay - 1 CLASSIC tick", "size_p": 200},
+      "lay": {"limit_price": "the decision book's best back + 1 CLASSIC tick", "size_p": 200, "max_price_h": 600},
+      "order_type": "LIMIT",
+      "persistence_type": "LAPSE",
+      "instructions_per_request": 1,
+      "send_book": "each leg on its own fresh live-key send book with virtual prices on; V0-V14 and V9b, with V13 at most 3 ticks",
+      "passive_check": "on the leg's send book, best back < leg price < best lay, our own resting BACK included; otherwise leg_not_passive, the leg is not sent and the market is latched",
+      "incomplete_pair": "BACK sent and LAY not sent (not passive, refused, late or FAILED): whole-cancel the BACK at once with KILL cases 1-4; the decision is pair_incomplete",
+      "unknown_place_outcome": "an UNKNOWN place outcome on either leg triggers auto-kill",
+      "back_not_sent": "nothing is sent"
+    },
+    "send_deadline_offset_s": -240,
+    "cancel": {
+      "offset_s": -60,
+      "off": "the PLACE or drill record's off",
+      "late": "a process that finds the wall clock more than one poll past the cancel point pulls at once; at or after the off it is a failed cancel",
+      "procedure": "read both legs by bet id; whole-cancel each leg still EXECUTABLE, the LAY first, one instruction per request; read both legs again",
+      "matched": "rides to the result; nothing is hedged, exited, re-priced, replaced or retried",
+      "failed": "auto-kill: KILL file, close the open, Pilot 2's own-scope kill as a child process, then the handoff",
+      "market_suspended": "cancel_market_suspended, no auto-kill; read status and legs every 5 s; one more whole cancel if the market reopens before the off; otherwise LAPSE acts"
+    },
+    "decisions_per_market_for_the_contract_life": 1,
+    "on_failed_predicate": "SKIP with a code"
+  },
+  "money": {
+    "stake_per_leg_p": 200,
+    "max_lay_price_h": 600,
+    "worst_race_p": 1000,
+    "worst_race_reason": "the LAY fully matched and its runner wins; per outcome, with no hedge credit, the BACK's loss is in the other outcome",
+    "day_stop_p": 2000,
+    "day_stop_reading": "hard_ceiling: a PLACE only if the day's worst-case equity minus 1000p stays at or above -2000p",
+    "pilot_stop_p": 10000,
+    "pilot_stop_reading": "a PLACE only if the pilot's worst-case equity minus 1000p stays at or above -10000p",
+    "max_open_worst_case_p": 2000,
+    "drill": {
+      "probe": "LAY 1.00 @ 1.01 plus BACK 1.00 @ 1000 on one runner",
+      "when": "only in the probe sessions, the first armed sessions after registration, one drill race each; before go-live the same faults run against a stand-in transport in a scratch state root and send nothing",
+      "faults": ["the scheduled cancel", "Ctrl-C", "the KILL file", "Pilot 2's kill", "a network cut at the cancel point", "SIGKILL, then Yu's kill", "SIGSTOP past the cancel point", "a sleep or a clock jump"],
+      "exempt_from": ["V13", "the passive check", "rule.selection"],
+      "r13": "binds each probe to its drill record instead of a decision record; a drill race uses up its market",
+      "records": "drill records, not PLACE records; outside the ledger and the verdict",
+      "before_any_place": "every probe drill has a passing receipt; a failed drill stops Pilot 2 until Astra has reviewed it and Yu decides again",
+      "max_loss_per_race_p": 100,
+      "max_races": 8,
+      "counts": "only races in which a probe order was sent; a drill whose probe was never sent is run again and does not count",
+      "market": "the session's first market on Pilot 1's scheduler list that meets rule.market, with no pre-filter flag needed; reserved at off - 300 s",
+      "runner": "the lowest best back in the decision book, then the lowest selection id",
+      "ledger": "outside Pilot 2's ledger, inside the overall budget"
+    },
+    "website_loss_limit_per_day_p": 5000,
+    "overall_budget": "open: Yu decides at the build consent (Pilot 1 -99000p + Pilot 2 -10000p + drill probes -800p + the November 2026 manual drills -1000p = -110800p, against 100000p)",
+    "separate_from_pilot_1": "Pilot 2's ledger starts at 0p; nothing of Pilot 2 enters Pilot 1's slots, pause or running total"
+  },
+  "placement_limits": {
+    "counts": "PLACE records, not submitted instructions; a PLACE takes its lifetime slot and day slot in its own append",
+    "place_records_per_utc_day": 5,
+    "lifetime_place_records": 10,
+    "place_records_per_pt4_session": 5,
+    "races_in_flight": 1,
+    "skip_streak_ends_session": 5,
+    "reservations": "every reservation uses up its market, SKIP included; no reservation is ever released",
+    "when_full": "SKIP(cap)",
+    "sessions": "at most one pilot session a UTC day across both pilots; never on a day with a Pilot 1 session; arming refused while any Pilot 1, manual or Bet Angel bet of ours is open or unsettled",
+    "in_session": "a Pilot 1, manual or Bet Angel bet of ours open or unsettled at a Pilot 2 open HALTs the session; no send while any Pilot 1 session window is open"
+  },
+  "caps": {
+    "config_names": "orders.caps.<name without its unit suffix>, max_book_age_s in seconds, and orders.rules.external_exposure_tolerance, in config-p2.json",
+    "external_exposure_tolerance_p": 0,
+    "max_book_age_ms": 2000,
+    "max_daily_loss_p": 2000,
+    "max_instructions_per_request": 1,
+    "max_liability_per_order_p": 1000,
+    "max_market_exposure_p": 1000,
+    "max_minutes_before_off": 10,
+    "max_orders_per_day": 10,
+    "max_orders_per_hour": 12,
+    "max_orders_per_minute": 2,
+    "max_price_deviation_ticks": 3,
+    "max_stake_per_order_p": 200,
+    "max_total_exposure_p": 2000
+  },
+  "shared_with_contract_p1": {
+    "contract_p1_sha256": "4dbccb5a45f7a4779e0263d4df5048f582f10b8dc3bd22c5f2e93e791155de92",
+    "sections": ["bsp", "final_execution"],
+    "reading": "per leg and per bet id, exactly as contract p1 defines them; C rows also keep placedDate and matchedDate"
+  },
+  "ledger": {
+    "W": "minus risk.worst_case_market_loss over the decision's legs, with no hedge credit, using checked current-order reads; before those reads, -1000p",
+    "pinned_examples_p": {
+      "pending_lone_lay_at_6_0": -1000,
+      "unsettled_round_trip_back_5_1_lay_5_0": -800,
+      "both_legs_checked_nothing_matched": 0,
+      "nothing_sent": 0
+    },
+    "contradiction": "the decision returns to -1000p and a review stop is set",
+    "S_requires": ["Yu's typed settle-market", "both legs final", "one WINNER and no removal", "the per-market commission check", "a P2-PT4 receipt with a matched, settled LAY"],
+    "commission": "commission_rate on each market's net, never per bet",
+    "pause": "none"
+  },
+  "measurement_classes": {
+    "unit": "one PLACE record: one market, one runner, up to two legs",
+    "order": ["protocol_violation", "definitely_unsent", "void", "post_decision_removal", "measurement_unresolved", "missing_bsp", "eligible"],
+    "rule": "each PLACE record ends in exactly one class; the first that applies wins; a decision with no fill is eligible and worth 0",
+    "post_decision_removal": "includes a non-runner removal that cancels our unmatched orders (inference, to check against Betfair's Exchange Horse Racing Rules: a reduction factor of 2.5% or more does so)"
+  },
+  "value_at_bsp": {
+    "inputs": "final matched sizes mB at price B and mL at price L",
+    "net_win": "mB * (B - 1) - mL * (L - 1)",
+    "net_lose": "mL - mB",
+    "commission": "commission_rate off whichever net is positive",
+    "value": "p * net_win + (1 - p) * net_lose, with p = 1 / BSP",
+    "deciding": "never"
+  },
+  "verdict": {
+    "population": "every PLACE record, P2-PT4 included",
+    "order": ["INVALID", "FAIL", "PASS", "INCOMPLETE"],
+    "INVALID": "any protocol_violation, including the day's or the pilot's worst-case equity ever below -2000p or -10000p",
+    "FAIL_if_any": [
+      "a leg ends measurement_unresolved",
+      "a sent leg is still EXECUTABLE at the off, so LAPSE removes it; cancels refused while the market was suspended are counted apart",
+      "more than one PLACE record needed an auto-kill or a handoff to Yu, suspended-market cases apart"
+    ],
+    "PASS": "lifetime_place_records PLACE records with none of the above",
+    "INCOMPLETE": "placing ended earlier with none of the above; reported as 'no failure in k decisions', never as PASS"
+  },
+  "reporting": {
+    "tables": ["D1 fills", "D2 time to fill", "D3 adverse selection", "D4 value at BSP by inventory state and price band", "D5 the funnel", "D6 settled profit and the running total"],
+    "tables_rule": "registered before the first PLACE record, computed once after the data lock, never deciding; groups under 30 values listed without intervals; P2-PT4 decisions shown apart",
+    "interim": "counts and codes only, on Pilot 1's allowlist, plus legs sent, legs refused as not passive, inventory-state counts and pre-filter flags",
+    "publication": "nothing enters Git or reports/ unless Yu approves the exact fields"
+  },
+  "endings": {
+    "final_date": "2027-06-30",
+    "placing_ends_at_first_of": ["lifetime_place_records PLACE records", "the final date", "no pilot room with nothing pending", "Yu in writing", "a breach of the Pilot 2 page"],
+    "protocol_violation": "ends placing at once"
+  }
+}

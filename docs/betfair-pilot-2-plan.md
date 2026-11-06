@@ -46,9 +46,8 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
 - **Yu, 2026-11-03, to lab-Claude: "Count first".** Before any Pilot 2 code, count for free how often today's markets show the spreads Pilot 2 would quote in. Build the pilot only if at least 1.4% of usable markets qualify over 10 or more racing days. This is registered in [docs/lp-rate-count.md](lp-rate-count.md), with Yu's choices on which run decides, and was amended once on 2026-11-04 on Yu's choice "Only new recordings".
 - **Yu, 2026-11-04, relayed, said but not decided:** "We can start now ah😂 no need record 10 days. And we can start small."
   - The Air's Claude read this as a decision to go on without waiting for Gate A, and asked Yu to confirm that reading.
-  - Yu has since confirmed only the drafting of this PR (below). Whether Pilot 2's code may be built without Gate A is still open for Yu (Open for Yu, below).
-  - Until Yu says so, "Count first" stands as registered.
-- **Yu, 2026-11-04, relayed: "2.是",** keeping Pilot 1 first. PR4 waits for Astra's acceptance of Pilot 1's go-live commit, and PR5 waits for Pilot 1's PT4.
+  - On 2026-11-06 Yu chose to wait for Gate A (below), so that reading does not hold.
+- **Yu, 2026-11-04, relayed: "2.是",** keeping Pilot 1 first. PR4 waits for Astra's acceptance of Pilot 1's go-live commit, and PR5 waits for Pilot 1's PT4. Yu confirmed this to lab-Claude on 2026-11-06 (below).
 - **Yu, 2026-11-05, relayed: "可以 let lab go ahead. 得".** This is the go-ahead for the lab to draft this PR (stage PR1: documents and one small test of the draft contract). It is not the build consent. The Air's Claude's proposals for the open questions remain proposals (Open for Yu, below).
 - **Yu, 2026-11-05, to lab-Claude: "Lets run live trading here actually".** Yu typed this on the lab Mac (the MacBook Pro). In a multiple-choice prompt the same day, Yu chose:
   - **"All of it":** the credentials, Pilot 1, Pilot 2, the manual £1 drills and the delayed-key price recorder all move from the Air to the lab Mac. The Air stops live work, so only one Mac trades.
@@ -60,6 +59,10 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
   Yu also approved rules for the lab Mac, kept in the lab's own instructions, not in the repo. Those that bear on Pilot 2 are on the page (Who does what).
   - What follows for Pilot 2 is on the page (What it allows, Who does what, How it ends), in the note (§2, §8, §15) and below (Before Pilot 2, Stage 0 and Gate A, Timeline, Risks).
   - Not decided, and open for Yu: where Astra's acceptance and the data-lock recomputation run, and how Astra reaches the lab Mac's journal, since the lab's Astra is tool-free (Open for Yu, below); whether the Air's helper scripts (arm-live.py, disarm-live.py, the config-field helper and livekey-check.py) come to the lab Mac; and which first-live gate items, beyond the T0, T1, T2, T5 and T9 redone on the lab Mac, Yu and Astra choose to repeat.
+- **Yu, 2026-11-06, to lab-Claude,** in a multiple-choice prompt, after Yu wrote "Lets go for LP trading :) Or anything to do before that?" and lab-Claude listed what comes first:
+  - **"Count first (Recommended)",** to "Should LP's code wait for the 10-day price count (Gate A)?": Pilot 2's code is built only after Gate A passes, as registered in [docs/lp-rate-count.md](lp-rate-count.md). The option said this costs little time, because Pilot 2's code cannot merge before Pilot 1's go-live anyway.
+  - **"Pilot 1 first (Recommended)",** to "Should Pilot 1 still go live before LP?": the relayed "2.是" above, now in Yu's own answer.
+  - **"Yes, without asking",** to "May I run the kill on this Mac without asking you first?": lab-Claude may run an own-scope kill on the lab Mac whenever something looks wrong, without asking first, and tells Yu straight after. The option told Yu that the kill never places a bet, cancels all our open orders, manual ones included, and stops Pilot 1 until Yu resumes it. This changes one of Yu's lab rules (page, Who does what).
 
 ## Before Pilot 2: attended manual drills
 Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all good" (relayed, 2026-11-04) and "用寬鬆版" (relayed, 2026-11-05). They are not part of Pilot 2.
@@ -86,7 +89,7 @@ Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all
   - It prints counts only.
   - Each run needs Yu's OK.
   - It can be read once 10 racing days and 300 usable markets are recorded.
-- As registered, Gate A decides whether Pilot 2's code is built. Whether Yu now waives that is open (Open for Yu, below).
+- Gate A decides whether Pilot 2's code is built, as registered. Yu confirmed this on 2026-11-06 ("Count first (Recommended)", Decided).
 - Either way, its pooled rate is the best estimate of how many decisions to expect. *Inference:* it is mostly an upper bound, because it uses delayed, conflated data with no virtual prices, and virtual prices close some spreads. They could also bring a few wider spreads into 3–4 ticks ([docs/lp-rate-count.md](lp-rate-count.md), What it cannot show).
 - **Gate B** is optional and needs Yu's yes (Open for Yu; note §16).
 
@@ -135,7 +138,7 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 | PR1 (this PR) | The page, the note, this plan, the draft contract p2-lp and the G1 follow-up. Docs only, plus a small test of the draft contract. Pilot 1's documents are unchanged | Astra's review; Yu merges | M |
 | PR2 (done) | The Stage 0 counter, [scripts/lp_rate_count.py](../scripts/lp_rate_count.py) (#56; amendment 1 in #57) | merged | S |
 | PR3 (optional) | Gate B: a counts-only table over Pilot 1's stored decision books | only with Yu's yes, and merged before Pilot 1's first PLACE record | S |
-| PR4 | The pure module pilot_lp.py: the contract loader, predicates, leg prices, passive check, two-leg record, fold, ledger, classes, value, verdict and tables | the build consent, and Gate A passed unless Yu says then to go on without it; merged only after Astra accepts Pilot 1's go-live commit | L |
+| PR4 | The pure module pilot_lp.py: the contract loader, predicates, leg prices, passive check, two-leg record, fold, ledger, classes, value, verdict and tables | the build consent and Gate A passed (Yu, 2026-11-06); merged only after Astra accepts Pilot 1's go-live commit | L |
 | PR5 | The gateway path for `pilot_lp`: two sends under one reservation, the passive check, read-cancel-read, the suspended-market rule, virtual prices on Pilot 2's books only, the in-session halts, and the drill probe's path (R13 to a drill record and its exemptions, for the fixed probe shape only) | merged only after Pilot 1's PT4 receipt, after the cross-version check, and after Gate B if PR3 exists | L, highest scrutiny |
 | PR6 | The executor and the `plp-*` commands: pre-filter, rest loop, pull, auto-kill, arming refusals | after PR5 | L |
 | PR7 | Capture, the data lock and the terminal report | after PR6 | M |
@@ -148,7 +151,6 @@ None of these needs an answer before the build consent, except Gate B, which nee
 
 | Question | The Air's Claude's proposal |
 |---|---|
-| May Pilot 2's code be built without waiting for Gate A (Decided, above)? | its reading of Yu's "We can start now": yes |
 | Overall budget: raise it, or keep £1,000 with the account balance as the joint stop (page, Money) | raise it to £1,100 (made before the manual drills' −£10 was counted; covering −£1,108 needs a budget of at least £1,108) |
 | Day stop: a hard ceiling (a race only if losing its full £10 still leaves the day at or above −£20), or stop once −£20 is reached | hard ceiling |
 | Confirm the 2026-11-03 money numbers for the automated pilot, with "5 a day" counting PLACE decisions | confirmed as given |
@@ -170,12 +172,12 @@ Also for Yu, before go-live:
 
 ## Timeline (*Inference*)
 - **November 2026:** this PR and Astra's review, after Pilot 1's review queue. The move to the lab Mac and its attended first-live tests (Decided). Then the attended manual drills, after the lab Mac's T9 probe. Recording starts on the lab Mac when Yu loads the recorder there.
-- **Once 10 racing days and 300 usable markets are recorded:** Gate A can be read. If it fails, no Pilot 2 code is built unless Yu decides to go on anyway; Yu then chooses between stopping at £0 and the levers with their counts.
-- **December:** the build consent when Yu is ready. PR4 is drafted once Gate A has passed, or once Yu has said at the build consent to go on without it. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
+- **Once 10 racing days and 300 usable markets are recorded:** Gate A can be read. If it fails, no Pilot 2 code is built (Yu, 2026-11-06); Yu then chooses between stopping at £0 and the levers with their counts.
+- **December:** the build consent when Yu is ready. PR4 is drafted once Gate A has passed and Yu has given the build consent. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
 - **January to February 2027:** PR4 merges once Astra has accepted Pilot 1's go-live commit. After Pilot 1's PT4 receipt, PR5 to PR8 follow with Codex and Astra rounds, about 4–6 weeks, with review dominating.
 - **February to March:** P2-PT2, P2-PT3, the G1 answer or Yu's recorded decision, the commission check, Astra's acceptance, Yu's go-live consent and registration. Then about 8 probe sessions, each on a day with no Pilot 1 session, and P2-PT4.
 - **March or April at the earliest, to 2027-06-30:** Pilot 2 sessions on days without Pilot 1.
-- Going on without Gate A would not bring this forward: the dates are set by the Pilot 1-first order and by review time. If Pilot 1 slips, Pilot 2 slips by the same amount.
+- *Inference:* waiting for Gate A, as Yu chose on 2026-11-06, does not move these dates, which are set by the Pilot 1-first order and by review time, as long as the lab Mac records its 10 racing days before the build consent. If Pilot 1 slips, Pilot 2 slips by the same amount.
 
 ## Risks
 - **Too few decisions.** The likeliest outcome is a handful of decisions and an INCOMPLETE verdict.

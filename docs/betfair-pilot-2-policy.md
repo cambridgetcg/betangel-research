@@ -98,7 +98,7 @@ Not weakened: Pilot 1's contract, config, caps, its one BACK per race, its immed
 ## Three consents
 1. **Build.**
    - Yu confirms the Money table: Yu's 2026-11-03 numbers for this automated pilot, each *proposed* row (the £ caps included), the day stop's reading and the overall budget. They are written into the contract, which is then frozen.
-   - Gate A: on 2026-11-06 Yu chose to wait for it ("Count first (Recommended)"; [plan](betfair-pilot-2-plan.md), Decided). Pilot 2's code is built only after Gate A, the free Stage 0 count, passes. The Air's Claude had read Yu's "We can start now ah😂 no need record 10 days" (2026-11-04) as going on without Gate A; that reading does not hold.
+   - Gate A: on 2026-11-06 Yu chose to wait for it ("Count first (Recommended)"; [plan](betfair-pilot-2-plan.md), Decided). Pilot 2's code merges only after Gate A, the free Stage 0 count, passes. On 2026-11-08 Yu chose to have the code drafted before then, as PRs nobody merges ("Draft now, gates unchanged (Recommended)"; plan, Decided). Drafting moves no gate. The Air's Claude had read Yu's "We can start now ah😂 no need record 10 days" (2026-11-04) as going on without Gate A; that reading does not hold.
    - Astra reviews this page, the engineering note, the plan and the frozen contract, and accepts them.
    - Yu then approves this page as committed, together with the changes to Pilot 1's documents listed below, and the frozen contract by its raw-bytes sha256. Yu gives a plain-words yes to each item under What it relaxes.
    - This consent allows no live order. With no registration receipt, the pilot checks refuse every Pilot 2 placement.

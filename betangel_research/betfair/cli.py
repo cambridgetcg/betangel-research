@@ -63,7 +63,7 @@ from .paths import StatePaths, network_forbidden, overrides_allowed
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPS_KEYS = frozenset({"home", "keychain_runner", "http_transport", "stream_socket_factory", "clock", "confirmer",
-                       "env", "pilot_context", "processes"})
+                       "env", "pilot_context", "processes", "git_runner", "popen"})
 READ_STATUS = "betfair_read_response_personal_use_not_for_redistribution"
 GITIGNORE_PATTERNS = ("*.crt", "*.key", "*.p12", "*.pfx", "*.pem")
 LOGIN_RESET_PHRASE = "RESET LOGIN FAILURES"
@@ -2389,7 +2389,8 @@ def _p2_factory(args, ctx, config):
 
 def _p2_env(args, ctx, *, best_effort=False):
     """What p2_run needs, built here so p2_run never imports the gateway (as _pilot_env): config-p2 from
-    load_config_p2, the gateway factory, and read sessions on preloaded credentials (_pilot_read_session)."""
+    load_config_p2, the gateway factory, read sessions on preloaded credentials (_pilot_read_session), and the runners
+    for git (the commit and a clean tree) and caffeinate (deps git_runner and popen stand in for them in tests)."""
     from types import SimpleNamespace
     from . import admission, pilot_run
     from .config import load_config_p2
@@ -2404,16 +2405,18 @@ def _p2_env(args, ctx, *, best_effort=False):
     env = SimpleNamespace(args=args, ctx=ctx, paths=paths, config=config, clock=ctx.clock, terminal=terminal,
                           confirmer=ctx.live_confirmer(), keychain_runner=ctx.keychain_runner, environ=dict(ctx.env),
                           paused_flag=ctx.paused_flag, signal_stop=SignalStop,
-                          processes=ctx.deps.get("processes") or admission.SYSTEM_PROCESSES)
+                          processes=ctx.deps.get("processes") or admission.SYSTEM_PROCESSES,
+                          git_runner=ctx.deps.get("git_runner") or subprocess.run,
+                          popen=ctx.deps.get("popen") or subprocess.Popen)
     env.gateway_factory = _p2_factory(args, ctx, config)
     env.read_session_factory = lambda credentials: _pilot_read_session(args, ctx, paths, config, credentials)
     return env
 
 
 def _p2_executor():
-    """The executor module, p2_run (PR-2 part B writes it and this returns it). Until then this stands in: p2-run and
-    p2-summary refuse before anything is read, and the package's static imports name only modules that exist."""
-    raise _Done(2, "Betfair order refused: p2_executor_not_built")
+    """The executor module, p2_run (imported only by the two Pilot 2 commands)."""
+    from . import p2_run
+    return p2_run
 
 
 def _p2_command(args, ctx, name, *, best_effort=False, logs_in=False):

@@ -76,6 +76,8 @@ class StatePaths:
         self.profiles_dir = self.root / "profiles"
         self.profile_dir = self.profiles_dir / self.profile
         self.config_path = self.profile_dir / "config.json"
+        # Pilot 2's own config (docs/betfair-pilot-2-engineering.md §2): read only by config.load_config_p2.
+        self.config_p2_path = self.profile_dir / "config-p2.json"
         self.auth_dir = self.profile_dir / "auth"
         self.login_ledger = self.auth_dir / "login-ledger.jsonl"
         self.orders_dir = self.profile_dir / "orders"

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stage 0 rate count for Pilot 2, registered in docs/lp-rate-count.md: first merged at 9e69b73 before any recording
-was read, and amended once (amendment 1, 2026-11-04) before any qualifying count was printed.
+was read, and amended three times before any qualifying count was printed (amendment 1, 2026-11-04; amendment 2,
+2026-11-05, no code change; amendment 3, 2026-11-09, the plain bot's decision time, off -590 s).
 
 It counts how often GB/IE horse-racing WIN markets in the #41 recorder's delayed-key recordings show the spreads
 Pilot 2 would quote in, per racing day (UTC date of the off) and pooled, and prints Gate A. It decides nothing else.
@@ -37,12 +38,12 @@ import re
 import stat
 import sys
 
-SCHEMA = "lp-rate-count/v2"
+SCHEMA = "lp-rate-count/v3"
 REGISTRATION = "docs/lp-rate-count.md"
 
 # --- the registered count (docs/lp-rate-count.md); changing any of these is a new registration ---------------
-DECISION_S = -300
-PERSISTENCE_S = -460
+DECISION_S = -590                           # amendment 3: the plain bot decides from off -590 s
+PERSISTENCE_S = -780                        # amendment 3: the end of the plain bot's delayed screen
 WINDOW_S = (-600, -300)                     # inclusive at both ends
 OFFSETS_S = (WINDOW_S[0], PERSISTENCE_S, DECISION_S)
 MAX_AGE_MS = 180_000                        # usable only if the data is no older than this at off + X
@@ -56,8 +57,8 @@ PRICE_LEVER_BACK_H = (600, 1000)            # 6.0 <= best back <= 10.0
 PRIMARY_TICKS = (3, 4)                      # best lay exactly 3 or 4 CLASSIC ticks above best back
 WIDTH_LEVER_TICKS = (5, 7)
 GATE_MIN_DAYS = 10
-GATE_MIN_USABLE = 300                       # usable markets at -300 s, pooled (Yu, 2026-11-03)
-GATE_PER_MILLE = 14                         # 1.4% of markets usable at -300 s
+GATE_MIN_USABLE = 300                       # usable markets at DECISION_S, pooled (Yu, 2026-11-03)
+GATE_PER_MILLE = 14                         # 1.4% of markets usable at DECISION_S
 
 # --- what a session must be to be read -------------------------------------------------------------------------
 REQUIRED_FIELDS = ("EX_BEST_OFFERS", "EX_MARKET_DEF")
@@ -73,9 +74,9 @@ NOT_USABLE = ("no_snapshot", "invalid", "out_of_population", "not_open_or_in_pla
 SESSION_SKIPS = ("recorded_before_registration", "not_a_directory", "no_receipt", "receipt_unreadable",
                  "not_delayed_key", "conflation_not_registered", "subscription_not_registered")
 SEGMENT_SKIPS = ("missing", "unreadable", "hash_mismatch", "replay_check_not_passed")
-COLUMNS = ("recorded", "usable_300", "primary", "flagged_460", "persistence", "persistence_two_batches", "window",
+COLUMNS = ("recorded", "usable", "primary", "flagged", "persistence", "persistence_two_batches", "window",
            "price_lever", "width_lever")
-RATE_COLUMNS = COLUMNS[2:]                  # every one a subset of usable_300; withheld until Gate A can be read
+RATE_COLUMNS = COLUMNS[2:]                  # every one a subset of usable; withheld until Gate A can be read
 TABLE_COLUMNS = (("primary", "primary"), ("persistence", "persistence"), ("window", "window"),
                  ("price_lever", "price lever"), ("width_lever", "width lever"))
 GATE_RESULTS = ("PASS", "FAIL", "NOT_ENOUGH_DAYS", "NOT_ENOUGH_MARKETS", "RECORDING_OPEN")
@@ -657,7 +658,7 @@ def tally(count):
     """Every column per UTC date of the off and pooled, before anything is withheld; the not-usable reasons and
     revised-marketTime counts per date too, so a summary can pool them over the same dates as the columns."""
     days = {}
-    not_usable = {}                                    # why markets were not usable at -300 s, per date
+    not_usable = {}                                    # why markets were not usable at DECISION_S, per date
     revised = {}                                       # usable markets with a revised marketTime, per date
     for market_id in sorted(count.offs):
         day = utc_date(count.offs[market_id])
@@ -671,9 +672,9 @@ def tally(count):
         earlier_pt, earlier = count.at(market_id, PERSISTENCE_S)
         _, start = count.at(market_id, WINDOW_S[0])
         flagged = earlier[0] == USABLE and earlier[1]
-        row["usable_300"] += 1
+        row["usable"] += 1
         row["primary"] += decision[1]
-        row["flagged_460"] += flagged
+        row["flagged"] += flagged
         row["persistence"] += decision[1] and flagged
         row["persistence_two_batches"] += decision[1] and flagged and earlier_pt != decision_pt
         row["window"] += (start[0] == USABLE and start[1]) or market_id in count.window
@@ -681,9 +682,9 @@ def tally(count):
         row["width_lever"] += decision[3]
         revised[day] = revised.get(day, 0) + (market_id in count.revised)
     pooled = {column: sum(row[column] for row in days.values()) for column in COLUMNS}
-    racing_days = sum(1 for row in days.values() if row["usable_300"] > 0)
-    return {"days": days, "pooled": pooled, "racing_days": racing_days, "not_usable_300": not_usable,
-            "schedule_revised_by_300": revised}
+    racing_days = sum(1 for row in days.values() if row["usable"] > 0)
+    return {"days": days, "pooled": pooled, "racing_days": racing_days, "not_usable": not_usable,
+            "schedule_revised": revised}
 
 
 def gate_days(days):
@@ -691,8 +692,8 @@ def gate_days(days):
     racing days and GATE_MIN_USABLE usable markets; None while they have not. Later dates never change Gate A."""
     racing_days = usable = 0
     for day in sorted(days):
-        racing_days += days[day]["usable_300"] > 0
-        usable += days[day]["usable_300"]
+        racing_days += days[day]["usable"] > 0
+        usable += days[day]["usable"]
         if racing_days >= GATE_MIN_DAYS and usable >= GATE_MIN_USABLE:
             return day
     return None
@@ -705,18 +706,18 @@ def summarise(count):
     through = gate_days(days)
     pooled_days = [day for day in days if through is None or day <= through]
     pooled = {column: sum(days[day][column] for day in pooled_days) for column in COLUMNS}
-    racing_days = sum(1 for day in pooled_days if days[day]["usable_300"] > 0)
+    racing_days = sum(1 for day in pooled_days if days[day]["usable"] > 0)
     recording_open = through is not None and not count.day_closed(through)
-    result = gate_a(racing_days, pooled["primary"], pooled["usable_300"], recording_open)
+    result = gate_a(racing_days, pooled["primary"], pooled["usable"], recording_open)
     withheld = result not in DECIDED
 
     def shown(row):
         if withheld:
-            return {"recorded": row["recorded"], "usable_300": row["usable_300"]}
-        return {**row, "rates_bp": {c: rate_bp(row[c], row["usable_300"]) for c in RATE_COLUMNS}}
+            return {"recorded": row["recorded"], "usable": row["usable"]}
+        return {**row, "rates_bp": {c: rate_bp(row[c], row["usable"]) for c in RATE_COLUMNS}}
 
     gate = {"result": result, "through": through, "racing_days": racing_days, "min_racing_days": GATE_MIN_DAYS,
-            "usable_300": pooled["usable_300"], "min_usable_300": GATE_MIN_USABLE,
+            "usable": pooled["usable"], "min_usable": GATE_MIN_USABLE,
             "recording_open": recording_open, "threshold_per_mille": GATE_PER_MILLE}
     if not withheld:
         gate["primary"] = pooled["primary"]
@@ -725,12 +726,12 @@ def summarise(count):
         "inputs": {"sessions": dict(count.sessions), "segments": dict(count.segments),
                    "markets_without_off": len(count.seen - set(count.offs))},
         "counts_withheld": withheld,
-        "days": [{"date": day, "racing_day": days[day]["usable_300"] > 0, "in_gate_a": day in pooled_days,
+        "days": [{"date": day, "racing_day": days[day]["usable"] > 0, "in_gate_a": day in pooled_days,
                   **shown(days[day])} for day in sorted(days)],
         "pooled": {**shown(pooled), "racing_days": racing_days},
-        "not_usable_300": {code: sum(counted["not_usable_300"].get(day, {}).get(code, 0) for day in pooled_days)
-                           for code in NOT_USABLE},
-        "schedule_revised_by_300": sum(counted["schedule_revised_by_300"].get(day, 0) for day in pooled_days),
+        "not_usable": {code: sum(counted["not_usable"].get(day, {}).get(code, 0) for day in pooled_days)
+                       for code in NOT_USABLE},
+        "schedule_revised": sum(counted["schedule_revised"].get(day, 0) for day in pooled_days),
         "gate_a": gate,
         "limits": LIMITS,
     }
@@ -745,7 +746,7 @@ def render_table(summary):
     shown = () if withheld else TABLE_COLUMNS
 
     def cells(label, row):
-        out = [f"{label:<10}", f"{row['recorded']:>9}", f"{row['usable_300']:>7}"]
+        out = [f"{label:<10}", f"{row['recorded']:>9}", f"{row['usable']:>7}"]
         for column, _ in shown:
             out.append(f"{row[column]:>6} {_percent(row['rates_bp'][column]):>8}")
         return "  ".join(out)
@@ -754,27 +755,27 @@ def render_table(summary):
     sessions, segments = inputs["sessions"], inputs["segments"]
     header = "  ".join([f"{'date':<10}", f"{'recorded':>9}", f"{'usable':>7}"] + [f"{name:>15}" for _, name in shown])
     lines = [f"LP rate count ({SCHEMA}; definitions in {REGISTRATION}). Counts and rates only; "
-             "rates are of markets usable at -300 s, rounded down.", f"script sha256 {summary['script_sha256']}",
-             header]
+             f"rates are of markets usable at {DECISION_S} s, rounded down.",
+             f"script sha256 {summary['script_sha256']}", header]
     lines += [cells(row["date"], row) for row in summary["days"]]
     lines.append(cells("pooled", pooled))
-    lines.append(f"racing days: {pooled['racing_days']} (UTC dates of the off with a market usable at -300 s)")
+    lines.append(f"racing days: {pooled['racing_days']} (UTC dates of the off with a market usable at {DECISION_S} s)")
     later = sum(1 for row in summary["days"] if not row["in_gate_a"])
     if later:
         lines.append(f"pooled and Gate A cover the dates through {gate['through']}; the {later} later dates are "
                      "descriptive only")
     if withheld:
         lines.append(f"qualifying counts withheld until Gate A can be read: {gate['min_racing_days']} racing days and "
-                     f"{gate['min_usable_300']} usable markets, and the recording of the last of those dates ended")
+                     f"{gate['min_usable']} usable markets, and the recording of the last of those dates ended")
     else:
-        flagged = pooled["flagged_460"]
+        flagged = pooled["flagged"]
         lines.append(f"persistence in delayed data, not live recall: {pooled['persistence']} of {flagged} usable "
-                     f"markets flagged at -460 s ({_percent(rate_bp(pooled['persistence'], flagged))}); "
+                     f"markets flagged at {PERSISTENCE_S} s ({_percent(rate_bp(pooled['persistence'], flagged))}); "
                      f"from two different data batches {pooled['persistence_two_batches']} "
                      f"({_percent(rate_bp(pooled['persistence_two_batches'], flagged))})")
-    lines.append("not usable at -300 s: " + ", ".join(f"{k} {v}" for k, v in summary["not_usable_300"].items()))
-    lines.append(f"marketTime revised at or before off -300 s (counted, not excluded): "
-                 f"{summary['schedule_revised_by_300']} of {pooled['usable_300']} usable")
+    lines.append(f"not usable at {DECISION_S} s: " + ", ".join(f"{k} {v}" for k, v in summary["not_usable"].items()))
+    lines.append(f"marketTime revised at or before off {DECISION_S} s (counted, not excluded): "
+                 f"{summary['schedule_revised']} of {pooled['usable']} usable")
     lines.append(f"sessions: {sessions['read']} read of {sessions['found']}, {sessions['read_partial']} of them from "
                  "a partial receipt (running or crashed) (" + ", ".join(f"{k} {sessions[k]}" for k in SESSION_SKIPS)
                  + ")")
@@ -783,13 +784,13 @@ def render_table(summary):
                  + f"); unlisted {segments['unlisted']}; session listings failed {segments['listing_failed']}; "
                  f"markets without an off {inputs['markets_without_off']}")
     state = "-" if gate["through"] is None else "is still open" if gate["recording_open"] else "has ended"
-    needs = (f"racing days {gate['racing_days']}, needs {gate['min_racing_days']}; usable {gate['usable_300']}, "
-             f"needs {gate['min_usable_300']}; pooled through {gate['through'] or '-'}, whose recording {state}")
+    needs = (f"racing days {gate['racing_days']}, needs {gate['min_racing_days']}; usable {gate['usable']}, "
+             f"needs {gate['min_usable']}; pooled through {gate['through'] or '-'}, whose recording {state}")
     if withheld:
         lines.append(f"Gate A: {gate['result']} ({needs})")
     else:
         lines.append(f"Gate A: {gate['result']} ({needs}; "
-                     f"primary {gate['primary']} of {gate['usable_300']} usable at -300 s, "
+                     f"primary {gate['primary']} of {gate['usable']} usable at {DECISION_S} s, "
                      f"{_percent(pooled['rates_bp']['primary'])} rounded down; passes when primary x 1000 >= "
                      f"{gate['threshold_per_mille']} x usable)")
     lines.append(f"Limits: {LIMITS}. It decides nothing beyond Gate A.")

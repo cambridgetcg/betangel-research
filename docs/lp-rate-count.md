@@ -1,8 +1,8 @@
 # LP rate count: Stage 0 for Pilot 2
 
-Status: Registration, written 2026-11-03 and first merged that day (PR #56, commit 9e69b73, stamped 23:04:55Z) before any recording was read for it. Amended once on 2026-11-04, before any qualifying count was printed ([amendment 1](#amendment-1-2026-11-04)); the amendment changes only which sessions are read and which code decides. Amended again on 2026-11-05, also before any qualifying count could be printed ([amendment 2](#amendment-2-2026-11-05)): the recorder and the deciding run move to the lab Mac (the MacBook Pro), and no code changes. The counter is not run again until amendment 1 has merged, nor on the lab Mac until amendment 2 has merged. The only run so far, on the Air on 2026-11-04, could print no more than NOT_ENOUGH_DAYS. On 2026-11-03 Yu chose "Count first": before any Pilot 2 code is built, count for free how often today's GB/IE horse-racing WIN markets show the spreads Pilot 2 would quote in. Later the same day Yu also settled which run decides Gate A, a minimum number of markets, and that qualifying counts stay hidden until then ([Yu's choices](#yus-choices-2026-11-03)).
+Status: Registration, written 2026-11-03 and first merged that day (PR #56, commit 9e69b73, stamped 23:04:55Z) before any recording was read for it. Amended once on 2026-11-04, before any qualifying count was printed ([amendment 1](#amendment-1-2026-11-04)); the amendment changes only which sessions are read and which code decides. Amended again on 2026-11-05, also before any qualifying count could be printed ([amendment 2](#amendment-2-2026-11-05)): the recorder and the deciding run move to the lab Mac (the MacBook Pro), and no code changes. Amended a third time on 2026-11-09, before any count was read on the lab Mac ([amendment 3](#amendment-3-2026-11-09)): the count moves to the plain bot's decision time, the last state at or before off −590 s instead of −300 s, and its pre-filter proxy from −460 s to −780 s, so the script, its sha256 and its output schema change. The counter is not run again until amendment 1 has merged, nor on the lab Mac until amendments 2 and 3 have merged. The only run so far, on the Air on 2026-11-04, could print no more than NOT_ENOUGH_DAYS. On 2026-11-03 Yu chose "Count first": before any Pilot 2 code is built, count for free how often today's GB/IE horse-racing WIN markets show the spreads Pilot 2 would quote in. Later the same day Yu also settled which run decides Gate A, a minimum number of markets, and that qualifying counts stay hidden until then ([Yu's choices](#yus-choices-2026-11-03)).
 
-For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, against betangel-research main 35da293; amendment 1 on 2026-11-04, against main b36c215; amendment 2 on 2026-11-05, against main c86764a.
+For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-03, against betangel-research main 35da293; amendment 1 on 2026-11-04, against main b36c215; amendment 2 on 2026-11-05, against main c86764a; amendment 3 on 2026-11-09, against 25c1341 (amendment 2's branch, PR #59).
 
 - The code is `scripts/lp_rate_count.py`, tested by `tests/test_lp_rate_count.py` on synthetic recordings only.
 - The definition comes from the Pilot 2 design (lab note, 2026-11-03, sections expected_rate, go_live_gates and code_stages PR2). This page fixes the details that design left open. It changes nothing in Pilot 1.
@@ -33,8 +33,8 @@ The input is the delayed-key recordings the #41 recorder writes on the lab Mac (
   - It is the same anchor lp-v1 (`docs/lp-study.md:23`), movement-v1 (`docs/movement-study.md:21`) and the recordings index (`betangel_research/betfair/recordings.py:12-14`) use.
   - The recorder's replay check makes sure every market's first change carries a marketTime (`betangel_research/betfair/recorder.py:125-131`).
 
-  A later revision does not move the off. Markets whose marketTime was revised at or before off −300 s are counted on their own line but not excluded, because the registered rule has no such exclusion.
-- **Racing day.** A racing day is a UTC date of the off on which at least one market is usable at −300 s. A short day, such as one where the lab Mac slept or the recorder crashed early, counts as a full racing day.
+  A later revision does not move the off. Markets whose marketTime was revised at or before off −590 s are counted on their own line but not excluded, because the registered rule has no such exclusion.
+- **Racing day.** A racing day is a UTC date of the off on which at least one market is usable at −590 s ([amendment 3](#amendment-3-2026-11-09)). A short day, such as one where the lab Mac slept or the recorder crashed early, counts as a full racing day.
 - **Snapshot at X.** This is the last recorded state at or before off + X. It holds every message with publish time pt ≤ off + X, so the batch published at off + X is included. Across segments, the latest such state is used.
   - A segment says nothing about a moment after its last line. Heartbeats count here: they arrive every 5 s, so a segment's last line is about when it stopped. If off + X falls after a segment's last line, that segment gives no snapshot at X. A state is never carried into a gap, as the recorder's own rule says. The gap of a few seconds between one segment and the next (a refresh every 30 minutes) can therefore lose a few snapshots, which show as no snapshot.
   - Times are always Betfair's pt, the same clock as marketTime. The lab Mac's `received_at` is never used, because nothing verifies it.
@@ -49,25 +49,25 @@ The input is the delayed-key recordings the #41 recorder writes on the lab Mac (
 
 ## Columns
 
-The script prints these per racing day and pooled. Every column counts markets usable at −300 s, and every rate is out of those markets, rounded down to 0.01%.
+The script prints these per racing day and pooled. Every column counts markets usable at −590 s ([amendment 3](#amendment-3-2026-11-09)), and every rate is out of those markets, rounded down to 0.01%.
 
 | Column | Counts the usable markets that are |
 | --- | --- |
-| usable | in the population, with a usable snapshot at −300 s (the denominator) |
-| primary | qualifying at −300 s |
-| flagged at −460 s | qualifying in the usable snapshot at −460 s (the last state at or before off −460 s). A proxy for Pilot 2's delayed pre-filter, which also sees virtual prices |
-| persistence | primary and flagged at −460 s. Labelled "persistence in delayed data, not live recall" |
-| persistence from two batches | persistence, where the −460 s and −300 s snapshots come from different delayed batches |
-| window | qualifying in some usable state from −600 s to −300 s: the state at −600 s, or the state after any line published after −600 s and up to −300 s |
+| usable | in the population, with a usable snapshot at −590 s (the denominator) |
+| primary | qualifying at −590 s |
+| flagged at −780 s | qualifying in the usable snapshot at −780 s (the last state at or before off −780 s). A proxy for the plain bot's delayed screen, which ends at off −780 s |
+| persistence | primary and flagged at −780 s. Labelled "persistence in delayed data, not live recall" |
+| persistence from two batches | persistence, where the −780 s and −590 s snapshots come from different delayed batches |
+| window | qualifying in some usable state from −600 s to −300 s: the state at −600 s, or the state after any line published after −600 s and up to −300 s. Description only: the plain bot's quotes rest from about −590 s to the pull at −300 s |
 | price lever | with an ACTIVE runner whose 6.0 ≤ b ≤ 10.0 and l is 3 or 4 ticks above |
 | width lever | with an ACTIVE runner whose 1.50 ≤ b ≤ 5.90 and l is 5 to 7 ticks above |
 
 - The table also shows "recorded": the markets in the recordings read, with their off on that date.
-- In `--json`, every column appears per racing day and pooled, with rates out of the usable markets. The table prints primary, persistence, window and the two levers per day; flagged and two-batch counts appear only in its pooled persistence line, where persistence and the two-batch count are shown as shares of the markets flagged at −460 s. That share is how often a delayed flag still holds at −300 s.
-- The −460 s and −300 s snapshots are 160 s apart, but delayed batches come every 180 s, so both can be the same batch seen twice. The two-batch count leaves those out.
+- In `--json`, every column appears per racing day and pooled, with rates out of the usable markets. The table prints primary, persistence, window and the two levers per day; flagged and two-batch counts appear only in its pooled persistence line, where persistence and the two-batch count are shown as shares of the markets flagged at −780 s. That share is how often a delayed flag still holds at −590 s.
+- The −780 s and −590 s snapshots are 190 s apart, more than the 180 s age limit, so a usable −590 s state never comes from the batch seen at −780 s, and the two-batch count equals persistence (*inference* from the age rule; [amendment 3](#amendment-3-2026-11-09)).
 
 It also prints:
-- why markets were not usable at −300 s (no snapshot, invalid, out of population, not open or in play, under 5 ACTIVE), over the same dates as the pooled row;
+- why markets were not usable at −590 s (no snapshot, invalid, out of population, not open or in play, under 5 ACTIVE), over the same dates as the pooled row;
 - the revised-marketTime line, over the same dates;
 - the sessions and segments it read and skipped, and how many sessions it read from a partial receipt (still running, or crashed);
 - the sha256 of the script's own bytes.
@@ -80,11 +80,11 @@ It never prints a market id, selection id, event name, venue, price or time of d
 
 Gate A is fixed by the recordings, not by when the script is run:
 
-- **Its dates.** Walking the UTC dates of the off in order, Gate A pools every date up to and including the first date D on which the running totals reach 10 racing days and 300 markets usable at −300 s. Dates after D never change it. They are printed per day for description only and are not pooled.
+- **Its dates.** Walking the UTC dates of the off in order, Gate A pools every date up to and including the first date D on which the running totals reach 10 racing days and 300 markets usable at −590 s. Dates after D never change it. They are printed per day for description only and are not pooled.
 - **When it can be read.** Only once D's recording has ended: a session started on a later UTC date exists, or the latest session's final `receipt.json` says complete with a stop reason that ends the recording day (`end_at_reached`, `max_duration_reached` or `max_seconds_reached`, as `recording_day.DONE_STOPS`). A session stopped for live work (`stop_requested`) or for a reconnect restart has not ended the day, because the daily wrapper resumes recording after it. Each session's receipt is read once, so the data and this check come from the same read.
-- So every run of the deciding code ([amendment 1](#amendment-1-2026-11-04)) after D's recording ends gives the same PASS or FAIL.
+- So every run of the deciding code ([amendment 3](#amendment-3-2026-11-09)) after D's recording ends gives the same PASS or FAIL.
 
-- **PASS.** The primary count is at least 1.4% of the markets usable at −300 s, pooled. The test is exact: primary × 1000 ≥ 14 × usable. Yu then decides whether Pilot 2 is built. The count starts nothing on its own.
+- **PASS.** The primary count is at least 1.4% of the markets usable at −590 s, pooled. The test is exact: primary × 1000 ≥ 14 × usable. Yu then decides whether Pilot 2 is built. The count starts nothing on its own.
 - **FAIL.** Below 1.4%. No Pilot 2 code is built unless Yu records a decision to go on anyway. Yu then chooses between:
   - stopping LP here, at a cost of £0; or
   - the lab bringing the levers with their counts (deciding from −600 to −300 s, lays above 6.0 at a smaller stake, wider spreads, or other markets).
@@ -92,14 +92,14 @@ Gate A is fixed by the recordings, not by when the script is run:
 - **NOT_ENOUGH_MARKETS.** 10 racing days or more, but fewer than 300 usable markets so far. Wait, then run it again.
 - **RECORDING_OPEN.** D is known, but its recording has not ended: the latest session is still recording, crashed, or was stopped for live work or a restart. Run it again after 23:00 London, or once a later day's session exists. A file or symlink with a session's name is not a session and is ignored here.
 - The threshold is 1.4%, about 0.5 qualifying markets a racing day. That is roughly five times the 2015-16 rate of 0.25–0.3% of markets (design, expected_rate).
-  - That comparison is approximate. lp-v1 excluded markets whose schedule was revised and divided by indexed markets. This count keeps revised markets and divides by markets usable at −300 s.
+  - That comparison is approximate. lp-v1 excluded markets whose schedule was revised and divided by indexed markets. This count keeps revised markets and divides by markets usable at −590 s.
 
 ### Yu's choices (2026-11-03)
 
 Yu took the lab's three suggestions ("Lets go with what you recommeded"):
 
-1. **The first decisive result decides.** The lab's suggestion was the first run after the 10th racing day's recording has closed. The script builds that in: Gate A pools a fixed set of dates and is read only after the last of them has ended, so the result does not depend on when anyone runs it. It cannot be re-run until it passes. The decisive run is a run of the deciding code (amendment 1's), on the lab Mac ([amendment 2](#amendment-2-2026-11-05)), with `--root` set to the recorder's recordings directory (the command below). A run on a copy, a subset or test data decides nothing.
-2. **At least 300 usable markets,** pooled, as well as 10 racing days. A short day, such as one where the lab Mac slept, still counts as a racing day, but 10 thin days cannot decide the gate. In 2025 there were about 36.5 GB/IE WIN markets a day (`docs/betfair-pilot-1-plan.md:204`), but that counts all markets, not markets usable at −300 s in these recordings. lp-v1 replayed about 31 a date in 2015-16. So 300 usable markets may take a few days more than 10 (*inference*).
+1. **The first decisive result decides.** The lab's suggestion was the first run after the 10th racing day's recording has closed. The script builds that in: Gate A pools a fixed set of dates and is read only after the last of them has ended, so the result does not depend on when anyone runs it. It cannot be re-run until it passes. The decisive run is a run of the deciding code (amendment 3's), on the lab Mac ([amendment 2](#amendment-2-2026-11-05)), with `--root` set to the recorder's recordings directory (the command below). A run on a copy, a subset or test data decides nothing.
+2. **At least 300 usable markets,** pooled, as well as 10 racing days. A short day, such as one where the lab Mac slept, still counts as a racing day, but 10 thin days cannot decide the gate. In 2025 there were about 36.5 GB/IE WIN markets a day (`docs/betfair-pilot-1-plan.md:204`), but that counts all markets, not markets usable at −590 s in these recordings. lp-v1 replayed about 31 a date in 2015-16. So 300 usable markets may take a few days more than 10 (*inference*).
 3. **Qualifying counts stay hidden until Gate A can be read.**
 
 Record the first PASS or FAIL with the run's script sha256 and the date it pools through.
@@ -111,7 +111,7 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 - **Yu's choice.** Yu was asked: "Should the count use only recordings made after the counting rule was fixed (from 3 Nov, 23:05 UTC), leaving out the four short October test recordings?" Yu chose "Only new recordings" (2026-11-04).
 - **The rule.** A session counts only if the UTC start in its name is at or after 2026-11-03 23:05:00 (`FIRST_START`), just after this page's first merge (9e69b73, stamped 23:04:55Z). An earlier session is not read at all, not even its receipt. It is counted under the skip code `recorded_before_registration` and adds no market, no date and no ended recording day. Every later session counts, including any recorded before amendment 1 merges; no run has printed a qualifying count for any of them.
 - **Unchanged.** Everything else, including the markets, the runner rule, the columns, Gate A's 10 racing days, 300 usable markets and 1.4%, and Yu's three choices. The output schema is now `lp-rate-count/v2`, because the sessions line has the new code.
-- **Which run decides.** A run whose printed sha256 is `a8c5a0ec99df9ab40b6edfaf0a153f09eb530dbba2d3e3c2505e3ae58ba6aace`: `scripts/lp_rate_count.py` as amended here, on main from the commit that lands amendment 1. `tests/test_lp_rate_count.py` checks that this line names the script's current sha256, so any change to the script fails the tests until this line names its new sha256, and changing this line takes a new amendment. A run of 9e69b73, or of any other version, decides nothing.
+- **Which run decides.** A run whose printed sha256 is `a8c5a0ec99df9ab40b6edfaf0a153f09eb530dbba2d3e3c2505e3ae58ba6aace`: `scripts/lp_rate_count.py` as amended here, on main from the commit that lands amendment 1. `tests/test_lp_rate_count.py` checks that this line names the script's current sha256, so any change to the script fails the tests until this line names its new sha256, and changing this line takes a new amendment. A run of 9e69b73, or of any other version, decides nothing. [Amendment 3](#amendment-3-2026-11-09) replaces this line.
 
 ### Amendment 2 (2026-11-05)
 
@@ -128,9 +128,29 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 - **The code.** `scripts/lp_rate_count.py` does not change. Its sha256 stays `a8c5a0ec…`, so amendment 1's [Which run decides](#amendment-1-2026-11-04) line stands as written, and the deciding run is a run of that script, now made on the lab Mac. Its `--root` help already names no machine ("the recorder's recordings directory on this Mac", `scripts/lp_rate_count.py:828`). Its docstring still says it was amended once (`scripts/lp_rate_count.py:2-3`); that stays, because any change to its bytes changes the deciding sha256.
 - **Unchanged.** Everything else, including amendment 1's `FIRST_START`, the markets, the runner rule, the columns, Gate A's 10 racing days, 300 usable markets and 1.4%, Yu's three choices of 2026-11-03, and the output schema `lp-rate-count/v2`.
 
+### Amendment 3 (2026-11-09)
+
+- **What changed.** On 2026-11-09 Yu chose "Plain capped bot (Recommended)" for Pilot 2: per race, one £2 BACK at the best lay less one tick and one £2 LAY at the best back plus one tick, inside a 3–4 tick spread, through Pilot 1's gateway and caps. For its timing Yu chose "-10 min, pulled at -5 min (Recommended)", whose option text said "Gate A needs an amendment to count at -10 min before any count is read". The bot decides from off −590 to −575 s and pulls its unmatched legs at −300 s (the plain bot's build spec, lab note, 2026-11-09, §2). It starts at −590 s, not −600 s, because the order path refuses an order more than 10 minutes before the off (V9b, `betangel_research/betfair/validate.py:124-132`). As registered, Gate A counted the spreads at −300 s, when the bot no longer quotes. This is that amendment.
+- **What has been seen.** Nothing. No count has been read on the lab Mac. Its recorder has not been loaded there: no launchd job for it was loaded or installed on 2026-11-09, and its rollout is still open (`docs/betfair-pilot-1-plan.md:131`). So it has recorded no session, and no run on the lab Mac has printed a count. The Air's sessions are not counted ([amendment 2](#amendment-2-2026-11-05)).
+- **The rule.**
+  - The decision snapshot is the last recorded state at or before off −590 s, not −300 s. "Usable", "primary", "racing day", the not-usable reasons, the revised-marketTime line and Gate A's denominator move with it.
+  - The pre-filter proxy ("flagged") moves from −460 s to −780 s, the end of the plain bot's delayed screen (off −840 to −780 s). The two-batch column now compares the −780 s and −590 s snapshots. They are 190 s apart, more than the 180 s age limit, so the two-batch count now always equals persistence (*inference* from the age rule). It is kept so the output keeps its columns.
+  - The window column stays from −600 s to −300 s, as description only.
+  - Gate A's 10 racing days, 300 usable markets and 1.4% are unchanged. Changing them is Yu's call.
+- **The runner rule.** Unchanged. It matches the plain bot's `select_runner` (build spec §1-§2: `BAND_H=(150,590)` and `SPREAD_TICKS=(3,4)`, carried from the drafted `runner_band` and `select_runner`, `pilot_lp.py:666-695` on lab/pilot2-pure 6ae3ed7): an ACTIVE runner whose best back b and best lay l are both on the CLASSIC ladder, with b < l, 1.50 ≤ b ≤ 5.90 and l exactly 3 or 4 ticks above b. The differences do not change which markets qualify:
+  - the bot takes one runner (the lowest best back, then best lay, then selection id); the count asks only whether any runner qualifies;
+  - the bot's leg prices always exist under this rule: its LAY at b plus one tick is at most 6.0 when b ≤ 5.90, and a spread of 3 or more ticks keeps it below its BACK at l less one tick (*inference*);
+  - the bot decides on its own live book, which has virtual prices; this count has none ([What it cannot show](#what-it-cannot-show)).
+
+  Beyond the runner rule, the bot also needs `turnInPlayEnabled` and, on its live book, a bet delay of 0 (build spec §1). The count checks neither, so it can only count more markets.
+- **`FIRST_START` stays** 2026-11-03 23:05:00 UTC. It leaves out sessions recorded before the rule was first fixed. A later one is not needed: the lab Mac has recorded nothing yet, the counter is not run there until this amendment has merged, and until Gate A can be read the script withholds every qualifying count. So no session can show anything about the result before this rule is fixed. A new `FIRST_START` at this amendment's merge would only leave out lab Mac sessions recorded before then.
+- **The code.** In `scripts/lp_rate_count.py`, `DECISION_S` is −590 and `PERSISTENCE_S` −780; `WINDOW_S` stays (−600, −300). The output schema is now `lp-rate-count/v3`. The output keys no longer carry a time: `usable_300`, `flagged_460`, `not_usable_300`, `schedule_revised_by_300` and `min_usable_300` become `usable`, `flagged`, `not_usable`, `schedule_revised` and `min_usable`, and the printed texts take their times from the two constants. The docstring now counts three amendments. `tests/test_lp_rate_count.py` moves its synthetic times to match. Nothing under `betangel_research/` changes.
+- **Unchanged.** Everything else, including the lab Mac's root (amendment 2), `FIRST_START`, the sessions and segments read, the markets, the levers, the age and 503 rules, how Gate A's dates are chosen, and Yu's three choices of 2026-11-03.
+- **Which run decides.** A run on the lab Mac whose printed sha256 is `fa6b4fbaae27d9cef6313aecad09c0fbccf0372b771adb807a335349e52f147a`: `scripts/lp_rate_count.py` as amended here, on main from the commit that lands amendment 3. This replaces amendment 1's line: a run of `a8c5a0ec…` (amendments 1 and 2), of 9e69b73, or of any other version, decides nothing. `tests/test_lp_rate_count.py` checks that this line names the script's current sha256, so changing the script again takes a new amendment.
+
 ## What it cannot show
 
-- **Delay.** The data is delayed by 1–180 s and conflated to 180 s, so a "−300 s" state can describe the exchange as early as about −660 s (*inference*: up to 180 s of age plus up to 180 s of delay).
+- **Delay.** The data is delayed by 1–180 s and conflated to 180 s, so a "−590 s" state can describe the exchange as early as about −950 s (*inference*: up to 180 s of age plus up to 180 s of delay).
 - **Depth.** It sees the best 3 levels only.
 - **Virtual prices.** There are none. Pilot 2 decides on a live book that has them, and virtual prices narrow spreads, which closes some 3–4 tick spreads (`docs/lp-study.md:125`). The design therefore reads the count as an upper bound, not live recall. *Inference:* virtual prices could also bring a few wider spreads down into 3–4 ticks, which the width lever shows.
 - **Coverage.** The recorder runs 07:00–23:00 London. Explicit-mode subscriptions can leave markets out (the first 150 by start time; `betangel_research/betfair/recorder.py:664-711`). So "recorded" is not every market.
@@ -140,8 +160,8 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 
 - Yu runs it, on the lab Mac ([amendment 2](#amendment-2-2026-11-05)). Yu's lab rules of 2026-11-05 (in the lab Mac's own instructions, outside Git) say no agent reads the recordings or receipts, and the count reads both, so this page gives the run to no agent (*inference* from those rules). Whether an agent may run it with Yu's OK is open for Yu.
 - The recordings never leave the lab Mac, apart from its encrypted local backup, and are never copied between Macs. Only the printed counts are shared, and only with Yu's OK.
-- Run it from a checkout of main that includes amendment 1, not from Pilot 1's registered checkout or the recording_day pinned worktree. Those stay at their own commits.
-- The printed script sha256 must be the one named under [Which run decides](#amendment-1-2026-11-04). A Gate A result is read only from a run whose sha256 matches.
+- Run it from a checkout of main that includes amendment 3, not from Pilot 1's registered checkout or the recording_day pinned worktree. Those stay at their own commits.
+- The printed script sha256 must be the one named under [Which run decides](#amendment-3-2026-11-09). A Gate A result is read only from a run whose sha256 matches.
 - Running it early does no harm. Until Gate A can be read it prints NOT_ENOUGH_DAYS, NOT_ENOUGH_MARKETS or RECORDING_OPEN and withholds the qualifying counts. An open segment is never read, and the sessions line shows how many sessions were read from a partial receipt.
 - The command (Python 3.10 or later):
 
@@ -162,4 +182,4 @@ Record the first PASS or FAIL with the run's script sha256 and the date it pools
 
 - Nothing under `betangel_research/` changes. The script sits in `scripts/`, outside `receipts.code_hashes` (`betangel_research/betfair/receipts.py:121-125`). So Pilot 1's code identity, contract and registration do not change, and Pilot 1 does not re-register.
 - Scripts may not import `betangel_research.betfair` (`tests/test_betfair_boundaries.py`). The script's line reader, best-offer fold and CLASSIC ladder are therefore small copies. Tests check them against `stream.messages`, `book.MarketBookCache` and `ticks.LADDER_CLASSIC`. The copies do not follow a later change to those modules by themselves; the tests are what catch one.
-- Three dated lines are added in [backtest plan](backtest-plan.md) §13: the registration (2026-11-03), amendment 1 (2026-11-04) and the move to the lab Mac with amendment 2 (2026-11-05).
+- Four dated lines are added in [backtest plan](backtest-plan.md) §13: the registration (2026-11-03), amendment 1 (2026-11-04), the move to the lab Mac with amendment 2 (2026-11-05) and amendment 3 (2026-11-09).

@@ -159,7 +159,7 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 | **Total** | | | **about 980 (690–1,350)** | **about 2,560 (1,800–3,400)** |
 
 - PR-G, PR-1 and PR-2 are drafted ahead of their gates (Yu, 2026-11-08; Decided), so the Gate column says only when each may merge. They are opened now as draft PRs, as Yu chose ("PRs that nobody merges yet", 2026-11-08). Yu's OK on their edits to existing test files and on the api.py change is asked before they merge (Open for Yu).
-- Each code PR is reviewed by Codex and Astra and merged by Yu. The full offline suite passes, including every Pilot 1 test unchanged.
+- Each code PR is reviewed by lab-Claude's own review rounds and by Astra, and merged by Yu. Yu, 2026-11-09: "No need codex review in the future. All yours". The full offline suite passes, including every Pilot 1 test unchanged.
 - *Estimate,* ±30%. The executor is the least certain figure: pilot_run.py is 2,820 lines. These figures assume stop-flag-only signals, no owed writes, one ticket per session and no end-session command. If Astra wants more, add 50%.
 - For comparison, the PR4 to PR8 plan as drafted came to about 27,000–30,000 lines, and the research's "Trimmed pilot" to about 13,000–16,000.
 
@@ -196,7 +196,7 @@ Also for Yu, before go-live:
 - **November 2026:** this rewrite and Astra's review, after Pilot 1's review queue. The move to the lab Mac and its attended first-live tests (Decided). Then the attended manual drills, after the lab Mac's T9 probe. Recording starts on the lab Mac when Yu loads the recorder there. PR-G merges before any count is read. PR-1 and PR-2 are open as draft PRs; nothing merges before its gate.
 - **Once 10 racing days and 300 usable markets are recorded:** Gate A can be read. If it fails, none of the drafted Pilot 2 code merges (Yu, 2026-11-06 and 2026-11-08); Yu then chooses between stopping at £0 and the levers with their counts.
 - **December:** the build consent when Yu is ready, only after Gate A has passed, with fewer relaxations to approve than the plan as drafted. Pilot 1's go-live and PT4 go ahead untouched; Pilot 1's plan expects its first bet in mid-to-late December.
-- **January to February 2027:** PR-1 merges once Astra has accepted Pilot 1's go-live commit. After Pilot 1's PT4 receipt, PR-2 follows with Codex and Astra rounds, perhaps 2–4 weeks, with review dominating.
+- **January to February 2027:** PR-1 merges once Astra has accepted Pilot 1's go-live commit. After Pilot 1's PT4 receipt, PR-2 follows with lab-Claude's and Astra's review rounds, perhaps 2–4 weeks, with review dominating.
 - **February to March:** the G1 answer or Yu's recorded decision, the commission check, Astra's acceptance of the commit and config-p2.json's sha256, and Yu's go-live consent. Then the first session, with 1 race.
 - **Late February or March at the earliest, to 2027-06-30:** Pilot 2 sessions on days without Pilot 1.
 - *Inference:* waiting for Gate A, as Yu chose on 2026-11-06, does not move these dates, which are set by the Pilot 1-first order and by review time, as long as the lab Mac records its 10 racing days before the build consent. If Pilot 1 slips, Pilot 2 slips by the same amount. Against the plan as drafted, the plain bot saves perhaps 3–6 weeks, mostly in review time and the probe-session days.

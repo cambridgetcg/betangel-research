@@ -122,6 +122,8 @@ def run(env):
     """p2-run: the ARM pre-checks, the P2 ARM line, then the session -> the exit code (0 an end that released the
     recording admission; 5 any other end once the ARM record exists). Refusals before the record raise Refused: exit 2,
     nothing sent, nothing journaled."""
+    if not p2_lp.IN_FORCE:                                  # switched off until the go-live commit (note §1)
+        raise Refused("p2_not_in_force")
     paths, config, clock = env.paths, env.config, env.clock
     if paths.profile != pilot_run.RECORDER_PROFILE:
         raise Refused("p2_profile_not_recorder_profile")
@@ -339,6 +341,8 @@ def race(env, s, market_id, off_ns):
     code = _idle(env, s, off_ns + p2_lp.SCREEN_S[0] * NS)
     if code is not None:
         return code
+    if env.clock.time_ns() > off_ns + p2_lp.SCREEN_S[1] * NS:     # again: a stall or sleep in the wait (Codex on #62)
+        return _skip(s, "missed_window")
     s.screened += 1
     code = screen(env, s.read, market_id, off_ns)
     if code is not None:

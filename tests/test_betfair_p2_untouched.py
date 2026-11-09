@@ -32,7 +32,8 @@ import test_betfair_support_gateway as gw
 import test_betfair_support_orders as so
 import test_betfair_support_pilot as sp
 from test_betfair_admission import FakeProcesses
-from test_betfair_p2_gateway import MARKET, arm_record, fake_git, leg, no_children, open_p2, p2_orders, race, set_time
+from test_betfair_p2_gateway import (MARKET, arm_record, fake_git, in_force, leg, no_children, open_p2, p2_orders, race,
+                                     set_time)
 
 S = pilot.NS
 DAY = "2027-01-04"
@@ -170,6 +171,7 @@ def neutral(event):
 
 class PilotOneBesidePilotTwo(unittest.TestCase):
     def setUp(self):
+        in_force(self)
         fake_git(self)
 
     def test_pilot_1_fold_ignores_p2_events_without_halt_kill_or_resume(self):

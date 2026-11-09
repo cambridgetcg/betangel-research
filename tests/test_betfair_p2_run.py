@@ -17,9 +17,10 @@ import io
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from betangel_research.betfair import admission, cli, p2_lp, p2_run, pilot, pilot_run
 from betangel_research.betfair import config as cfg
@@ -37,8 +38,8 @@ import test_betfair_support_gateway as gw
 import test_betfair_support_pilot as sp
 import test_betfair_support_run as sr
 from test_betfair_admission import FakeProcesses
-from test_betfair_p2_gateway import (arm_record, fake_git, fill, manual, no_children, p2_orders, refuse_at_exchange,
-                                     session_start)
+from test_betfair_p2_gateway import (arm_record, fake_git, fill, in_force, manual, no_children, p2_orders,
+                                     refuse_at_exchange, session_start)
 from test_betfair_support import dumps
 
 S = p2_lp.NS
@@ -231,6 +232,7 @@ def submits(env, action):
 
 class P2RunCase(unittest.TestCase):
     def setUp(self):
+        in_force(self)
         fake_git(self)
 
     def assertEnded(self, result, code, *, exit_code, released):
@@ -303,6 +305,18 @@ class Race(P2RunCase):
         self.assertEqual(live_key_requests(env), [])
         self.assertEqual({r["slot"] for r in env.router.reads}, {"delayed"})
         self.assertEqual((placed(env), kinds(env)[-1]), ([], "operator_confirm"))
+
+    def test_screen_window_rechecked_after_the_idle_wait(self):
+        # Codex on #62: the Mac stalls or sleeps in IDLE's wait for the screen (180 s from off -850 s, so it wakes at
+        # about off -670 s, past -780 s). The window is checked again after the wait: missed_window, nothing read live.
+        env = build(self)
+        add_race(env)
+        at(env, OFF - 850 * S, lambda: env.clock.advance(180))
+        result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertEqual((result[3]["screened"], result[3]["codes"]), (0, {"missed_window": 1}))
+        self.assertEqual((live_key_requests(env), placed(env), legs(env)), ([], [], []))
+        self.assertEqual(kinds(env)[-1], "operator_confirm")
 
     def test_back_refused(self):
         env = build(self)
@@ -985,6 +999,33 @@ class Arm(P2RunCase):
         self.assertEqual(code, 2)
         self.assertIn("Betfair order refused: owner_live", err)
         self.assertEqual(len(placed(env)), 2)                           # the manual BACK never went
+
+
+class SwitchedOff(unittest.TestCase):
+    """The committed default (IN_FORCE False, note §1): p2-run refuses at its very top, before the SSH check and any
+    Keychain, journal or git read; p2-summary (offline, read only) still works."""
+
+    def setUp(self):
+        fake_git(self)
+
+    def test_p2_run_refused_before_any_read_and_p2_summary_works(self):
+        self.assertIs(p2_lp.IN_FORCE, False)
+        env = build(self)
+        add_race(env)
+        env.environ["SSH_TTY"] = "/dev/ttys003"                      # the SSH check, were it reached, would refuse
+        head = len(events(env))
+        connect = Mock(wraps=sqlite3.connect)
+        with patch.object(sqlite3, "connect", connect):
+            code, _, err, summary = p2_run_cli(env)
+        self.assertEqual((code, err.strip().splitlines()[-1]), (2, "Betfair order refused: p2_not_in_force"))
+        self.assertEqual(connect.call_args_list, [])                    # no journal read
+        self.assertEqual((env.runner.calls, env.git.calls, env.confirmer.prompts, env.popen.calls, summary),
+                         ([], [], [], [], None))                         # no /usr/bin/security or git call
+        self.assertEqual((env.transport.requests, len(events(env))), ([], head))
+        self.assertEqual(admission.admission_status(env.paths)["admission"], None)
+        code, out, err = run_main(["p2-summary", "--mode", "live"], deps(env))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("total: sessions 0, races 0;"), out)
 
 
 class Summary(P2RunCase):

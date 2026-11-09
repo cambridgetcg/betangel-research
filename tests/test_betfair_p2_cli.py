@@ -29,7 +29,7 @@ from betangel_research.betfair.paths import FORBID_NETWORK_ENV, StatePaths
 import test_betfair_support as support
 import test_betfair_support_gateway as gw
 from test_betfair_killswitch import run_cli_main
-from test_betfair_p2_gateway import P2_EXAMPLE, arm_record, fake_git, no_children, p2_orders, p2_token
+from test_betfair_p2_gateway import P2_EXAMPLE, arm_record, fake_git, in_force, no_children, p2_orders, p2_token
 
 
 def run_main(argv, deps=None):
@@ -169,6 +169,7 @@ class Kill(unittest.TestCase):
 
 class Commands(unittest.TestCase):
     def setUp(self):
+        in_force(self)
         fake_git(self)
         self.env = with_config_p2(gw.build_live_gateway(self))
         no_children(self)

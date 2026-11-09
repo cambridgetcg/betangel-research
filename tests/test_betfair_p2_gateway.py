@@ -33,6 +33,7 @@ from betangel_research.betfair.risk import RiskGuard
 import test_betfair_support as support
 import test_betfair_support_gateway as gw
 import test_betfair_support_pilot as sp
+from test_betfair_p2_lp import in_force
 
 P2_EXAMPLE = support.REPO_ROOT / "research" / "betfair-config-p2.example.json"
 S = p2_lp.NS
@@ -242,12 +243,29 @@ def session_start(env, *, until_ns):
 
 class P2Case(unittest.TestCase):
     def setUp(self):
+        in_force(self)
         fake_git(self)
 
     def back_placed(self, env, gateway, market_id=MARKET):
         result = leg(env, gateway, "BACK", market_id)
         self.assertEqual((rule(result), states(result)), (("accepted", None), ["EXECUTABLE"]))
         return result
+
+
+class SwitchedOff(unittest.TestCase):
+    """The committed default (IN_FORCE False, note §1): no Pilot 2 gateway, even on config-p2 exactly as pinned."""
+
+    def setUp(self):
+        fake_git(self)
+
+    def test_lp_gateway_refused_while_not_in_force(self):
+        self.assertIs(p2_lp.IN_FORCE, False)
+        with patch.object(p2_lp, "IN_FORCE", True):          # build checks config-p2 against the pins in force
+            env = build(self)
+        self.assertEqual(p2_lp.config_problems(env.p2), ["p2_not_in_force"])
+        with self.assertRaisesRegex(ConfigError, "p2_gateway_needs_config_p2"):
+            gateway_for(env, env.p2, guard=env.p2_guard, lp=lp_of(env))
+        self.assertEqual((env.router.order_requests, env.confirmer.prompts), ([], []))
 
 
 class Context(P2Case):

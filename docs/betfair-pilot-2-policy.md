@@ -20,7 +20,7 @@ These are RS-19's five principles. Each says what it means here. Where a detail 
 
 **Transparency.** Every order is journaled before it is sent, with its intent, risk decision and submit, and its outcome after. SKIPs, screens and refused legs are printed in the session with their codes, not journaled. Each session ends with a short printed summary, and `p2-summary` prints the counts at any time. *Why:* the same as RS-19. Yu should be able to see what the code did without having to trust it.
 
-**Truth.** There is no verdict. The results are counts and P&L: the journal's counts, Betfair's cleared profit and commission, and Yu's own check on the website. A disagreement between them blocks the next ARM until Astra has looked. Anything we cannot verify counts at its worst case in the gateway's day stop. *Why:* with at most 10 races, money can answer nothing, and Yu chose no registered verdict on 2026-11-09.
+**Truth.** There is no verdict. The results are counts and P&L: the journal's counts, Betfair's cleared profit and commission, and Yu's own check on the website. A disagreement between them blocks the next ARM until Astra has looked; that is Yu's procedure, not code. Anything we cannot verify counts at its worst case in the gateway's day stop. *Why:* with at most 10 races, money can answer nothing, and Yu chose no registered verdict on 2026-11-09.
 
 **Understanding.** It tests operations: whether a plain bot can post two passive £2 orders, rest them, pull them in time and stop safely. It also shows whether and how live fills happen; with the few races expected, those are counts, not rates. No mispricing is known. The research round's judgement, which is not evidence, leans to "we are picked off" ([lp-study](lp-study.md), Predictions). lp-v1 could neither support nor rule that out, and its only released statistics, a move against queued orders after they filled, are partly by construction and say nothing about orders inside the spread, which is where Pilot 2's sit ([lp-study](lp-study.md), Results). *Inference:* the honest expectation is a few pence negative per race, very few races, and an answer about operations only. *Why:* the same as RS-19. Any larger liquidity step needs these operations facts first, and offline history cannot show queue position, virtual prices or latency.
 
@@ -48,7 +48,7 @@ These are RS-19's five principles. Each says what it means here. Where a detail 
 | Screen, to | `SCREEN_S[1]` | -780 | seconds | *proposed* | Before the open, with time to spare |
 | Open | `OPEN_S` | -740 | seconds | *proposed* | 150 s before the decision, as Pilot 1's open lead |
 | Decide, from | `DECIDE_S[0]` | -590 | seconds | Yu, 2026-11-09 ("−10 min") | The BACK's send book is observed in this window |
-| Decide, to | `DECIDE_S[1]` | -575 | seconds | Yu, 2026-11-09 ("−10 min") | A 15 s window, as Pilot 1's |
+| Decide, to | `DECIDE_S[1]` | -575 | seconds | *proposed* | A 15 s window, as Pilot 1's |
 | LAY book by | `LAY_BOOK_BY_S` | -532 | seconds | *proposed* | With the 2 s book age, the LAY leaves by about off −530 s |
 | Pull | `PULL_S` | -300 | seconds | Yu, 2026-11-09 ("pulled at −5 min") | If the pull fails, about 5 minutes are left to cancel by hand |
 | Rest check | `SLICE_S` | 1 | seconds | *proposed* | Local checks every second, with no Betfair call |
@@ -56,14 +56,14 @@ These are RS-19's five principles. Each says what it means here. Where a detail 
 | Skip streak | `SKIP_STREAK` | 5 | count | *proposed* | 5 refused BACKs in a row end the session. This limits live-key reads that end with no order (F46) |
 
 ## Money
-Yu chose the first five numbers on 2026-11-03, in a question that offered them for a hand trial. At the build consent Yu confirms them for this bot, together with each row marked *proposed*. Only Yu changes a money number.
+Yu chose the first five numbers on 2026-11-03, in a question that offered them for a hand trial. At the build consent Yu confirms them for this bot, together with each row marked *proposed* and each *proposed reading*. Only Yu changes a money number.
 
 | Value | Constant | Number | Unit | Whose | What it means |
 |---|---|---|---|---|---|
 | Stake, each leg | `STAKE_P` | 200 | pence | Yu, 2026-11-03, to confirm | £2 a side: one £2 BACK and one £2 LAY on one runner. A BACK can lose £2. A LAY at price L can lose £2 × (L − 1) |
 | Highest lay price | `MAX_LAY_H` | 600 | hundredths | Yu, 2026-11-03, to confirm | 6.0. One LAY can lose at most £10 |
-| Races a day | `RACES_DAY` | 5 | count | Yu, 2026-11-03, to confirm | At most 5 a UTC day. A ceiling, never a target. A race counts from its first submit; a market screened, skipped or refused before any submit does not count |
-| Day stop | — | 2000 | pence | Yu, 2026-11-03, to confirm | −£20, as the gateway's R10 at £20 in config-p2.json. R10 counts settled losses, matched bets not yet settled and open orders. settle-market books each bet at its worst case. A BACK goes only if the race's full £10 still fits, so the worst possible day is −£20 |
+| Races a day | `RACES_DAY` | 5 | count | Yu, 2026-11-03, to confirm | At most 5 a UTC day. A ceiling, never a target. *Proposed reading:* a race counts from its first submit; a market screened, skipped or refused before any submit does not count |
+| Day stop | — | 2000 | pence | Yu, 2026-11-03, to confirm | −£20, as the gateway's R10 at £20 in config-p2.json. R10 counts settled losses, matched bets not yet settled and open orders. settle-market books each bet at its worst case. *Proposed reading:* a hard ceiling. A BACK goes only if the race's full £10 still fits, so the worst possible day is −£20. The other reading, "stop once −£20 is reached", would allow a −£30 day |
 | Pilot stop | — | 10000 | pence | Yu, 2026-11-03, to confirm | −£100. It holds by count: 10 races × £10 |
 | Worst race | `PAIR_WORST_P` | 1000 | pence | follows from Yu's numbers | −£10: the LAY fully matched and its runner wins. The BACK loses only when its runner loses, so the two never add up |
 | Races in total | `RACES_TOTAL` | 10 | count | *proposed* | 10 × £10 = £100, so −£100 holds by count, as Pilot 1's 495 × £2 does |
@@ -82,7 +82,7 @@ Yu chose the first five numbers on 2026-11-03, in a question that offered them f
 - **Losses pay no commission.** Commission is Basic 2% on each market's net, checked per market and never per bet, because both orders of one race are in one market.
 
 ## Arming a session
-- Yu types `p2-run --mode live --confirm-live live-<cfg12>-<YYYYMMDD> --until HHMM --races N` at the lab Mac's own keyboard. The token is keyed by config-p2.json's sha256, so arming one pilot never arms the other.
+- Yu types `p2-run --mode live --confirm-live live-<cfg12>-<YYYYMMDD> --until HHMM --races N [--bet-angel-paused]` at the lab Mac's own keyboard. The flag is needed while Bet Angel's coexistence is unverified (A12). The token is keyed by config-p2.json's sha256, so arming one pilot never arms the other.
 - **Refused before any line,** with nothing journaled:
   - not live, or not the default profile; config-p2.json missing or not exactly as the note §9 pins it;
   - `SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY` set (friction only);
@@ -109,7 +109,7 @@ The full state machine is in the [note](betfair-pilot-2-engineering.md) §8. In 
 - **The LAY refused or failed:** pull the BACK at once. The LAY's outcome unknown: reconcile; if not found, pull the BACK, hand off the LAY, end.
 - **During the rest:** a stop, the KILL file, another process's event, a clock jump or a late wake pulls at once and ends the session. A kill event or an unreadable journal: the handoff for both legs, end.
 - **At the pull:** nothing matched, the next market. A leg matched, the session ends with the settle line. A failed or unknown cancel, a suspended market or a leg still part unmatched: the handoff, end. LAPSE acts at the turn in play.
-- **An exception after a send:** one best-effort pull, then the handoff for each leg not shown complete, and the lock is released.
+- **An exception after a send:** one best-effort pull (none if the pull itself raised), then the handoff for each leg not shown complete, and the lock is released.
 - **The process gone** (SIGKILL, power loss, a sleep through the off): nothing runs. The race is bounded at £10 and LAPSE. The next ARM refuses until every leg is resolved.
 - **The handoff** names each leg (bet id or ref, side, £2 at its price, runner, market), then the stops in order: the Betfair phone app, the website, and the own-scope `kill` run from Pilot 2's checkout, by its absolute path. With the pull at −300 s, about 5 minutes are left before the off.
 
@@ -118,7 +118,7 @@ The full state machine is in the [note](betfair-pilot-2-engineering.md) §8. In 
   - Pilot 2's code refuses to arm over SSH (friction only), while Pilot 1's armed-session file exists, on a day with a Pilot 1 session or an earlier Pilot 2 session, and refuses to send while a Pilot 1 session's window is open.
   - Pilot 1's code is unchanged and does not know about Pilot 2's days. So not starting Pilot 1 after a Pilot 2 session on the same day is Yu's rule on Pilot 1's side.
 - Pilot 2 arms only when no Pilot 1 bet, manual bet or Bet Angel bet of ours is open or unsettled, and each BACK checks this again. The lab Mac is on mains power with the lid open, and the Betfair phone app is logged in as the stop away from the lab Mac. Nothing heavy (backtests, model studies, large downloads) runs on the lab Mac while a session is armed or an order rests (Yu's lab rule, 2026-11-05).
-- Anyone at the lab Mac can stop it with Ctrl-C, the KILL file or the existing own-scope `kill`, which also sweeps `p2-lp` once config-p2.json exists. Since 2026-11-06, lab-Claude may run an own-scope kill whenever something looks wrong, without asking first, and tells Yu straight after (Yu: "Yes, without asking"; [plan](betfair-pilot-2-plan.md), Decided). Whether that covers the kill run from Pilot 2's checkout is open for Yu (plan, Open for Yu). It never runs the account-wide kill, deletes the KILL file or resumes. Any other agent may only create the KILL file. For the existing `kill`, the KILL file stops new sends at once, but its cancels wait for its Keychain reads: if macOS asks, each read waits up to 120 s for someone at the lab Mac to click Allow (order-path §9, step 7; whether macOS asks is unverified, F73). The Betfair website and phone app stop it from anywhere.
+- Anyone at the lab Mac can stop it with Ctrl-C, the KILL file or the existing own-scope `kill`. Run from Pilot 2's checkout, the kill also sweeps `p2-lp` once config-p2.json exists; run from Pilot 1's checkout, it finds Pilot 2's legs only through a readable journal (What it relaxes, item 12). Since 2026-11-06, lab-Claude may run an own-scope kill whenever something looks wrong, without asking first, and tells Yu straight after (Yu: "Yes, without asking"; [plan](betfair-pilot-2-plan.md), Decided). Whether that covers the kill run from Pilot 2's checkout is open for Yu (plan, Open for Yu). It never runs the account-wide kill, deletes the KILL file or resumes. Any other agent may only create the KILL file. For the existing `kill`, the KILL file stops new sends at once, but its cancels wait for its Keychain reads: if macOS asks, each read waits up to 120 s for someone at the lab Mac to click Allow (order-path §9, step 7; whether macOS asks is unverified, F73). The Betfair website and phone app stop it from anywhere.
   - From the Air over SSH, creating the lab Mac's KILL file stops new sends but itself cancels nothing; a running bot pulls its own resting legs when it sees the file ([note](betfair-pilot-2-engineering.md) §8). A kill run on the Air engages only the Air's KILL file, so the lab Mac can keep sending.
   - There is no auto-kill. The own-scope kill cancels every open order of ours, Pilot 1's and manual ones included, as Pilot 1's kill does.
   - The gateway lock is held for about 7.5 minutes a race, from the open to the pull. Meanwhile a typed `cancel` waits for the lock and fails. The banner names the stops that work.
@@ -163,13 +163,18 @@ On 2026-11-09 Yu chose "Plain capped bot (Recommended)" ([plan](betfair-pilot-2-
 - the drills: P2-PT2's dry day, the stand-in transport and the probe sessions on real orders;
 - registration: the frozen contract `research/pilots/p2-lp.json`, its receipt, PA1–PA4 and the code-hash digest;
 - the auto-kill, the suspended-market poll and the second cancel;
-- Pilot 2's own records, fold, stops and its own kill.
+- Pilot 2's own records, fold, stops and its own kill;
+- journaled SKIPs and screens, which are printed in the session instead;
+- the end-session command: `p2-summary` and Yu's existing `recording-release` cover a crash;
+- the battery check: caffeinate stays, and mains power with the lid open is Yu's procedure.
+
+The [note](betfair-pilot-2-engineering.md) §16 lists everything left out, including what the 2026-11-09 designs proposed and this page never had: a fault acknowledgement line and a process pin.
 
 Each cut protection needs Yu's yes in plain words at the build consent. Writing it here decides nothing.
 
 ## Three consents
 1. **Build.**
-   - Yu confirms the Money table: Yu's 2026-11-03 numbers for this bot, each *proposed* row (the £ caps included) and the overall budget. There is no contract to freeze: the numbers are on this page and in the `p2_lp` constants, and a test pins them to each other.
+   - Yu confirms the Money table: Yu's 2026-11-03 numbers for this bot, each *proposed* row (the £ caps included), the two *proposed readings* (how a race counts, and the day stop's reading) and the overall budget. There is no contract to freeze: the numbers are on this page and in the `p2_lp` constants, and a test pins them to each other.
    - Yu gives a plain-words yes to each item under What it relaxes and each cut above.
    - Gate A: on 2026-11-06 Yu chose to wait for it ("Count first (Recommended)"; [plan](betfair-pilot-2-plan.md), Decided). Pilot 2's code merges only after Gate A, the free Stage 0 count, passes. On 2026-11-08 Yu chose to have the code drafted before then, as PRs nobody merges ("Draft now, gates unchanged (Recommended)"; plan, Decided). Drafting moves no gate. Because the bot now decides at off −590 s, Gate A counts at that time too: amendment 3 of [docs/lp-rate-count.md](lp-rate-count.md), a separate PR, must merge before any count is read. The Air's Claude had read Yu's "We can start now ah😂 no need record 10 days" (2026-11-04) as going on without Gate A; that reading does not hold.
    - Astra reviews this page, the engineering note and the plan, and accepts them.
@@ -188,7 +193,7 @@ Each cut protection needs Yu's yes in plain words at the build consent. Writing 
 3. **Each session.**
    - Yu arms it with the P2 ARM line.
    - The first session is `RACES 1`, with Yu watching both legs on the website through the pull.
-   - Yu checks each race with a matched leg on the website: matched sizes, prices, result, per-market commission, and the lay's profit sign and basis. A disagreement with `p2-summary` blocks the next ARM until Astra has looked.
+   - Yu checks each race with a matched leg on the website: matched sizes, prices, result, per-market commission, and the lay's profit sign and basis. A disagreement with `p2-summary` blocks the next ARM until Astra has looked; that is Yu's procedure, not code.
 
 ## How it ends
 - Placing stops at the first of these:

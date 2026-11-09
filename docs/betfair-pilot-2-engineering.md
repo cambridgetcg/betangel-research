@@ -11,7 +11,7 @@ For Astra, Yu and the Air's Claude. Author: lab-Claude, 2026-11-05; rewritten on
 ## 1. What it amends
 Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then are listed on the page, under Changes to Pilot 1's documents.
 
-## 2. Scope: one lineage inside Pilot 1's profile
+## 2. Scope: inside Pilot 1's profile
 - **Identity.**
   - No contract. Two new modules: `p2_lp.py`, pure (the constants, the rule, the counts, the ARM line and the summary), and `p2_run.py`, the executor. `p2_lp.py` imports only `pilot` and `ticks`, never the gateway or `pilot_gate`. `p2_run.py` never imports the gateway; cli.py hands it the factories. The names keep them, and their tests `tests/test_betfair_p2_*.py`, out of Pilot 1's `pilot*` file families.
   - customer_strategy_ref `p2-lp`; intent source `pilot_lp`, live only and accepted only through the gateway's new `lp_place`. The public `place()` and its typed line stay byte-identical (tests/test_betfair_pilot_gateway.py:2287-2385 guard that).
@@ -68,7 +68,7 @@ The plain manual first-byte gate, unchanged, for each leg. `lp_place` runs `_pla
 - It skips V0 and `_take_confirmations` (gateway.py:1290-1292, :1297), because there is no per-order typed line.
 - It keeps the funds check first, then fetches the book itself, at most twice (gateway.py:1301-1304).
 - A `choose_*` code refuses, with only the funds check journaled.
-- Then `_live_arming("place", book)` and the unchanged `_place_core` with source `pilot_lp`.
+- Then `_live_arming("place", book)` and `_place_core` with source `pilot_lp` and its one new hook, `lp_check` (§6).
 - With no Pilot 2 side, `_place_live` is byte for byte today's.
 
 ## 6. Counts and gateway checks
@@ -152,8 +152,9 @@ PULL     first the kill check: a kill event, or the journal unreadable -> HANDOF
   |-- complete, nothing matched -> close, next market
   |-- complete, a leg matched -> close, END (prints the settle-market line; ARM refuses until settled)
   |-- a cancel raised, an UNKNOWN left, MARKET_SUSPENDED, a part still EXECUTABLE -> HANDOFF, close, END
-EXCEPTION after a submit: one best-effort PULL (kill check first, no retry), HANDOFF for each leg not shown
-         complete (by ref and market when no bet id is known); the lock is released; END, exit 5
+EXCEPTION after a submit: if it did not come from the PULL, one best-effort PULL (kill check first, no retry);
+         HANDOFF for each leg not shown complete (by ref and market when no bet id is known);
+         the lock is released; END, exit 5
 GONE     SIGKILL, power loss, a sleep through the off: nothing runs; bounded at £10 and LAPSE;
          the next ARM refuses while a leg is open or unresolved
 ```
@@ -226,7 +227,7 @@ eng §13's bans stay, except that this bot may send lays. Still: more than one i
   - tests/test_betfair_p2_gateway.py: the Pilot 2 context in paper and with Pilot 1's config, `place()` refused on it, the ARM record, the request body, the check on the submit's basis, the pair rules, R5, R8 and R10 with settle-market, the race counts, own-leg cancels, the kill's extra ref, and the three-UNKNOWN HALT after a round trip;
   - tests/test_betfair_p2_run.py: one test per §8 edge, the ARM refusals, the first session at 1 race, caffeinate, the ARM record under the lock, and the owner lock blocking `pilot-run` and a manual `place`;
   - tests/test_betfair_p2_cli.py: `init-config --p2`, `load_config` refusing config-p2.json, the kill's refs with and without it, and `p2-summary`.
-- **Existing test files that change:** tests/test_betfair_backtest_boundaries.py (two data lines for `p2_lp` and `p2_run`), tests/test_lp_rate_count.py (PR-G) and tests/test_betfair_pilot_2_docs.py (this PR). Each, and the api.py change, needs Yu's OK before its PR is opened.
+- **Existing test files that change:** tests/test_betfair_backtest_boundaries.py (two data lines for `p2_lp` and `p2_run`) and tests/test_lp_rate_count.py (PR-G). Each, and the api.py change, needs Yu's OK before its PR is opened. tests/test_betfair_pilot_2_docs.py, which exists only on this PR's branch, changes in this PR.
 - **P2-PT3,** the fault drills, are tests/test_betfair_p2_run.py, inside the offline suite only. No drill runs against the real state root, the Keychain or Betfair, because the journal anchor's Keychain item is keyed by its service and the profile alone (credentials.py:37, :131, :150), so a scratch run that reached it would overwrite Pilot 1's anchor.
 - **Go-live prerequisite.** A19 needs a `ref_roundtrip_verified` event in the lab Mac's journal before any Pilot 2 open arms (arming.py:53, :477-478). Pilot 1 going first on the lab Mac probably covers it.
 

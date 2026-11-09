@@ -78,7 +78,7 @@ For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against beta
     - Cut, against the page as drafted: the verdict, the ledger, value at BSP, the tables, the drills and probe sessions, registration and the auto-kill (page, Cut from the page as first drafted). Each cut protection needs Yu's yes in plain words at the build consent; choosing the option is not that yes.
     - The decision moves to about off −590 s and the pull to off −300 s (Values and why). Gate A's amendment 3 counts at −590 s before any count is read (Stage 0 and Gate A).
     - The 2026-11-08 choices "P2-LP as drafted in #58" and "All of PR4–PR8, stacked" are replaced by this one. The "3–5k lines" estimate was checked against the code before building: about 980 source and 2,560 test lines (*Estimate*; Stages).
-    - Unchanged: Yu's money numbers, "Let it run", the Heartbeat ban, Gate A, Pilot 1 first, Yu's build consent, Astra's review and Yu's consents. Drafting moves no gate.
+    - Unchanged: Yu's money numbers, "Let it run" (a lone matched leg still rides to the result, but its scoring against BSP is cut with value at BSP), the Heartbeat ban, Gate A, Pilot 1 first, Yu's build consent, Astra's review and Yu's consents. Drafting moves no gate.
 
 ## Before Pilot 2: attended manual drills
 Yu chose to try a few live orders by hand first: "Yea lets go for the drill, all good" (relayed, 2026-11-04) and "用寬鬆版" (relayed, 2026-11-05). They are not part of Pilot 2.
@@ -169,8 +169,9 @@ None of these needs an answer before the build consent, except the three edits t
 | Question | Proposal |
 |---|---|
 | Overall budget: raise it, or keep £1,000 with the account balance as the joint stop (page, Money) | The Air's Claude: raise it to £1,100, which now covers −£1,100 exactly |
-| Confirm the 2026-11-03 money numbers for the bot, with "5 a day" counting races from their first submit and the day stop as R10 at £20 | The Air's Claude: confirmed as given |
-| A lifetime cap of 10 races | The Air's Claude: yes |
+| Day stop: a hard ceiling (a race only if losing its full £10 still leaves the day at or above −£20), or stop once −£20 is reached | The Air's Claude: hard ceiling |
+| Confirm the 2026-11-03 money numbers for the bot, with "5 a day" counting races from their first submit | The Air's Claude: "confirmed as given", with "at most 5 PLACE decisions a UTC day (SKIPs not counted)"; the lab: races from their first submit |
+| A lifetime cap of 10 races | The Air's Claude: "Lifetime cap of 10 decisions: yes"; the lab: 10 races |
 | The strict reading: the session ends after any matched leg, and nothing else of ours may be open or unsettled when a BACK goes, so at most £10 is open | the lab: yes |
 | One pilot session a UTC day, as the page says and the code enforces; or several sessions, at most 5 races a day, with the page and RS-19's lines reworded | the lab: one a day |
 | No pause: the hard stops and the 10-race cap replace it | the lab: yes |
@@ -183,7 +184,7 @@ None of these needs an answer before the build consent, except the three edits t
 | tests/test_lp_rate_count.py changing in PR-G | the lab: yes; amendment 3 needs it |
 | Final date | The Air's Claude: 2027-06-30 |
 | If races are too rare: stop, or the lab brings the levers with their counts (a later final date, lays above 6.0 at a smaller stake, other markets) | The Air's Claude: the levers; Yu decides then |
-| Reviews: Astra on the Air accepts; the lab's tool-free gpt-6-astra may pre-review, but that is not Astra's acceptance. Since the move (Decided, 2026-11-05), also: where Astra's acceptance runs | as stated, proposed before the move; where Astra runs is open for Yu |
+| Reviews: Astra on the Air accepts; the lab's tool-free gpt-6-astra may pre-review, but that is not Astra's acceptance. Since the move (Decided, 2026-11-05), also: where Astra's acceptance runs, and how Astra reaches the lab Mac's journal | as stated, proposed before the move; where Astra runs, and how it reaches the journal, are open for Yu |
 
 Also for Yu, before go-live:
 - send the [G1 follow-up](betfair-pilot-2-g1-question.md) to Betfair, or record a decision to go ahead without an answer;

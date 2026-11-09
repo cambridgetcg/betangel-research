@@ -32,9 +32,9 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
   - `p2-run`, the session (page, Arming a session);
   - `p2-summary`, offline counts, with `--cleared` for Betfair's figures (§10);
   - `init-config --p2`, which writes research/betfair-config-p2.example.json to config-p2.json with O_EXCL (as cli.py:889-905);
-  - the existing `kill`, which adds `p2-lp` to its sweep only when config-p2.json exists. That check sits in its own try, and an OSError counts as present, because any exception in that block ends the kill `kill_incomplete` before a cancel (cli.py:2152-2164).
+  - the existing `kill`, which adds `p2-lp` to its sweep only when config-p2.json exists. The check sits inside the kill's own try (cli.py `_p2_configured`): only a missing file (by `lstat`, so a dangling link counts as present) leaves `p2-lp` out, and any other error counts as present, so no problem in that check can end the kill before its sweep.
 - There is no register, end-session, ack or separate kill command for Pilot 2.
-- **One pilot session per UTC day across both pilots.** ARM refuses on a UTC day with a Pilot 1 `session_start` or a P2 ARM record, while a Pilot 1 window is open, or while Pilot 1's armed-session file exists (pilot_run.py:350). Each leg checks the Pilot 1 day and the ARM record again (§6). Sends are refused while a Pilot 1 session's window is open (gateway.py:745, :1942-1944).
+- **One pilot session per UTC day across both pilots.** ARM refuses on a UTC day with a Pilot 1 `session_start` or a P2 ARM record, while a Pilot 1 window is open, or while Pilot 1's armed-session file exists (pilot_run.py:350). Each leg checks the Pilot 1 day and the ARM record again (§6). Sends are refused while a Pilot 1 session's window is open (gateway.py:745, :1942-1944). Pilot 1's own ARM does not look for P2 ARM records (it checks only its own `session_start`, pilot_run.py:891-892), so today the rule holds from Pilot 2's side only; a matching check in Pilot 1 is a go-live question for Yu and Astra (plan, Open for Yu).
 - Pilot 1's code is unchanged, so nothing on Pilot 1's side refuses a Pilot 1 session after a Pilot 2 session on the same UTC day. That half of "one pilot session a day" is Yu's rule.
 - **Caffeinate.** `/usr/bin/caffeinate -i -s -w <pid>`, started at the ARM and ended at the session's end. It is process-scoped and changes no setting. Mains power and the open lid are Yu's procedure; there is no battery check in code.
 - Typed lines are Yu's, as in eng §3.
@@ -87,12 +87,12 @@ The plain manual first-byte gate, unchanged, for each leg. `lp_place` runs `_pla
 |---|---|
 | £2 BACK at l − 1, £2 LAY at b + 1, one runner | `choose_*` with `leg_prices`; `p2_leg_shape`; R5's £2 stake cap (risk.py:292-295) |
 | best back 1.50–5.90, spread 3–4 ticks | `select_runner` on the gateway's own fresh send book; V13 at 3 ticks |
-| BACK first; LAY only if the BACK was placed | the BACK placed in this open; `p2_lay_without_back` on the basis read; V7 at 1 instruction (validate.py:310); a restart can never send an earlier LAY |
+| BACK first; LAY only if the BACK was placed | the BACK placed in this open and still resting or matched; `p2_lay_without_back` on the basis read; V7 at 1 instruction (validate.py:310); a restart can never send an earlier LAY |
 | each leg strictly inside the spread on a fresh book | the passive check inside `choose_*`, on the book `_place_core` judges; V8 keeps LAY < BACK; V10 and A18 at 2 s |
 | lay at most 6.0; worst race −£10 | `leg_prices`; R5's liability cap of £10, so 6.0 passes and 6.2 is refused (risk.py:296-299); R8's market cap of £10, with no hedge credit (risk.py:136-154, :367-380) |
 | 5 races a day, 10 in all | `races()` on the basis fold; R6 at 10 orders a day as a backstop (risk.py:301-325) |
 | day stop −£20 | R10 at £20 (risk.py:327-348, :378-379) and the pair pre-check. settle-market books each bet at its worst case (gateway.py:3017), so one fully matched race at 6.0 books £12 and ends the day |
-| one race in flight; nothing else of ours open or unsettled | one process, one open, `.gateway.lock`; `p2_other_bet_open` (every ref but this open's legs; pilot_gate.py:318-334); R3 (risk.py:286-290); the session ends after any matched leg |
+| one race in flight; nothing else of ours open or unsettled | one process, one open, `.gateway.lock`; `p2_other_bet_open` (for a BACK, every ref of ours, this open's own included; for a LAY, every ref but this open's legs; pilot_gate.py:318-334); R3 (risk.py:286-290); the session ends after any matched leg |
 | no Pilot 2 race on a Pilot 1 day | the Pilot 1 day at ARM and per leg; the armed-session file at ARM; the window guards; Pilot 1 cannot arm while Pilot 2 holds the live-owner lock |
 | GB/IE horse-racing WIN, LIMIT, LAPSE | the catalogue filter, then `p2_country` on the stored row (the snapshot has no country, schemas.py:18-22); V9 with config-p2's rules (validate.py:104-124); the request body is LIMIT LAPSE (gateway.py:2011-2017) |
 | decide −590 to −575 s, LAY by −530 s, pull at −300 s | the `choose_*` windows on the send book's own time; V9b at 10 minutes (validate.py:124-132); the rest loop (§8) |
@@ -132,7 +132,7 @@ PRE-OPEN stop flag -> END | KILL file -> END | login cap -> next market | admiss
 OPEN     off -740 s: gateway "place" with config-p2.json: lock, login, startup reconcile, A1-A19, anchor
   |-- raised (not armed, Pilot 1 window, lock busy, login error, signal) -> END, nothing sent
   |-- open report not armed (a foreign order journals a HALT and fails A17) -> close, END
-WAIT     until off -590 s, 1 s slices: stop, KILL file, any journal event after our head, drift -> close, END
+WAIT     until off -590 s, 1 s slices: stop, KILL file, a kill event, an unreadable journal, any journal event after our head, drift, a late wake -> close, END
 BACK     lp_place("BACK"), book observed off -590..-575 s
   |-- refused with a code, or by a V-, R- or A-rule -> close, next market; 5 in a row -> END
   |-- raised with nothing submitted: not armed or the Pilot 1 window -> close, END; book fetch failed -> next market
@@ -226,7 +226,7 @@ eng §13's bans stay, except that this bot may send lays. Still: more than one i
   - tests/test_betfair_p2_lp.py: the pure rule (band edges, leg prices, the passive check, the screen, the windows, each refusal code in order, the counts, the ARM line, `config_problems`, the handoff, the summary, its imports), and the constants against this page's Values and Money tables;
   - tests/test_betfair_p2_gateway.py: the Pilot 2 context in paper and with Pilot 1's config, `place()` refused on it, the ARM record, the request body, the check on the submit's basis, the pair rules, R5, R8 and R10 with settle-market, the race counts, own-leg cancels, the kill's extra ref, and the three-UNKNOWN HALT after a round trip;
   - tests/test_betfair_p2_run.py: one test per §8 edge, the ARM refusals, the first session at 1 race, caffeinate, the ARM record under the lock, and the owner lock blocking `pilot-run` and a manual `place`;
-  - tests/test_betfair_p2_cli.py: `init-config --p2`, `load_config` refusing config-p2.json, the kill's refs with and without it, and `p2-summary`.
+  - tests/test_betfair_p2_cli.py: `init-config --p2`, `load_config` refusing config-p2.json, and the kill's refs with and without it. `p2-summary` is tested in tests/test_betfair_p2_run.py.
 - **Existing test files that change:** tests/test_betfair_backtest_boundaries.py (two data lines for `p2_lp` and `p2_run`) and tests/test_lp_rate_count.py (PR-G). Each, and the api.py change, needs Yu's OK before its PR is opened. tests/test_betfair_pilot_2_docs.py, which exists only on this PR's branch, changes in this PR.
 - **P2-PT3,** the fault drills, are tests/test_betfair_p2_run.py, inside the offline suite only. No drill runs against the real state root, the Keychain or Betfair, because the journal anchor's Keychain item is keyed by its service and the profile alone (credentials.py:37, :131, :150), so a scratch run that reached it would overwrite Pilot 1's anchor.
 - **Go-live prerequisite.** A19 needs a `ref_roundtrip_verified` event in the lab Mac's journal before any Pilot 2 open arms (arming.py:53, :477-478). Pilot 1 going first on the lab Mac probably covers it.

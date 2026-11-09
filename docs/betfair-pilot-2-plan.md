@@ -175,6 +175,7 @@ None of these needs an answer before the build consent. The three edits to exist
 | The strict reading: the session ends after any matched leg, and nothing else of ours may be open or unsettled when a BACK goes, so at most £10 is open | the lab: yes |
 | One pilot session a UTC day, as the page says and the code enforces; or several sessions, at most 5 races a day, with the page and RS-19's lines reworded | the lab: one a day |
 | No pause: the hard stops and the 10-race cap replace it | the lab: yes |
+| Pilot 1's ARM refusing a UTC day that already has a P2 ARM record (it does not today; note §3) | the lab: add it in Pilot 1's go-live commit, if Yu and Astra want it |
 | config-p2.json's £ caps (note §9) | The Air's Claude: as derived |
 | Each item under What it relaxes and each cut (page), including dropping P2-PT2 and the probe sessions, and the exception path's one best-effort pull | the lab: yes, each in plain words |
 | The pull's unknown cancel reports can HALT both pilots (note §8): accept it, or have Astra weigh one cancel request carrying both bet ids, which adds 1 to the count, not 2 | open, for Astra and Yu |

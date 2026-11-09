@@ -21,6 +21,8 @@ from . import pilot
 from .ticks import is_on_ladder, tick_index, tick_offset, to_hundredths, to_pence
 
 NS = pilot.NS
+# Only the go-live commit, which also applies the page's AGENTS.md, RS-19 and order-path lines, sets this True.
+IN_FORCE = False
 STRATEGY_REF = "p2-lp"
 SOURCE = "pilot_lp"
 SIDES = ("BACK", "LAY")
@@ -375,8 +377,11 @@ def _value(config, path):
 
 def config_problems(config):
     """Every config-p2 pin a validated config breaks, in CONFIG_PINS order, as p2_config_<key>; p2_config_pilot
-    first when orders.pilot is present. [] means it is config-p2 exactly as note §9 pins it."""
-    found = ["p2_config_pilot"] if _value(config, ("orders", "pilot")) is not _MISSING else []
+    first when orders.pilot is present, and p2_not_in_force before all while IN_FORCE is False (note §1). [] means it
+    is config-p2 exactly as note §9 pins it, and in force."""
+    found = [] if IN_FORCE else ["p2_not_in_force"]
+    if _value(config, ("orders", "pilot")) is not _MISSING:
+        found.append("p2_config_pilot")
     for path, pinned in CONFIG_PINS:
         value = _value(config, path)
         same = (value is pinned) if isinstance(pinned, bool) else (type(value) is not bool and value == pinned)

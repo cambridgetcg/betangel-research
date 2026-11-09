@@ -3,11 +3,11 @@
 These show the runner rule at its band and spread edges and its tie order, the leg prices at the worked tick edges
 and the lay cap, the passive check with our own BACK resting, the schedule row, the screen, each leg's choice with
 its window and codes, the race counts, the ARM record, every leg refusal in order, config-p2's pins (and that
-load_config_p2 reads only its own path), the constants against the page's Values and Money rows, the handoff, the
-summary, the copied rules against their originals, and the module's imports and closure. Books are synthetic
-snapshots that pass schemas.validate_book_snapshot; orders are synthetic core-fold records. No journal file, clock,
-network or Keychain is touched. They do not show that a caller fetched, journaled or sent what these functions
-assume (PR-2), nor anything about Betfair's real responses.
+load_config_p2 reads only its own path), the switched-off default (IN_FORCE False), the constants against the page's
+Values and Money rows, the handoff, the summary, the copied rules against their originals, and the module's imports
+and closure. Books are synthetic snapshots that pass schemas.validate_book_snapshot; orders are synthetic core-fold
+records. No journal file, clock, network or Keychain is touched. They do not show that a caller fetched, journaled or
+sent what these functions assume (PR-2), nor anything about Betfair's real responses.
 """
 
 import ast
@@ -464,8 +464,16 @@ class Counts(unittest.TestCase):
             "other", "1.999", side="LAY", submitted_ns=ARM_NS + S)))))
 
 
+def in_force(test):
+    """p2_lp.IN_FORCE True for this test, as only the go-live commit sets it (the pins below are tested in force)."""
+    patcher = patch.object(p2_lp, "IN_FORCE", True)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 class ConfigP2(unittest.TestCase):
     def setUp(self):
+        in_force(self)
         support.block_network(self)
         # No git child process: the worktree check (paths.is_inside_git_worktree) is faked; the roots are temporary.
         worktree = patch("betangel_research.betfair.paths.is_inside_git_worktree", return_value=False)
@@ -562,6 +570,24 @@ class ConfigP2(unittest.TestCase):
         text = P2_EXAMPLE.read_text(encoding="utf-8")
         for literal in boundaries.NEVER_ANYWHERE:
             self.assertNotIn(literal.lower(), text.lower().replace("heartbeat_api_enabled", ""))
+
+
+class SwitchedOff(unittest.TestCase):
+    """The code ships switched off (note §1): IN_FORCE is False in the committed file, and config_problems then refuses
+    every config, config-p2 exactly as pinned included, with p2_not_in_force first."""
+
+    def test_in_force_false_until_the_go_live_commit(self):
+        self.assertIs(p2_lp.IN_FORCE, False)
+        self.assertEqual(PATH.read_text(encoding="utf-8").count("\nIN_FORCE = False\n"), 1)
+        example = json.loads(P2_EXAMPLE.read_text(encoding="utf-8"))
+        self.assertEqual(p2_lp.config_problems(example), ["p2_not_in_force"])
+        with_pilot = copy.deepcopy(example)
+        with_pilot["orders"]["pilot"] = {}
+        self.assertEqual(p2_lp.config_problems(with_pilot), ["p2_not_in_force", "p2_config_pilot"])
+        self.assertEqual(p2_lp.config_problems({})[0], "p2_not_in_force")
+        with patch.object(p2_lp, "IN_FORCE", True):
+            self.assertEqual(p2_lp.config_problems(example), [])
+            self.assertEqual(p2_lp.config_problems(with_pilot), ["p2_config_pilot"])
 
 
 class Page(unittest.TestCase):

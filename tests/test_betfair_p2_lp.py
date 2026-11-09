@@ -448,6 +448,10 @@ class Counts(unittest.TestCase):
         for label, changes in (("other market", {"pair": dict(PAIR, market_id="1.999")}),
                                ("back failed", {"orders": by_ref(dict(back, state="FAILED", bet_id=None))}),
                                ("back unknown", {"orders": by_ref(dict(back, state="UNKNOWN", bet_id=None))}),
+                               # Lapsed or cancelled with nothing matched (an in-line reconcile can find it so): no
+                               # BACK rests beside the LAY.
+                               ("back complete, nothing matched", {"orders": by_ref(dict(
+                                   back, state="EXECUTION_COMPLETE", size_remaining_p=0, size_lapsed_p=200))}),
                                ("back other runner", {"orders": by_ref(dict(back, selection_id=12))}),
                                ("no back", {"orders": {}})):
             with self.subTest(case=label):
@@ -663,9 +667,9 @@ class Summary(unittest.TestCase):
         found = p2_lp.summary(events, orders)
         lines = p2_lp.summary_lines(found, checkout="/Users/someone/p2")
         self.assertEqual(lines[0], (
-            "total: sessions 2, races 5; legs sent BACK 5, LAY 2; placed BACK 3, LAY 2; refused BACK 1, LAY 1 "
-            "(codes: INSUFFICIENT_FUNDS 1, R5 1); matched 3 (2 in full); round trips 1, lone BACKs 1, lone LAYs 0; "
-            "cancelled 2, lapsed 1, unresolved 1; booked at settle -£2.00; races left 5"))
+            "total: sessions 2, races 5; legs sent BACK 5, LAY 2; placed BACK 3, LAY 2; refused or failed BACK 1, "
+            "LAY 1 (codes: INSUFFICIENT_FUNDS 1, R5 1); matched 3 (2 in full); round trips 1, lone BACKs 1, lone LAYs "
+            "0; cancelled 2, lapsed 1, unresolved 1; booked at settle -£2.00; races left 5"))
         self.assertTrue(lines[1].startswith(f"{DAY}: sessions 1, races 2;"))
         self.assertTrue(lines[2].startswith(f"{NEXT_DAY}: sessions 1, races 3;"))
         self.assertIn("3 p2-lp legs are open or unsettled", lines[3])
@@ -734,9 +738,9 @@ class Boundaries(unittest.TestCase):
         found += bb.stdlib_shadow_violations(bb.REAL, [module])
         self.assertEqual(found, [], bb.describe(found))
         tree = boundaries.tree(PATH)
-        # pilot.py's list without "replace": arm_line's str.replace (os, whose replace renames, is not imported).
+        # pilot.py's list (tests/test_betfair_pilot.py).
         banned = {"open", "write", "write_text", "write_bytes", "read_text", "read_bytes", "mkdir", "touch", "unlink",
-                  "rename", "chmod", "now", "utcnow", "today", "time", "time_ns", "monotonic",
+                  "rename", "replace", "chmod", "now", "utcnow", "today", "time", "time_ns", "monotonic",
                   "monotonic_ns", "perf_counter", "sleep", "getenv", "urandom", "random", "randint"}
         self.assertEqual([ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
                           and boundaries.called_name(n) in banned], [])

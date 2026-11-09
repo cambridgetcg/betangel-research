@@ -65,8 +65,8 @@ CONFIG_PINS = (
     (("orders", "rules", "external_exposure_tolerance"), 0.0),
     (("orders", "live", "heartbeat_api_enabled"), False),
     (("read", "app_key_slot"), "delayed"))
-# schemas.UNRESOLVED_STATES and schemas.TERMINAL_STATES, copied: schemas imports receipts, which runs git. The test
-# pins each copy to its original.
+# schemas.UNRESOLVED_STATES and schemas.TERMINAL_STATES, copied: this module imports only pilot and ticks (build
+# spec §1). The test pins each copy to its original.
 UNRESOLVED_STATES = frozenset({"SUBMITTING", "UNKNOWN", "ABSENT_UNCONFIRMED", "CANCEL_PENDING", "REPLACE_PENDING"})
 TERMINAL_STATES = frozenset({"REFUSED", "FAILED", "ABSENT_ACCEPTED", "LAPSED", "REPLACED", "SETTLED", "VOIDED"})
 PLACED_STATES = ("EXECUTABLE", "EXECUTION_COMPLETE")
@@ -262,7 +262,7 @@ def races(orders, *, since_ns=None, day=None):
 
 def arm_line(cfg12, day, hhmm, races):
     """The typed ARM line: cfg12 is config-p2's sha256[:12], day the UTC day 'YYYY-MM-DD', hhmm UNTIL's 'HHMM'."""
-    return ARM_LINE.format(cfg12=cfg12, day=day.replace("-", ""), hhmm=hhmm, n=races)
+    return ARM_LINE.format(cfg12=cfg12, day="".join(day.split("-")), hhmm=hhmm, n=races)
 
 
 def arm_payload(line, *, session_id, config_sha256, utc_day, until_ns, races, code_commit):
@@ -314,12 +314,13 @@ def arm_problem(event, *, config_sha256, session_id, now_ns):
 def leg_refusal(*, side, market_id, instruction, orders, others, p1_day, arm_event, arm_events_today, lp, pair,
                 off_ns, config_sha256, now_ns):
     """The gateway's check for one leg on the submit's basis read (note §6), or None. orders is the core fold's;
-    others the refs of our open or unsettled orders that are not this open's legs; p1_day Pilot 1's session_start
-    of today, or None; arm_event the event at lp["arm_seq"] and arm_events_today the P2 ARM records of today; lp
-    {arm_seq, session_id, races}; pair the placed BACK's pending, or None; off_ns the send book's off. In order:
-    the ARM record (arm_problem, then p2_arm_already_today for an earlier one today), p2_pilot_1_day; for a BACK
+    others the refs of our open or unsettled orders (for a LAY, not this open's legs); p1_day Pilot 1's
+    session_start of today, or None; arm_event the event at lp["arm_seq"] and arm_events_today the P2 ARM records of
+    today; lp {arm_seq, session_id, races}; pair the placed BACK's pending, or None; off_ns the send book's off. In
+    order: the ARM record (arm_problem, then p2_arm_already_today for an earlier one today), p2_pilot_1_day; for a BACK
     p2_market_used, p2_until_before_pull, p2_races_total, p2_races_today, p2_races_session, p2_other_bet_open; for a
-    LAY p2_lay_without_back, p2_lay_already_sent, p2_lay_not_pair, p2_other_bet_open; then p2_leg_shape."""
+    LAY p2_lay_without_back (unless this pair's BACK rests, or has matched), p2_lay_already_sent, p2_lay_not_pair,
+    p2_other_bet_open; then p2_leg_shape."""
     code = arm_problem(arm_event, config_sha256=config_sha256, session_id=lp["session_id"], now_ns=now_ns)
     if code is not None:
         return code
@@ -345,8 +346,9 @@ def leg_refusal(*, side, market_id, instruction, orders, others, p1_day, arm_eve
             return "p2_other_bet_open"
     elif side == "LAY":
         if pair is None or pair["market_id"] != market_id or not any(
-                order["side"] == "BACK" and order["state"] in PLACED_STATES
-                and order["selection_id"] == pair["selection_id"] for order in mine):
+                order["side"] == "BACK" and order["selection_id"] == pair["selection_id"]
+                and (order["state"] == "EXECUTABLE"
+                     or (order["state"] == "EXECUTION_COMPLETE" and order["size_matched_p"] > 0)) for order in mine):
             return "p2_lay_without_back"
         if any(order["side"] == "LAY" for order in mine):
             return "p2_lay_already_sent"
@@ -494,7 +496,7 @@ def _count_line(name, counts):
 
     codes = ", ".join(f"{code} {n}" for code, n in counts["codes"].items()) or "none"
     return (f"{name}: sessions {counts['sessions']}, races {counts['races']}; legs sent {sides('sent')}; placed "
-            f"{sides('placed')}; refused {sides('refused')} (codes: {codes}); matched {counts['matched']} "
+            f"{sides('placed')}; refused or failed {sides('refused')} (codes: {codes}); matched {counts['matched']} "
             f"({counts['matched_full']} in full); round trips {counts['round_trips']}, lone BACKs "
             f"{counts['lone_backs']}, lone LAYs {counts['lone_lays']}; cancelled {counts['cancelled']}, lapsed "
             f"{counts['lapsed']}, unresolved {counts['unresolved']}; booked at settle "

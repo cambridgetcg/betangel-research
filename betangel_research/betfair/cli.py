@@ -2399,6 +2399,8 @@ def _p2_env(args, ctx, *, best_effort=False):
     paths = _paths(args, ctx)
     if args.command == "p2-run" and paths.profile != pilot_run.RECORDER_PROFILE:
         raise _Done(2, "Betfair order refused: p2_profile_not_recorder_profile")
+    if args.command == "p2-run":
+        from . import gateway  # noqa: F401  the order path loads before the banner's git read, so the commit holds
     config = load_config_p2(paths=paths)
     ctx.paused_flag = _paused_flag(config)
     terminal = pilot_run.Terminal(ctx.out, ctx.err)

@@ -461,7 +461,8 @@ class OrderGateway:
         self._reset_pilot_open()
         if pilot is not None:
             clock.set_observer(self._pilot_clock_read)
-        # Pilot 2 (its engineering note §5, §6): lp is {arm_seq, session_id, races} from p2-run's ARM record; the
+        # Pilot 2 (its engineering note §5, §6): lp is {arm_seq, session_id, races} from p2-run's ARM record, plus
+        # stop_requested(), which the first-byte gate asks after the KILL file (p2_stop_before_send); the
         # placed BACK's pending ({market_id, selection_id, lay_price_h}) once chosen and once placed; and every ref
         # this gateway drew for a leg, kept from before its intent, so a raise after the send cannot lose one. One
         # gateway serves one open (cli.py's factory), so nothing is reset.
@@ -1072,6 +1073,8 @@ class OrderGateway:
                     unreadable = True                   # acted on after the KILL check (R2-N2)
             if kill_engaged(self.paths):
                 return "kill_engaged_before_send"
+            if self._lp is not None and self._lp.get("stop_requested") is not None and self._lp["stop_requested"]():
+                return "p2_stop_before_send"            # Pilot 2: Yu's stop is pending (a signal the open deferred)
             if unreadable:
                 return "pilot_gate_head_unreadable"
             if not self._book_age_ok(book):

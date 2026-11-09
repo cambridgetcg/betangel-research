@@ -318,6 +318,62 @@ class Race(P2RunCase):
         self.assertEqual((live_key_requests(env), placed(env), legs(env)), ([], [], []))
         self.assertEqual(kinds(env)[-1], "operator_confirm")
 
+    def test_decide_window_rechecked_after_the_pre_open_wait(self):
+        # Review round (time-1): the Mac stalls or sleeps in the wait for the open (200 s from off -760 s, so it wakes
+        # at about off -559 s, past -575 s). The BACK could only be refused: missed_window, no open, no live-key read.
+        env = build(self)
+        add_race(env)
+        at(env, OFF - 760 * S, lambda: env.clock.advance(200))
+        result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertEqual({k: result[3][k] for k in ("screened", "flagged", "codes")},
+                         {"screened": 1, "flagged": 1, "codes": {"missed_window": 1}})
+        self.assertEqual((live_key_requests(env), placed(env), legs(env)), ([], [], []))
+        self.assertEqual(kinds(env)[-1], "operator_confirm")
+
+    def test_slow_open_moves_on_before_the_back(self):
+        # Review round (time-1): the open itself runs past off -575 s (170 s from -740 s). The WAIT returns at once and
+        # the race moves on with no funds read and no live book for a BACK that could only be refused.
+        env = build(self)
+        add_race(env)
+        open_report = OrderGateway.open_report
+
+        def slow(gateway):
+            env.clock.advance(170)
+            return open_report(gateway)
+
+        with patch.object(OrderGateway, "open_report", slow):
+            result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertEqual(result[3]["codes"], {"missed_window": 1})
+        self.assertEqual((placed(env), legs(env)), ([], []))
+        self.assertNotIn("funds_check", kinds(env)[kinds(env).index("operator_confirm"):])
+        self.assertEqual([r["slot"] for r in env.router.reads_of(sp.BOOK, MARKET)], ["delayed"])
+
+    def test_turn_in_play_off_is_left_out_of_the_list(self):
+        # Review round (exec-filters-1): a market that does not turn in play (LAPSE would not act) is never screened.
+        env = build(self)
+        market = add_race(env)
+        market.turn_in_play = False
+        result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertIn("markets: 0 listed; left out: turn_in_play_not_enabled 1", result[2])
+        self.assertEqual((result[3]["markets"], result[3]["screened"]), (0, 0))
+        self.assertEqual((env.router.reads_of(sp.CATALOGUE, MARKET), env.router.reads_of(sp.BOOK, MARKET)), ([], []))
+        self.assertEqual(live_key_requests(env), [])
+
+    def test_off_moved_at_the_screen(self):
+        # Review round (exec-filters-1): the start moves after the day's list and before the screen: the fresh row's
+        # off differs, so off_moved, no book read and nothing on the live key.
+        env = build(self)
+        market = add_race(env)
+        at(env, OFF - 841 * S, lambda: setattr(market, "off_ns", OFF + 60 * S))
+        result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertEqual((result[3]["screened"], result[3]["flagged"], result[3]["codes"]), (1, 0, {"off_moved": 1}))
+        self.assertEqual(env.router.reads_of(sp.BOOK, MARKET), [])
+        self.assertEqual(live_key_requests(env), [])
+
     def test_back_refused(self):
         env = build(self)
         market = add_race(env)
@@ -551,6 +607,31 @@ class Stops(P2RunCase):
                 self.assertTrue(all(o["state"] == "EXECUTION_COMPLETE" for o in legs(env)))
                 self.assertEqual(live_key_requests(env) == [], name == "idle")
 
+    def test_ctrl_c_during_the_lay_refuses_it_at_the_first_byte(self):
+        # Review round (time-4): Ctrl-C after BETWEEN's look, inside the LAY's lp_place (its funds read). The signal is
+        # deferred, so the LAY's first-byte gate refuses it (FAILED, nothing sent); the BACK is pulled; the end.
+        env = build(self)
+        add_race(env)
+        funds, calls = OrderGateway._funds, []
+
+        def fire_on_the_lays(gateway):
+            calls.append(True)
+            if len(calls) == 2:
+                sr.fire()
+            return funds(gateway)
+
+        with patch.object(OrderGateway, "_funds", fire_on_the_lays):
+            result = p2_run_cli(env)
+        self.assertEnded(result, "stopped", exit_code=0, released=True)
+        self.assertTrue(result[3]["stop_requested"])
+        back, lay = legs(env)
+        self.assertEqual((len(placed(env)), [c["instructions"][0]["betId"] for c in cancelled(env)]),
+                         (1, [back["bet_id"]]))
+        self.assertEqual((back["state"], lay["state"], lay["error_code"]),
+                         ("EXECUTION_COMPLETE", "FAILED", "transport_not_sent"))
+        self.assertIn("p2_stop_before_send", [e["payload"]["exception"]["code"] for e in events(env)
+                                              if e["kind"] == "report" and e["payload"].get("exception")])
+
     def test_kill_file_pulls(self):
         env = build(self)
         add_race(env)
@@ -637,6 +718,16 @@ class Stops(P2RunCase):
                 result = p2_run_cli(env)
                 self.assertEnded(result, name, exit_code=0, released=True)
                 self.assertEqual(len(cancelled(env)), 2)
+
+    def test_drift_before_the_open_is_seen_at_the_wait(self):
+        # Review round (time-2): the wall clock steps back 120 s in the wait for the open. The drift baseline is the
+        # race's (after the screen), so the WAIT's first look ends the session before any send.
+        env = build(self)
+        add_race(env)
+        at(env, OFF - 760 * S, lambda: env.clock.step_wall(-120))
+        result = p2_run_cli(env)
+        self.assertEnded(result, "drift", exit_code=0, released=True)
+        self.assertEqual((placed(env), legs(env)), ([], []))
 
     def test_kill_event_before_pull_hands_off(self):
         env = build(self)
@@ -904,8 +995,15 @@ class Arm(P2RunCase):
         self.assertRefused(env, p2_run_cli(env, races=2), "p2_races_invalid")
         result = p2_run_cli(env, races=1)
         self.assertEnded(result, "races_done", exit_code=0, released=True)
-        self.assertIn("Races so far: 0 today, 0 of 10 in total; this session may run 1 until 2000Z",
-                      env.confirmer.prompts[0]["banner"])
+        banner = env.confirmer.prompts[0]["banner"]
+        self.assertIn("Races so far: 0 today, 0 of 10 in total; this session may run 1 until 2000Z", banner)
+        # Review round (banner-1): the page's banner items (Arming a session): cfg12, commit, stops, warnings.
+        for text in (f"config-p2 {cfg.config_sha256(env.p2)[:12]}", f"code commit {sp.COMMIT[:12]}",
+                     "the Betfair phone app", "Ctrl-C here", "the KILL file", f"own-scope kill from {p2_run.CHECKOUT}",
+                     "typed cancel fails", "the session ends after any race with a matched leg", "Nothing heavy runs",
+                     "mains power with the lid open"):
+            with self.subTest(text=text):
+                self.assertIn(text, banner)
         # With one race run, the next day may ask for more (at most 5, and 10 in all).
         sr.set_day(env, 1, before_off_s=900)
         code, _, err, summary = p2_run_cli(env, races=6)
@@ -972,6 +1070,24 @@ class Arm(P2RunCase):
         self.assertEqual((code, summary, arm_events(env)), (2, None, []))
         self.assertIn("Betfair order refused: journal_changed_during_arm", err)
         self.assertIn("recording released (generation 1)", err)
+
+    def test_commit_moved_since_the_banner_refuses_the_arm(self):
+        # Review round (code-identity-1): the checkout moves to another clean commit while Yu types the line. The ARM
+        # refuses before any Keychain read or record, and the admission is released.
+        env = build(self)
+        add_race(env)
+        confirm = env.confirmer.confirm_line
+
+        def typed_then_pulled(expected, *, banner):
+            confirm(expected, banner=banner)
+            env.git.commit = "d" * 40
+
+        env.confirmer.confirm_line = typed_then_pulled
+        code, _, err, summary = p2_run_cli(env)
+        self.assertEqual((code, summary, arm_events(env), env.popen.calls), (2, None, [], []))
+        self.assertIn("Betfair order refused: p2_code_changed", err)
+        self.assertIn("recording released (generation 1)", err)
+        self.assertEqual((sr.credential_reads(env), env.transport.requests), ([], []))
 
     def test_owner_lock_blocks_pilot_run_and_manual_place(self):
         env = build(self)
@@ -1065,6 +1181,20 @@ class Summary(P2RunCase):
         self.assertEqual(support.FakeHttpTransport.header_text(request, "X-Application"),
                          "synthetic-delayed-key-0001")
         self.assertEqual(len(env.router.order_requests), 2)             # the race's two legs only
+
+    def test_cleared_refuses_a_read_slot_other_than_delayed(self):
+        # Review round (f46-summary-1): config-p2 edited to read with the live key. --cleared refuses before any
+        # Keychain read or login (F46: the live key only in a placing session).
+        env = build(self)
+        arm_record(env, until_ns=sp.UNTIL, races=1)
+        config = json.loads(env.paths.config_p2_path.read_text(encoding="utf-8"))
+        config["read"]["app_key_slot"] = "live"
+        env.paths.config_p2_path.write_text(json.dumps(config), encoding="utf-8")
+        env.transport.requests.clear()
+        code, out, err = run_main(["p2-summary", "--mode", "live", "--cleared"], deps(env))
+        self.assertEqual(code, 2, err)
+        self.assertIn("Betfair order refused: p2_cleared_needs_delayed_key", err)
+        self.assertEqual((env.runner.calls, env.transport.requests), ([], []))
 
 
 if __name__ == "__main__":

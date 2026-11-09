@@ -162,7 +162,7 @@ def _armed(env, view, stop, *, line, day, until_ns, races):
             s = SimpleNamespace(session_id=f"p2s-{tag}", ticket=ticket, stop=stop, races=races, until_ns=until_ns,
                                 arm_seq=None, head=None, credentials=None, caffeinate=None, read_session=None,
                                 read=None, raced=0, streak=0, pulled=False, handoff=False, codes={}, listed=0,
-                                screened=0, flagged=0)
+                                screened=0, flagged=0, clock0=None)
             try:
                 _arm(env, s, view, line=line, day=day)
             except Refused:
@@ -197,6 +197,8 @@ def _arm(env, s, view, *, line, day):
     problems = arm_problems(env, fresh, now_ns=clock.time_ns(), until_ns=s.until_ns, races=s.races)
     if problems:
         refuse("p2_arm_refused:" + ",".join(problems))
+    if fresh["git"]["commit"] != view["git"]["commit"]:  # the commit recorded is the one the banner showed
+        refuse("p2_code_changed")
     if s.stop.requested:
         refuse("p2_arm_stopped")
     try:
@@ -343,6 +345,7 @@ def race(env, s, market_id, off_ns):
         return code
     if env.clock.time_ns() > off_ns + p2_lp.SCREEN_S[1] * NS:     # again: a stall or sleep in the wait (Codex on #62)
         return _skip(s, "missed_window")
+    s.clock0 = (env.clock.time_ns(), env.clock.monotonic_ns())   # watch's drift baseline, one a race (time-2)
     s.screened += 1
     code = screen(env, s.read, market_id, off_ns)
     if code is not None:
@@ -351,6 +354,8 @@ def race(env, s, market_id, off_ns):
     code = _idle(env, s, off_ns + p2_lp.OPEN_S * NS)
     if code is not None:
         return code
+    if env.clock.time_ns() > off_ns + p2_lp.DECIDE_S[1] * NS:     # a stall or sleep: the BACK could only be refused
+        return _skip(s, "missed_window")
     if pilot_run.cap_blocks(env.config, env.paths, clock=env.clock):
         return _skip(s, "login_cap")
     problems = pilot_run.admission_intact(env.paths, s.ticket, clock=env.clock)
@@ -364,7 +369,12 @@ def _open(env, s, market_id, off_ns):
     there is Yu's stop); the race's own exceptions are handled inside the open, so one out of close() leaves the race's
     code as it was."""
     s.pulled = False
-    lp = {"arm_seq": s.arm_seq, "session_id": s.session_id, "races": s.races}
+
+    def stop_requested():                                 # the first-byte gate refuses a leg once Yu's stop is pending
+        signals = getattr(env.ctx, "signals", None)        # this open's guard: a signal deferred after the BACK's send
+        return s.stop.requested or bool(signals is not None and signals.pending)
+
+    lp = {"arm_seq": s.arm_seq, "session_id": s.session_id, "races": s.races, "stop_requested": stop_requested}
     done = {}
     try:
         with env.gateway_factory(lp, credentials=s.credentials, stop=s.stop) as gw:
@@ -395,6 +405,8 @@ def _legs(env, s, gw, market_id, off_ns):
     trigger = _wait(env, s, off_ns + p2_lp.DECIDE_S[0] * NS)
     if trigger is not None:
         return trigger
+    if env.clock.time_ns() > off_ns + p2_lp.DECIDE_S[1] * NS:     # a slow open: no funds or book read for a refusal
+        return _skip(s, "missed_window")
     result, exc = _place(env, s, gw, market_id, "BACK")
     if exc is not None:                                   # nothing of the BACK submitted
         if isinstance(exc, env.signal_stop):
@@ -420,7 +432,8 @@ def _legs(env, s, gw, market_id, off_ns):
     if state not in p2_lp.PLACED_STATES:
         outcome = pull(env, s, gw, market_id)              # the BACK, at once
         if state in (None, "REFUSED", "FAILED"):
-            return _pulled(env, s, gw, market_id, outcome) or "next"
+            s.stop.take_pending(getattr(env.ctx, "signals", None))      # a stop during the LAY ends the session
+            return _pulled(env, s, gw, market_id, outcome) or ("stopped" if s.stop.requested else "next")
         _pulled(env, s, gw, market_id, outcome)            # the LAY is unresolved: handed off with the pull's legs
         return "lay_unresolved"
     trigger = _wait(env, s, off_ns + p2_lp.PULL_S * NS)    # REST: no Betfair call
@@ -472,9 +485,10 @@ def watch(env, s, since_seq, *, until_ns):
     trigger: stopped (the flag, or a signal the gateway deferred), unreadable (the journal), kill_event (a kill since
     the ARM record), foreign (any event after since_seq: ours stop at our head, and .gateway.lock keeps every writer but
     the kill out), kill_file, drift (wall and monotonic time apart by more than DRIFT_TOLERANCE_NS) or late_wake (a
-    slice ending more than LATE_WAKE_S late). Checked once before any wait."""
+    slice ending more than LATE_WAKE_S late). Checked once before any wait. Drift is measured from the race's baseline
+    (s.clock0, taken after the screen-window check), so a step before this wait is seen too."""
     clock = env.clock
-    wall0, mono0 = clock.time_ns(), clock.monotonic_ns()
+    wall0, mono0 = s.clock0
     while True:
         s.stop.take_pending(getattr(env.ctx, "signals", None))
         if s.stop.requested:
@@ -652,6 +666,8 @@ def summary(env):
     if env.args.cleared and not arms:
         w.line("no P2 ARM record: nothing to clear")
     elif env.args.cleared:
+        if env.config["read"]["app_key_slot"] != "delayed":   # never the live key outside a placing session (F46)
+            raise Refused("p2_cleared_needs_delayed_key")
         try:
             credentials = pilot_run.load_session_credentials(env.config, paths, runner=env.keychain_runner,
                                                              purposes=("read",))

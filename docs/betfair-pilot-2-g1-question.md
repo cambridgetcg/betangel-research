@@ -1,9 +1,9 @@
 # G1 follow-up for Pilot 2 (draft for Yu)
 
-Status: draft, not sent. Written by lab-Claude on 2026-11-05 for the [Pilot 2 page](betfair-pilot-2-policy.md). Yu sends it, or decides not to; lab-Claude never contacts Betfair Developer Support. It contains no account name, ID, key, IP address or secret.
+Status: draft, not sent. Written by lab-Claude on 2026-11-05 for the [Pilot 2 page](betfair-pilot-2-policy.md), and updated on 2026-11-09 for the plain bot's timing. Yu sends it, or decides not to; lab-Claude never contacts Betfair Developer Support. It contains no account name, ID, key, IP address or secret.
 
 ## Note for Yu
-- **Why a follow-up.** The first G1 question, drafted for Pilot 1, described only Pilot 1's shape: back the favourite, one bet per race, any unmatched part cancelled at once. Whatever Betfair answered to it, Pilot 2 is a new shape, with resting lays as well as backs, cancelled 60 seconds before the off. So the page's go-live consent needs Betfair's answer to this follow-up, or Yu's recorded decision to go ahead without one.
+- **Why a follow-up.** The first G1 question, drafted for Pilot 1, described only Pilot 1's shape: back the favourite, one bet per race, any unmatched part cancelled at once. Whatever Betfair answered to it, Pilot 2 is a new shape, with resting lays as well as backs, cancelled five minutes before the off. So the page's go-live consent needs Betfair's answer to this follow-up, or Yu's recorded decision to go ahead without one.
 - **Where to send it.** The Developer Support request form, https://support.developer.betfair.com/hc/en-us/requests/new. If the first question was answered on a ticket, replying on that ticket keeps the context. The message's first line thanks Betfair for that earlier answer, so drop it if there was none.
 - **Numbers in the message.** All of them wait for Yu's build consent: £2, the lay cap of 6.0 and "5 markets a day" are Yu's 2026-11-03 numbers, to be confirmed, and "10 in all" and "ending by 30 June 2027" are proposals. If Yu changes any, change the message before sending it.
 - **The form may ask for your App Key or account details.** Those go in the form's own fields, at your discretion, never in the message text and never in any repo copy.
@@ -22,10 +22,9 @@ Thank you for your earlier answer about my small automated betting trial. I am p
 
 - The same account, used only by me with my own money, and the same live application key.
 - Software I commissioned for my own use, written with AI coding assistants. It follows one fixed rule; no AI model makes betting decisions. I start and attend every session.
-- In GB and IE horse-racing win markets, about five minutes before the off, when one runner has a gap of three or four price steps between the best back and lay prices, it places one £2 back order and one £2 lay order on that runner. Both are priced inside the gap, so they wait to be matched. The lay price is never above 6.0.
-- About 60 seconds before the off it cancels whatever is still unmatched. Anything matched stays to the result. No in-play bets.
+- In GB and IE horse-racing win markets, about ten minutes before the off, when one runner has a gap of three or four price steps between the best back and lay prices, it places one £2 back order and one £2 lay order on that runner. Both are priced inside the gap, so they wait to be matched. The lay price is never above 6.0.
+- About five minutes before the off it cancels whatever is still unmatched. Anything matched stays to the result. No in-play bets.
 - One market at a time, at most 5 markets a day and 10 in all, ending by 30 June 2027.
-- Before that, to test its safety stops, it places a few £1 orders at prices that cannot realistically be matched (a lay at 1.01 and a back at 1000), and cancels them.
 
 Questions:
 

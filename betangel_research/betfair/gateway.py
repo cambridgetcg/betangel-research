@@ -33,6 +33,12 @@ live probe (place then cancel), reconciliation of unknown outcomes under the liv
 replace and live partial cancels were removed (refused before anything is read, journaled or sent);
 nothing settles a live order automatically. Paper keeps replace, reductions and its settlement model.
 
+Pilot 2's plain capped bot (docs/betfair-pilot-2-engineering.md §2, §5, §6): a live gateway built with lp, on
+config-p2 only, refuses place() and sends through lp_place alone, one leg per call. That is the manual path without a
+typed line: the gateway's own fresh book with virtual prices, p2_lp's choice, and every pair rule checked on the
+submit's own basis read (_lp_check). Its cancel() takes only its own legs, and lp_legs() names every leg whose ref
+was drawn, whatever raised after.
+
 The kill (amendment A3, D4) never takes or waits for .gateway.lock: it engages the KILL file, sweeps
 our bets by our strategy refs and our journal's betIds, re-sweeps at 20 s and 35 s after the KILL
 file and journals no order moves. A lock holder is never waited for or signalled: a place or
@@ -57,12 +63,13 @@ publish (_anchor_wait_s).
 """
 
 import contextlib
+from functools import partial
 import os
 import secrets
 import signal
 import sqlite3
 
-from . import pilot as pilot_rules, pilot_gate
+from . import p2_lp, pilot as pilot_rules, pilot_gate
 from .arming import (anchor_failures, checks_for, combine, dynamic_arming, register_account, static_arming,
                      token_matches)
 from .config import config_sha256, money_pence, order_strategy_ref, own_strategy_refs, pilot_enabled
@@ -92,7 +99,8 @@ from .validate import make_customer_order_ref, make_customer_ref
 PLACE_METHOD = "SportsAPING/v1.0/placeOrders"
 CANCEL_METHOD = "SportsAPING/v1.0/cancelOrders"
 # "pilot": RS-19's registered executor, live only and only through pilot_place (engineering note §2, E3).
-SOURCES = ("cli_manual", "api", "pilot")
+# "pilot_lp": Pilot 2's plain bot, live only and only through lp_place (Pilot 2 engineering note §2).
+SOURCES = ("cli_manual", "api", "pilot", "pilot_lp")
 LIVE_BANNER = "MODE=LIVE: this sends a real order to Betfair with real money."
 ACCOUNT_WIDE_BANNER = ("MODE=LIVE: this cancels every unmatched bet on the Betfair account, Bet Angel's included; "
                        "matched bets cannot be undone.")
@@ -363,7 +371,7 @@ class OrderGateway:
 
     def __init__(self, config, *, paths, mode, journal, guard, paper=None, rpc=None, read=None, confirmer=None,
                  clock=SYSTEM_CLOCK, env=None, keychain_runner=None, on_send=None, pilot=None, in_session_settle=False,
-                 contract_reader=None):
+                 contract_reader=None, lp=None):
         if mode not in ("paper", "live"):
             raise ConfigError("gateway_mode_invalid")
         if type(in_session_settle) is not bool:
@@ -375,6 +383,8 @@ class OrderGateway:
                 raise ConfigError("paper_gateway_must_not_hold_rpc")
             if pilot is not None:
                 raise ConfigError("paper_gateway_must_not_hold_pilot")
+            if lp is not None:
+                raise ConfigError("paper_gateway_must_not_hold_lp")
             if read is not None and getattr(read, "app_key_slot", None) != "delayed":
                 raise ConfigError("paper_gateway_read_must_use_delayed_key")
         else:
@@ -395,6 +405,8 @@ class OrderGateway:
                 # transports (rpc.transport, session.transport) are not checked: they must keep reading the
                 # monotonic clock only (transport.py's send-by and budget), never the wall clock.
                 raise ConfigError("pilot_gateway_needs_one_observed_clock")
+            if lp is not None and (pilot is not None or p2_lp.config_problems(config)):
+                raise ConfigError("p2_gateway_needs_config_p2")          # config-p2 exactly, never Pilot 1's
         self.config = config
         self.paths = paths
         self.mode = mode
@@ -449,6 +461,13 @@ class OrderGateway:
         self._reset_pilot_open()
         if pilot is not None:
             clock.set_observer(self._pilot_clock_read)
+        # Pilot 2 (its engineering note §5, §6): lp is {arm_seq, session_id, races} from p2-run's ARM record; the
+        # placed BACK's pending ({market_id, selection_id, lay_price_h}) once chosen and once placed; and every ref
+        # this gateway drew for a leg, kept from before its intent, so a raise after the send cannot lose one. One
+        # gateway serves one open (cli.py's factory), so nothing is reset.
+        self._lp = lp
+        self._lp_pending = self._lp_pair = None
+        self._lp_refs = set()
 
     # --- journal plumbing ----------------------------------------------------------------------
 
@@ -947,7 +966,7 @@ class OrderGateway:
 
     # --- shared checks -------------------------------------------------------------------------
 
-    def _check_source(self, source, *, pilot_path=False):
+    def _check_source(self, source, *, pilot_path=False, lp_path=False):
         if source not in SOURCES:
             raise ValueError("source must be cli_manual or api")
         if source == "pilot":
@@ -956,6 +975,13 @@ class OrderGateway:
                 raise OrderRefused("pilot_source_live_only")
             if not pilot_path:
                 raise OrderRefused("pilot_source_needs_pilot_path")
+            return
+        if source == "pilot_lp":
+            # Pilot 2: live only, and only through lp_place.
+            if self.mode != "live":
+                raise OrderRefused("pilot_lp_source_live_only")
+            if not lp_path:
+                raise OrderRefused("pilot_lp_source_needs_lp_path")
             return
         if self.mode == "live" and source != "cli_manual":
             raise OrderRefused("api_source_paper_only")
@@ -983,12 +1009,14 @@ class OrderGateway:
             failures = list((self._report or {}).get("failures") or ["not_armed"])
             raise NotArmed(failures[0], detail={"failures": failures})
 
-    def _self_fetch(self, market_id):
-        """The gateway's own book: live key in live mode (A18), the delayed read client in paper."""
+    def _self_fetch(self, market_id, *, virtualise=False):
+        """The gateway's own book: live key in live mode (A18), the delayed read client in paper. virtualise (Pilot 2's
+        send books only) asks for virtual prices; it is passed only when set, so every other request is unchanged."""
         if self.read is None:
             raise OrderRefused("paper_book_required")
+        options = {"virtualise": True} if virtualise else {}
         try:
-            return self.read.market_snapshot(market_id, fetched_by="gateway_self_fetch")
+            return self.read.market_snapshot(market_id, fetched_by="gateway_self_fetch", **options)
         except (BetfairError, ValueError) as exc:
             raise OrderRefused("book_fetch_failed", detail={"code": safe_code(getattr(exc, "code", None)
                                                                                or type(exc).__name__)}) from None
@@ -1266,6 +1294,8 @@ class OrderGateway:
 
     def place(self, market_id, instructions, *, book=None, source, confirm_token=None):
         """Place v1 LIMIT instructions -> {"intent_id", "mode", "decision", "refusal", "orders", "journal_seq"}."""
+        if self._lp is not None:
+            raise OrderRefused("p2_gateway_refuses_place")          # a Pilot 2 gateway sends through lp_place only
         self._check_source(source)
         self._seqs = []
         if self.mode == "live":
@@ -1280,31 +1310,48 @@ class OrderGateway:
         return self._place_core(market_id, instructions, book=book, source=source, intent_id=_intent_id(),
                                 arming={"armed": True, "failures": [], "checked": []}, probe=False)
 
-    def _place_live(self, market_id, instructions, confirm_token, *, command, probe, echo_lines=None):
+    def _place_live(self, market_id, instructions, confirm_token, *, command, probe, echo_lines=None, lp_side=None):
+        """lp_side (Pilot 2's lp_place, its engineering note §5): no V0 check and no typed line, a virtual send book,
+        and the leg chosen on it by p2_lp (a code refuses with only funds_check journaled); None is the manual path."""
         if not token_matches(self.config, confirm_token, self.clock.time_ns()):
             raise NotArmed("confirm_token_mismatch")
         self._require_armed()
         self._refuse_manual_during_session()
         if self._resolved_at_open:
             return self._resolved_refusal()
-        if not isinstance(instructions, list) or not instructions or any(_instruction_echo(i) is None
-                                                                         for i in instructions):
+        if lp_side is None and (not isinstance(instructions, list) or not instructions
+                                or any(_instruction_echo(i) is None for i in instructions)):
             raise OrderRefused("validation:V0", detail={"reason": "instructions_must_be_v1"})
         intent_id = _intent_id()
-        if echo_lines is None:
-            echo_lines = [order_echo_line(market_id, i["selection_id"], i["side"], i["price_h"], i["size_p"])
-                          for i in instructions]
-        self._take_confirmations(echo_lines, intent_id)
+        if lp_side is None:
+            if echo_lines is None:
+                echo_lines = [order_echo_line(market_id, i["selection_id"], i["side"], i["price_h"], i["size_p"])
+                              for i in instructions]
+            self._take_confirmations(echo_lines, intent_id)
         # Funds first, then the book (amendment A3, C2): the book's age window, which bounds the send,
         # then covers only the decision, the journal appends and the connect. The book is fetched after
         # the operator typed the order, so it is never older than the echo.
         funds, checked_at = self._funds()
-        book = self._self_fetch(market_id)
+        virtualise = lp_side is not None
+        book = self._self_fetch(market_id, virtualise=virtualise)
         if not self._book_age_ok(book):
-            book = self._self_fetch(market_id)
+            book = self._self_fetch(market_id, virtualise=virtualise)
+        source, lp_check = "cli_manual", None
+        if lp_side is not None:
+            if lp_side == "BACK":
+                # The country of the row p2-run's screen stored (the snapshot has none); a refetched row has no
+                # EVENT, so it fails closed.
+                country = ((self.read.catalogue_row(market_id) or {}).get("event") or {}).get("countryCode")
+                instruction, self._lp_pending, code = p2_lp.choose_back(book, country=country)
+            else:
+                instruction, code = p2_lp.choose_lay(book, self._lp_pair)
+            if code is not None:
+                return self._result(None, [], decision="refused", refusal={"rule": code, "detail": {}})
+            instructions, source = [instruction], p2_lp.SOURCE
+            lp_check = partial(self._lp_check, side=lp_side, off_ns=parse_utc_ns(book["market_time"]))
         arming = self._live_arming(command, book)
-        return self._place_core(market_id, instructions, book=book, source="cli_manual", intent_id=intent_id,
-                                arming=arming, probe=probe, funds=funds, funds_checked_at=checked_at)
+        return self._place_core(market_id, instructions, book=book, source=source, intent_id=intent_id,
+                                arming=arming, probe=probe, funds=funds, funds_checked_at=checked_at, lp_check=lp_check)
 
     def _refuse_refs(self, payload, refs, reason, *, intent_id, customer_ref=None):
         """A refusing risk_decision moving this request's own unsent refs to REFUSED -> the event appended (a pilot
@@ -1326,6 +1373,56 @@ class OrderGateway:
         detail = {"orders": [{"customer_order_ref": ref, "market_id": orders[ref]["market_id"]}
                              for ref in refs if ref in orders]}
         return self._result(None, refs, decision="refused", refusal={"rule": RESOLVED_AT_OPEN_RULE, "detail": detail})
+
+    # --- Pilot 2's plain capped bot (docs/betfair-pilot-2-engineering.md §5, §6) ---------------------------------
+
+    def lp_place(self, market_id, side, *, confirm_token):
+        """One Pilot 2 leg, "BACK" or "LAY", in this gateway's place open: _place_live with no typed line, on the
+        gateway's own virtual send book, where p2_lp chooses the leg and _lp_check judges it on the submit's basis.
+        The executor passes only the side. A placed BACK (EXECUTABLE or EXECUTION_COMPLETE) becomes this open's pair,
+        the only one a LAY may follow. -> the place result."""
+        if self._lp is None:
+            raise OrderRefused("lp_place_needs_p2_gateway")
+        self._check_source(p2_lp.SOURCE, lp_path=True)
+        self._seqs = []
+        self._require_open("place")
+        result = self._place_live(market_id, None, confirm_token, command="place", probe=False, lp_side=side)
+        return self._lp_keep(side, result)
+
+    def _lp_keep(self, side, result):
+        if side == "BACK" and any(order["state"] in p2_lp.PLACED_STATES for order in result["orders"]):
+            self._lp_pair = self._lp_pending
+        return result
+
+    def _lp_check(self, events, market_id, instruction, *, side, off_ns):
+        """p2_lp.leg_refusal on the events read that is the submit's basis (anything journaled after it makes the
+        submit refuse), with the cached fold, which is at or after it; then, for a BACK, the pair pre-check: R1, R3,
+        R6 and R8-R10 for one more PAIR_WORST_P BACK (risk.evaluate_pilot_reservation). -> a code or None."""
+        state = self._state()
+        now_ns = self.clock.time_ns()
+        today = pilot_rules.utc_day(now_ns)
+        session = pilot_gate.latest_note(events, "session_start")
+        code = p2_lp.leg_refusal(
+            side=side, market_id=market_id, instruction=instruction, orders=state["orders"],
+            others=sorted(set(pilot_gate.open_manual_refs([], state["orders"])) - self._lp_refs),
+            p1_day=session if session is not None and session["utc_day"] == today else None,
+            arm_event=next((event for event in events if event["seq"] == self._lp["arm_seq"]), None),
+            arm_events_today=p2_lp.arm_records(events, day=today), lp=self._lp, pair=self._lp_pair, off_ns=off_ns,
+            config_sha256=config_sha256(self.config), now_ns=now_ns)
+        if code is not None or side != "BACK":
+            return code
+        failures = self.guard.evaluate_pilot_reservation(market_id, state=state, now_ns=now_ns,
+                                                         size_p=p2_lp.PAIR_WORST_P)
+        return f"p2_pair_precheck:{failures[0]['rule']}" if failures else None
+
+    def lp_legs(self):
+        """{ref: the core fold's order record} for every leg ref this gateway drew; a ref with no order in a readable
+        fold never had an intent and is left out. If the journal cannot be read or folded, every ref maps to None, so
+        a handoff still names each one."""
+        state = self._fold_or_none()
+        if state is None:
+            return {ref: None for ref in sorted(self._lp_refs)}
+        return {ref: state["orders"][ref] for ref in sorted(self._lp_refs) if ref in state["orders"]}
 
     # --- RS-19 pilot placement (P1-06; engineering note §2-§9) ---------------------------------------------------
 
@@ -1919,8 +2016,12 @@ class OrderGateway:
         return dict(result, pilot=info)
 
     def _place_core(self, market_id, instructions, *, book, source, intent_id, arming, probe, funds=None,
-                    funds_checked_at=None, pilot=None):
+                    funds_checked_at=None, pilot=None, lp_check=None):
         """The decision, intent, risk decision, submit and send of one place request.
+
+        lp_check (a Pilot 2 leg, its engineering note §6): run on the events read that is the submit's basis, right
+        after the session guard; a code refuses before any intent. Its refs then join the gateway's leg refs before
+        any intent is written.
 
         pilot (pilot_place's send step, P1-06 §2.5 G): the PLACE record's context. Its basis is the head of the
         authority fold taken before the funds read (critique 3), and only this request's own events may follow it:
@@ -1942,10 +2043,16 @@ class OrderGateway:
                           "last_sha256": events[-1]["event_sha256"]} if events else {})
                 if pilot_gate.session_window_open(events, now_ns=now_ns):
                     raise OrderRefused(MANUAL_DURING_SESSION)
+                refusal = None if lp_check is None else lp_check(events, market_id, listed[0])
+                if refusal is not None:
+                    return self._result(intent_id, [], decision="refused", refusal={"rule": refusal, "detail": {}})
             else:
                 basis = self.journal.anchor()                               # the head the decision is taken at
             own_from = len(self._seqs)
             cref, refs = self._new_refs(len(listed), now_ns)
+            if lp_check is not None:
+                # Before any intent: the submit, the send and the report can each raise after the order went out.
+                self._lp_refs.update(refs)
             binding = {"source": source}
         else:
             basis, own_from = pilot["basis"], pilot["own_from"]
@@ -2229,7 +2336,8 @@ class OrderGateway:
         v1 (amendment A3): a size reduction is refused before anything is checked, read or journaled. A paper
         gateway that lost its paper lock refuses before anything is journaled (_require_paper_lock). Source "pilot"
         is the pilot's remainder cancel (engineering note §8): only in the pilot-place open that sent the order and
-        only for that one bet id; no PA gate."""
+        only for that one bet id; no PA gate. A Pilot 2 gateway cancels only its own legs: every bet id must be the bet
+        id of one of its leg refs in the fold (p2_cancel_not_own_leg), refused with nothing journaled."""
         own_pilot_bet = (self._command == "pilot-place" and self._pilot_bet_id is not None
                          and isinstance(bet_ids, (list, tuple)) and list(bet_ids) == [self._pilot_bet_id])
         self._check_source(source, pilot_path=own_pilot_bet)
@@ -2244,6 +2352,11 @@ class OrderGateway:
         reductions = list(size_reductions) if size_reductions is not None else [None] * len(bet_ids)
         if len(reductions) != len(bet_ids):
             raise ValueError("size_reductions must match bet_ids")
+        if self._lp is not None:
+            orders = self._state()["orders"]
+            legs = {orders[ref]["bet_id"] for ref in self._lp_refs if ref in orders} - {None}
+            if any(bet not in legs for bet in bet_ids):
+                raise OrderRefused("p2_cancel_not_own_leg")
         self._require_armed()
         cancels = [{"bet_id": bet, "size_reduction_p": reduction} for bet, reduction in zip(bet_ids, reductions)]
         return self._cancel(market_id, cancels, kill_targets=None, reconcile=True)
@@ -3046,7 +3159,8 @@ class OrderGateway:
         self._append("kill", {"reason": safe_code(reason) if reason else "kill", "scope": scope})
         self._halt("kill")
 
-    def kill(self, *, scope="own", reason, confirm_account_wide=False, engaged_monotonic_ns=None, progress=None):
+    def kill(self, *, scope="own", reason, confirm_account_wide=False, engaged_monotonic_ns=None, progress=None,
+             extra_strategy_refs=()):
         """Engage the kill file and HALT first; then (live) sweep our own bets, and with scope "account"
         afterwards send the account-wide cancel. The own sweep always runs first, so nothing about the
         account-wide step (a missing flag, a mistyped phrase, a refusal or a failed cancel) can stop
@@ -3062,7 +3176,8 @@ class OrderGateway:
         and always ends kill_incomplete. A kill event the journal cannot take stops the kill's later
         journal writes, never its cancels, and makes it kill_incomplete (journal_write_failed). A kill that
         ends incomplete journals HALT kill_incomplete when it can (journal_halt_kill_incomplete).
-        progress(text) gets the operator's lines."""
+        progress(text) gets the operator's lines. extra_strategy_refs join the swept refs whatever the journal says
+        (the CLI passes Pilot 2's p2-lp when the profile has config-p2.json)."""
         self._seqs = []
         if scope not in ("own", "account"):
             raise ValueError("scope must be own or account")
@@ -3092,7 +3207,7 @@ class OrderGateway:
             self._append("note", {"reason": UNTRUSTED_SWEEP_NOTE})     # best effort: never stops the sweep
         # Under a pilot-enabled config both of our refs, from the config alone, whatever the journal, the receipt or
         # the contract file says (Astra's ruling on critique 13): the pilot's and the fixed manual ref.
-        refs = sorted(set(own_strategy_refs(self.config)) | set(state["strategy_refs_seen"]))
+        refs = sorted(set(own_strategy_refs(self.config)) | set(state["strategy_refs_seen"]) | set(extra_strategy_refs))
         standin = self._no_orders_state()
 
         def cancel_fn(market_id, bet_ids, kill_targets):

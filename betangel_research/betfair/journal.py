@@ -95,7 +95,8 @@ DAY_NS = 86_400_000_000_000
 INTENT_PAYLOAD_KEYS = frozenset({"order", "customer_strategy_ref", "is_probe", "parent_ref", "provisional_child",
                                  "source"})
 # "pilot": the registered pilot executor's orders (RS-19, engineering note §2 E3), live journals only (append).
-INTENT_SOURCES = ("cli_manual", "api", "paper_replay", "pilot")
+# "pilot_lp": Pilot 2's plain bot (its engineering note §2), live journals only too.
+INTENT_SOURCES = ("cli_manual", "api", "paper_replay", "pilot", "pilot_lp")
 EVENT_COLUMNS = ("seq", "event_id", "recorded_at", "monotonic_ns", "kind", "mode", "intent_id",
                  "customer_order_ref", "customer_ref", "bet_id", "market_id", "state_after", "payload_json",
                  "prev_sha256", "event_sha256")
@@ -567,7 +568,7 @@ class OrderJournal:
                                                        market_id=market_id, state_after=state_after)
         if "paper_state" in payload and self.mode != "paper":
             raise JournalError("paper_state_in_live_journal")
-        if kind == "intent" and payload.get("source") == "pilot" and self.mode != "live":
+        if kind == "intent" and payload.get("source") in ("pilot", "pilot_lp") and self.mode != "live":
             raise JournalError("pilot_intent_in_paper_journal")
         recorded_at = self.clock.utc_now()
         monotonic_ns = self.clock.monotonic_ns()

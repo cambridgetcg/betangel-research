@@ -3,7 +3,7 @@
 docs/betfair-pilot-2-policy.md (the page) is the policy and docs/betfair-pilot-2-engineering.md (the note) the detail.
 Every leg rule lives in the pure p2_lp and in the gateway's lp_place, the only order path, which this module never
 imports: the CLI hands it a factory that opens one config-p2 "place" gateway per race with the session's preloaded
-credentials, and a delayed read session. This module adds the parts the note gives the executor (§3, §5, §8, §10): the
+credentials, and a delayed read session. This module adds the parts the note gives the executor (§3, §7, §8, §10): the
 ARM pre-checks, the typed ARM line (always Yu's, at the terminal, through the live confirmer; nothing here types or
 supplies one), the ARM record, the market list and the screen on the delayed key, one race per open (WAIT, BACK, LAY,
 REST and PULL, with every failure edge), the handoff, the end and its release, and the offline summary. Ownership of
@@ -86,8 +86,8 @@ def arm_problems(env, view, *, now_ns, until_ns, races):
         problems.append("p2_code_unknown")
     elif git["dirty"]:
         problems.append("p2_tree_dirty")
-    problems += admission.live_state_problems(paths, clock=clock) + admission.ledger_problems(config, paths,
-                                                                                               clock=clock)
+    problems += admission.live_state_problems(paths, clock=clock)
+    problems += admission.ledger_problems(config, paths, clock=clock)
     problems += pilot_run.armed_session_check(paths)
     day = pilot.utc_day(now_ns)
     start = pilot_gate.latest_note(events, "session_start")
@@ -590,14 +590,19 @@ def _raised(env, s, gw, market_id, exc):
 # --- the end (note §8) and p2-summary (note §10) --------------------------------------------------------------------
 
 
-def _close(s):
-    """Log out the read session and end caffeinate, once each, best effort."""
-    session, s.read_session = s.read_session, None
+def _logout(session):
+    """Log out one read session, best effort."""
     if session is not None:
         try:
             session.close()
         except Exception:
             pass
+
+
+def _close(s):
+    """Log out the read session and end caffeinate, once each, best effort."""
+    session, s.read_session = s.read_session, None
+    _logout(session)
     process, s.caffeinate = s.caffeinate, None
     if process is not None:
         try:
@@ -654,7 +659,7 @@ def summary(env):
             _print(w, p2_lp.summary_lines(counts, checkout=CHECKOUT))
             raise Refused(f"p2_cleared_read_failed:{_code(exc)}") from None
         finally:
-            _close(SimpleNamespace(read_session=session, caffeinate=None))
+            _logout(session)
     _print(w, p2_lp.summary_lines(counts, cleared, checkout=CHECKOUT))
     return 0
 

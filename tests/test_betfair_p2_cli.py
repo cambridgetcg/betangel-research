@@ -19,7 +19,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from betangel_research.betfair import cli, pilot_run
+from betangel_research.betfair import cli, p2_run, pilot_run
 from betangel_research.betfair import config as cfg
 from betangel_research.betfair.credentials import anchor_write, load_credentials
 from betangel_research.betfair.errors import ConfigError
@@ -30,6 +30,7 @@ import test_betfair_support_gateway as gw
 from test_betfair_killswitch import run_cli_main
 from test_betfair_p2_gateway import P2_EXAMPLE, arm_record, fake_git, no_children, p2_orders, p2_token
 
+
 def run_main(argv, deps=None):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -38,8 +39,8 @@ def run_main(argv, deps=None):
 
 
 def stand_in_executor(test, **functions):
-    """cli._p2_executor returns a stand-in p2_run holding only the given functions, for this test."""
-    patcher = patch.object(cli, "_p2_executor", return_value=types.SimpleNamespace(**functions))
+    """p2_run's run and summary replaced by the given functions, for this test."""
+    patcher = patch.multiple(p2_run, **functions)
     patcher.start()
     test.addCleanup(patcher.stop)
 

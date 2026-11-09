@@ -2413,22 +2413,15 @@ def _p2_env(args, ctx, *, best_effort=False):
     return env
 
 
-def _p2_executor():
-    """The executor module, p2_run (imported only by the two Pilot 2 commands)."""
-    from . import p2_run
-    return p2_run
-
-
 def _p2_command(args, ctx, name, *, best_effort=False, logs_in=False):
-    from . import pilot_run
-    executor = _p2_executor()
+    from . import p2_run, pilot_run
     if args.mode != "live":                     # before any path, config, journal, Keychain or terminal use
         raise _Done(2, "Betfair order refused: p2_live_only (the Pilot 2 commands run with --mode live only)")
     env = _p2_env(args, ctx, best_effort=best_effort)
     if logs_in:
         _coexistence(env.config, args)
     try:
-        return getattr(executor, name)(env)
+        return getattr(p2_run, name)(env)
     except pilot_run.Refused as exc:
         env.terminal.lines(exc.lines)
         raise _Done(2, f"Betfair order refused: {exc.code}") from None

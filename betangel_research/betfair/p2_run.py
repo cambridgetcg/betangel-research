@@ -73,15 +73,13 @@ def arm_view(env):
 
 def arm_problems(env, view, *, now_ns, until_ns, races):
     """ARM's content checks (note §7), read only, before the line and again after it -> [codes], [] when clean:
-    config-p2's pins; no SSH session; a known commit and a clean tree; release's clean live state, the login ledger
-    and no Pilot 1 armed-session file; no Pilot 1 session today or open, and no P2 ARM record today (one pilot session
-    a UTC day across both pilots); none of our bets open or unsettled; the race counts and N (1 to min(5, 10 - total),
-    and 1 while no race has run); UNTIL after now + 20 min; the login cap."""
+    config-p2's pins; a known commit and a clean tree; release's clean live state, the login ledger and no Pilot 1
+    armed-session file; no Pilot 1 session today or open, and no P2 ARM record today (one pilot session a UTC day
+    across both pilots); none of our bets open or unsettled; the race counts and N (1 to min(5, 10 - total), and 1
+    while no race has run); UNTIL after now + 20 min; the login cap. An SSH session is refused before this, in run."""
     paths, config, clock = env.paths, env.config, env.clock
     events, orders, git = view["events"], view["state"]["orders"], view["git"]
     problems = list(p2_lp.config_problems(config))
-    if any(env.environ.get(name) for name in SSH_VARS):
-        problems.append("p2_over_ssh")
     if git["commit"] is None or git["dirty"] is None:
         problems.append("p2_code_unknown")
     elif git["dirty"]:
@@ -127,6 +125,8 @@ def run(env):
     paths, config, clock = env.paths, env.config, env.clock
     if paths.profile != pilot_run.RECORDER_PROFILE:
         raise Refused("p2_profile_not_recorder_profile")
+    if any(env.environ.get(name) for name in SSH_VARS):     # first: no Keychain anchor, journal or git read (note §7)
+        raise Refused("p2_arm_refused:p2_over_ssh")
     pilot_run.gates(env, "pilot-arm")                       # A2 on config-p2's token, A11, A13
     now = clock.time_ns()
     until_ns = _until_ns(env.args.until, now)
@@ -437,8 +437,10 @@ def _place(env, s, gw, market_id, side):
 
 
 def _state(result):
+    """The leg's state, or None when nothing was sent: a refused result may list other bets (the gateway's
+    resolved-at-open refusal lists the earlier orders it found live)."""
     views = result.get("orders") or []
-    return views[0]["state"] if views else None
+    return views[0]["state"] if views and result.get("decision") == "accepted" else None
 
 
 def _submitted(gw, side=None):

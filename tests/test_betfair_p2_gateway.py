@@ -455,6 +455,17 @@ class Legs(P2Case):
         env.exchange.place_handler = None
         self.assertEqual(rule(leg(env, gateway, "LAY")), ("refused", "p2_lay_without_back"))
         self.assertEqual(len(placed(env)), 1)
+        # Nor is a BACK complete with nothing matched: pulled in this open, the LAY would rest alone.
+        env = build(self)
+        race(env)
+        gateway = open_p2(env)
+        set_time(env.clock, OFF - 590 * S)
+        back = self.back_placed(env, gateway)
+        gateway.cancel(MARKET, [back["orders"][0]["bet_id"]], source="cli_manual")
+        self.assertEqual([(o["state"], o["size_matched_p"]) for o in fold(env)["orders"].values()
+                          if o["customer_strategy_ref"] == "p2-lp"], [("EXECUTION_COMPLETE", 0)])
+        self.assertEqual(rule(leg(env, gateway, "LAY")), ("refused", "p2_lay_without_back"))
+        self.assertEqual(len(placed(env)), 1)
 
     def test_other_bet_open_refuses_back(self):
         env = build(self)
@@ -465,6 +476,17 @@ class Legs(P2Case):
         before = head(env)
         self.assertEqual(rule(leg(env, gateway, "BACK")), ("refused", "p2_other_bet_open"))
         self.assertEqual((kinds_after(env, before), len(placed(env))), (["funds_check"], 1))
+        # This open's own resting BACK refuses a BACK in another market too (the executor never sends one): only a
+        # LAY leaves this open's legs out.
+        env = build(self)
+        race(env)
+        race(env, "1.235")
+        gateway = open_p2(env)
+        set_time(env.clock, OFF - 590 * S)
+        self.back_placed(env, gateway)
+        self.assertEqual(rule(leg(env, gateway, "BACK", "1.235")), ("refused", "p2_other_bet_open"))
+        self.assertEqual(rule(leg(env, gateway, "LAY")), ("accepted", None))
+        self.assertEqual([request["params"]["marketId"] for request in placed(env)], [MARKET, MARKET])
 
     def test_pilot_1_day_and_window_refuse(self):
         env = build(self)
@@ -514,7 +536,8 @@ class Limits(P2Case):
         race(env, "1.235", off_ns=OFF + 600 * S)
         set_time(env.clock, OFF + 10 * S)
         self.back_placed(env, open_p2(env), "1.235")
-        # R3: this open's own leg left unresolved (its outcome unknown and not found) blocks a BACK elsewhere.
+        # R3's case: this open's own leg left unresolved (its outcome unknown and not found) blocks a BACK elsewhere.
+        # An unresolved order of ours is open, so p2_other_bet_open refuses it first; R3 stays behind it.
         env = build(self)
         race(env)
         gateway = open_p2(env)
@@ -523,7 +546,10 @@ class Limits(P2Case):
         lost = leg(env, gateway, "BACK")
         self.assertEqual(states(lost), ["ABSENT_UNCONFIRMED"])
         race(env, "1.235", off_ns=env.clock.time_ns() + 585 * S)
-        self.assertEqual(rule(leg(env, gateway, "BACK", "1.235")), ("refused", "p2_pair_precheck:unresolved_orders"))
+        self.assertEqual(rule(leg(env, gateway, "BACK", "1.235")), ("refused", "p2_other_bet_open"))
+        self.assertEqual(env.p2_guard.evaluate_pilot_reservation("1.235", state=fold(env), now_ns=env.clock.time_ns(),
+                                                                 size_p=p2_lp.PAIR_WORST_P)[0]["rule"],
+                         "unresolved_orders")
         self.assertEqual(len(placed(env)), 1)
 
     def test_r5_lay_600_passes_620_refused(self):

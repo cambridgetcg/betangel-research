@@ -314,6 +314,35 @@ class Race(P2RunCase):
         self.assertEqual((placed(env), legs(env)), ([], []))
         self.assertEqual(kinds(env)[-1], "funds_check")         # the choice refused: only funds_check journaled
 
+    def test_back_refusal_listing_live_orders_is_a_skip(self):
+        # A refused result may list other bets as live (the gateway's resolved-at-open refusal lists the earlier
+        # orders it found EXECUTABLE): still a refusal, so no race, no LAY and nothing sent.
+        env = build(self)
+        add_race(env)
+        sides = []
+
+        def resolved_at_open(gateway, market_id, side, **kwargs):
+            sides.append(side)
+            return {"intent_id": None, "mode": "live", "decision": "refused",
+                    "refusal": {"rule": "earlier_unknown_resolved_at_open", "detail": {}},
+                    "orders": [{"customer_order_ref": "bro-earlier", "state": "EXECUTABLE", "bet_id": "9"}],
+                    "journal_seq": None}
+
+        with patch.object(OrderGateway, "lp_place", resolved_at_open):
+            result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertEqual((result[3]["races"], result[3]["codes"]), (0, {"earlier_unknown_resolved_at_open": 1}))
+        self.assertEqual((sides, placed(env), cancelled(env)), (["BACK"], [], []))
+
+    def test_four_tick_spread_legs_inside_v13(self):
+        # 3.00/3.20 is 4 ticks: the BACK at 3.15 and the LAY at 3.05 are each 3 ticks from the best price, V13's edge.
+        env = build(self)
+        add_race(env, back="3.00", lay="3.20")
+        result = p2_run_cli(env)
+        self.assertEnded(result, "races_done", exit_code=0, released=True)
+        self.assertEqual([p["instructions"][0]["limitOrder"]["price"] for p in placed(env)], [3.15, 3.05])
+        self.assertEqual(len(cancelled(env)), 2)
+
     def test_back_unknown_found_and_absent(self):
         env = build(self)
         add_race(env)
@@ -533,6 +562,48 @@ class Stops(P2RunCase):
         back, lay = legs(env)
         self.assertHandoff(result[2], back["bet_id"], lay["bet_id"])
 
+    def test_unreadable_journal_hands_off_no_cancel(self):
+        # Between the legs (the look after the BACK), in the rest, and at the pull's own kill check: never race a
+        # kill the journal cannot show.
+        unreadable = {"readable": False, "events": [], "kill_seq": None, "kill_incomplete_seq": None,
+                      "place_submit": None}
+        original_read, original_watch = pilot_run.pilot_events_after, p2_run.watch
+
+        def between(env, broken):
+            def back(params):
+                env.exchange.place_handler = None
+                result = env.exchange.place(params)
+                broken.append(True)
+                return result
+            env.exchange.place_handler = back
+
+        def rest(env, broken):
+            at(env, OFF - 400 * S, lambda: broken.append(True))
+
+        def pull(env, broken):
+            def watch(env_, s, since_seq, *, until_ns):
+                found = original_watch(env_, s, since_seq, until_ns=until_ns)
+                if found is None and until_ns == REST_END:
+                    broken.append(True)
+                return found
+            return patch.object(p2_run, "watch", watch)
+
+        for name, (inject, sends) in {"between": (between, 1), "rest": (rest, 2), "pull": (pull, 2)}.items():
+            with self.subTest(case=name):
+                env = build(self)
+                add_race(env)
+                broken = []
+                patcher = inject(env, broken) or contextlib.nullcontext()
+
+                def read(path, since_seq):
+                    return dict(unreadable) if broken else original_read(path, since_seq)
+
+                with patcher, patch.object(pilot_run, "pilot_events_after", read):
+                    result = p2_run_cli(env)
+                self.assertEnded(result, "unreadable", exit_code=5, released=False)
+                self.assertEqual((len(placed(env)), cancelled(env)), (sends, []))
+                self.assertHandoff(result[2], *[o["bet_id"] for o in legs(env)])
+
     def test_foreign_event_pulls(self):
         env = build(self)
         add_race(env)
@@ -639,6 +710,39 @@ class Failures(P2RunCase):
         self.assertEqual((result[3]["codes"], result[3]["flagged"]), ({"p2_country": 5}, 5))
         self.assertEqual(env.router.reads_of(sp.CATALOGUE, "1.245"), [])
         self.assertEqual(placed(env), [])
+
+    def test_skip_streak_resets_after_a_race(self):
+        # Day 1: the first session's one race. Day 2, RACES 2: four refused BACKs, a race, then five more refused.
+        env = build(self)
+        add_race(env)
+        self.assertEnded(p2_run_cli(env), "races_done", exit_code=0, released=True)
+        sr.set_day(env, 1, before_off_s=900)
+        day2 = OFF + pilot.DAY_NS
+        for n in range(10):
+            add_race(env, f"1.{300 + n}", day2 + n * 600 * S, country="GB" if n == 4 else "FR")
+        result = p2_run_cli(env, races=2)
+        self.assertEnded(result, "skip_streak", exit_code=0, released=True)
+        self.assertEqual((result[3]["races"], result[3]["codes"]), (1, {"p2_country": 9}))
+        self.assertEqual(len(placed(env)), 4)
+
+    def test_pull_that_raised_is_not_pulled_again(self):
+        # The pull's first leg read raises: the exception edge hands both legs off and never pulls a second time.
+        env = build(self)
+        add_race(env)
+        lp_legs, calls = OrderGateway.lp_legs, []
+
+        def first_read_breaks(gateway):
+            calls.append(True)
+            if len(calls) == 1:
+                raise RuntimeError("legs_unreadable_once")
+            return lp_legs(gateway)
+
+        with patch.object(OrderGateway, "lp_legs", first_read_breaks):
+            result = p2_run_cli(env)
+        self.assertEnded(result, "exception", exit_code=5, released=False)
+        self.assertIn(f"p2-run: RuntimeError after a submit in {MARKET}", result[2])
+        self.assertEqual((len(placed(env)), cancelled(env)), (2, []))
+        self.assertHandoff(result[2], *[o["bet_id"] for o in legs(env)])
 
     def test_open_not_armed_report_ends_at_once(self):
         env = build(self)
@@ -757,6 +861,29 @@ class Arm(P2RunCase):
         self.assertIn("operator_echo_mismatch", err)
         self.assertEqual(sr.credential_reads(env), [])
 
+    def test_ssh_refused_before_any_keychain_or_git_read(self):
+        env = build(self)
+        add_race(env)
+        env.environ["SSH_TTY"] = "/dev/ttys003"
+        code, _, err, summary = p2_run_cli(env)
+        self.assertEqual((code, err.strip().splitlines()[-1]), (2, "Betfair order refused: p2_arm_refused:p2_over_ssh"))
+        self.assertEqual((env.runner.calls, env.git.calls, env.confirmer.prompts, summary), ([], [], [], None))
+        self.assertEqual(env.transport.requests, [])
+
+    def test_login_cap_at_arm_and_pre_open(self):
+        env = build(self)
+        add_race(env)
+        with patch.object(pilot_run, "cap_blocks", return_value=True):
+            self.assertRefused(env, p2_run_cli(env), "p2_login_cap")
+        # Reached after the ARM: the race is skipped before its open, with no live-key read.
+        env = build(self)
+        add_race(env)
+        with patch.object(pilot_run, "cap_blocks", lambda config, paths, *, clock: clock.time_ns() >= OFF - 745 * S):
+            result = p2_run_cli(env)
+        self.assertEnded(result, "no_more_markets", exit_code=0, released=True)
+        self.assertEqual(result[3]["codes"], {"login_cap": 1})
+        self.assertEqual((live_key_requests(env), placed(env)), ([], []))
+
     def test_first_session_races_1(self):
         env = build(self)
         add_race(env)
@@ -871,8 +998,8 @@ class Summary(P2RunCase):
         self.assertEqual(code, 0, err)
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith("total: sessions 1, races 1; legs sent BACK 1, LAY 1; placed BACK 1, LAY 1;"
-                                            " refused BACK 0, LAY 0 (codes: none); matched 2 (2 in full); round trips "
-                                            "1, lone BACKs 0, lone LAYs 0;"), lines[0])
+                                            " refused or failed BACK 0, LAY 0 (codes: none); matched 2 (2 in full); "
+                                            "round trips 1, lone BACKs 0, lone LAYs 0;"), lines[0])
         self.assertTrue(lines[0].endswith("; races left 9"))
         self.assertTrue(lines[1].startswith("2027-01-04: sessions 1, races 1;"))
         self.assertIn("2 p2-lp legs are open or unsettled; the next ARM refuses until each is cancelled or settled "

@@ -1390,21 +1390,26 @@ class OrderGateway:
         return self._lp_keep(side, result)
 
     def _lp_keep(self, side, result):
-        if side == "BACK" and any(order["state"] in p2_lp.PLACED_STATES for order in result["orders"]):
+        # Only an accepted result's orders are this leg's: a refusal may list other bets (_resolved_refusal).
+        if side == "BACK" and result["decision"] == "accepted" and any(
+                order["state"] in p2_lp.PLACED_STATES for order in result["orders"]):
             self._lp_pair = self._lp_pending
         return result
 
     def _lp_check(self, events, market_id, instruction, *, side, off_ns):
         """p2_lp.leg_refusal on the events read that is the submit's basis (anything journaled after it makes the
         submit refuse), with the cached fold, which is at or after it; then, for a BACK, the pair pre-check: R1, R3,
-        R6 and R8-R10 for one more PAIR_WORST_P BACK (risk.evaluate_pilot_reservation). -> a code or None."""
+        R6 and R8-R10 for one more PAIR_WORST_P BACK (risk.evaluate_pilot_reservation). -> a code or None. Only a LAY
+        leaves this open's legs out of the other-bet check: a BACK never goes while any bet of ours is open, this
+        open's own included."""
         state = self._state()
         now_ns = self.clock.time_ns()
         today = pilot_rules.utc_day(now_ns)
         session = pilot_gate.latest_note(events, "session_start")
+        own = self._lp_refs if side == "LAY" else set()
         code = p2_lp.leg_refusal(
             side=side, market_id=market_id, instruction=instruction, orders=state["orders"],
-            others=sorted(set(pilot_gate.open_manual_refs([], state["orders"])) - self._lp_refs),
+            others=sorted(set(pilot_gate.open_manual_refs([], state["orders"])) - own),
             p1_day=session if session is not None and session["utc_day"] == today else None,
             arm_event=next((event for event in events if event["seq"] == self._lp["arm_seq"]), None),
             arm_events_today=p2_lp.arm_records(events, day=today), lp=self._lp, pair=self._lp_pair, off_ns=off_ns,

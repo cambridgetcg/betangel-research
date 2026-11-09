@@ -14,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import types
 import unittest
@@ -118,14 +119,16 @@ class Kill(unittest.TestCase):
         anchor = env.journal.anchor()
         anchor_write(env.paths.profile, dict(anchor, seq=anchor["seq"] + 5, last_sha256="e" * 64,
                                              updated_at=env.clock.utc_now()), runner=env.runner)
-        if config_p2:
+        if config_p2 == "dangling":
+            env.paths.config_p2_path.symlink_to(env.paths.config_p2_path.with_name("gone.json"))
+        elif config_p2:
             env.paths.config_p2_path.write_text("{}", encoding="utf-8")        # its presence only: never loaded here
         code, out, err = run_cli_main(env, ["kill", "--reason", "drill"])
         self.assertIn("cancel open bets on the Betfair website or in Bet Angel now", err)
         return env, code, json.loads(out), ours, leg
 
     def test_kill_refs_with_and_without_config_p2(self):
-        for present in (False, True):
+        for present in (False, True, "dangling"):                 # a dangling symlink is present (lstat)
             with self.subTest(config_p2=present):
                 env, code, out, ours, leg = self.kill(config_p2=present)
                 self.assertEqual((code, out["status"]), (3, "kill_incomplete"))
@@ -133,14 +136,14 @@ class Kill(unittest.TestCase):
                 self.assertEqual(env.exchange.orders[leg]["status"], "EXECUTION_COMPLETE" if present else "EXECUTABLE")
 
     def test_kill_sweeps_when_config_p2_check_raises(self):
-        stat = Path.stat
+        lstat = os.lstat
 
         def denied(path, *args, **kwargs):
-            if path.name == "config-p2.json":
+            if Path(path).name == "config-p2.json":
                 raise PermissionError(13, "denied")
-            return stat(path, *args, **kwargs)
+            return lstat(path, *args, **kwargs)
 
-        with patch.object(Path, "stat", denied):
+        with patch.object(os, "lstat", denied):
             env, code, out, ours, leg = self.kill(config_p2=False)
             self.assertTrue(cli._p2_configured(env.paths))
         self.assertEqual((code, out["status"]), (3, "kill_incomplete"))
@@ -148,6 +151,20 @@ class Kill(unittest.TestCase):
         self.assertFalse(cli._p2_configured(env.paths))                         # missing: absent
         env.paths.config_p2_path.write_text("{}", encoding="utf-8")
         self.assertTrue(cli._p2_configured(env.paths))
+
+    def test_kill_exit_3_when_p2_lp_cannot_be_imported(self):
+        # The p2_lp import sits inside the kill's try, as the gateway's own import of it does: exit 3 with the advice
+        # and HALT kill_incomplete, never exit 4. Only that one sys.modules entry changes, and it is put back.
+        name = "betangel_research.betfair.p2_lp"
+        module = sys.modules[name]
+        sys.modules[name] = None
+        try:
+            env, code, out, ours, leg = self.kill(config_p2=True)
+        finally:
+            sys.modules[name] = module
+        self.assertEqual((code, out["status"], out["journal_halt_kill_incomplete"]),
+                         (3, "kill_incomplete_no_session", "appended"))
+        self.assertTrue(out["kill_file_engaged"])
 
 
 class Commands(unittest.TestCase):

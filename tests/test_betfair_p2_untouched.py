@@ -8,11 +8,12 @@ race (its ARM record, funds checks, intents, risk decisions, submits, reports an
 resume) equals the fold with each of those events replaced by a plain note; a HALT a Pilot 2 pull journals stops
 Pilot 1 (its ARM refuses, pilot_run.py:907-908, and so does its pilot-place open); and a Pilot 2 leg left resting halts
 a Pilot 1 open and refuses Pilot 1's ARM (pilot-run through cli.main, pilot_run.py:909-910). No /usr/bin/security,
-git or other child process runs, and nothing opens the network. Pilot 1's files staying byte-identical is a
-merge-checklist item (git diff), not a test here.
+git or other child process runs, and nothing opens the network. Pilot 1's files and tests are byte-identical to
+c86764a's (sha256, by name; pilot_run.py also as PR #59 leaves it).
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import unittest
@@ -38,6 +39,27 @@ DAY = "2027-01-04"
 DAY_NS = pilot.parse_utc_ns(DAY + "T00:00:00Z")
 ARM_NS = DAY_NS + 9 * 3600 * pilot.NS
 
+# Pilot 1's files at c86764a by sha256, listed by name (build spec §7; note §14), so a change to any of them fails here.
+# pilot_run.py may also be as PR #59 (25c1341) leaves it: one handoff line (:270) says the lab Mac, not the Air. #59
+# merges first; once it has, its hash alone stays.
+PILOT_1_SHA256 = {
+    "betangel_research/betfair/pilot.py": ("c0e76246241b6ba2aaf9667cbd859ddea8081e6e90d0014a1e2cda4411bd69dd",),
+    "betangel_research/betfair/pilot_run.py": ("702cd4fb8825aa2f4dec05a99b0aecdb2d20eeff9ebbb2e8de70f225a05afb62",
+                                               "2388181915c1f723b60c5449717f19bf505892ffcc8e96d82ef5ebc746c37ec2"),
+    "betangel_research/betfair/pilot_gate.py": ("61a4e88365aa33e1f2fffe5c5f1e3d4f28b654b478aaa3036c31d108f62820e0",),
+    "research/pilots/p1-fav-t5.json": ("4dbccb5a45f7a4779e0263d4df5048f582f10b8dc3bd22c5f2e93e791155de92",),
+    "tests/test_betfair_pilot.py": ("c1c9e26ce2a894c11f9620dc6de7a2eb0e606dfac9cfc1a9c131642e7d0b63fc",),
+    "tests/test_betfair_pilot_carriers.py": ("21a66e8949a9d7f06c788fbbd953b2b98af9cefe8a13655898fa19d353d6ac06",),
+    "tests/test_betfair_pilot_gateway.py": ("8ac842f0c4e41234ab78cf75885193aa9ec107747ae0940808b22fe20c8e9758",),
+    "tests/test_betfair_pilot_ownership.py": ("d8f379497a93bf79ac8ccaf30551c219b8f38f59f3a6f3582874e5a50c4eb8c7",),
+    "tests/test_betfair_pilot_review_fixes.py": ("ac3f6affc80d9ee6c269cdf4518bfc5a60fff0ff2066ee77e594d2f4adeaa163",),
+    "tests/test_betfair_pilot_run.py": ("e77dccdf83646e7dd722aaf284f88f5d270dacc0621e011e8f80bc6ce318030a",),
+    "tests/test_betfair_pilot_run_gaps.py": ("f3ebb2b5d2b88d6cc3137bc10d773d6aabb1a2f4763ddbef8332185691e0ceb7",),
+    "tests/test_betfair_pilot_scope.py": ("3efee26ff5fe6eb371d44bb49f934a2ed22a5cfda6fe77be114db8025eb25500",),
+    "tests/test_betfair_support_pilot.py": ("8885f3a737214815cf1d6450967354b9e58873794e1df73c19c0a6f7495a9b65",),
+    "tests/test_betfair_rollout_pilot_lines.py": ("30905b59f98f1f4507bb09ad2d107198a37b55c9b0897d3787faa1e424a11dfe",),
+}
+
 
 def intent(seq, ref, source):
     return {"seq": seq, "kind": "intent", "customer_order_ref": ref, "recorded_at": utc_from_ns(ARM_NS + seq),
@@ -47,6 +69,13 @@ def intent(seq, ref, source):
 def p2_leg(ref, **changes):
     return so.order_record(**{"customer_order_ref": ref, "customer_strategy_ref": "p2-lp", "mode": "live",
                               "submitted_at": utc_from_ns(ARM_NS + 60 * pilot.NS), **changes})
+
+
+class PilotOneFiles(unittest.TestCase):
+    def test_pilot_1_files_sha256_at_c86764a(self):
+        for name, allowed in PILOT_1_SHA256.items():
+            with self.subTest(file=name):
+                self.assertIn(hashlib.sha256((support.REPO_ROOT / name).read_bytes()).hexdigest(), allowed)
 
 
 class PilotOneSeesPilotTwo(unittest.TestCase):

@@ -2178,11 +2178,12 @@ def cmd_kill(args, ctx):
         if not static["armed"]:
             out["arming_failures"] = static["failures"]
             return incomplete("kill_incomplete_not_armed")
-        # Its own check, before the block below: any exception there ends the kill before a cancel.
-        from .p2_lp import STRATEGY_REF as P2_STRATEGY_REF
-        extra = (P2_STRATEGY_REF,) if _p2_configured(paths) else ()
         opened = False
         try:
+            # Inside the try, as the gateway's own import of p2_lp is: a module that cannot be imported ends the kill
+            # exit 3 with the advice, never exit 4. _p2_configured itself fails only towards sweeping p2-lp.
+            from .p2_lp import STRATEGY_REF as P2_STRATEGY_REF
+            extra = (P2_STRATEGY_REF,) if _p2_configured(paths) else ()
             with _gateway(args, ctx, command=command, mode="live") as (gateway, _, _):
                 opened = True
                 out["session"].update(logged_in=True, login=gateway.login_kind)
@@ -2363,10 +2364,11 @@ def cmd_pilot_capture(args, ctx):
 
 
 def _p2_configured(paths):
-    """Whether this profile has config-p2.json, so the kill sweeps p2-lp too. Only a missing file is absent: any other
-    OSError counts as present, since the kill must neither miss Pilot 2's legs nor fail before its sweep."""
+    """Whether this profile has config-p2.json, so the kill sweeps p2-lp too. Only a missing entry is absent: lstat, as
+    kill_engaged, so a dangling symlink counts, and any other OSError counts as present, since the kill must neither
+    miss Pilot 2's legs nor fail before its sweep."""
     try:
-        paths.config_p2_path.stat()
+        os.lstat(paths.config_p2_path)
     except FileNotFoundError:
         return False
     except OSError:

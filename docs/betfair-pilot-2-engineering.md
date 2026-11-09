@@ -10,6 +10,8 @@ For Astra, Yu and the Air's Claude. Author: lab-Claude, 2026-11-05; rewritten on
 
 ## 1. What it amends
 Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then are listed on the page, under Changes to Pilot 1's documents.
+- **Switched off until then.** The code ships with `p2_lp.IN_FORCE` False. Only the go-live commit, which also applies the page's AGENTS.md, RS-19 and order-path lines, sets it True.
+- While it is False, `config_problems` returns `p2_not_in_force` first, so the gateway refuses a Pilot 2 context (`p2_gateway_needs_config_p2`), and `p2-run` refuses `p2_not_in_force` at its very top, before the SSH check and any Keychain, journal or git read. `p2-summary` (offline, read only) and `init-config --p2` still work.
 
 ## 2. Scope: inside Pilot 1's profile
 - **Identity.**
@@ -40,7 +42,7 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
 - Typed lines are Yu's, as in eng §3.
 
 ## 4. The decision
-- **Markets.** One delayed catalogue call: GB and IE, event type 7, WIN, with MARKET_START_TIME and MARKET_DESCRIPTION. Each row must have bettingType ODDS and `turnInPlayEnabled` true (`schedule_row_ok`). A market whose screen window has passed is skipped (`missed_window`). A market whose off −300 s is after UNTIL is left out, as the gateway would refuse it (`p2_until_before_pull`).
+- **Markets.** One delayed catalogue call: GB and IE, event type 7, WIN, with MARKET_START_TIME and MARKET_DESCRIPTION. Each row must have bettingType ODDS and `turnInPlayEnabled` true (`schedule_row_ok`). A market whose screen window has passed, before the wait for it or after it (a stall or sleep of the Mac), is skipped (`missed_window`). A market whose off −300 s is after UNTIL is left out, as the gateway would refuse it (`p2_until_before_pull`).
 - **Screen,** off −840 to −780 s, on the delayed session only.
   - One fresh catalogue row by market id with Pilot 1's row projections, stored with `store_catalogue_row` as Pilot 1 does (api.py:777-787; gateway.py:1846). Every send book takes its `market_time` and the country from this row, not from a cache up to 6 h old (config.py:46).
   - One delayed `market_snapshot`. `screen` needs `isMarketDataDelayed` true (else `not_delayed`), then `book_problems` and `select_runner`.
@@ -125,7 +127,9 @@ R10 books a settled race at its worst case, so two matched races can use up the 
 ## 8. Rest, pull, handoffs and settlement
 **One race:**
 ```
-IDLE     armed, no lock; markets from one delayed catalogue call (§4)
+IDLE     armed, no lock; markets from one delayed catalogue call (§4); 1 s slices to off -840 s
+  |-- stop flag -> END | KILL file -> END
+  |-- off -780 s passed, checked before the wait and again after it (a stall or sleep) -> next market (missed_window)
 SCREEN   off -840..-780 s, delayed session: a fresh row, stored; one delayed book
   |-- off moved, read error, screen code ----------------------------> next market (no live-key read)
 PRE-OPEN stop flag -> END | KILL file -> END | login cap -> next market | admission broken -> END
@@ -170,7 +174,7 @@ GONE     SIGKILL, power loss, a sleep through the off: nothing runs; bounded at 
 - **Settlement** is Yu's typed `settle-market`, one market at a time, as in eng §8. R10 books a loss on the UTC day the settle is typed. The session ends after any matched leg, and the next ARM refuses until it is settled.
 
 ## 9. Caps in config-p2.json
-`config_problems` pins exact values, so loosening one needs a code change and Astra's review. The £ ones are derived from Yu's money numbers and are Yu's to set at the build consent. All are inside constants.py's ceilings.
+`config_problems` pins exact values, so loosening one needs a code change and Astra's review. While `IN_FORCE` is False it also returns `p2_not_in_force` first (§1). The £ ones are derived from Yu's money numbers and are Yu's to set at the build consent. All are inside constants.py's ceilings.
 
 | Cap | Value | Why |
 |---|---|---|
@@ -226,6 +230,7 @@ eng §13's bans stay, except that this bot may send lays. Still: more than one i
   - tests/test_betfair_p2_lp.py: the pure rule (band edges, leg prices, the passive check, the screen, the windows, each refusal code in order, the counts, the ARM line, `config_problems`, the handoff, the summary, its imports), and the constants against this page's Values and Money tables;
   - tests/test_betfair_p2_gateway.py: the Pilot 2 context in paper and with Pilot 1's config, `place()` refused on it, the ARM record, the request body, the check on the submit's basis, the pair rules, R5, R8 and R10 with settle-market, the race counts, own-leg cancels, the kill's extra ref, and the three-UNKNOWN HALT after a round trip;
   - tests/test_betfair_p2_run.py: one test per §8 edge, the ARM refusals, the first session at 1 race, caffeinate, the ARM record under the lock, and the owner lock blocking `pilot-run` and a manual `place`;
+  - the switched-off default (§1): `IN_FORCE` False in the committed code, `config_problems` and the gateway refusing, and `p2-run` refusing with no Keychain, journal or git read; the tests of the live path patch it True;
   - tests/test_betfair_p2_cli.py: `init-config --p2`, `load_config` refusing config-p2.json, and the kill's refs with and without it. `p2-summary` is tested in tests/test_betfair_p2_run.py.
 - **Existing test files that change:** tests/test_betfair_backtest_boundaries.py (two data lines for `p2_lp` and `p2_run`) and tests/test_lp_rate_count.py (PR-G). Each, and the api.py change, needs Yu's OK before its PR is opened. tests/test_betfair_pilot_2_docs.py, which exists only on this PR's branch, changes in this PR.
 - **P2-PT3,** the fault drills, are tests/test_betfair_p2_run.py, inside the offline suite only. No drill runs against the real state root, the Keychain or Betfair, because the journal anchor's Keychain item is keyed by its service and the profile alone (credentials.py:37, :131, :150), so a scratch run that reached it would overwrite Pilot 1's anchor.

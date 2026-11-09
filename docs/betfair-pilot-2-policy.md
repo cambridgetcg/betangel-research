@@ -1,6 +1,6 @@
 # Pilot 2 (P2-LP): a plain capped bot for two-sided quotes
 
-Status: proposed, for Astra's review. Nothing on this page is approved, and no Pilot 2 live order is allowed before Yu's go-live consent here. [RS-19](betfair-pilot-policy.md), Pilot 1's other documents and AGENTS.md are unchanged by this commit. The lines they would gain at Pilot 2's go-live are listed under [Changes to Pilot 1's documents](#changes-to-pilot-1s-documents-at-pilot-2s-go-live) and are not in force.
+Status: proposed, for Astra's review. Nothing on this page is approved, and no Pilot 2 live order is allowed before Yu's go-live consent here. [RS-19](betfair-pilot-policy.md), Pilot 1's other documents and AGENTS.md are unchanged by this commit. The lines they would gain at Pilot 2's go-live are listed under [Changes to Pilot 1's documents](#changes-to-pilot-1s-documents-at-pilot-2s-go-live) and are not in force. The code ships switched off (`p2_lp.IN_FORCE` False); only the go-live commit, which also applies those lines, sets it True.
 
 For Yu, Astra and the Air's Claude. Author: lab-Claude, 2026-11-05, against betangel-research main c86764a, after Yu's go-ahead to draft it (relayed by the Air's Claude, 2026-11-05: "可以 let lab go ahead. 得"). Rewritten on 2026-11-09 as the plain capped bot Yu chose that day ("Plain capped bot (Recommended)" and "−10 min, pulled at −5 min (Recommended)"; [plan](betfair-pilot-2-plan.md), Decided).
 
@@ -179,7 +179,7 @@ Each cut protection needs Yu's yes in plain words at the build consent. Writing 
    - Gate A: on 2026-11-06 Yu chose to wait for it ("Count first (Recommended)"; [plan](betfair-pilot-2-plan.md), Decided). Pilot 2's code merges only after Gate A, the free Stage 0 count, passes. On 2026-11-08 Yu chose to have the code drafted before then, as PRs nobody merges ("Draft now, gates unchanged (Recommended)"; plan, Decided). Drafting moves no gate. Because the bot now decides at off −590 s, Gate A counts at that time too: amendment 3 of [docs/lp-rate-count.md](lp-rate-count.md), a separate PR, must merge before any count is read. The Air's Claude had read Yu's "We can start now ah😂 no need record 10 days" (2026-11-04) as going on without Gate A; that reading does not hold.
    - Astra reviews this page, the engineering note and the plan, and accepts them.
    - Yu then approves this page as committed, together with the changes to Pilot 1's documents listed below.
-   - This consent allows no live order. Nothing in the code waits for the go-live consent, so that wait is this page's rule: Yu creates and arms config-p2.json only after it.
+   - This consent allows no live order. The code ships switched off: while `p2_lp.IN_FORCE` is False, `p2-run` refuses (`p2_not_in_force`) before any Keychain, journal or git read, and the gateway refuses the Pilot 2 context. `p2-summary` and `init-config --p2` still work. Yu creates and arms config-p2.json only after the go-live consent.
    - Pilot 1 goes first (Yu, 2026-11-04, relayed; confirmed by Yu to lab-Claude, 2026-11-06). No Pilot 2 code merges into betangel_research/ before Astra has accepted Pilot 1's go-live commit. Pilot 2's order path merges only after Pilot 1's PT4 receipt exists. Every Pilot 1 test passes unchanged at every Pilot 2 commit.
 2. **Go live.**
    - These must be done first, none with a live order:
@@ -188,7 +188,7 @@ Each cut protection needs Yu's yes in plain words at the build consent. Writing 
      - Betfair's answer to the [G1 follow-up](betfair-pilot-2-g1-question.md), or Yu's recorded decision to go ahead without one;
      - Yu's check of Basic 2% commission in My Account and of the £50 website loss limit;
      - Astra's acceptance of the exact code commit and config-p2.json's sha256.
-   - Yu then approves going live, naming the code commit and config-p2.json's sha256. The changes to Pilot 1's documents come into force in that commit.
+   - Yu then approves going live, naming the code commit and config-p2.json's sha256. The changes to Pilot 1's documents come into force in that commit, which also sets `p2_lp.IN_FORCE` True.
    - Any change to one of those needs this consent again.
 3. **Each session.**
    - Yu arms it with the P2 ARM line.
@@ -207,7 +207,7 @@ Each cut protection needs Yu's yes in plain words at the build consent. Writing 
 - The lines added to Pilot 1's documents at Pilot 2's go-live are removed when Pilot 2 ends, except where Pilot 1 still needs them.
 
 ## Changes to Pilot 1's documents at Pilot 2's go-live
-These are not applied in this commit. They are applied in the go-live commit that Yu approves. They are listed now so that Astra and Yu review them with this page. Line numbers are at main c86764a.
+These are not applied in this commit. They are applied in the go-live commit that Yu approves, the same commit that sets `p2_lp.IN_FORCE` True. They are listed now so that Astra and Yu review them with this page. Line numbers are at main c86764a.
 
 - **RS-19 ([docs/betfair-pilot-policy.md](betfair-pilot-policy.md)).**
   - What it allows (:6): "No other strategy, agent, script or scheduler places live orders" gains ", except the Pilot 2 bot under docs/betfair-pilot-2-policy.md, in sessions Yu arms and attends". "gain this one exception" becomes "gain these two exceptions".

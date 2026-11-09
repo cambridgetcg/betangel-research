@@ -224,9 +224,9 @@ class Case(unittest.TestCase):
         count = lp.Count().read_root(lp.check_root(str(self.root)))
         self.assertEqual(count.segments["unreadable"], 0)
         counted = lp.tally(count)                                           # reasons and revisions over all dates
-        counted["not_usable_300"] = {code: sum(day[code] for day in counted["not_usable_300"].values())
+        counted["not_usable"] = {code: sum(day[code] for day in counted["not_usable"].values())
                                      for code in lp.NOT_USABLE}
-        counted["schedule_revised_by_300"] = sum(counted["schedule_revised_by_300"].values())
+        counted["schedule_revised"] = sum(counted["schedule_revised"].values())
         return counted
 
     def pooled(self):
@@ -282,10 +282,10 @@ class LadderTests(Case):
     def test_two_to_five_tick_spreads_end_to_end(self):
         lays = {"1.999123411": 3.1, "1.999123412": 3.15, "1.999123413": 3.2, "1.999123414": 3.25}
         mds = [(m, definition(), quotes(3.0, lay)) for m, lay in lays.items()]
-        lines = [image(at(-400), *mds)] + beats(-400, 0)
+        lines = [image(at(-690), *mds)] + beats(-690, 0)
         self.rec.session([lines])
         pooled = self.pooled()
-        self.assertEqual((pooled["usable_300"], pooled["primary"], pooled["width_lever"], pooled["price_lever"]),
+        self.assertEqual((pooled["usable"], pooled["primary"], pooled["width_lever"], pooled["price_lever"]),
                          (4, 2, 1, 0))
 
 
@@ -349,91 +349,91 @@ class ReaderAndFoldTests(Case):
                         self.assertEqual(mine.best(MARKET, str(selection)), expected)
 
     def test_non_finite_numbers_make_the_market_invalid_until_its_next_image(self):
-        lines = [image(at(-700), (MARKET, definition(), quotes(3.0, 3.15))),
-                 delta(at(-500), rc=[{"id": SELECTIONS[1], "batb": [[0, 12.0, "Infinity"]]}]),
-                 delta(at(-320), rc=quotes(3.0, 3.15, others=False))]
-        self.rec.session([seg(lines, beats(-700, 0))])
+        lines = [image(at(-990), (MARKET, definition(), quotes(3.0, 3.15))),
+                 delta(at(-790), rc=[{"id": SELECTIONS[1], "batb": [[0, 12.0, "Infinity"]]}]),
+                 delta(at(-610), rc=quotes(3.0, 3.15, others=False))]
+        self.rec.session([seg(lines, beats(-990, 0))])
         summary = self.summary()
         self.assertEqual(summary["inputs"]["segments"]["read"], 1)
-        self.assertEqual(summary["not_usable_300"]["invalid"], 1)
-        self.assertEqual(summary["pooled"]["usable_300"], 0)
+        self.assertEqual(summary["not_usable"]["invalid"], 1)
+        self.assertEqual(summary["pooled"]["usable"], 0)
 
 
 class SnapshotTests(Case):
     def test_last_state_at_or_before_each_offset(self):
-        """A change published exactly at off - 300 s is part of the -300 s state; one a millisecond later is not."""
-        self.rec.session([seg(image(at(-400), (MARKET, definition(), quotes(3.0, 3.1)),
+        """A change published exactly at off - 590 s is part of the -590 s state; one a millisecond later is not."""
+        self.rec.session([seg(image(at(-690), (MARKET, definition(), quotes(3.0, 3.1)),
                                     ("1.999123402", definition(), quotes(3.0, 3.15))),
-                              delta(at(-300), rc=quotes(3.0, 3.15, others=False)),
-                              delta(at(-299.999), rc=quotes(3.0, 3.1, others=False)),
-                              delta(at(-299.999), "1.999123402", rc=quotes(3.0, 3.1, others=False)),
-                              beats(-400, 0))])
-        self.assertEqual((self.pooled()["usable_300"], self.pooled()["primary"]), (2, 2))
+                              delta(at(-590), rc=quotes(3.0, 3.15, others=False)),
+                              delta(at(-589.999), rc=quotes(3.0, 3.1, others=False)),
+                              delta(at(-589.999), "1.999123402", rc=quotes(3.0, 3.1, others=False)),
+                              beats(-690, 0))])
+        self.assertEqual((self.pooled()["usable"], self.pooled()["primary"]), (2, 2))
 
     def test_snapshot_older_than_180_s_is_no_snapshot(self):
         """Heartbeats do not refresh the data: age is measured from the last non-heartbeat line."""
-        for last_data_s, usable in ((-480, 1), (-480.001, 0), (-700, 0)):
+        for last_data_s, usable in ((-770, 1), (-770.001, 0), (-990, 0)):
             with self.subTest(last_data_s=last_data_s):
                 self.reset()
-                lines = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.15))),
+                lines = [image(at(-1190), (MARKET, definition(), quotes(3.0, 3.15))),
                          delta(at(last_data_s), rc=quotes(3.0, 3.15, others=False)),
-                         delta(at(-100), rc=quotes(3.0, 3.15, others=False))]
-                lines += [heartbeat(at(t)) for t in range(-895, 0, 5) if at(t) > at(last_data_s)]
+                         delta(at(-390), rc=quotes(3.0, 3.15, others=False))]
+                lines += [heartbeat(at(t)) for t in range(-1185, 0, 5) if at(t) > at(last_data_s)]
                 self.rec.session([sorted(lines, key=lambda m: m["pt"])])
                 summary = self.summary()
-                self.assertEqual(summary["pooled"]["usable_300"], usable)
-                self.assertEqual(summary["not_usable_300"]["no_snapshot"], 1 - usable)
+                self.assertEqual(summary["pooled"]["usable"], usable)
+                self.assertEqual(summary["not_usable"]["no_snapshot"], 1 - usable)
 
     def test_the_latest_state_across_segments_is_used(self):
-        early = market_lines(steady(3.0, 3.15), start=-900, end=-360)   # last data at -360 s, qualifying
-        # The next segment's later image (before -300 s) wins, although it does not qualify.
-        self.rec.session([early, [image(at(-330), (MARKET, definition(), quotes(3.0, 3.1)))] + beats(-330, 0)])
-        self.assertEqual((self.pooled()["usable_300"], self.pooled()["primary"]), (1, 0))
+        early = market_lines(steady(3.0, 3.15), start=-1190, end=-650)  # last data at -650 s, qualifying
+        # The next segment's later image (before -590 s) wins, although it does not qualify.
+        self.rec.session([early, [image(at(-620), (MARKET, definition(), quotes(3.0, 3.1)))] + beats(-620, 0)])
+        self.assertEqual((self.pooled()["usable"], self.pooled()["primary"]), (1, 0))
 
     def test_a_state_is_never_carried_past_the_end_of_its_segment(self):
-        """The -300 s state needs a line of that segment (a heartbeat will do) at or after -300 s, and fresh data."""
-        for last_line_s, last_data_s, primary in ((-400, -420, 0), (-300.001, -420, 0), (-300, -420, 1),
-                                                  (-290, -540, 0), (-290, -450, 1)):
+        """The -590 s state needs a line of that segment (a heartbeat will do) at or after -590 s, and fresh data."""
+        for last_line_s, last_data_s, primary in ((-690, -710, 0), (-590.001, -710, 0), (-590, -710, 1),
+                                                  (-580, -830, 0), (-580, -740, 1)):
             with self.subTest(last_line_s=last_line_s, last_data_s=last_data_s):
                 self.reset()
-                early = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.15))),
+                early = [image(at(-1190), (MARKET, definition(), quotes(3.0, 3.15))),
                          delta(at(last_data_s), rc=quotes(3.0, 3.15, others=False))]
-                early += [heartbeat(at(t)) for t in range(-895, int(last_line_s), 5) if at(t) > at(last_data_s)]
+                early += [heartbeat(at(t)) for t in range(-1185, int(last_line_s), 5) if at(t) > at(last_data_s)]
                 early.append(heartbeat(at(last_line_s)))
-                late = [image(at(-250), (MARKET, definition(), quotes(3.0, 3.15)))] + beats(-250, 0)
+                late = [image(at(-540), (MARKET, definition(), quotes(3.0, 3.15)))] + beats(-540, 0)
                 self.rec.session([early, late])
                 counted = self.counted()
-                self.assertEqual((counted["pooled"]["primary"], counted["not_usable_300"]["no_snapshot"]),
+                self.assertEqual((counted["pooled"]["primary"], counted["not_usable"]["no_snapshot"]),
                                  (primary, 1 - primary))
 
     def test_a_503_at_the_snapshot_makes_it_invalid(self):
-        base = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.15))),
-                delta(at(-360), rc=quotes(3.0, 3.15, others=False))]
-        self.rec.session([base + [heartbeat(at(-320), status=503), delta(at(-100), rc=quotes(3.0, 3.15))]])
+        base = [image(at(-1190), (MARKET, definition(), quotes(3.0, 3.15))),
+                delta(at(-650), rc=quotes(3.0, 3.15, others=False))]
+        self.rec.session([base + [heartbeat(at(-610), status=503), delta(at(-390), rc=quotes(3.0, 3.15))]])
         summary = self.summary()
-        self.assertEqual((summary["pooled"]["usable_300"], summary["not_usable_300"]["invalid"]), (0, 1))
+        self.assertEqual((summary["pooled"]["usable"], summary["not_usable"]["invalid"]), (0, 1))
         self.reset()
-        # A healthy line after the 503 and before -300 s restores the same (fresh) data.
-        self.rec.session([base + [heartbeat(at(-320), status=503), heartbeat(at(-310)),
-                                  delta(at(-100), rc=quotes(3.0, 3.15))]])
+        # A healthy line after the 503 and before -590 s restores the same (fresh) data.
+        self.rec.session([base + [heartbeat(at(-610), status=503), heartbeat(at(-600)),
+                                  delta(at(-390), rc=quotes(3.0, 3.15))]])
         self.assertEqual(self.pooled()["primary"], 1)
 
     def test_off_is_the_first_published_market_time_and_revisions_are_counted(self):
         revised = definition(off_text=_iso(at(300)), version=2)          # 5 minutes later
-        lines = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.1))),
-                 delta(at(-600), md=revised),
-                 delta(at(-360), rc=quotes(3.0, 3.15, others=False)),     # qualifies at the first off - 300 s
-                 delta(at(-60), rc=quotes(3.0, 3.1, others=False))]
-        self.rec.session([seg(lines, beats(-900, 300))])
+        lines = [image(at(-1190), (MARKET, definition(), quotes(3.0, 3.1))),
+                 delta(at(-890), md=revised),
+                 delta(at(-650), rc=quotes(3.0, 3.15, others=False)),     # qualifies at the first off - 590 s
+                 delta(at(-350), rc=quotes(3.0, 3.1, others=False))]
+        self.rec.session([seg(lines, beats(-1190, 300))])
         counted = self.counted()
-        self.assertEqual((counted["pooled"]["primary"], counted["schedule_revised_by_300"]), (1, 1))
+        self.assertEqual((counted["pooled"]["primary"], counted["schedule_revised"]), (1, 1))
 
     def test_racing_day_is_the_utc_date_of_the_first_off(self):
         off = timestamp_ms("2026-11-10T23:58:00.000Z")
         md = definition(off_text=_iso(off))
-        lines = [image(at(-900, off), (MARKET, md, quotes(3.0, 3.15))),
-                 delta(at(-400, off), md=definition(off_text=_iso(at(600, off)), version=2))]
-        self.rec.session([seg(lines, beats(-900, 0, off))])
+        lines = [image(at(-1190, off), (MARKET, md, quotes(3.0, 3.15))),
+                 delta(at(-690, off), md=definition(off_text=_iso(at(600, off)), version=2))]
+        self.rec.session([seg(lines, beats(-1190, 0, off))])
         self.assertEqual([row["date"] for row in self.summary()["days"]], ["2026-11-10"])
 
 
@@ -451,69 +451,71 @@ class ExclusionTests(Case):
                  "1.999123435": (definition(priceLadderDefinition=None), "out_of_population"),
                  "1.999123429": (definition(active=5, country="IE", eventTypeId=7), None),
                  "1.999123436": (definition(priceLadderDefinition="CLASSIC"), None)}    # the bare-string form
-        lines = [image(at(-400), *[(m, md, quotes(3.0, 3.15)) for m, (md, _) in cases.items()])] + beats(-400, 0)
+        lines = [image(at(-690), *[(m, md, quotes(3.0, 3.15)) for m, (md, _) in cases.items()])] + beats(-690, 0)
         self.rec.session([lines])
         counted = self.counted()
-        self.assertEqual((counted["pooled"]["usable_300"], counted["pooled"]["primary"]), (2, 2))
+        self.assertEqual((counted["pooled"]["usable"], counted["pooled"]["primary"]), (2, 2))
         self.assertEqual(counted["pooled"]["recorded"], len(cases))
         expected = {code: 0 for code in lp.NOT_USABLE}
         for _, code in cases.values():
             if code:
                 expected[code] += 1
-        self.assertEqual(counted["not_usable_300"], expected)
+        self.assertEqual(counted["not_usable"], expected)
 
     def test_suspension_clears_the_quotes_and_a_reopen_without_new_quotes_shows_none(self):
-        lines = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.15))),
-                 delta(at(-500), md=definition(status="SUSPENDED", version=2)),
-                 delta(at(-400), md=definition(status="OPEN", version=3))]
-        self.rec.session([seg(lines, beats(-900, 0))])
-        self.assertEqual((self.pooled()["usable_300"], self.pooled()["primary"]), (1, 0))
+        lines = [image(at(-1190), (MARKET, definition(), quotes(3.0, 3.15))),
+                 delta(at(-790), md=definition(status="SUSPENDED", version=2)),
+                 delta(at(-690), md=definition(status="OPEN", version=3))]
+        self.rec.session([seg(lines, beats(-1190, 0))])
+        self.assertEqual((self.pooled()["usable"], self.pooled()["primary"]), (1, 0))
 
 
 class ColumnTests(Case):
     def test_persistence_needs_both_snapshots(self):
-        def schedule(qualify_460, qualify_300):
-            # data at -900, -720, -540 (the -460 s state), -360 (the -300 s state), -180, 0
-            return lambda t: (3.0, 3.15) if (t == -540 and qualify_460) or (t == -360 and qualify_300) else (3.0, 3.1)
+        def schedule(qualify_780, qualify_590):
+            # data at -900 (the -780 s state), -720 (the -590 s state), -540, -360, -180, 0
+            return lambda t: (3.0, 3.15) if (t == -900 and qualify_780) or (t == -720 and qualify_590) else (3.0, 3.1)
         markets = {"1.999123431": (True, True), "1.999123432": (False, True), "1.999123433": (True, False)}
         self.rec.session([multi_lines({m: schedule(*flags) for m, flags in markets.items()})])
         pooled = self.pooled()
-        self.assertEqual((pooled["primary"], pooled["flagged_460"], pooled["persistence"],
+        self.assertEqual((pooled["primary"], pooled["flagged"], pooled["persistence"],
                           pooled["persistence_two_batches"]), (2, 2, 1, 1))
 
-    def test_persistence_from_one_batch_seen_twice_is_not_counted_as_two_batches(self):
-        """Data at -480 s and then nothing until -120 s: the -460 s and -300 s states are one delayed batch."""
+    def test_one_batch_is_never_both_snapshots(self):
+        """Amendment 3: the -780 s and -590 s states are 190 s apart, more than the 180 s age limit, so data seen at
+        -780 s is stale at -590 s, and every persistent market comes from two batches."""
         lines = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.1))),
-                 delta(at(-480), rc=quotes(3.0, 3.15, others=False)),
-                 delta(at(-120), rc=quotes(3.0, 3.1, others=False))]
+                 delta(at(-780), rc=quotes(3.0, 3.15, others=False)),
+                 delta(at(-400), rc=quotes(3.0, 3.1, others=False))]
         self.rec.session([seg(lines, beats(-900, 0, step=5))])
-        pooled = self.pooled()
-        self.assertEqual((pooled["primary"], pooled["flagged_460"], pooled["persistence"],
-                          pooled["persistence_two_batches"]), (1, 1, 1, 0))
+        counted = self.counted()
+        self.assertEqual((counted["pooled"]["usable"], counted["not_usable"]["no_snapshot"]), (0, 1))
 
     def test_window_counts_any_usable_qualifying_state_from_600_to_300_s(self):
         cases = {"1.999123441": [(-650, (3.0, 3.15)), (-610, (3.0, 3.1))],    # qualifies only before the window
                  "1.999123442": [(-650, (3.0, 3.15)), (-590, (3.0, 3.1))],    # the -600 s state qualifies
                  "1.999123443": [(-650, (3.0, 3.1)), (-450, (3.0, 3.2)), (-400, (3.0, 3.1))],  # inside only
                  "1.999123444": [(-650, (3.0, 3.1)), (-299, (3.0, 3.15))],    # just after the window
-                 "1.999123445": [(-650, (3.0, 3.1)), (-300, (3.0, 3.15))],    # at -300 s exactly: primary too
-                 "1.999123446": [(-650, (3.0, 3.1)), (-450, (3.0, 3.15))]}    # suspended at -350 s, below
+                 "1.999123445": [(-650, (3.0, 3.1)), (-300, (3.0, 3.15))],    # at -300 s exactly
+                 "1.999123446": [(-650, (3.0, 3.1)), (-450, (3.0, 3.15))],    # suspended at the -590 s state, below
+                 "1.999123447": [(-650, (3.0, 3.1)), (-590, (3.0, 3.15))]}    # at -590 s exactly: primary too
         lines = [image(at(-650), *[(m, definition(), quotes(*changes[0][1])) for m, changes in cases.items()])]
         lines += [delta(at(t), m, quotes(*p, others=False)) for m, changes in cases.items() for t, p in changes[1:]]
-        # Not usable at -300 s, so outside every rate's denominator, the window's included.
-        lines.append(delta(at(-350), "1.999123446", md=definition(status="SUSPENDED", version=2)))
+        # Suspended from -620 to -500 s: not usable at -590 s, so outside every rate's denominator, the window's too.
+        lines += [delta(at(-620), "1.999123446", md=definition(status="SUSPENDED", version=2)),
+                  delta(at(-500), "1.999123446", md=definition(version=3))]
         self.rec.session([seg(lines, beats(-650, 0, step=5))])
         counted = self.counted()
-        self.assertEqual((counted["pooled"]["usable_300"], counted["pooled"]["window"], counted["pooled"]["primary"]),
-                         (5, 3, 1))
-        self.assertEqual(counted["not_usable_300"]["not_open_or_in_play"], 1)
+        self.assertEqual((counted["pooled"]["usable"], counted["pooled"]["window"], counted["pooled"]["primary"]),
+                         (6, 4, 1))
+        self.assertEqual(counted["not_usable"]["not_open_or_in_play"], 1)
 
     def test_window_ignores_a_stale_state(self):
         lines = [image(at(-900), (MARKET, definition(), quotes(3.0, 3.15)))] + [
             heartbeat(at(t)) for t in range(-895, -200, 5)] + [delta(at(-200), rc=quotes(3.0, 3.1, others=False))]
         self.rec.session([lines])
         counted = self.counted()
-        self.assertEqual((counted["pooled"]["window"], counted["not_usable_300"]["no_snapshot"]), (0, 1))
+        self.assertEqual((counted["pooled"]["window"], counted["not_usable"]["no_snapshot"]), (0, 1))
 
     def test_price_and_width_levers(self):
         mds = [("1.999123451", definition(), quotes(6.0, 6.6)),     # price lever (3 ticks from 6.0)
@@ -522,9 +524,9 @@ class ColumnTests(Case):
                ("1.999123454", definition(), quotes(5.9, 7.0)),     # width lever, 6 ticks (6.0 6.2 ... 7.0)
                ("1.999123455", definition(), quotes(5.9, 7.2)),     # width lever, 7 ticks
                ("1.999123456", definition(), quotes(5.9, 7.4))]     # 8 ticks: nothing
-        self.rec.session([[image(at(-400), *mds)] + beats(-400, 0)])
+        self.rec.session([[image(at(-690), *mds)] + beats(-690, 0)])
         pooled = self.pooled()
-        self.assertEqual((pooled["usable_300"], pooled["primary"], pooled["price_lever"], pooled["width_lever"]),
+        self.assertEqual((pooled["usable"], pooled["primary"], pooled["price_lever"], pooled["width_lever"]),
                          (6, 0, 2, 3))
 
 
@@ -550,17 +552,17 @@ class GateTests(Case):
                 index = n * per_day + k
                 prices = (3.0, 3.15) if index < qualifying else (3.0, 3.1)
                 markets.append((f"1.99{first + n:02d}{k:05d}", definition(off_text=_iso(off)), quotes(*prices)))
-            self.rec.session([[image(at(-400, off), *markets)] + beats(-400, 0, off)],
+            self.rec.session([[image(at(-690, off), *markets)] + beats(-690, 0, off)],
                              **(session if n == count - 1 else {}))
         return self.summary()["gate_a"]
 
     def test_gate_a_pass(self):
         gate = self.days(10, 5)                                            # 5 of 300: 1.67%
-        self.assertEqual((gate["result"], gate["primary"], gate["usable_300"]), ("PASS", 5, 300))
+        self.assertEqual((gate["result"], gate["primary"], gate["usable"]), ("PASS", 5, 300))
 
     def test_gate_a_fail(self):
         gate = self.days(10, 4)                                            # 4 of 300: 1.33%
-        self.assertEqual((gate["result"], gate["racing_days"], gate["usable_300"]), ("FAIL", 10, 300))
+        self.assertEqual((gate["result"], gate["racing_days"], gate["usable"]), ("FAIL", 10, 300))
 
     def test_gate_a_not_enough_days(self):
         self.assertEqual(self.days(9, 300)["result"], "NOT_ENOUGH_DAYS")
@@ -569,9 +571,9 @@ class GateTests(Case):
         summary = self.summary()
         self.assertTrue(summary["counts_withheld"])
         self.assertNotIn("primary", summary["gate_a"])
-        self.assertEqual(set(summary["pooled"]), {"recorded", "usable_300", "racing_days"})
+        self.assertEqual(set(summary["pooled"]), {"recorded", "usable", "racing_days"})
         for row in summary["days"]:
-            self.assertEqual(set(row), {"date", "racing_day", "in_gate_a", "recorded", "usable_300"})
+            self.assertEqual(set(row), {"date", "racing_day", "in_gate_a", "recorded", "usable"})
         code, out, err = self.run_tool()
         self.assertEqual((code, err), (0, ""))
         for word in ("primary", "persistence", "window", "lever", "flagged", "%"):
@@ -583,7 +585,7 @@ class GateTests(Case):
     def test_gate_a_not_enough_markets(self):
         self.days(10, 300, per_day=29)
         gate = self.assert_withheld()
-        self.assertEqual((gate["result"], gate["usable_300"], gate["through"]), ("NOT_ENOUGH_MARKETS", 290, None))
+        self.assertEqual((gate["result"], gate["usable"], gate["through"]), ("NOT_ENOUGH_MARKETS", 290, None))
         self.assertEqual(lp.gate_a(10, 299, 299, recording_open=True), "NOT_ENOUGH_MARKETS")
 
     def test_gate_a_waits_until_the_recording_of_its_last_date_has_ended(self):
@@ -632,10 +634,10 @@ class GateTests(Case):
         for index, date in enumerate(("2026-10-13", "2026-10-19", "2026-10-19", "2026-10-22")):
             off = timestamp_ms(f"{date}T14:35:00.000Z")
             markets = [(f"1.98{index}{k:05d}", definition(off_text=_iso(off)), quotes(3.0, 3.15)) for k in range(30)]
-            self.rec.session([[image(at(-400, off), *markets)] + beats(-400, 0, off)],
+            self.rec.session([[image(at(-690, off), *markets)] + beats(-690, 0, off)],
                              stop_reason="max_seconds_reached")
         gate = self.days(10, 4)                                                # December: 4 of 300
-        self.assertEqual((gate["result"], gate["through"], gate["primary"], gate["usable_300"]),
+        self.assertEqual((gate["result"], gate["through"], gate["primary"], gate["usable"]),
                          ("FAIL", "2026-12-10", 4, 300))
         summary = self.summary()
         self.assertEqual([row["date"] for row in summary["days"]], [f"2026-12-{n:02d}" for n in range(1, 11)])
@@ -654,9 +656,10 @@ class GateTests(Case):
         self.assertIn("recorded_before_registration 5", self.run_tool()[1])
 
     def test_this_registration_names_the_sha256_that_decides(self):
-        """The page names the deciding script's sha256, so the script cannot change without a new amendment there."""
+        """Amendment 3 names the deciding script's sha256, so the script cannot change without a new amendment."""
         page = (ROOT / "docs" / "lp-rate-count.md").read_text(encoding="utf-8")
-        decides = next(line for line in page.splitlines() if line.startswith("- **Which run decides.**"))
+        amendment = page.split("\n### Amendment 3 (2026-11-09)\n", 1)[1]
+        decides = next(line for line in amendment.splitlines() if line.startswith("- **Which run decides.**"))
         script = hashlib.sha256((ROOT / "scripts" / "lp_rate_count.py").read_bytes()).hexdigest()
         self.assertEqual(re.findall(r"`([0-9a-f]{64})`", decides), [script])
 
@@ -670,12 +673,12 @@ class GateTests(Case):
                               delta(at(-600, off), md=revised), delta(at(-360, off), rc=quotes(3.0, 3.1)),
                               beats(-900, 300, off))])
         everything = self.counted()
-        self.assertEqual((everything["schedule_revised_by_300"], everything["not_usable_300"]["out_of_population"]),
+        self.assertEqual((everything["schedule_revised"], everything["not_usable"]["out_of_population"]),
                          (1, 1))
         summary = self.summary()
-        self.assertEqual((summary["gate_a"]["through"], summary["schedule_revised_by_300"]), ("2026-12-10", 0))
-        self.assertEqual(summary["not_usable_300"], {code: 0 for code in lp.NOT_USABLE})
-        self.assertIn("marketTime revised at or before off -300 s (counted, not excluded): 0 of 300 usable",
+        self.assertEqual((summary["gate_a"]["through"], summary["schedule_revised"]), ("2026-12-10", 0))
+        self.assertEqual(summary["not_usable"], {code: 0 for code in lp.NOT_USABLE})
+        self.assertIn("marketTime revised at or before off -590 s (counted, not excluded): 0 of 300 usable",
                       self.run_tool()[1])
 
     def test_until_gate_a_can_be_read_nothing_about_qualifying_markets_is_printed(self):
@@ -709,8 +712,9 @@ class SessionTests(Case):
                          fields=FIELDS + ["EX_BEST_OFFERS_DISP"])
         self.rec.session([market_lines(steady(3.0, 3.15), market_id="1.999123473")], subscription=False)
         self.rec.session([market_lines(steady(3.0, 3.15), market_id="1.999123474")], replay_status="failed")
-        crashed = self.rec.session([market_lines(steady(3.0, 3.1), market_id="1.999123475", end=-600)], partial=True,
-                                   open_segment=market_lines(steady(3.0, 3.15), market_id="1.999123475", start=-500))
+        crashed = self.rec.session([market_lines(steady(3.0, 3.1), market_id="1.999123475", start=-1190, end=-890)],
+                                   partial=True,
+                                   open_segment=market_lines(steady(3.0, 3.15), market_id="1.999123475", start=-790))
         tampered = self.rec.session([market_lines(steady(3.0, 3.15), market_id="1.999123476")])
         (tampered / "seg-000.jsonl").write_bytes((tampered / "seg-000.jsonl").read_bytes() + b"\n")
         self.rec.session([market_lines(steady(3.0, 3.15), market_id="1.999123477")], conflate_ms=None)
@@ -729,10 +733,10 @@ class SessionTests(Case):
                          {"listed": 4, "read": 2, "unlisted": 1, "listing_failed": 0, "missing": 0, "unreadable": 0,
                           "hash_mismatch": 1, "replay_check_not_passed": 1})
         self.assertTrue(crashed.joinpath("seg-001.jsonl").is_file())
-        # The good market qualifies; the crashed session's closed segment ends before -600 s, its open one is unread.
+        # The good market qualifies; the crashed session's closed segment ends before -590 s, its open one is unread.
         counted = self.counted()
         self.assertEqual((counted["pooled"]["recorded"], counted["pooled"]["primary"]), (2, 1))
-        self.assertEqual(counted["not_usable_300"]["no_snapshot"], 1)
+        self.assertEqual(counted["not_usable"]["no_snapshot"], 1)
 
     def test_output_is_deterministic(self):
         self.rec.session([market_lines(steady(3.0, 3.15))])
@@ -772,8 +776,8 @@ def normalise(text):
 
 JSON_KEYS = {"schema", "registration", "script_sha256", "inputs", "sessions", "segments", "markets_without_off",
              "counts_withheld", "days", "date", "racing_day", "in_gate_a", "rates_bp", "pooled", "racing_days",
-             "not_usable_300", "schedule_revised_by_300", "gate_a", "result", "through", "min_racing_days",
-             "min_usable_300", "recording_open", "threshold_per_mille", "limits", "found", "read", "read_partial",
+             "not_usable", "schedule_revised", "gate_a", "result", "through", "min_racing_days",
+             "min_usable", "recording_open", "threshold_per_mille", "limits", "found", "read", "read_partial",
              "listed", "unlisted", "listing_failed", *lp.COLUMNS, *lp.NOT_USABLE, *lp.SESSION_SKIPS, *lp.SEGMENT_SKIPS}
 
 
@@ -787,9 +791,9 @@ class ProjectionTests(Case):
             off = at(86_400 * day)
             day_market = market_id if day == 0 else f"{market_id[:-2]}{50 + day}"
             fillers = [(f"1.98{day:02d}{k:05d}", definition(off_text=_iso(off)), quotes(3.0, 3.1)) for k in range(29)]
-            rec.session([seg(image(at(-900, off), (day_market, definition(off_text=_iso(off)), rc), *fillers),
-                             beats(-900, 0, off), delta(at(-360, off), day_market, quotes(back, lay, others=False)),
-                             [delta(at(-360, off), m, quotes(3.0, 3.1, others=False)) for m, _, _ in fillers])])
+            rec.session([seg(image(at(-1190, off), (day_market, definition(off_text=_iso(off)), rc), *fillers),
+                             beats(-1190, 0, off), delta(at(-650, off), day_market, quotes(back, lay, others=False)),
+                             [delta(at(-650, off), m, quotes(3.0, 3.1, others=False)) for m, _, _ in fillers])])
         rec.session([[image(at(-900), ("1.999123402", definition(country="FR"), rc))]])
 
     def test_no_id_name_price_or_time_reaches_the_output(self):
@@ -810,8 +814,8 @@ class ProjectionTests(Case):
         other.mkdir()
         self.fixture(other, 3.5, 3.65, "1.999123499")
         tomorrow = at(86_400)
-        Recordings(other).session([[image(at(-400, tomorrow), ("1.999123498", definition(
-            off_text=_iso(tomorrow)), quotes(5.9, 6.4)))] + beats(-400, 0, tomorrow)])
+        Recordings(other).session([[image(at(-690, tomorrow), ("1.999123498", definition(
+            off_text=_iso(tomorrow)), quotes(5.9, 6.4)))] + beats(-690, 0, tomorrow)])
         mine, theirs = self.run_tool()[1], self.run_tool(root=other)[1]
         self.assertNotEqual(mine, theirs)
         self.assertEqual(set(normalise(mine).splitlines()), set(normalise(theirs).splitlines()))
@@ -844,14 +848,14 @@ class RecorderOutputTests(unittest.TestCase):
         """The real StreamRecorder, driven by the scripted stream, writes a session this count reads whole."""
         support.block_network(self)
         paths = support.temp_state_paths(self)
-        start = "2026-11-10T14:28:20.000"                               # off - 400 s
+        start = "2026-11-10T14:23:30.000"                               # off - 690 s
         clock = support.FakeClock(start=start + "000Z")
         session = fx.FakeSession()
         script = fx.handshake() + [fx.change(lambda sid: fx.image(
             sid, timestamp_ms(start + "Z"), market_id=MARKET, definition=definition(), rc=quotes(3.0, 3.15),
             conflate_ms=180000))]
-        # A heartbeat after -300 s keeps the session's span past the snapshot (a state is never carried further).
-        script.append(fx.change(lambda sid: fx.heartbeat(sid, at(-295))))
+        # A heartbeat after -590 s keeps the session's span past the snapshot (a state is never carried further).
+        script.append(fx.change(lambda sid: fx.heartbeat(sid, at(-585))))
         server = fx.FakeStreamServer([script], clock)
         StreamRecorder(fx.recorder_config(paths), paths=paths, session=session,
                        stream_factory=lambda: fx.make_client(server, session, clock),
@@ -862,10 +866,10 @@ class RecorderOutputTests(unittest.TestCase):
             self.assertEqual(lp.main(["--root", str(paths.recordings_dir), "--json"]), 0)
         summary = json.loads(out.getvalue())
         self.assertEqual((summary["inputs"]["sessions"]["read"], summary["inputs"]["segments"]["read"]), (1, 1))
-        self.assertEqual((summary["pooled"]["usable_300"], summary["gate_a"]["result"]), (1, "NOT_ENOUGH_DAYS"))
+        self.assertEqual((summary["pooled"]["usable"], summary["gate_a"]["result"]), (1, "NOT_ENOUGH_DAYS"))
         pooled = lp.tally(lp.Count().read_root(paths.recordings_dir))["pooled"]
-        self.assertEqual((pooled["usable_300"], pooled["primary"]), (1, 1))
-        self.assertEqual(pooled["flagged_460"], 0)                           # -460 s is before the session began
+        self.assertEqual((pooled["usable"], pooled["primary"]), (1, 1))
+        self.assertEqual(pooled["flagged"], 0)                               # -780 s is before the session began
 
 
 class ImportTests(unittest.TestCase):
@@ -909,7 +913,7 @@ class ImportTests(unittest.TestCase):
                                         capture_output=True, text=True, timeout=60, cwd=tmp, check=False)
             self.assertEqual((documented.returncode, documented.stderr), (0, ""))
             printed = json.loads(documented.stdout)
-            self.assertEqual((printed["pooled"]["usable_300"], printed["counts_withheld"]), (1, True))
+            self.assertEqual((printed["pooled"]["usable"], printed["counts_withheld"]), (1, True))
             self.assertEqual(printed["script_sha256"], hashlib.sha256(TOOL.read_bytes()).hexdigest())
             self.assertEqual(sorted(str(p) for p in Path(tmp).rglob("*")), before)
 

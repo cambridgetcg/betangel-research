@@ -154,11 +154,12 @@ Money numbers are Yu's (the page, Money). Every other number is chosen by RS-19'
 | PR-D (#58, this PR) | The page, the note, this plan and the G1 follow-up, rewritten for the plain bot; Pilot 1's document lines listed, not applied; the draft contract retired; the docs test | Astra's review; Yu merges | 0 | about −60 |
 | Stage 0 counter (done) | [scripts/lp_rate_count.py](../scripts/lp_rate_count.py) (#56; amendment 1 in #57) | merged | | |
 | PR-G | Gate A's amendment 3: the count at off −590 s | merges before any lab count is read | about 30 | about 120 changed |
-| PR-1 | `p2_lp.py`, `load_config_p2`, `config_p2_path`, the example config-p2, the `p2_lp` boundary entry, and the `p2_lp` and Pilot 1 untouched tests | merged only after Gate A has passed, the build consent, and Astra's acceptance of Pilot 1's go-live commit | about 320, plus 45 of JSON | about 780 |
-| PR-2 | The gateway, api, journal and cli changes, `p2_run.py`, the `p2_run` boundary entry, and the gateway, run and cli tests | merged only after Pilot 1's PT4 receipt, the build consent and Astra's review; going live is Yu's consent | about 630 | about 1,780 |
+| PR-1 | `p2_lp.py`, `load_config_p2`, `config_p2_path`, the example config-p2, the `p2_lp` boundary entry, the `p2_lp` tests and the two pure Pilot 1 untouched checks (an open Pilot 2 leg is a Pilot 1 manual ref; the ARM record is no pilot note) | merged only after Gate A has passed, the build consent, and Astra's acceptance of Pilot 1's go-live commit | about 320, plus 45 of JSON | about 780 |
+| PR-2 | The gateway, api, journal and cli changes, `p2_run.py`, the `p2_run` boundary entry, the gateway, run and cli tests, and the rest of the Pilot 1 untouched tests (the sha256 pins, the fold, the P2 HALT, the open-leg halt and ARM refusal) | merged only after Pilot 1's PT4 receipt, the build consent and Astra's review; going live is Yu's consent | about 630 | about 1,780 |
 | **Total** | | | **about 980 (690–1,350)** | **about 2,560 (1,800–3,400)** |
 
 - PR-G, PR-1 and PR-2 are drafted ahead of their gates (Yu, 2026-11-08; Decided), so the Gate column says only when each may merge. They are opened now as draft PRs, as Yu chose ("PRs that nobody merges yet", 2026-11-08). Yu's OK on their edits to existing test files and on the api.py change is asked before they merge (Open for Yu).
+- PR-1 is rebased onto main once PR-G is there, and then gains a test that reads scripts/lp_rate_count.py's runner rule and times (by `ast`, no import) and pins them to `p2_lp`'s constants, so a later change on either side cannot leave Gate A counting another rule. It cannot pass before PR-G is on main.
 - Each code PR is reviewed by lab-Claude's own review rounds and by Astra, and merged by Yu. Yu, 2026-11-09: "No need codex review in the future. All yours". The full offline suite passes, including every Pilot 1 test unchanged.
 - *Estimate,* ±30%. The executor is the least certain figure: pilot_run.py is 2,820 lines. These figures assume stop-flag-only signals, no owed writes, one ticket per session and no end-session command. If Astra wants more, add 50%.
 - For comparison, the PR4 to PR8 plan as drafted came to about 27,000–30,000 lines, and the research's "Trimmed pilot" to about 13,000–16,000.
@@ -212,7 +213,7 @@ Also for Yu, before go-live:
 - **No auto-kill.** A failed pull ends in a handoff, with about 5 minutes left before the off for Yu to cancel in the phone app or run the kill. If macOS asks on the kill's Keychain reads (F73), each read can wait up to 120 s.
 - **No dead-man.** A crash, sleep or network cut leaves the legs resting until the off, bounded at that race's £10.
 - **No registration.** The banner shows the commit and the code refuses a dirty tree, but only Yu's comparison of the commit and config-p2.json's sha256 with what Astra accepted ties the running code to the reviewed code.
-- **The shared journal.** The design relies on Pilot 1's unchanged code ignoring Pilot 2's orders and ARM records (note §7). This has been read on main but not yet pinned by a test. The untouched tests in PR-1 pin it.
+- **The shared journal.** The design relies on Pilot 1's unchanged code ignoring Pilot 2's orders and ARM records (note §7). This has been read on main but not yet pinned by a test on main. The untouched tests pin it: the two pure checks in PR-1, the rest in PR-2.
 - **Journal-wide effects.** Both pilots fold one journal, so:
   - a Pilot 2 UNKNOWN blocks Pilot 1's placing too (R3), and counts toward the three-UNKNOWN HALT (journal.py:932-933);
   - R10 books a loss on the UTC day its settle is typed. A Pilot 2 settle typed on a Pilot 1 day uses Pilot 1's £50 of room, which is the safe direction. The reverse can end a Pilot 2 session early.

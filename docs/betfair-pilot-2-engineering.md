@@ -47,7 +47,7 @@ Nothing, until Pilot 2's go-live. The lines Pilot 1's documents would gain then 
   - One fresh catalogue row by market id with Pilot 1's row projections, stored with `store_catalogue_row` as Pilot 1 does (api.py:777-787; gateway.py:1846). Every send book takes its `market_time` and the country from this row, not from a cache up to 6 h old (config.py:46).
   - One delayed `market_snapshot`. `screen` needs `isMarketDataDelayed` true (else `not_delayed`), then `book_problems` and `select_runner`.
   - The off moved, a read error or a screen code: the next market, with no live-key read (F46).
-- **Before the open:** the stop flag or the KILL file ends the session; the login cap moves to the next market; a broken admission ends the session.
+- **Before the open:** the stop flag or the KILL file ends the session; the login cap moves to the next market; a broken admission ends the session. The time is checked again after the wait for the open, and again when the open's WAIT returns: once off −575 s has passed (a stall, a sleep or a slow open), the BACK could only be refused, so the race moves to the next market (`missed_window`) before any live-key read, or before the BACK's funds and book reads.
 - **Open,** off −740 s: the gateway command `place` with config-p2.json and the Pilot 2 context. The lock, the login, the startup reconcile, UNKNOWNs resolved within 120 s (gateway.py:104, :774-781), A1–A19, the Pilot 1 window guard (gateway.py:745) and the anchor. If `open_report()["armed"]` is not True, close and end (gateway.py:827-829): dynamic failures do not raise (gateway.py:785-788, :810-820).
 - **Book problems** (`book_problems`): OPEN, not in play, at least 5 ACTIVE runners; on a live send book also `isMarketDataDelayed` false and `betDelay` 0. The V-rules check neither the bet delay nor the ACTIVE count (validate.py:104-140, :280).
 - **Runner** (`select_runner`, on the send book):
@@ -108,13 +108,13 @@ R10 books a settled race at its worst case, so two matched races can use up the 
 - **After Yu's line,** in this order:
   1. the stop flag;
   2. `live_ownership` with owner `p2-session:<hex8>` (admission.py:628), which holds the live-owner lock and the recording admission for the whole session;
-  3. the checks again, on a fresh view;
+  3. the checks again, on a fresh view, whose commit must be the one the banner showed (`p2_code_changed`); `p2-run` loads the order path (gateway.py) before the banner's git read, so the commit recorded is the code that places;
   4. the session credentials;
   5. caffeinate;
   6. the ARM record, compare-and-appended on the view's head while holding `.gateway.lock` (released before the first open, as Pilot 1 appends `session_start`, pilot_run.py:1074-1088), then `publish_anchor`;
   7. the delayed read session.
 - **What each leg checks.** That exact record: this config's sha256, this session, today, before UNTIL, and no earlier P2 ARM record today (§6). Only `p2-run` builds a gateway with the Pilot 2 context, and only after the line. This is friction, not cryptography (betfair-order-path.md:243).
-- **What Pilot 1's unchanged code does with Pilot 2's records.** Read on main; pinned by the untouched tests before PR-1 merges (§14).
+- **What Pilot 1's unchanged code does with Pilot 2's records.** Read on main; pinned by the untouched tests before PR-2 merges (§14).
   - Pilot 1's fold handles only notes keyed `pilot` (pilot.py:1941). Pilot 2 writes no note of its own, so its "another contract" refusals (pilot.py:2010-2016; pilot_run.py:758-762; pilot_gate.py:291-306) never fire.
   - An intent whose source is not `pilot` sets a review stop if a Pilot 1 session is armed, and is otherwise ignored (pilot.py:2376-2383).
   - An open or unsettled bet whose source is not `pilot` halts a Pilot 1 placement open as `manual_bet_open_during_session` (pilot_gate.py:318-334; gateway.py:1422-1425), and refuses Pilot 1's ARM (pilot_run.py:909-910).
@@ -133,19 +133,21 @@ IDLE     armed, no lock; markets from one delayed catalogue call (§4); 1 s slic
 SCREEN   off -840..-780 s, delayed session: a fresh row, stored; one delayed book
   |-- off moved, read error, screen code ----------------------------> next market (no live-key read)
 PRE-OPEN stop flag -> END | KILL file -> END | login cap -> next market | admission broken -> END
+  |-- off -575 s passed, checked again after the wait (a stall or sleep) -> next market (missed_window)
 OPEN     off -740 s: gateway "place" with config-p2.json: lock, login, startup reconcile, A1-A19, anchor
   |-- raised (not armed, Pilot 1 window, lock busy, login error, signal) -> END, nothing sent
   |-- open report not armed (a foreign order journals a HALT and fails A17) -> close, END
 WAIT     until off -590 s, 1 s slices: stop, KILL file, a kill event, an unreadable journal, any journal event after our head, drift, a late wake -> close, END
+  |-- off -575 s passed when it returns (a slow open), checked again -> close, next market (missed_window)
 BACK     lp_place("BACK"), book observed off -590..-575 s
   |-- refused with a code, or by a V-, R- or A-rule -> close, next market; 5 in a row -> END
   |-- raised with nothing submitted: not armed or the Pilot 1 window -> close, END; book fetch failed -> next market
   |-- FAILED (rejected, or not sent) -> close, next market (a race once its submit is journaled)
   |-- UNKNOWN -> in-line reconcile (<= 40 s): found -> placed | else -> close, HANDOFF(BACK), END
-BETWEEN  stop flag, KILL file with no kill event, a foreign event -> PULL(BACK), END
+BETWEEN  stop flag, KILL file with no kill event, a foreign event, drift -> PULL(BACK), END
          a kill event, or the journal unreadable -> HANDOFF, close, END (never race the kill)
-LAY      lp_place("LAY"), book observed by off -532 s
-  |-- refused, FAILED, or raised with no LAY submitted -> PULL(BACK) at once -> BACK matched ? END : next market
+LAY      lp_place("LAY"), book observed by off -532 s; a stop since BETWEEN's look refuses it at the first byte
+  |-- refused, FAILED, or raised with no LAY submitted -> PULL(BACK) at once -> BACK matched or a stop ? END : next market
   |-- raised with the LAY submitted -> EXCEPTION
   |-- UNKNOWN -> reconcile: found -> REST | else -> PULL(BACK), HANDOFF(LAY), END
 REST     until off -300 s, 1 s slices, no Betfair call
@@ -163,7 +165,8 @@ GONE     SIGKILL, power loss, a sleep through the off: nothing runs; bounded at 
          the next ARM refuses while a leg is open or unresolved
 ```
 - **Network loss.** A send not sent is FAILED; one after bytes is UNKNOWN (above). Nothing is called during the rest. A cancel exception leaves `cancel_outcome_unknown` or `cancel_not_processed` (gateway.py:2297-2310), which means a handoff.
-- **Signals.** Before an open's first send, the gateway guard raises SignalStop (cli.py:209-213). After it, signals are deferred (cli.py:215-218) and the next slice turns them into a pull. A second Ctrl-C during the pull is deferred too.
+- **Signals.** Before an open's first send, the gateway guard raises SignalStop (cli.py:209-213). After it, signals are deferred (cli.py:215-218) and the next slice turns them into a pull. A deferred signal or the stop flag also refuses the LAY at its first byte (`p2_stop_before_send`, checked after the KILL file), so a stop between the legs never lets the LAY go: the BACK is pulled and the session ends. A second Ctrl-C during the pull is deferred too.
+- **Clock drift** (wall and monotonic time apart by more than 2 s) is measured from one baseline a race, taken after the screen-window check, so a wall-clock step in the wait for the open, in the open or between the legs is seen at the next look (WAIT, BETWEEN or REST), not only one inside a single wait.
 - **KILL file.** R1 and the first-byte gate refuse any send (risk.py:259-283; gateway.py:1045-1046). Cancels stay allowed (risk.py:623-631), so with no kill event the bot pulls its own legs. With a kill event it hands off, because a duplicate cancel only leaves an UNKNOWN (gateway.py:2156-2157).
 - **Partial fill at the pull.** A whole cancel short of the remainder is UNKNOWN `cancel_size_short_refresh_needed` (lifecycle.py:283-288), then reconciled in line.
 - **The pull and the three-UNKNOWN HALT.** The rest makes no Betfair call, so a leg that matched still looks EXECUTABLE and is cancelled. Fully matched gives BET_TAKEN_OR_LAPSED, UNKNOWN (lifecycle.py:296-297); part matched gives `cancel_size_short` (:286-288). Each such report counts toward the HALT once `unknown_before + 1 ≥ 3` (gateway.py:1190-1192, :2294, :2310, :2323), and only a clean report with moves resets the count; a reconcile does not (journal.py:932-933). A round trip adds 2. So one earlier UNKNOWN since the last clean report makes the BACK's cancel HALT the shared journal, and Pilot 1 is blocked until RESUME LIVE. The safe direction; it costs sessions.
@@ -204,7 +207,7 @@ This replaces the ledger, the classes, the verdict and the tables.
   - open or unsettled legs, with the handoff text;
   - the worst case booked at settle.
 - **`p2-run`'s end** also prints that session's screens, flags and skip codes. They are printed, not journaled.
-- **`--cleared`** uses the delayed read key: cleared orders, SETTLED, from the first P2 ARM, ref `p2-lp`, grouped by MARKET (api.py:844-884). It gives Betfair's profit and commission per race and in total. A journal market not cleared, or a cleared market not in the journal, prints "check the website". *Unverified:* whether commission is filled when grouped by MARKET (F37).
+- **`--cleared`** uses the delayed read key, and refuses (`p2_cleared_needs_delayed_key`) before any Keychain read if config-p2's `read.app_key_slot` is not "delayed": cleared orders, SETTLED, from the first P2 ARM, ref `p2-lp`, grouped by MARKET (api.py:844-884). It gives Betfair's profit and commission per race and in total. A journal market not cleared, or a cleared market not in the journal, prints "check the website". *Unverified:* whether commission is filled when grouped by MARKET (F37).
 - A disagreement with Yu's website check blocks the next ARM until Astra has looked; that is Yu's procedure. Agents relay counts and codes only.
 
 ## 11. Final execution, classes and value
@@ -222,7 +225,7 @@ eng §13's bans stay, except that this bot may send lays. Still: more than one i
   - The order path (PR-2) merges only after Pilot 1's PT4 receipt exists, so the shared placement path is first proven live on Pilot 1's simpler shape.
   - Gate A's amendment 3 (PR-G) merges before any lab count is read, and the code merges only after Gate A passes.
   - Every Pilot 1 test passes unchanged at every Pilot 2 commit, and contract p1's sha256 (4dbccb5a…) is unchanged.
-- **Pilot 1 untouched** (tests/test_betfair_p2_untouched.py, in PR-1):
+- **Pilot 1 untouched** (tests/test_betfair_p2_untouched.py). PR-1 has its two pure checks: an open or unsettled Pilot 2 leg is a Pilot 1 manual ref, and the P2 ARM record is no pilot note. PR-2 adds the rest, which need its journal and gateway:
   - the sha256 at c86764a of pilot.py, pilot_run.py, pilot_gate.py, p1-fav-t5.json and Pilot 1's test files, listed by name;
   - Pilot 1's `pilot.fold` over a journal with Pilot 2's intents, submits, reports and ARM records, but no HALT, kill or resume, equals its fold without them; and a Pilot 2 HALT stops Pilot 1;
   - an open Pilot 2 leg halts a Pilot 1 open and refuses Pilot 1's ARM.
@@ -232,7 +235,7 @@ eng §13's bans stay, except that this bot may send lays. Still: more than one i
   - tests/test_betfair_p2_run.py: one test per §8 edge, the ARM refusals, the first session at 1 race, caffeinate, the ARM record under the lock, and the owner lock blocking `pilot-run` and a manual `place`;
   - the switched-off default (§1): `IN_FORCE` False in the committed code, `config_problems` and the gateway refusing, and `p2-run` refusing with no Keychain, journal or git read; the tests of the live path patch it True;
   - tests/test_betfair_p2_cli.py: `init-config --p2`, `load_config` refusing config-p2.json, and the kill's refs with and without it. `p2-summary` is tested in tests/test_betfair_p2_run.py.
-- **Existing test files that change:** tests/test_betfair_backtest_boundaries.py (two data lines for `p2_lp` and `p2_run`) and tests/test_lp_rate_count.py (PR-G). Each, and the api.py change, needs Yu's OK before its PR is opened. tests/test_betfair_pilot_2_docs.py, which exists only on this PR's branch, changes in this PR.
+- **Existing test files that change:** tests/test_betfair_backtest_boundaries.py (two data lines for `p2_lp` and `p2_run`) and tests/test_lp_rate_count.py (PR-G). Each, and the api.py change, needs Yu's OK before the PR carrying it merges (plan, Open for Yu). tests/test_betfair_pilot_2_docs.py, which exists only on this PR's branch, changes in this PR.
 - **P2-PT3,** the fault drills, are tests/test_betfair_p2_run.py, inside the offline suite only. No drill runs against the real state root, the Keychain or Betfair, because the journal anchor's Keychain item is keyed by its service and the profile alone (credentials.py:37, :131, :150), so a scratch run that reached it would overwrite Pilot 1's anchor.
 - **Go-live prerequisite.** A19 needs a `ref_roundtrip_verified` event in the lab Mac's journal before any Pilot 2 open arms (arming.py:53, :477-478). Pilot 1 going first on the lab Mac probably covers it.
 

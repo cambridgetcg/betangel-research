@@ -96,7 +96,7 @@ Yu chose the first five numbers on 2026-11-03, in a question that offered them f
   - the login cap.
 - **The banner** shows config-p2.json's sha256 (cfg12), the commit, today's and total races, N, and the stops: the phone app, Ctrl-C, the KILL file and the own-scope `kill`. It warns that a typed `cancel` fails while legs rest, that the session ends after any matched leg, and that nothing heavy runs on the lab Mac while armed or an order rests. It asks for mains power with the lid open.
 - **Then Yu types at /dev/tty:** `P2 ARM <cfg12> <YYYYMMDD> UNTIL <HHMM>Z RACES <N>`.
-- **After the line:** the live-owner lock and recording admission, the checks again, the credentials, caffeinate, and then the ARM record in the journal, appended under `.gateway.lock`, with the anchor published.
+- **After the line:** the live-owner lock and recording admission, the checks again (and the commit must still be the one the banner showed), the credentials, caffeinate, and then the ARM record in the journal, appended under `.gateway.lock`, with the anchor published.
 - **What it binds.** Every leg's gateway check needs that exact ARM record: this config's sha256, this session, today, before UNTIL, and within its race count. Only `p2-run` builds a gateway that can send for Pilot 2, and only after the line. This is friction, not cryptography; the rule that agents never arm is this page's.
 - **Later lines are the existing ones:** `SETTLE MARKET`, `ACCEPT ABSENT`, `RESUME LIVE` and `RELEASE RECORDING GENERATION <N>`.
 

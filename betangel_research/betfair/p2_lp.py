@@ -1,6 +1,6 @@
 """Pure Pilot 2 logic for the plain capped bot (P2-LP): the constants, the runner rule and the leg prices, the screen,
-each leg's choice, the race counts, the gateway's leg refusals, the ARM line and record, config-p2's pins, the handoff
-and the summary.
+each leg's choice, the race counts, the gateway's leg refusals and the pair's room, the ARM line and record,
+config-p2's pins, the handoff and the summary.
 
 docs/betfair-pilot-2-policy.md (the page) holds the numbers in its Values and Money tables, and the constants below
 are their only other copy (tests/test_betfair_p2_lp.py pins each to its row); docs/betfair-pilot-2-engineering.md
@@ -66,7 +66,17 @@ CONFIG_PINS = (
     (("orders", "rules", "event_type_ids"), ["7"]),
     (("orders", "rules", "external_exposure_tolerance"), 0.0),
     (("orders", "live", "heartbeat_api_enabled"), False),
-    (("read", "app_key_slot"), "delayed"))
+    (("read", "app_key_slot"), "delayed"),
+    # The times the state machine's budget assumes (note §8: the in-line reconcile, each send and each read's
+    # retries), and R7's cap, which the pair pre-check does not model.
+    (("orders", "reconcile", "poll_interval_s"), 1.0),
+    (("orders", "reconcile", "window_s"), 15),
+    (("orders", "reconcile", "grace_s"), 5),
+    (("orders", "reconcile", "min_successful_polls"), 3),
+    (("http", "timeout_s"), 10),
+    (("http", "order_deadline_s"), 10),
+    (("read", "retry_backoff_s"), [1, 4, 16]),
+    (("orders", "caps", "max_transactions_per_hour"), 300))
 # schemas.UNRESOLVED_STATES and schemas.TERMINAL_STATES, copied: this module imports only pilot and ticks (build
 # spec §1). The test pins each copy to its original.
 UNRESOLVED_STATES = frozenset({"SUBMITTING", "UNKNOWN", "ABSENT_UNCONFIRMED", "CANCEL_PENDING", "REPLACE_PENDING"})
@@ -225,8 +235,10 @@ def choose_back(book, *, country):
 def choose_lay(book, pending):
     """The LAY on a fresh send book -> (instruction, None), or (None, code). pending is the placed BACK's (None, or
     another market, is p2_lay_without_back). observed_at must be at or before off + LAY_BOOK_BY_S
-    (p2_send_deadline); then book_problems on the live book, the runner ACTIVE (runner_not_active), and the passive
-    check for the LAY on this book, our resting BACK included."""
+    (p2_send_deadline); then book_problems on the live book, the runner ACTIVE (runner_not_active), the passive
+    check for the LAY on this book, our resting BACK included, and the best back still the LAY's price less one tick
+    (p2_book_moved: the price was taken from the BACK's book, and a best back that fell since leaves it more than
+    one tick above). It only refuses: the LAY's price is never moved."""
     if pending is None or pending["market_id"] != book["market_id"]:
         return None, "p2_lay_without_back"
     off_ns = _off_ns(book)
@@ -238,10 +250,14 @@ def choose_lay(book, pending):
     runner = book["runners"].get(str(pending["selection_id"]))
     if runner is None or runner["status"] != "ACTIVE":
         return None, "runner_not_active"
-    code = passive_check(best_back_h=_best_h(runner["back"]), best_lay_h=_best_h(runner["lay"]), side="LAY",
+    back_h = _best_h(runner["back"])
+    code = passive_check(best_back_h=back_h, best_lay_h=_best_h(runner["lay"]), side="LAY",
                          price_h=pending["lay_price_h"])
     if code is not None:
         return None, code
+    if not (is_on_ladder(back_h) and is_on_ladder(pending["lay_price_h"])
+            and tick_index(pending["lay_price_h"]) == tick_index(back_h) + 1):
+        return None, "p2_book_moved"
     return _instruction(pending["selection_id"], "LAY", pending["lay_price_h"]), None
 
 
@@ -260,6 +276,14 @@ def races(orders, *, since_ns=None, day=None):
         if (since_ns is None or at >= since_ns) and (day is None or pilot.utc_day(at) == day):
             found.add(order["market_id"])
     return found
+
+
+def pair_placed(orders):
+    """Whether one race has had both legs placed at Betfair: a p2-lp LAY with a bet id in the core fold's orders. The
+    gateway sends a LAY only while its pair's BACK rests or has matched (leg_refusal), so a placed LAY is a placed
+    pair. A race whose BACK was rejected, not sent, or pulled because its LAY was refused is not one."""
+    return any(order["customer_strategy_ref"] == STRATEGY_REF and order["side"] == "LAY"
+               and order["bet_id"] is not None for order in orders.values())
 
 
 def arm_line(cfg12, day, hhmm, races):
@@ -310,6 +334,30 @@ def arm_problem(event, *, config_sha256, session_id, now_ns):
         return "p2_arm_not_today"
     if not now_ns < inner["until_ns"]:
         return "p2_arm_expired"
+    return None
+
+
+def pair_room(*, lay_price_h, available_p, reserve_p, submitted_ns, orders_today, exchange_orders_today, caps,
+              now_ns):
+    """The part of the BACK's pair pre-check that risk.evaluate_pilot_reservation leaves out (it asks R6 for one more
+    order and has no funds rule), as the R-rule's name or None (note §6). Room for both legs in the minute, hour and
+    day windows, counted as risk.py:307-320 counts them from the fold's submitted_instruction_wall_ns, orders_today
+    and the exchange floor's orders_today against config-p2's caps (rate_minute, rate_hour, rate_day). Then funds for
+    both legs, as R11 asks of each in turn (risk.py:418-424): the BACK's stake, then, while it rests, the LAY's whole
+    liability at lay_price_h, rounded up to a penny, within available_p less reserve_p (funds). Ints only: an
+    available figure or a reserve that is not int pence, or a price off the ladder, refuses (funds)."""
+    minute = sum(1 for at in submitted_ns if at > now_ns - 60 * NS)
+    hour = sum(1 for at in submitted_ns if at > now_ns - 3600 * NS)
+    day_start = now_ns - now_ns % pilot.DAY_NS
+    day = max(sum(1 for at in submitted_ns if at >= day_start), orders_today or 0, exchange_orders_today or 0)
+    for rule, used, key in (("rate_minute", minute, "max_orders_per_minute"),
+                            ("rate_hour", hour, "max_orders_per_hour"), ("rate_day", day, "max_orders_per_day")):
+        if used + len(SIDES) > caps[key]:
+            return rule
+    if not is_on_ladder(lay_price_h) or type(available_p) is not int or type(reserve_p) is not int:
+        return "funds"
+    if STAKE_P - ((-STAKE_P * (lay_price_h - 100)) // 100) > available_p - reserve_p:
+        return "funds"
     return None
 
 
@@ -406,17 +454,34 @@ def _leg_text(ref, order, market_id):
             f"{order['selection_id']} in {order['market_id']}, state {order['state']}")
 
 
+def _matched_text(order):
+    """One leg of a market with a matched leg, for Yu's website check: its side, its matched size at the journal's
+    average matched price (hundredths, rounded against us), what was cancelled or lapsed, and its state. No bet id
+    and no ref."""
+    average = order["average_price_matched_h"]
+    text = f"{order['side']} matched {_money(order['size_matched_p'])}"
+    if order["size_matched_p"] > 0:
+        text += f" @ {average // 100}.{average % 100:02d}" if type(average) is int else " @ unknown"
+    for key, word in (("size_cancelled_p", "cancelled"), ("size_lapsed_p", "lapsed")):
+        if order[key] > 0:
+            text += f", {word} {_money(order[key])}"
+    return f"{text}, {order['state']}"
+
+
 def handoff_lines(legs, *, checkout, market_id=None):
     """The handoff (note §8): one line per leg of legs ({ref: the core fold's order record, or None when the fold
     could not be read}; market_id names the market of a None leg), then the stops in order: the Betfair phone app,
-    the website, and the own-scope kill run from Pilot 2's checkout by its absolute path."""
+    the website, and the own-scope kill run from Pilot 2's checkout by its absolute path. The last line is for a
+    suspended market, worded to hold whether or not Betfair refuses a cancel there (unverified, note §8)."""
     return [_leg_text(ref, order, market_id) for ref, order in legs.items()] + [
         "These legs may still be open. Stop them now, in this order:",
         "1. the Betfair phone app: cancel each unmatched part;",
         "2. the Betfair website: cancel each unmatched part;",
         f"3. the own-scope kill from Pilot 2's checkout: cd \"{checkout}\" && python3 -m betangel_research.betfair "
         f"kill --reason \"p2 handoff\"",
-        "A kill from Pilot 1's checkout misses these legs when the journal cannot be read."]
+        "A kill from Pilot 1's checkout misses these legs when the journal cannot be read.",
+        "If a cancel is refused because the market is suspended, cancel again as soon as it reopens; anything "
+        "unmatched lapses at the off."]
 
 
 def _open_or_unsettled(order):
@@ -445,7 +510,23 @@ def _settled_worst_p(order):
     return worst + (remaining if order["side"] == "BACK" else -((-remaining * (order["price_h"] - 100)) // 100))
 
 
-def _counts(legs, *, sessions, races):
+def _matched_at_once(events):
+    """The refs matched, in part or in full, in their own place report (the plan's taker fills): a place's report
+    event with a transition whose fields carry a matched size. A leg first found matched by a reconcile or at the
+    pull is not one, and no fill time is recorded."""
+    found = set()
+    for event in events:
+        payload = event.get("payload")
+        if event.get("kind") != "report" or not isinstance(payload, dict) or payload.get("action") != "place":
+            continue
+        for move in payload.get("transitions") or ():
+            fields = move.get("fields") if isinstance(move, dict) else None
+            if isinstance(fields, dict) and type(fields.get("size_matched_p")) is int and fields["size_matched_p"] > 0:
+                found.add(move.get("customer_order_ref"))
+    return found
+
+
+def _counts(legs, *, sessions, races, at_once=frozenset()):
     def by_side(test):
         return {side: sum(1 for order in legs if order["side"] == side and test(order)) for side in SIDES}
 
@@ -465,6 +546,7 @@ def _counts(legs, *, sessions, races):
             "refused": by_side(refused), "codes": dict(sorted(codes.items())),
             "matched": sum(1 for order in legs if order["size_matched_p"] > 0),
             "matched_full": sum(1 for order in legs if order["size_matched_p"] == order["size_p"]),
+            "matched_at_once": by_side(lambda order: order["customer_order_ref"] in at_once),
             "round_trips": sum(1 for sides in matched.values() if sides == set(SIDES)),
             "lone_backs": sum(1 for sides in matched.values() if sides == {"BACK"}),
             "lone_lays": sum(1 for sides in matched.values() if sides == {"LAY"}),
@@ -476,23 +558,31 @@ def _counts(legs, *, sessions, races):
 
 def summary(events, orders):
     """p2-summary's counts (note §10) from the journal's events and the core fold's orders: {"total", "days",
-    "races_left", "open", "matched_markets"}. A session is a P2 ARM record (by its utc_day), races come from races(),
-    and a leg falls on the UTC day of its intent event. Per bucket: legs sent, placed and refused (REFUSED or FAILED,
-    with their codes) by side; legs matched in part or in full; round trips, lone BACKs and lone LAYs by market; legs
-    cancelled, lapsed and unresolved; and the worst case settle-market booked. open lists the legs still open or
-    unsettled; matched_markets the markets with a matched leg, for --cleared."""
+    "races_left", "open", "matched_markets", "matched_legs"}. A session is a P2 ARM record (by its utc_day), races
+    come from races(), and a leg falls on the UTC day of its intent event. Per bucket: legs sent, placed and refused
+    (REFUSED or FAILED, with their codes) by side; legs matched in part or in full, and those matched in their own
+    place report, by side; round trips, lone BACKs and lone LAYs by market; legs cancelled, lapsed and unresolved; and
+    the worst case settle-market booked. open lists the legs still open or unsettled; matched_markets the markets
+    with a matched leg, for --cleared; matched_legs each such market's submitted legs, BACK first."""
     legs = {ref: order for ref, order in orders.items() if order["customer_strategy_ref"] == STRATEGY_REF}
     leg_day = {event["customer_order_ref"]: pilot.utc_day(pilot.parse_utc_ns(event["recorded_at"]))
                for event in events if event.get("kind") == "intent" and event.get("customer_order_ref") in legs}
     arm_days = [_arm(event)["utc_day"] for event in arm_records(events)]
+    at_once = _matched_at_once(events)
     days = {day: _counts([order for ref, order in sorted(legs.items()) if leg_day.get(ref) == day],
-                         sessions=arm_days.count(day), races=len(races(orders, day=day)))
+                         sessions=arm_days.count(day), races=len(races(orders, day=day)), at_once=at_once)
             for day in sorted(set(leg_day.values()) | set(arm_days))}
     total = len(races(orders))
-    return {"total": _counts([order for _, order in sorted(legs.items())], sessions=len(arm_days), races=total),
+    matched_markets = sorted({order["market_id"] for order in legs.values() if order["size_matched_p"] > 0})
+    return {"total": _counts([order for _, order in sorted(legs.items())], sessions=len(arm_days), races=total,
+                             at_once=at_once),
             "days": days, "races_left": max(RACES_TOTAL - total, 0),
             "open": [order for _, order in sorted(legs.items()) if _open_or_unsettled(order)],
-            "matched_markets": sorted({order["market_id"] for order in legs.values() if order["size_matched_p"] > 0})}
+            "matched_markets": matched_markets,
+            "matched_legs": {market: sorted((order for order in legs.values() if order["market_id"] == market
+                                             and order["submitted_at"] is not None),
+                                            key=lambda order: (SIDES.index(order["side"]), order["customer_order_ref"]))
+                             for market in matched_markets}}
 
 
 def _count_line(name, counts):
@@ -502,17 +592,24 @@ def _count_line(name, counts):
     codes = ", ".join(f"{code} {n}" for code, n in counts["codes"].items()) or "none"
     return (f"{name}: sessions {counts['sessions']}, races {counts['races']}; legs sent {sides('sent')}; placed "
             f"{sides('placed')}; refused or failed {sides('refused')} (codes: {codes}); matched {counts['matched']} "
-            f"({counts['matched_full']} in full); round trips {counts['round_trips']}, lone BACKs "
-            f"{counts['lone_backs']}, lone LAYs {counts['lone_lays']}; cancelled {counts['cancelled']}, lapsed "
-            f"{counts['lapsed']}, unresolved {counts['unresolved']}; booked at settle "
+            f"({counts['matched_full']} in full; in the place report {sides('matched_at_once')}); round trips "
+            f"{counts['round_trips']}, lone BACKs {counts['lone_backs']}, lone LAYs {counts['lone_lays']}; cancelled "
+            f"{counts['cancelled']}, lapsed {counts['lapsed']}, unresolved {counts['unresolved']}; booked at settle "
             f"{_money(-counts['settled_worst_p'])}")
 
 
 def _pence(value):
+    """Betfair's figure as int pence: an exact penny, or a double within a millionth of a pound of one (Betfair
+    serialises amounts as raw doubles; reconcile.RESPONSE_AMOUNT_TOLERANCE, copied, in plain float arithmetic), else
+    None. 1.005 is no penny amount."""
     try:
         return to_pence(value)
     except ValueError:
+        pass
+    if type(value) is not float or value != value or abs(value) >= 1e9:
         return None
+    nearest = round(value * 100)
+    return nearest if abs(value * 100 - nearest) <= 1e-4 else None
 
 
 def _cleared_lines(cleared, matched_markets):
@@ -540,14 +637,27 @@ def _cleared_lines(cleared, matched_markets):
 
 
 def summary_lines(summary, cleared=None, *, checkout):
-    """The printed summary: the total, each UTC day, the handoff for open or unsettled legs, then, with cleared
-    (Betfair's SETTLED rows grouped by MARKET), its profit and commission. Counts, codes and Betfair's figures only."""
+    """The printed summary: the total, each UTC day, one line for each market with a matched leg, the open or
+    unsettled legs, then, with cleared (Betfair's SETTLED rows grouped by MARKET), its profit and commission. Of the
+    open or unsettled legs, only those that may still rest (unresolved or EXECUTABLE, p2-run's handoff rule) get the
+    handoff. A market where none may, its open legs matched and waiting to be settled, gets one line instead:
+    nothing to cancel, and settle-market after its result. Counts, codes and Betfair's figures only, and, for each
+    market with a matched leg, each leg's matched size and average matched price, for Yu's website check."""
     lines = [_count_line("total", summary["total"]) + f"; races left {summary['races_left']}"]
     lines += [_count_line(day, counts) for day, counts in summary["days"].items()]
+    lines += [f"matched {market}: " + "; ".join(_matched_text(order) for order in legs)
+              for market, legs in summary["matched_legs"].items()]
     if summary["open"]:
         lines.append(f"{len(summary['open'])} p2-lp legs are open or unsettled; the next ARM refuses until each is "
                      f"cancelled or settled (settle-market after its result).")
-        lines += handoff_lines({order["customer_order_ref"]: order for order in summary["open"]}, checkout=checkout)
+        resting = {order["customer_order_ref"]: order for order in summary["open"]
+                   if order["state"] in UNRESOLVED_STATES or order["state"] == "EXECUTABLE"}
+        waiting = sorted({order["market_id"] for order in summary["open"]}
+                         - {order["market_id"] for order in resting.values()})
+        lines += [f"{market}: matched and not settled; the journal shows nothing resting, so there is nothing to "
+                  f"cancel. After its result: settle-market --market {market}" for market in waiting]
+        if resting:
+            lines += handoff_lines(resting, checkout=checkout)
     if cleared is not None:
         lines += _cleared_lines(cleared, summary["matched_markets"])
     return lines

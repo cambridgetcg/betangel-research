@@ -2,16 +2,18 @@
 
 These show the runner rule at its band and spread edges and its tie order, the leg prices at the worked tick edges
 and the lay cap, the passive check with our own BACK resting, the schedule row, the screen, each leg's choice with
-its window and codes, the race counts, the ARM record, every leg refusal in order, config-p2's pins (and that
-load_config_p2 reads only its own path), the switched-off default (IN_FORCE False), the constants against the page's
-Values and Money rows, the handoff, the summary, the copied rules against their originals, and the module's imports
-and closure. Books are synthetic snapshots that pass schemas.validate_book_snapshot; orders are synthetic core-fold
-records. No journal file, clock, network or Keychain is touched. They do not show that a caller fetched, journaled or
-sent what these functions assume (PR-2), nor anything about Betfair's real responses.
+its window and codes, the race counts, the first placed pair, the pair's room, the ARM record, every leg refusal in
+order, config-p2's pins (and that load_config_p2 reads only its own path), the switched-off default (IN_FORCE False),
+the constants against the page's Values and Money rows, the handoff, the summary, the copied rules against their
+originals, and the module's imports and closure. Books are synthetic snapshots that pass
+schemas.validate_book_snapshot; orders are synthetic core-fold records. No journal file, clock, network or Keychain is
+touched. They do not show that a caller fetched, journaled or sent what these functions assume (PR-2), nor anything
+about Betfair's real responses.
 """
 
 import ast
 import copy
+from decimal import Decimal
 import inspect
 import json
 import os
@@ -20,7 +22,7 @@ import unittest
 from unittest.mock import patch
 
 from betangel_research.betfair import config as cfg
-from betangel_research.betfair import journal, p2_lp, pilot, pilot_gate, schemas
+from betangel_research.betfair import journal, p2_lp, pilot, pilot_gate, reconcile, risk, schemas
 from betangel_research.betfair.errors import ConfigError
 from betangel_research.betfair.paths import FORBID_NETWORK_ENV
 from betangel_research.betfair.receipts import utc_from_ns
@@ -299,10 +301,32 @@ class Choose(unittest.TestCase):
                   "runner_not_active"),
                  ({"runners": runners({11: (3.05, 3.10)})}, "leg_not_passive"),     # someone backs at our price
                  ({"runners": runners({11: (3.0, 3.05)})}, "leg_not_passive"),      # a lay at our price
-                 ({"runners": runners({11: (3.0, None)})}, "leg_not_passive"))
+                 ({"runners": runners({11: (3.0, None)})}, "leg_not_passive"),
+                 ({"runners": runners({11: (None, 3.10)})}, "leg_not_passive"),
+                 # The best back fell since the BACK's book: 3.05 is no longer the best back + 1 tick.
+                 ({"runners": runners({11: (2.98, 3.10)})}, "p2_book_moved"),       # by one tick
+                 ({"runners": runners({11: (2.88, 3.10)})}, "p2_book_moved"),       # by six
+                 ({"runners": runners({11: (2.98, 3.15)})}, "p2_book_moved"),       # and our BACK is gone
+                 ({"runners": runners({11: (1.01, 3.10)})}, "p2_book_moved"),
+                 ({"runners": runners({11: (2.99, 3.10)})}, "p2_book_moved"))       # a best back off the ladder
         for changes, found in cases:
             with self.subTest(changes=changes):
                 self.assertEqual(p2_lp.choose_lay(live_book(OFF - 560 * S, resting, **changes), PAIR), (None, found))
+        # Across a band edge the tick is the ladder's: 2.02 pairs with a best back of 2.00, never 1.99 or 1.98.
+        for back, found in ((2.0, None), (1.99, "p2_book_moved"), (1.98, "p2_book_moved")):
+            with self.subTest(back=back):
+                book = live_book(OFF - 560 * S, runners({11: (back, 2.06)}))
+                self.assertEqual(p2_lp.choose_lay(book, dict(PAIR, lay_price_h=202))[1], found)
+        # It only refuses: a price that is not the BACK's (here off the ladder) is refused too, never moved or raised.
+        self.assertEqual(p2_lp.choose_lay(live_book(OFF - 560 * S, resting), dict(PAIR, lay_price_h=303)),
+                         (None, "p2_book_moved"))
+        # The order: the deadline, the book, the runner, the passive check, then the moved book.
+        late = live_book(OFF - 300 * S, runners({11: (2.98, 3.10)}), bet_delay=1)
+        self.assertEqual(p2_lp.choose_lay(late, PAIR)[1], "p2_send_deadline")
+        self.assertEqual(p2_lp.choose_lay(live_book(OFF - 560 * S, runners({11: (2.98, 3.10)}), bet_delay=1), PAIR)[1],
+                         "bet_delay_not_zero")
+        self.assertEqual(p2_lp.choose_lay(live_book(OFF - 560 * S, runners({11: (2.98, 3.05)})), PAIR)[1],
+                         "leg_not_passive")
 
 
 class Counts(unittest.TestCase):
@@ -318,10 +342,104 @@ class Counts(unittest.TestCase):
         self.assertEqual(p2_lp.races(orders), {"1.1", "1.5", "1.6", "1.7"})
         self.assertEqual(p2_lp.races(orders, day=DAY), {"1.1", "1.5", "1.7"})
         self.assertEqual(p2_lp.races(orders, day=NEXT_DAY), {"1.6"})
-        self.assertEqual(p2_lp.races(orders, since_ns=ARM_NS + 10 * S), {"1.1", "1.5", "1.6"})   # at or after
+        self.assertEqual(p2_lp.races(orders, since_ns=ARM_NS + 10 * S), {"1.1", "1.5", "1.6"})
         self.assertEqual(p2_lp.races(orders, since_ns=ARM_NS + 11 * S), {"1.1", "1.5", "1.6"})   # its LAY counts
         self.assertEqual(p2_lp.races(orders, since_ns=ARM_NS, day=NEXT_DAY), {"1.6"})
         self.assertEqual(p2_lp.races({}), set())
+        # At or after: an order alone in its market, submitted exactly at since_ns, counts; a microsecond on, not.
+        only = by_ref(leg("only", "1.8", submitted_ns=ARM_NS + 10 * S))
+        self.assertEqual(p2_lp.races(only, since_ns=ARM_NS + 10 * S), {"1.8"})
+        self.assertEqual(p2_lp.races(only, since_ns=ARM_NS + 10 * S + US), set())
+
+    def test_pair_placed_needs_a_p2_lay_with_a_bet_id(self):
+        """N stays 1 until one race has had both legs placed: a race whose BACK was rejected or never sent, or whose
+        LAY was refused, is a race (races()) and no placed pair."""
+        back = leg("a1", submitted_ns=NOW)
+        for label, records in (
+                ("nothing", ()),
+                ("the BACK rejected at the exchange", (dict(back, state="FAILED", bet_id=None),)),
+                ("the BACK placed alone", (back,)),
+                ("the LAY refused", (back, leg("a2", side="LAY", state="REFUSED", bet_id=None))),
+                ("the LAY failed", (back, leg("a2", side="LAY", submitted_ns=NOW + S, state="FAILED", bet_id=None))),
+                ("the LAY unknown", (back, leg("a2", side="LAY", submitted_ns=NOW + S, state="UNKNOWN", bet_id=None))),
+                ("Pilot 1's and a manual LAY", (back, leg("p", "1.3", side="LAY", customer_strategy_ref="p1-fav-t5"),
+                                                leg("m", "1.4", side="LAY", customer_strategy_ref="bar-manual")))):
+            with self.subTest(case=label):
+                self.assertIs(p2_lp.pair_placed(by_ref(*records)), False)
+                self.assertEqual(len(p2_lp.races(by_ref(*records))), 1 if records else 0)
+        for label, lay in (("resting", leg("a2", side="LAY", submitted_ns=NOW + S)),
+                           ("pulled", leg("a2", side="LAY", submitted_ns=NOW + S, state="EXECUTION_COMPLETE",
+                                          size_cancelled_p=200)),
+                           ("settled", leg("a2", side="LAY", submitted_ns=NOW + S, state="SETTLED",
+                                           size_matched_p=200))):
+            with self.subTest(case=label):
+                self.assertIs(p2_lp.pair_placed(by_ref(back, lay)), True)
+        self.assertIs(p2_lp.pair_placed(by_ref(leg("x", "1.9", side="LAY", submitted_ns=ARM_NS - pilot.DAY_NS))), True)
+
+    def room(self, **changes):
+        """pair_room's keywords with room for a pair at config-p2's caps and the worst LAY's funds exactly."""
+        caps = {"max_orders_per_minute": 2, "max_orders_per_hour": 12, "max_orders_per_day": 10}
+        return {"lay_price_h": 600, "available_p": 1200, "reserve_p": 0, "submitted_ns": [], "orders_today": 0,
+                "exchange_orders_today": None, "caps": caps, "now_ns": NOW, **changes}
+
+    def test_pair_room_funds_for_both_legs(self):
+        """The BACK goes only with funds for its £2 and the LAY's whole liability on top: £12.00 at 6.0, £3.02 at
+        1.51 (page, Money)."""
+        self.assertIsNone(p2_lp.pair_room(**self.room()))
+        for lay, need in ((600, 1200), (590, 1180), (305, 610), (200, 400), (151, 302), (152, 304)):
+            with self.subTest(lay=lay):
+                self.assertEqual(need, p2_lp.STAKE_P + p2_lp.STAKE_P * (lay - 100) // 100)
+                self.assertIsNone(p2_lp.pair_room(**self.room(lay_price_h=lay, available_p=need)))
+                self.assertEqual(p2_lp.pair_room(**self.room(lay_price_h=lay, available_p=need - 1)), "funds")
+                self.assertIsNone(p2_lp.pair_room(**self.room(lay_price_h=lay, available_p=need + 50, reserve_p=50)))
+                self.assertEqual(p2_lp.pair_room(**self.room(lay_price_h=lay, available_p=need + 49, reserve_p=50)),
+                                 "funds")
+        self.assertEqual(p2_lp.pair_room(**self.room(available_p=0)), "funds")
+        self.assertEqual(p2_lp.pair_room(**self.room(available_p=-1)), "funds")
+        # Ints only, fail closed: an unknown balance, a float, a boolean, text, or a price off the ladder.
+        for changes in ({"available_p": None}, {"available_p": 1200.0}, {"available_p": True},
+                        {"available_p": "1200"}, {"reserve_p": None}, {"reserve_p": 0.0}, {"lay_price_h": None},
+                        {"lay_price_h": 600.0}, {"lay_price_h": 603}, {"lay_price_h": 100, "available_p": 10 ** 6},
+                        {"lay_price_h": True, "available_p": 10 ** 6}):
+            with self.subTest(changes=changes):
+                self.assertEqual(p2_lp.pair_room(**self.room(**changes)), "funds")
+        self.assertEqual(set(inspect.signature(p2_lp.pair_room).parameters), set(self.room()))
+
+    def test_pair_room_two_orders_in_each_window(self):
+        """R6 must have room for both legs, at config-p2's 2 a minute, 12 an hour and 10 a day: one order too many in
+        a window refuses the BACK, so its LAY is never refused alone."""
+        day_start = NOW - NOW % pilot.DAY_NS
+
+        def found(times=(), **changes):
+            return p2_lp.pair_room(**self.room(submitted_ns=list(times), **changes))
+
+        day_20 = dict(self.room()["caps"], max_orders_per_day=20)             # only to show the hour apart from the day
+        self.assertIsNone(found([NOW - 60 * S]))                               # each window is open at its far end
+        self.assertEqual(found([NOW - 60 * S + 1]), "rate_minute")
+        self.assertEqual(found([NOW]), "rate_minute")
+        self.assertIsNone(found([NOW - 1800 * S] * 8))                         # 8 in the hour and today
+        self.assertIsNone(found([NOW - 1800 * S] * 10, caps=day_20))
+        self.assertEqual(found([NOW - 1800 * S] * 11, caps=day_20), "rate_hour")
+        self.assertIsNone(found([NOW - 3600 * S] * 11, caps=day_20))
+        self.assertEqual(found([NOW - 3600 * S + 1] * 11, caps=day_20), "rate_hour")
+        # The day: nine orders of ours today leave room for one, so the fifth race's BACK is refused, not its LAY.
+        self.assertEqual(found([day_start] * 9), "rate_day")
+        self.assertIsNone(found([day_start] * 8))
+        self.assertIsNone(found([day_start - 1] * 30))                         # yesterday's never count
+        self.assertEqual(found(orders_today=9), "rate_day")
+        self.assertIsNone(found(orders_today=8))
+        self.assertEqual(found(exchange_orders_today=9), "rate_day")           # the exchange's count is a floor
+        self.assertIsNone(found(orders_today=None, exchange_orders_today=8))
+        self.assertEqual(found([day_start] * 3, orders_today=5, exchange_orders_today=9), "rate_day")
+        # The order is RULE_ORDER's: the minute, the hour, the day, then funds.
+        every = {"times": [NOW] * 11, "available_p": 0}
+        self.assertEqual(found(**every), "rate_minute")
+        self.assertEqual(found(**dict(every, times=[NOW - 1800 * S] * 11)), "rate_hour")
+        self.assertEqual(found(**dict(every, times=[day_start] * 11)), "rate_day")
+        self.assertEqual(found(**dict(every, times=[])), "funds")
+        self.assertLess(risk.RULE_ORDER.index("rate_minute"), risk.RULE_ORDER.index("rate_hour"))
+        self.assertLess(risk.RULE_ORDER.index("rate_hour"), risk.RULE_ORDER.index("rate_day"))
+        self.assertLess(risk.RULE_ORDER.index("rate_day"), risk.RULE_ORDER.index("funds"))
 
     def test_arm_problem_each_code(self):
         event = arm_event()
@@ -379,7 +497,7 @@ class Counts(unittest.TestCase):
             instruction = {"selection_id": 11, "handicap": 0, "side": "BACK", "price_h": 310, "size_p": 200,
                            "persistence_type": "LAPSE"}
             if "p2_market_used" in broken:                                    # refused ones count too
-                records.append(leg("used", state="REFUSED", bet_id=None, error_code="R5"))
+                records.append(leg("used", state="REFUSED", bet_id=None, error_code="risk_refused"))
             if "p2_races_total" in broken:
                 records += [leg(f"t{i}", f"1.10{i}", submitted_ns=DAY_NS - (i + 1) * pilot.DAY_NS) for i in range(10)]
             if "p2_races_today" in broken:
@@ -464,6 +582,37 @@ class Counts(unittest.TestCase):
             "other", "1.999", side="LAY", submitted_ns=ARM_NS + S)))))
 
 
+# config-p2's pins as literals, in CONFIG_PINS order (note §9). A pin and the example config changed together still
+# fail here: nothing else states max_total_exposure, the three order rates or max_minutes_before_off.
+PINNED = (
+    (("orders", "customer_strategy_ref"), "p2-lp"),
+    (("orders", "caps", "max_stake_per_order"), 2.0),
+    (("orders", "caps", "max_liability_per_order"), 10.0),
+    (("orders", "caps", "max_market_exposure"), 10.0),
+    (("orders", "caps", "max_total_exposure"), 20.0),
+    (("orders", "caps", "max_daily_loss"), 20.0),
+    (("orders", "caps", "max_orders_per_minute"), 2),
+    (("orders", "caps", "max_orders_per_hour"), 12),
+    (("orders", "caps", "max_orders_per_day"), 10),
+    (("orders", "caps", "max_instructions_per_request"), 1),
+    (("orders", "caps", "max_price_deviation_ticks"), 3),
+    (("orders", "caps", "max_book_age_s"), 2.0),
+    (("orders", "caps", "max_minutes_before_off"), 10),
+    (("orders", "rules", "market_types"), ["WIN"]),
+    (("orders", "rules", "event_type_ids"), ["7"]),
+    (("orders", "rules", "external_exposure_tolerance"), 0.0),
+    (("orders", "live", "heartbeat_api_enabled"), False),
+    (("read", "app_key_slot"), "delayed"),
+    (("orders", "reconcile", "poll_interval_s"), 1.0),
+    (("orders", "reconcile", "window_s"), 15),
+    (("orders", "reconcile", "grace_s"), 5),
+    (("orders", "reconcile", "min_successful_polls"), 3),
+    (("http", "timeout_s"), 10),
+    (("http", "order_deadline_s"), 10),
+    (("read", "retry_backoff_s"), [1, 4, 16]),
+    (("orders", "caps", "max_transactions_per_hour"), 300))
+
+
 def in_force(test):
     """p2_lp.IN_FORCE True for this test, as only the go-live commit sets it (the pins below are tested in force)."""
     patcher = patch.object(p2_lp, "IN_FORCE", True)
@@ -516,7 +665,15 @@ class ConfigP2(unittest.TestCase):
         self.paths.config_p2_path.write_text(json.dumps(self.example()), encoding="utf-8")
         loaded = cfg.load_config_p2(paths=self.paths)
         self.assertEqual(p2_lp.config_problems(loaded), [])
-        self.assertEqual(len(p2_lp.CONFIG_PINS), 18)
+        self.assertEqual(len(p2_lp.CONFIG_PINS), 26)
+        self.assertEqual([(path, value, type(value)) for path, value in p2_lp.CONFIG_PINS],
+                         [(path, value, type(value)) for path, value in PINNED])
+        self.assertEqual(len({path[-1] for path, _ in PINNED}), len(PINNED))    # each code names one key
+        # The example and the code's defaults carry each timing value, so no hand edit is needed to meet the pins.
+        for path, value in PINNED[18:]:
+            with self.subTest(key=path[-1]):
+                self.assertEqual(p2_lp._value(cfg.DEFAULTS, path), value)
+                self.assertEqual(p2_lp._value(json.loads(P2_EXAMPLE.read_text(encoding="utf-8")), path), value)
         # Pilot 1's example config breaks the ref and every cap the bot narrows.
         self.assertEqual(p2_lp.config_problems(cfg.load_config(support.write_test_config(self.paths),
                                                                paths=self.paths)),
@@ -529,7 +686,9 @@ class ConfigP2(unittest.TestCase):
                     "max_orders_per_minute": 3, "max_orders_per_hour": 13, "max_orders_per_day": 11,
                     "max_instructions_per_request": 2, "max_price_deviation_ticks": 4, "max_book_age_s": 3.0,
                     "max_minutes_before_off": 11, "market_types": ["WIN", "PLACE"], "event_type_ids": ["7", "4339"],
-                    "external_exposure_tolerance": 0.01, "heartbeat_api_enabled": True, "app_key_slot": "live"}
+                    "external_exposure_tolerance": 0.01, "heartbeat_api_enabled": True, "app_key_slot": "live",
+                    "poll_interval_s": 2.0, "window_s": 16, "grace_s": 6, "min_successful_polls": 4, "timeout_s": 11,
+                    "order_deadline_s": 11, "retry_backoff_s": [1, 4, 16, 64], "max_transactions_per_hour": 301}
         for path, _ in p2_lp.CONFIG_PINS:
             with self.subTest(key=path[-1]):
                 changed = copy.deepcopy(loaded)
@@ -550,6 +709,23 @@ class ConfigP2(unittest.TestCase):
         stake_2 = copy.deepcopy(loaded)
         stake_2["orders"]["caps"]["max_stake_per_order"] = 2                  # 2 and 2.0 are the same pound value
         self.assertEqual(p2_lp.config_problems(stake_2), [])
+        # The timing keys at the widest values a config may hold, and R7's cap at 1 (it would refuse the LAY alone):
+        # each still validates, and without its pin the in-line reconcile could block for 1,210 s, not 40 (note §8).
+        wide = copy.deepcopy(loaded)
+        wide["orders"]["reconcile"].update(poll_interval_s=10, window_s=600, grace_s=600, min_successful_polls=100)
+        wide["http"].update(timeout_s=60, order_deadline_s=12)
+        wide["read"]["retry_backoff_s"] = [300] * 5
+        wide["orders"]["caps"]["max_transactions_per_hour"] = 1
+        cfg.validate_config(wide, paths=self.paths)
+        self.assertEqual(p2_lp.config_problems(wide), [
+            "p2_config_poll_interval_s", "p2_config_window_s", "p2_config_grace_s", "p2_config_min_successful_polls",
+            "p2_config_timeout_s", "p2_config_order_deadline_s", "p2_config_retry_backoff_s",
+            "p2_config_max_transactions_per_hour"])
+        for backoff in ([1, 4], [16, 4, 1], []):
+            with self.subTest(backoff=backoff):
+                shorter = copy.deepcopy(loaded)
+                shorter["read"]["retry_backoff_s"] = backoff
+                self.assertEqual(p2_lp.config_problems(shorter), ["p2_config_retry_backoff_s"])
         with_pilot = copy.deepcopy(loaded)
         with_pilot["orders"]["pilot"] = {"contract_path": "research/pilots/p1-fav-t5.json",
                                          "contract_sha256": "a" * 64, "evidence_deadline_s": 2}
@@ -610,6 +786,10 @@ class Page(unittest.TestCase):
         self.assertEqual(p2_lp.PAIR_WORST_P, p2_lp.STAKE_P * (p2_lp.MAX_LAY_H - 100) // 100)
         self.assertEqual(p2_lp.CONFIG_PINS[10], (("orders", "caps", "max_price_deviation_ticks"),
                                                  p2_lp.SPREAD_TICKS[1] - 1))
+        # Nothing in this module reads SCREEN_S or OPEN_S (p2-run does), so no test of the pure rule moves with them:
+        # here they are held by their rows above and by these literals only. delayed_book() is read at off -800 s.
+        self.assertEqual((p2_lp.SCREEN_S, p2_lp.OPEN_S), ((-840, -780), -740))
+        self.assertTrue(p2_lp.SCREEN_S[0] <= -800 <= p2_lp.SCREEN_S[1] < p2_lp.OPEN_S < p2_lp.DECIDE_S[0])
 
 
 class Handoff(unittest.TestCase):
@@ -629,6 +809,10 @@ class Handoff(unittest.TestCase):
         self.assertIn(f'cd "{checkout}" && python3 -m betangel_research.betfair kill --reason "p2 handoff"', text)
         self.assertNotIn("account", text)
         self.assertIn("A kill from Pilot 1's checkout misses these legs when the journal cannot be read.", text)
+        # A suspended market: every stop above is a cancel, so the last line says what to do if one is refused there.
+        self.assertEqual(lines[-1], "If a cancel is refused because the market is suspended, cancel again as soon as "
+                                    "it reopens; anything unmatched lapses at the off.")
+        self.assertEqual(len(lines), 3 + 6)
         self.assertEqual(p2_lp.handoff_lines({"bro-c": None}, checkout=checkout)[0],
                          "p2-lp leg bro-c in unknown market: its side, price and state could not be read")
 
@@ -642,15 +826,16 @@ class Summary(unittest.TestCase):
                 average_price_matched_h=310),
             leg("a2", "1.101", side="LAY", submitted_ns=ARM_NS + 40 * S, state="EXECUTION_COMPLETE",
                 size_matched_p=100, size_cancelled_p=100, average_price_matched_h=305, bet_id="312345678902"),
-            # Day 1, race 1.102: the BACK pulled unmatched, the LAY refused by R5 before its submit.
+            # Day 1, race 1.102: the BACK pulled unmatched, the LAY refused by R5 before its submit. The gateway
+            # writes risk_refused for any R- or V-rule (gateway.py:2114); the rule's name is in the session's print.
             leg("b1", "1.102", submitted_ns=ARM_NS + 900 * S, state="EXECUTION_COMPLETE", size_cancelled_p=200,
                 bet_id="312345678903"),
-            leg("b2", "1.102", side="LAY", state="REFUSED", bet_id=None, error_code="R5"),
+            leg("b2", "1.102", side="LAY", state="REFUSED", bet_id=None, error_code="risk_refused"),
             # Day 2: 1.103 rejected by Betfair; 1.104 a lone BACK settled, its LAY lapsed; 1.105 unknown.
             leg("c1", "1.103", submitted_ns=ARM_NS + day2 + 10 * S, state="FAILED", bet_id=None,
                 error_code="INSUFFICIENT_FUNDS"),
             leg("d1", "1.104", submitted_ns=ARM_NS + day2 + 900 * S, state="SETTLED", size_matched_p=200,
-                average_price_matched_h=310, bet_id="312345678904"),
+                average_price_matched_h=315, bet_id="312345678904"),          # matched above its 3.10 limit
             leg("d2", "1.104", side="LAY", submitted_ns=ARM_NS + day2 + 930 * S, state="LAPSED", size_lapsed_p=200,
                 bet_id="312345678905"),
             leg("e1", "1.105", submitted_ns=ARM_NS + day2 + 1800 * S, state="UNKNOWN", bet_id=None),
@@ -671,9 +856,9 @@ class Summary(unittest.TestCase):
         total = found["total"]
         self.assertEqual(total, {
             "sessions": 2, "races": 5, "sent": {"BACK": 5, "LAY": 2}, "placed": {"BACK": 3, "LAY": 2},
-            "refused": {"BACK": 1, "LAY": 1}, "codes": {"INSUFFICIENT_FUNDS": 1, "R5": 1}, "matched": 3,
-            "matched_full": 2, "round_trips": 1, "lone_backs": 1, "lone_lays": 0, "cancelled": 2, "lapsed": 1,
-            "unresolved": 1, "settled_worst_p": 200})
+            "refused": {"BACK": 1, "LAY": 1}, "codes": {"INSUFFICIENT_FUNDS": 1, "risk_refused": 1}, "matched": 3,
+            "matched_full": 2, "matched_at_once": {"BACK": 0, "LAY": 0}, "round_trips": 1, "lone_backs": 1,
+            "lone_lays": 0, "cancelled": 2, "lapsed": 1, "unresolved": 1, "settled_worst_p": 200})
         self.assertEqual(list(found["days"]), [DAY, NEXT_DAY])
         day1, day2 = found["days"][DAY], found["days"][NEXT_DAY]
         self.assertEqual((day1["sessions"], day1["races"], day1["sent"], day1["refused"], day1["round_trips"]),
@@ -685,8 +870,53 @@ class Summary(unittest.TestCase):
         self.assertEqual(found["races_left"], 5)
         self.assertEqual([order["customer_order_ref"] for order in found["open"]], ["a1", "a2", "e1"])
         self.assertEqual(found["matched_markets"], ["1.101", "1.104"])
+        # Each market with a matched leg, its submitted legs BACK first (the lapsed LAY of a lone BACK included).
+        self.assertEqual({market: [order["customer_order_ref"] for order in legs]
+                          for market, legs in found["matched_legs"].items()},
+                         {"1.101": ["a1", "a2"], "1.104": ["d1", "d2"]})
         empty = p2_lp.summary([], {})
-        self.assertEqual((empty["total"]["races"], empty["races_left"], empty["days"], empty["open"]), (0, 10, {}, []))
+        self.assertEqual((empty["total"]["races"], empty["races_left"], empty["days"], empty["open"],
+                          empty["matched_legs"]), (0, 10, {}, [], {}))
+
+    def test_summary_counts_legs_matched_in_their_own_place_report(self):
+        """The plan's taker fills: a leg whose own place report carries a matched size, by side. A cancel's or a
+        reconcile's report, a place report with nothing matched and another pilot's leg are not counted."""
+        events, orders = self.journal()
+
+        def report(seq, kind, action, ref, matched):
+            return {"seq": seq, "kind": kind, "recorded_at": utc_from_ns(ARM_NS + 11 * S),
+                    "payload": {"action": action, "transitions": [{
+                        "customer_order_ref": ref, "state": "EXECUTION_COMPLETE", "reason": "place_report",
+                        "fields": {"size_matched_p": matched}}]}}
+
+        def at_once(*more):
+            found = p2_lp.summary(events + list(more), orders)
+            return (found["total"]["matched_at_once"], found["days"][DAY]["matched_at_once"],
+                    found["days"][NEXT_DAY]["matched_at_once"])
+
+        none = {"BACK": 0, "LAY": 0}
+        self.assertEqual(at_once(), (none, none, none))
+        self.assertEqual(at_once(report(90, "report", "place", "a1", 200)), ({"BACK": 1, "LAY": 0},) * 2 + (none,))
+        self.assertEqual(at_once(report(90, "report", "place", "a2", 100)), ({"BACK": 0, "LAY": 1},) * 2 + (none,))
+        self.assertEqual(at_once(report(90, "report", "place", "a1", 200), report(91, "report", "place", "a2", 100),
+                                 report(92, "report", "place", "d1", 1)),
+                         ({"BACK": 2, "LAY": 1}, {"BACK": 1, "LAY": 1}, {"BACK": 1, "LAY": 0}))
+        for label, event in (("a cancel's report", report(90, "report", "cancel", "a2", 100)),
+                             ("a reconcile", report(90, "reconcile", "place", "a1", 200)),
+                             ("nothing matched", report(90, "report", "place", "b1", 0)),
+                             ("a matched size that is no int", report(90, "report", "place", "a1", True)),
+                             ("Pilot 1's leg", report(90, "report", "place", "p1", 200)),
+                             ("no transitions", {"seq": 90, "kind": "report", "recorded_at": utc_from_ns(ARM_NS),
+                                                 "payload": {"action": "place", "report": None, "transitions": []}}),
+                             ("no fields", {"seq": 90, "kind": "report", "recorded_at": utc_from_ns(ARM_NS),
+                                            "payload": {"action": "place", "transitions": [
+                                                {"customer_order_ref": "a1", "state": "UNKNOWN"}]}}),
+                             ("no payload", {"seq": 90, "kind": "report", "recorded_at": utc_from_ns(ARM_NS)})):
+            with self.subTest(case=label):
+                self.assertEqual(at_once(event), (none, none, none))
+        line = p2_lp.summary_lines(p2_lp.summary(events + [report(90, "report", "place", "a1", 200)], orders),
+                                   checkout="/Users/someone/p2")[0]
+        self.assertIn("; matched 3 (2 in full; in the place report BACK 1, LAY 0); round trips 1,", line)
 
     def test_summary_lines_and_cleared(self):
         events, orders = self.journal()
@@ -694,16 +924,32 @@ class Summary(unittest.TestCase):
         lines = p2_lp.summary_lines(found, checkout="/Users/someone/p2")
         self.assertEqual(lines[0], (
             "total: sessions 2, races 5; legs sent BACK 5, LAY 2; placed BACK 3, LAY 2; refused or failed BACK 1, "
-            "LAY 1 (codes: INSUFFICIENT_FUNDS 1, R5 1); matched 3 (2 in full); round trips 1, lone BACKs 1, lone LAYs "
-            "0; cancelled 2, lapsed 1, unresolved 1; booked at settle -£2.00; races left 5"))
+            "LAY 1 (codes: INSUFFICIENT_FUNDS 1, risk_refused 1); matched 3 (2 in full; in the place report BACK 0, "
+            "LAY 0); round trips 1, lone BACKs 1, lone LAYs 0; cancelled 2, lapsed 1, unresolved 1; booked at settle "
+            "-£2.00; races left 5"))
         self.assertTrue(lines[1].startswith(f"{DAY}: sessions 1, races 2;"))
         self.assertTrue(lines[2].startswith(f"{NEXT_DAY}: sessions 1, races 3;"))
-        self.assertIn("3 p2-lp legs are open or unsettled", lines[3])
-        self.assertEqual(lines[4:7], p2_lp.handoff_lines({o["customer_order_ref"]: o for o in found["open"]},
-                                                         checkout="/Users/someone/p2")[:3])
+        # Each market with a matched leg, settled or not, for Yu's website check: each leg's matched size and average
+        # matched price. The half-hedged 1.101 counts as a round trip above; here its LAY shows £1.00.
+        self.assertEqual(lines[3:5], [
+            "matched 1.101: BACK matched £2.00 @ 3.10, EXECUTION_COMPLETE; LAY matched £1.00 @ 3.05, cancelled £1.00, "
+            "EXECUTION_COMPLETE",
+            "matched 1.104: BACK matched £2.00 @ 3.15, SETTLED; LAY matched £0.00, lapsed £2.00, LAPSED"])
+        self.assertEqual(lines[5], "3 p2-lp legs are open or unsettled; the next ARM refuses until each is cancelled "
+                                   "or settled (settle-market after its result).")
+        # 1.101's legs are matched with nothing resting: one line to wait and settle. The stops are for the
+        # unresolved leg alone (p2-run's handoff rule).
+        self.assertEqual(lines[6], "1.101: matched and not settled; the journal shows nothing resting, so there is "
+                                   "nothing to cancel. After its result: settle-market --market 1.101")
+        self.assertEqual(lines[7:], p2_lp.handoff_lines({"e1": orders["e1"]}, checkout="/Users/someone/p2"))
+        self.assertEqual(lines[7], "p2-lp leg e1: BACK £2.00 @ 3.10 on runner 11 in 1.105, state UNKNOWN")
+        for hidden in ("312345678901", "312345678902", "312345678904", "312345678905", "a1", "a2", "d1", "d2"):
+            self.assertFalse(any(hidden in line for line in lines[3:7]), hidden)   # no bet id and no ref
         self.assertFalse(any("cleared" in line for line in lines))
         cleared = [{"marketId": "1.104", "profit": 1.96, "commission": 0.04}, {"marketId": "1.999", "profit": -2.0},
-                   {"marketId": "1.998", "profit": "x"}, "not a row"]
+                   {"marketId": "1.998", "profit": "x"}, "not a row", {"marketId": "1.997", "profit": 1.005},
+                   # Betfair's raw doubles: 4.30 - 4.10 as a float sum, and a commission of 0.1 + 0.2 - 0.28.
+                   {"marketId": "1.101", "profit": 0.20000000000000018, "commission": 0.020000000000000018}]
         tail = p2_lp.summary_lines(found, cleared, checkout="/Users/someone/p2")[len(lines):]
         self.assertEqual(tail, [
             "cleared 1.104: profit £1.96, commission £0.04",
@@ -711,11 +957,63 @@ class Summary(unittest.TestCase):
             "check the website: 1.999 is cleared but has no matched p2-lp leg in the journal",
             "check the website: a cleared row for 1.998 has no readable profit",
             "check the website: a cleared row for a market has no readable profit",
-            "check the website: 1.101 has a matched p2-lp leg but no cleared figure",
-            "cleared total: profit -£0.04, commission £0.04"])
+            "check the website: a cleared row for 1.997 has no readable profit",
+            "cleared 1.101: profit £0.20, commission £0.02",
+            "cleared total: profit £0.16, commission £0.06"])
+        short = p2_lp.summary_lines(found, cleared[:5], checkout="/Users/someone/p2")[len(lines):]
+        self.assertEqual(short[-2:], ["check the website: 1.101 has a matched p2-lp leg but no cleared figure",
+                                      "cleared total: profit -£0.04, commission £0.04"])
         quiet = p2_lp.summary_lines(p2_lp.summary([], {}), [], checkout="/Users/someone/p2")
         self.assertEqual(quiet[-1], "cleared total: profit £0.00, commission £0.00")
         self.assertEqual(len(quiet), 2)
+
+    def test_summary_lines_stops_only_for_a_leg_that_may_rest(self):
+        """After a race with a fill ended cleanly, p2-summary must not print "Stop them now" or the kill command: a
+        kill then cancels nothing and halts both pilots until Yu resumes."""
+        events, orders = self.journal()
+
+        def printed(*refs, **changed):
+            kept = {ref: dict(orders[ref], **changed.get(ref, {})) for ref in refs}
+            return p2_lp.summary_lines(p2_lp.summary(events, kept), checkout="/Users/someone/p2")
+
+        wait = "1.101: matched and not settled; the journal shows nothing resting, so there is nothing to cancel. "
+        # Only matched legs with nothing resting: the count, the settle line, and no stop of any kind.
+        lines = printed("a1", "a2")
+        self.assertEqual(lines[-2:], ["2 p2-lp legs are open or unsettled; the next ARM refuses until each is "
+                                      "cancelled or settled (settle-market after its result).",
+                                      wait + "After its result: settle-market --market 1.101"])
+        for stop in ("Stop them now", "kill", "phone app", "website", "may still be open", "p2-lp leg ", "312345678"):
+            self.assertFalse(any(stop in line for line in lines), stop)
+        # A matched leg in a terminal state (a LAY that lapsed part matched) waits the same way.
+        lapsed = printed("a1", "a2", a2={"state": "LAPSED", "size_cancelled_p": 0, "size_lapsed_p": 100})
+        self.assertEqual(lapsed[-1], wait + "After its result: settle-market --market 1.101")
+        self.assertIn("LAY matched £1.00 @ 3.05, lapsed £1.00, LAPSED", lapsed[-3])
+        # One leg matched and the other still resting in one market: the stops for the resting leg alone, and no
+        # line saying nothing rests there.
+        for state in ("EXECUTABLE", *sorted(p2_lp.UNRESOLVED_STATES)):
+            with self.subTest(state=state):
+                mixed = printed("a1", "a2", a2={"state": state, "size_matched_p": 0, "size_cancelled_p": 0,
+                                                 "size_remaining_p": 200, "average_price_matched_h": None})
+                resting = dict(orders["a2"], state=state, size_matched_p=0, size_cancelled_p=0, size_remaining_p=200,
+                               average_price_matched_h=None)
+                self.assertEqual(mixed[-9], "matched 1.101: BACK matched £2.00 @ 3.10, EXECUTION_COMPLETE; LAY matched "
+                                            f"£0.00, {state}")
+                self.assertIn("2 p2-lp legs are open or unsettled", mixed[-8])
+                self.assertEqual(mixed[-7:], p2_lp.handoff_lines({"a2": resting}, checkout="/Users/someone/p2"))
+                self.assertFalse(any("nothing resting" in line for line in mixed))
+        # A part-matched leg whose remainder still rests is handed off, with its matched part shown.
+        part = printed("a1", a1={"state": "EXECUTABLE", "size_matched_p": 100, "size_remaining_p": 100})
+        self.assertEqual(part[-9], "matched 1.101: BACK matched £1.00 @ 3.10, EXECUTABLE")
+        self.assertEqual(part[-6], "These legs may still be open. Stop them now, in this order:")
+        # A LAY refused before its submit never reached Betfair, so the website check has no line for it.
+        unsent = printed("a1", "a2", a2={"state": "REFUSED", "submitted_at": None, "bet_id": None, "size_matched_p": 0,
+                                          "size_cancelled_p": 0, "average_price_matched_h": None})
+        self.assertEqual(unsent[-3], "matched 1.101: BACK matched £2.00 @ 3.10, EXECUTION_COMPLETE")
+        self.assertEqual(unsent[-1], wait + "After its result: settle-market --market 1.101")
+        # Settled, or never matched: no line about open legs at all; a matched size with no average says so.
+        self.assertEqual(len(printed("d1", "d2", "b1", "b2", "c1")), 4)
+        self.assertEqual(printed("d1", d1={"average_price_matched_h": None})[-1],
+                         "matched 1.104: BACK matched £2.00 @ unknown, SETTLED")
 
 
 class Copies(unittest.TestCase):
@@ -739,6 +1037,71 @@ class Copies(unittest.TestCase):
         events = [intent_event(i, record["customer_order_ref"], ARM_NS) for i, record in enumerate(records)]
         self.assertEqual(sorted(r["customer_order_ref"] for r in records if p2_lp._open_or_unsettled(r)),
                          pilot_gate.open_manual_refs(events, by_ref(*records)))
+
+    def test_pence_reads_betfairs_doubles_as_reconcile_does(self):
+        """_pence against reconcile's snapping rule (reconcile.py:66-69, :87-94): a response amount within a millionth
+        of a pound of a penny is that penny, and anything further away is no penny amount."""
+        self.assertEqual(reconcile.RESPONSE_AMOUNT_TOLERANCE, Decimal("0.000001"))
+        for value, pence in ((0.20000000000000018, 20), (0.30000000000000004, 30), (3.4400000000000004, 344),
+                             (-0.20000000000000018, -20), (4.3 - 4.1, 20), (0.1 + 0.2, 30), (1.96, 196), (-2.0, -200),
+                             (0.0, 0), (2, 200), (1.005, None), (0.004, None), (1.9649, None),
+                             (float("nan"), None), (float("inf"), None), (float("-inf"), None), (1e12 + 0.001, None),
+                             (True, None), (None, None), ("x", None), ([], None)):
+            with self.subTest(value=value):
+                self.assertEqual(p2_lp._pence(value), pence)
+                self.assertIs(type(p2_lp._pence(value)), type(pence))
+        checked = 0
+        for penny in range(-700, 701, 7):
+            for off in (0.0, 1e-12, -1e-12, 4e-7, -4e-7, 2e-6, -2e-6, 0.004, -0.004, 0.005):
+                value = penny / 100 + off
+                snapped = reconcile._snapped(reconcile._decimal(value))
+                self.assertEqual(p2_lp._pence(value), None if snapped is None else int(snapped * 100), value)
+                checked += snapped is not None
+        self.assertGreater(checked, 900)
+
+    def test_pair_room_equals_the_guards_r6_for_two_orders_and_r11_for_both_legs(self):
+        """pair_room against risk.py's own rules on config-p2's example: R6 asked for two placements (risk.py:301-325)
+        and R11's available-to-bet rule for a BACK and its LAY in one request (risk.py:418-424)."""
+        config = json.loads(P2_EXAMPLE.read_text(encoding="utf-8"))
+        guard, caps = risk.RiskGuard(config, mode="live"), config["orders"]["caps"]
+        now = NOW
+        day_start = now - now % pilot.DAY_NS
+        seen = set()
+        for in_minute in range(4):
+            for in_hour in range(0, 14, 3):
+                for earlier_today in range(0, 12, 2):
+                    for orders_today in (None, 0, 9, 10):
+                        for floor_today in (None, 8, 9):
+                            times = ([now - 30 * S] * in_minute + [now - 1800 * S] * in_hour
+                                     + [day_start + S] * earlier_today + [day_start - S] * 3)
+                            state = {"submitted_instruction_wall_ns": times, "orders_today": orders_today,
+                                     "exchange_floor": None if floor_today is None else {"orders_today": floor_today},
+                                     "transactions_by_clock_hour": {}}
+                            failures = []
+                            guard._r6_r7(failures, state, now, 2)
+                            want = next((f["rule"] for f in failures if f["rule"].startswith("rate_")), None)
+                            got = p2_lp.pair_room(lay_price_h=600, available_p=10 ** 6, reserve_p=0,
+                                                  submitted_ns=times, orders_today=orders_today,
+                                                  exchange_orders_today=floor_today, caps=caps, now_ns=now)
+                            self.assertEqual(got, want, (in_minute, in_hour, earlier_today, orders_today, floor_today))
+                            seen.add(got)
+        self.assertEqual(seen, {None, "rate_minute", "rate_hour", "rate_day"})
+        for lay_h in (151, 200, 305, 590, 600):
+            pair = [(0, risk._pseudo_order(MARKET, p2_lp._instruction(11, "BACK", 620), "a")),
+                    (1, risk._pseudo_order(MARKET, p2_lp._instruction(11, "LAY", lay_h), "b"))]
+            refused = 0
+            for available in range(0, 1300):
+                failures = []
+                guard._funds_rules(failures, {"funds": None, "funds_checked_at": None},
+                                   {"availableToBetBalance": available / 100, "exposure": 0.0}, now, pair, 0,
+                                   funds_checked_at=utc_from_ns(now))
+                want = "funds" if any(f["reason"] == "insufficient_available_to_bet" for f in failures) else None
+                got = p2_lp.pair_room(lay_price_h=lay_h, available_p=risk._gbp_floor_pence(available / 100),
+                                      reserve_p=guard.caps_p["funds_reserve"], submitted_ns=[], orders_today=0,
+                                      exchange_orders_today=None, caps=caps, now_ns=now)
+                self.assertEqual(got, want, (lay_h, available))
+                refused += got == "funds"
+            self.assertEqual(refused, p2_lp.STAKE_P + p2_lp.STAKE_P * (lay_h - 100) // 100)
 
 
 class Boundaries(unittest.TestCase):

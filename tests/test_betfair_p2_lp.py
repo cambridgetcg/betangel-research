@@ -1,14 +1,14 @@
 """Pure Pilot 2 logic (betangel_research.betfair.p2_lp) against the Pilot 2 page and engineering note, synthetic.
 
-These show the runner rule at its band and spread edges and its tie order, the leg prices at the worked tick edges
-and the lay cap, the passive check with our own BACK resting, the schedule row, the screen, each leg's choice with
-its window and codes, the race counts, the first placed pair, the pair's room, the ARM record, every leg refusal in
-order, config-p2's pins (and that load_config_p2 reads only its own path), the switched-off default (IN_FORCE False),
-the constants against the page's Values and Money rows, the handoff, the summary, the copied rules against their
-originals, and the module's imports and closure. Books are synthetic snapshots that pass
-schemas.validate_book_snapshot; orders are synthetic core-fold records. No journal file, clock, network or Keychain is
-touched. They do not show that a caller fetched, journaled or sent what these functions assume (PR-2), nor anything
-about Betfair's real responses.
+These show the runner rule at its band and spread edges and its tie order, the leg prices at the worked tick edges and
+the lay cap, the passive check with our own BACK resting, the schedule row, the screen, each leg's choice with its
+window and codes, the race counts, the first placed pair, the pair's room, the ARM record, every leg refusal in order,
+config-p2's pins (and that load_config_p2 reads only its own path), the switched-off default (IN_FORCE False), the
+constants against the page's Values and Money rows and against the rule and times Gate A's counter holds, the handoff,
+the summary, the copied rules against their originals, and the module's imports and closure. Books are synthetic
+snapshots that pass schemas.validate_book_snapshot; orders are synthetic core-fold records. No journal file, clock,
+network or Keychain is touched. They do not show that a caller fetched, journaled or sent what these functions assume
+(PR-2), nor anything about Betfair's real responses.
 """
 
 import ast
@@ -790,6 +790,76 @@ class Page(unittest.TestCase):
         # here they are held by their rows above and by these literals only. delayed_book() is read at off -800 s.
         self.assertEqual((p2_lp.SCREEN_S, p2_lp.OPEN_S), ((-840, -780), -740))
         self.assertTrue(p2_lp.SCREEN_S[0] <= -800 <= p2_lp.SCREEN_S[1] < p2_lp.OPEN_S < p2_lp.DECIDE_S[0])
+
+
+class GateA(unittest.TestCase):
+    COUNTER = REPO / "scripts" / "lp_rate_count.py"
+    # The counter's name for each value it copies from the bot's rule (docs/lp-rate-count.md, amendment 4, Open for
+    # Yu, item 3), and where the bot holds it: a p2_lp constant (with an index), or a config-p2 pin.
+    PINS = {"DECISION_S": ("DECIDE_S", 0), "PERSISTENCE_S": ("SCREEN_S", 1), "PRIMARY_BACK_H": ("BAND_H", None),
+            "PRIMARY_TICKS": ("SPREAD_TICKS", None), "MIN_ACTIVE": ("MIN_ACTIVE", None),
+            "COUNTRIES": ("COUNTRIES", None)}
+    CONFIG_PINS = {"EVENT_TYPE": ("orders", "rules", "event_type_ids")}
+
+    @staticmethod
+    def bound(node):
+        """The names an ast node binds: any store or del (=, +=, :=, unpacking, for, with), a parameter, an import, a
+        global or nonlocal, a def or class, an except or match capture."""
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            return [node.id]
+        if isinstance(node, ast.arg):
+            return [node.arg]
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return [alias.asname or alias.name.split(".")[0] for alias in node.names]
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            return list(node.names)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return [node.name]
+        if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
+            return [node.name]
+        return []
+
+    def test_the_counter_counts_the_rule_and_times_the_bot_runs(self):
+        """Gate A decides whether this code merges, so its counter and the bot must hold one rule (plan, Stages).
+        scripts/lp_rate_count.py is read as text with ast and never imported. The time of its decision snapshot, the
+        time of its earlier (persistence) snapshot, its primary price band and spread, its runner minimum and its
+        countries equal p2_lp's first decision second, the end of its screen, its band, its spread, its runner minimum
+        and its countries; its event type is the one config-p2 pins. Each of these names is bound once in the whole
+        script, by one module-level assignment of a literal. The market type has no name there: the script compares
+        marketType once, with !=, against one literal, which is the market type config-p2 pins. A change to one of
+        these values on one side alone fails here. It does not show that the two apply the rule the same way
+        (test_lp_rate_count ties the counter's ladder to the package ladder, and its own cases show what it counts),
+        and no reading of the text sees a value changed through globals() or exec, or a literal written in place of
+        a name."""
+        tree = ast.parse(self.COUNTER.read_text(encoding="utf-8"))
+        names = set(self.PINS) | set(self.CONFIG_PINS)
+        bindings = [name for node in ast.walk(tree) for name in self.bound(node) if name in names]
+        top_level = {node.targets[0].id: node.value for node in tree.body
+                     if isinstance(node, ast.Assign) and len(node.targets) == 1
+                     and isinstance(node.targets[0], ast.Name) and node.targets[0].id in names}
+        self.assertEqual(sorted(bindings), sorted(names))            # each name bound once in the whole script ...
+        self.assertEqual(sorted(top_level), sorted(names))           # ... by one module-level NAME = <literal>
+        literals = {name: ast.literal_eval(value) for name, value in top_level.items()}
+        for name, (ours, index) in self.PINS.items():
+            with self.subTest(counter=name, bot=ours):
+                expected = getattr(p2_lp, ours)
+                self.assertEqual(literals[name], expected if index is None else expected[index])
+        pinned = dict(p2_lp.CONFIG_PINS)
+        self.assertEqual(len(pinned), len(p2_lp.CONFIG_PINS))        # no path twice, so no pin is hidden by another
+        for name, path in self.CONFIG_PINS.items():
+            with self.subTest(counter=name, config=path):
+                self.assertEqual([literals[name]], pinned[path])
+        mentions = sum(isinstance(node, ast.Constant) and node.value == "marketType" for node in ast.walk(tree))
+        compares = [node for node in ast.walk(tree) if isinstance(node, ast.Compare) and isinstance(node.left, ast.Call)
+                    and node.left.args and isinstance(node.left.args[0], ast.Constant)
+                    and node.left.args[0].value == "marketType"]
+        self.assertEqual((mentions, len(compares)), (1, 1))
+        self.assertEqual([type(op) for op in compares[0].ops], [ast.NotEq])
+        self.assertIsInstance(compares[0].comparators[0], ast.Constant)
+        self.assertEqual([compares[0].comparators[0].value], pinned[("orders", "rules", "market_types")])
+        # The counter's persistence snapshot is the end of the bot's screen, before its decision; both are before the
+        # pull, which is the end of the counter's lever window.
+        self.assertTrue(p2_lp.SCREEN_S[1] < p2_lp.DECIDE_S[0] < p2_lp.PULL_S)
 
 
 class Handoff(unittest.TestCase):

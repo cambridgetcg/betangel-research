@@ -123,6 +123,7 @@ security add-generic-password -U -s betangel-research.betfair.app-key.live -a de
 
 - `-w` 一定係最後一個 token，`security` 就會提示你輸入個值（F68，`man_page_read`）。唔好將 secret 直接寫喺命令行，咁會入 shell history 同 `ps`。
 - Live key 用 `-T ""`，意圖係冇任何 application 可以靜靜讀佢，每次讀都彈 macOS 授權 dialog。**彈出嚟就撳 Allow，永遠唔好撳 Always Allow**；Always Allow 應該會將 `security` 加入信任名單，之後讀取再冇 dialog（推斷：man page 冇提 Always Allow，所以呢個建議係保守做法、冇文件根據）。man page 寫明 `-T ""` 會拎走建立 item 嘅 application 預設嘅免警告讀取，但冇講之後係咪每次讀都彈 dialog（F73，`partially_unverified`），T0 會觀察；arming 唔依賴佢，因為代碼偵測唔到。
+- **lab 機嘅 live key（2026-11-10 改咗）。** 2026-11-06 Yu 揀咗淨係 live key 每次讀都問（「Just the live key (Recommended)」），搬機第 4 步跟住寫明：live key 彈 dialog 就撳 Allow，永遠唔撳 Always Allow（[落單路徑 §7](betfair-order-path.md#7-journal-hash-chain-and-anchor)）。2026-11-10 lab 機第一次讀 live key 嗰陣，macOS 問咗一次（要 Mac 嘅 login password），Yu 撳咗 Always Allow；三分鐘後再讀冇 dialog（觀察，冇 T0 收據，所以 F73 唔改標籤）。lab-Claude 建議還原個 prompt，Yu 決定保留（Yu 2026-11-10：「Its ok😂 Lets keep always allow」）。所以喺 lab 機，`/usr/bin/security` 讀 live key 唔會彈 dialog。上面嗰句建議留低做紀錄，但已經唔係 Yu 喺 lab 機對 live key 嘅做法（[Pilot 1 plan](betfair-pilot-1-plan.md) Architecture 第 4 步）。`keychain-setup` 印嘅 note 仲係「answer Allow, never Always Allow」：嗰句喺 `cli.py`，係代碼，要另開 PR 先改。
 - 未開 live key 嘅話，第四行可以遲啲先做。
 
 | Service | 內容 | 用途 |
@@ -320,6 +321,8 @@ python3 -m betangel_research.betfair verify-day --day 2026-10-21         # 離�
 > All recordings, of any year, stay in clear on the Mac that recorded them until the P1 data lock, and are never copied between Macs. After the move (order-path §7), the recorder runs on the lab Mac (the MacBook Pro); its recordings never leave the lab Mac except to their only second copy, the lab Mac's encrypted local backup, which Yu sets up before the first order. The Air's recordings stay on the Air; their only second copy is the Air's Time Machine backup on Yu's encrypted, directly attached disk. Only fixed counts, codes and hashes go anywhere else. The seal applies to every copy.
 >
 > On each Mac the seal is a workflow control, not access control: any process running as that Mac's user can read the clear recordings and the archive.
+
+**Backup 嘅次序（2026-11-10 改咗）。** 上面引文話 lab 機嘅加密本地 backup 喺第一張單之前設好，係跟 Yu 2026-11-05 嘅決定。2026-11-10 Yu 將一磅嘅 T9 probe 擺咗喺 backup 前面（Yu 2026-11-10：「Oh, lets go for the probe without backup. I still havent made the order, am shopping for it now.」），所以 lab 機第一張單（T9 嘅 LAY £1.00 @ 1.01）喺 backup 之前落咗。Backup 仍然喺人手 £1 drill 之前：呢個係 lab 嘅建議，Yu 冇改。到 2026-11-10 backup 仲未做。引文照原文留低，等 Yu 同 Astra 確認嗰陣一齊睇（[Pilot 1 plan](betfair-pilot-1-plan.md) Architecture 第 6 步）。
 
 lab 機上每個 agent（包括經 SSH 嘅 Air Claude）都以同一個 macOS user `user` 運行。所以喺 lab 機，呢個 seal 同 Yu 嘅私人 risk view（[engineering note](betfair-pilot-engineering.md) §12）都靠 Yu 2026-11-05 嘅 lab 規則：冇 agent 讀、列或者抄 state root、recordings、收據或者 certificate 目錄，只可以轉述 CLI 印出嚟嘅數目同 code。呢條規則寫喺 lab 機自己嘅指示，唔喺 repo；代碼擋唔到（§2）。
 

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Stage 0 rate count for Pilot 2, registered in docs/lp-rate-count.md: first merged at 9e69b73 before any recording
-was read, and amended three times before any qualifying count was printed (amendment 1, 2026-11-04; amendment 2,
-2026-11-05, no code change; amendment 3, 2026-11-09, the plain bot's decision time, off -590 s).
+was read, and amended four times before any qualifying count was printed (amendment 1, 2026-11-04; amendment 2,
+2026-11-05, no code change; amendment 3, 2026-11-09, the plain bot's decision time, off -590 s; amendment 4,
+2026-11-10, Gate A's last date closes only when a session started on a later UTC date exists).
 
 It counts how often GB/IE horse-racing WIN markets in the #41 recorder's delayed-key recordings show the spreads
 Pilot 2 would quote in, per racing day (UTC date of the off) and pooled, and prints Gate A. It decides nothing else.
 Gate A is fixed by the data, not by when the script runs: it pools the racing days up to the first UTC date on
 which the running totals reach 10 racing days and 300 usable markets, and is read only once that date's recording
-has ended. Until then the script prints only how many markets were recorded and usable, never what qualified.
+has ended: a session started on a later UTC date exists (amendment 4). Until then the script prints only how many
+markets were recorded and usable, never what qualified.
 
 Offline and read only. It reads the session directories (rec-*) under the one recordings root it is given that
 started at or after 2026-11-03 23:05:00 UTC (amendment 1: none from before that first merge), and in each only
@@ -15,8 +17,8 @@ the closed segments its receipt lists (sha256 checked), plus its own bytes for t
 file. Output is counts, rates, UTC dates and that sha256 only: never a market id, selection id, event name, venue,
 price or time of day. Errors print a fixed code.
 
-Limits: delayed (1-180 s) and conflated (180 s) data, best three levels, no virtual prices. The count is an upper
-bound, not live recall.
+Limits: delayed (1-180 s) and conflated (180 s) data, best three levels, no virtual prices. The count is mostly an
+upper bound on the bot's rate, not live recall.
 
 Standard library only. Scripts may not import betangel_research.betfair (tests/test_betfair_boundaries.py), so the
 line reader, the best-offer fold and the CLASSIC ladder below are small copies of betangel_research.stream.messages,
@@ -81,9 +83,8 @@ TABLE_COLUMNS = (("primary", "primary"), ("persistence", "persistence"), ("windo
                  ("price_lever", "price lever"), ("width_lever", "width lever"))
 GATE_RESULTS = ("PASS", "FAIL", "NOT_ENOUGH_DAYS", "NOT_ENOUGH_MARKETS", "RECORDING_OPEN")
 DECIDED = ("PASS", "FAIL")
-DAY_DONE_STOPS = ("end_at_reached", "max_duration_reached", "max_seconds_reached")   # recording_day.DONE_STOPS
 LIMITS = ("delayed 1-180 s and conflated to 180 s, best 3 levels, no virtual prices: "
-          "an upper bound, not live recall")
+          "mostly an upper bound on the bot's rate, not live recall")
 
 # --- CLASSIC ladder (copy of constants.CLASSIC_BANDS and ticks.LADDER_CLASSIC), integer hundredths -------------
 CLASSIC_BANDS = ((101, 200, 1), (200, 300, 2), (300, 400, 5), (400, 600, 10), (600, 1000, 20),
@@ -474,40 +475,36 @@ def _is_directory(path):
 
 
 def load_receipt(directory):
-    """(receipt, partial, ended, None) or (None, None, ended, skip code), from one read of receipt.json, else
-    receipt.partial.json (a session still running, or one that crashed: partial is True). ended is True only for a
-    final receipt.json, complete, whose stop_reason says the recording day was over (recording_day.DONE_STOPS); a
-    stop for live work or a reconnect restart is not, because the day's recording resumes after it."""
+    """(receipt, partial, None) or (None, None, skip code), from one read of receipt.json, else receipt.partial.json
+    (a session still running, or one that crashed: partial is True)."""
     for name in ("receipt.json", "receipt.partial.json"):
         path = directory / name
         if _is_regular(path):
             try:
                 receipt = _strict_json(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, RecursionError):
-                return None, None, False, "receipt_unreadable"
+                return None, None, "receipt_unreadable"
             break
     else:
-        return None, None, False, "no_receipt"
-    ended = (name == "receipt.json" and isinstance(receipt, dict) and receipt.get("complete") is True
-             and receipt.get("stop_reason") in DAY_DONE_STOPS)
+        return None, None, "no_receipt"
     if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
             or receipt["schema_version"] != 1 or not isinstance(receipt.get("segments"), list)):
-        return None, None, ended, "receipt_unreadable"
+        return None, None, "receipt_unreadable"
     freshness = receipt.get("data_freshness")
     if (receipt.get("key_type") != "delayed" or not isinstance(freshness, dict)
             or freshness.get("label") != "delayed_conflated"):
-        return None, None, ended, "not_delayed_key"
+        return None, None, "not_delayed_key"
     echoed = freshness.get("conflate_ms_echoed")
     if type(echoed) is not int or echoed != CONFLATE_MS:
-        return None, None, ended, "conflation_not_registered"
+        return None, None, "conflation_not_registered"
     subscription = receipt.get("subscription")
     data_filter = subscription.get("market_data_filter") if isinstance(subscription, dict) else None
     fields = data_filter.get("fields") if isinstance(data_filter, dict) else None
     levels = data_filter.get("ladderLevels") if isinstance(data_filter, dict) else None
     if (not isinstance(fields, list) or VIRTUAL_FIELD in fields or any(f not in fields for f in REQUIRED_FIELDS)
             or type(levels) is not int or not 1 <= levels <= MAX_LADDER_LEVELS):
-        return None, None, ended, "subscription_not_registered"
-    return receipt, name == "receipt.partial.json" or receipt.get("complete") is not True, ended, None
+        return None, None, "subscription_not_registered"
+    return receipt, name == "receipt.partial.json" or receipt.get("complete") is not True, None
 
 
 def session_date(name):
@@ -529,8 +526,7 @@ class Count:
         self.revised = set()
         self.sessions = {"found": 0, "read": 0, "read_partial": 0, **{code: 0 for code in SESSION_SKIPS}}
         self.starts = []                                   # UTC start date of every session directory, in order
-        self.latest_ended = False                          # the latest session directory ended its recording day
-        # (both from FIRST_START on: a session that started before it adds no date and closes no day)
+        # (from FIRST_START on: a session that started before it adds no date and closes no day)
         self.segments = {"listed": 0, "read": 0, "unlisted": 0, "listing_failed": 0,
                          **{code: 0 for code in SEGMENT_SKIPS}}
 
@@ -548,9 +544,8 @@ class Count:
             if not _is_directory(directory):                 # a file, or a symlink (never followed)
                 self.sessions["not_a_directory"] += 1
                 continue
-            receipt, partial, ended, problem = load_receipt(directory)
+            receipt, partial, problem = load_receipt(directory)
             self.starts.append(session_date(name))
-            self.latest_ended = ended                      # the same read that supplies the session's data
             if problem is not None:
                 self.sessions[problem] += 1
                 continue
@@ -560,9 +555,11 @@ class Count:
         return self
 
     def day_closed(self, day):
-        """True when no more data can come for markets with their off on this UTC date: a session started after
-        it, or the latest session ended its recording day (one recorder runs at a time on a profile)."""
-        return any(start > day for start in self.starts) or self.latest_ended
+        """True when no more data can come for markets with their off on this UTC date: a session directory that
+        started on a later UTC date exists (one recorder runs at a time on a profile). How the date's own sessions
+        stopped is not used (amendment 4): a hand-started recording reaches its --max-seconds or --end-at at any
+        time of day, and recording can go on after it."""
+        return any(start > day for start in self.starts)
 
     def read_session(self, directory, receipt):
         listed = {}
@@ -766,7 +763,8 @@ def render_table(summary):
                      "descriptive only")
     if withheld:
         lines.append(f"qualifying counts withheld until Gate A can be read: {gate['min_racing_days']} racing days and "
-                     f"{gate['min_usable']} usable markets, and the recording of the last of those dates ended")
+                     f"{gate['min_usable']} usable markets, and a session started on a later UTC date than the last "
+                     "of those dates")
     else:
         flagged = pooled["flagged"]
         lines.append(f"persistence in delayed data, not live recall: {pooled['persistence']} of {flagged} usable "
@@ -783,7 +781,8 @@ def render_table(summary):
                  + ", ".join(f"{k} {segments[k]}" for k in SEGMENT_SKIPS)
                  + f"); unlisted {segments['unlisted']}; session listings failed {segments['listing_failed']}; "
                  f"markets without an off {inputs['markets_without_off']}")
-    state = "-" if gate["through"] is None else "is still open" if gate["recording_open"] else "has ended"
+    state = ("-" if gate["through"] is None else "has ended" if not gate["recording_open"]
+             else "is open until a session starts on a later UTC date")
     needs = (f"racing days {gate['racing_days']}, needs {gate['min_racing_days']}; usable {gate['usable']}, "
              f"needs {gate['min_usable']}; pooled through {gate['through'] or '-'}, whose recording {state}")
     if withheld:

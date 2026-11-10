@@ -543,8 +543,9 @@ class GateTests(Case):
         self.assertEqual(lp.gate_a(10, 300, 300, recording_open=True), "RECORDING_OPEN")
         self.assertEqual(lp.gate_a(9, 300, 300, recording_open=True), "NOT_ENOUGH_DAYS")
 
-    def days(self, count, qualifying, per_day=30, first=1, **session):
-        """`count` days of `per_day` markets each, with `qualifying` qualifying markets spread over them."""
+    def days(self, count, qualifying, per_day=30, first=1, closed=True, **session):
+        """`count` days of `per_day` markets each, with `qualifying` qualifying markets spread over them and, unless
+        `closed` is False, a session started on the next UTC date, so the last day's recording has ended."""
         for n in range(count):
             off = timestamp_ms(f"2026-12-{first + n:02d}T14:35:00.000Z")
             markets = []
@@ -554,7 +555,20 @@ class GateTests(Case):
                 markets.append((f"1.99{first + n:02d}{k:05d}", definition(off_text=_iso(off)), quotes(*prices)))
             self.rec.session([[image(at(-690, off), *markets)] + beats(-690, 0, off)],
                              **(session if n == count - 1 else {}))
+        if closed:
+            self.later_session(first + count)
         return self.summary()["gate_a"]
+
+    def later_session(self, date):
+        """The directory of a session started on 2026-12-`date`, with no receipt yet. Its name is all Gate A uses."""
+        (self.root / f"rec-202612{date:02d}T070000Z-ffffff{date:02d}").mkdir()
+
+    def day(self, date, count, qualifying, hour=14, **session):
+        """One session on 2026-12-`date`: `count` markets off at `hour`:35 UTC, the first `qualifying` qualifying."""
+        off = timestamp_ms(f"2026-12-{date:02d}T{hour:02d}:35:00.000Z")
+        markets = [(f"1.{hour:02d}{date:02d}{k:05d}", definition(off_text=_iso(off)),
+                    quotes(3.0, 3.15 if k < qualifying else 3.1)) for k in range(count)]
+        self.rec.session([[image(at(-690, off), *markets)] + beats(-690, 0, off)], **session)
 
     def test_gate_a_pass(self):
         gate = self.days(10, 5)                                            # 5 of 300: 1.67%
@@ -579,7 +593,7 @@ class GateTests(Case):
         for word in ("primary", "persistence", "window", "lever", "flagged", "%"):
             self.assertNotIn(word, out)
         self.assertIn("qualifying counts withheld until Gate A can be read: 10 racing days and 300 usable markets, "
-                      "and the recording of the last of those dates ended", out)
+                      "and a session started on a later UTC date than the last of those dates", out)
         return summary["gate_a"]
 
     def test_gate_a_not_enough_markets(self):
@@ -589,24 +603,29 @@ class GateTests(Case):
         self.assertEqual(lp.gate_a(10, 299, 299, recording_open=True), "NOT_ENOUGH_MARKETS")
 
     def test_gate_a_waits_until_the_recording_of_its_last_date_has_ended(self):
-        """A session stopped for live work or a reconnect restart resumes the same day, so it has not ended."""
-        for session, result in (({"partial": True}, "RECORDING_OPEN"),                  # running or crashed
-                                ({"stop_reason": "stop_requested"}, "RECORDING_OPEN"),  # drained for live work
-                                ({"stop_reason": "reconnect_budget_exhausted"}, "RECORDING_OPEN"),
-                                ({"complete": False}, "RECORDING_OPEN"),
-                                ({"stop_reason": "max_duration_reached"}, "PASS"),
-                                ({}, "PASS")):                                          # end_at_reached
+        """Amendment 4: however the last date's latest session stopped, the date is open until a session started on
+        a later UTC date exists. A hand-started recording reaches its cap or its end instant at any time of day."""
+        for session in ({"partial": True},                                     # running or crashed
+                        {"stop_reason": "stop_requested"},                     # drained for live work
+                        {"stop_reason": "reconnect_budget_exhausted"},
+                        {"complete": False},
+                        {"stop_reason": "max_duration_reached"},
+                        {"stop_reason": "max_seconds_reached"},
+                        {}):                                                   # end_at_reached
             with self.subTest(session=session):
                 self.reset()
-                self.days(10, 300, **session)
-                if result == "RECORDING_OPEN":
-                    gate = self.assert_withheld()
-                    self.assertEqual((gate["result"], gate["recording_open"], gate["through"]),
-                                     (result, True, "2026-12-10"))
-                else:
-                    self.assertEqual(self.summary()["gate_a"]["result"], result)
+                self.days(10, 300, closed=False, **session)
+                gate = self.assert_withheld()
+                self.assertEqual((gate["result"], gate["recording_open"], gate["through"]),
+                                 ("RECORDING_OPEN", True, "2026-12-10"))
+                self.assertIn("pooled through 2026-12-10, whose recording is open until a session starts on a later "
+                              "UTC date)", self.run_tool()[1])
+                self.later_session(11)
+                gate = self.summary()["gate_a"]
+                self.assertEqual((gate["result"], gate["recording_open"], gate["primary"]), ("PASS", False, 300))
+                self.assertIn("pooled through 2026-12-10, whose recording has ended;", self.run_tool()[1])
         self.reset()
-        self.days(10, 300)
+        self.days(10, 300, closed=False)
         (self.root / "rec-20261210T200000Z-fffffff0").mkdir()                  # resumed that day, no receipt yet
         self.assertEqual(self.assert_withheld()["result"], "RECORDING_OPEN")
         (self.root / "rec-20261211T060000Z-fffffff1").write_text("x")          # not a session: ignored
@@ -614,6 +633,31 @@ class GateTests(Case):
         (self.root / "rec-20261211T070000Z-fffffff2").mkdir()                  # a session started on a later date
         gate = self.summary()["gate_a"]
         self.assertEqual((gate["result"], gate["recording_open"], gate["primary"]), ("PASS", False, 300))
+
+    def test_a_part_recorded_last_date_is_never_decisive(self):
+        """Amendment 4, the review's two cases. A hand-started session on the last date stops at its cap or its end
+        instant, and recording goes on that afternoon. Under amendment 3 the first case printed FAIL (4 of 307) and
+        then PASS (10 of 313), and the second PASS (5 of 300) and then FAIL (5 of 358). Now nothing is decided and no
+        qualifying count is printed until a later date's session exists, and later data does not change the result."""
+        for per_day, first_day, morning, afternoon, result in (
+                (34, 4, (1, 0, "max_seconds_reached"), (6, 6), ("PASS", 10, 313)),
+                (33, 5, (3, 0, "end_at_reached"), (58, 0), ("FAIL", 5, 358))):
+            with self.subTest(stop_reason=morning[2]):
+                self.reset()
+                for date in range(1, 10):
+                    self.day(date, per_day, first_day if date == 1 else 0)
+                self.assertEqual(self.assert_withheld()["result"], "NOT_ENOUGH_DAYS")
+                self.day(10, morning[0], morning[1], hour=11, stop_reason=morning[2])
+                gate = self.assert_withheld()
+                self.assertEqual((gate["result"], gate["through"]), ("RECORDING_OPEN", "2026-12-10"))
+                self.day(10, *afternoon, hour=16)                              # end_at_reached, as the daily wrapper
+                gate = self.assert_withheld()
+                self.assertEqual((gate["result"], gate["through"]), ("RECORDING_OPEN", "2026-12-10"))
+                self.later_session(11)
+                decided = self.summary()["gate_a"]
+                self.assertEqual((decided["result"], decided["primary"], decided["usable"]), result)
+                self.day(11, 30, 30)                                           # a later date, every market qualifying
+                self.assertEqual(self.summary()["gate_a"], decided)
 
     def test_gate_a_is_fixed_by_its_dates_whenever_the_script_runs(self):
         self.days(10, 4)                                                       # 4 of 300: FAIL
@@ -649,19 +693,27 @@ class GateTests(Case):
             summary = self.summary()
         opened = [call.args[0].name for call in reader.call_args_list]
         self.assertEqual(min(opened), "rec-20261103T230500Z-0000000b")          # no earlier receipt is even opened
-        self.assertEqual(len(opened), 11)
+        self.assertEqual(len(opened), 12)                                       # 10 days, this one, the later session
         self.assertEqual(summary["gate_a"], gate)
         self.assertEqual((summary["inputs"]["sessions"]["recorded_before_registration"],
-                          summary["inputs"]["sessions"]["no_receipt"]), (5, 1))
+                          summary["inputs"]["sessions"]["no_receipt"]), (5, 2))
         self.assertIn("recorded_before_registration 5", self.run_tool()[1])
 
     def test_this_registration_names_the_sha256_that_decides(self):
-        """Amendment 3 names the deciding script's sha256, so the script cannot change without a new amendment."""
+        """Amendment 4 names the deciding script's sha256, so the script cannot change without a new amendment.
+        Amendment 3's line keeps the sha256 it named, which no longer decides."""
         page = (ROOT / "docs" / "lp-rate-count.md").read_text(encoding="utf-8")
-        amendment = page.split("\n### Amendment 3 (2026-11-09)\n", 1)[1]
-        decides = next(line for line in amendment.splitlines() if line.startswith("- **Which run decides.**"))
+
+        def decides(number):
+            amendment = re.split(rf"\n### Amendment {number} \([^)\n]*\)\n", page, maxsplit=1)[1]
+            amendment = re.split(r"\n##+ ", amendment, maxsplit=1)[0]             # up to the next heading
+            line, = [line for line in amendment.splitlines() if line.startswith("- **Which run decides.**")]
+            return re.findall(r"`([0-9a-f]{64})`", line)
+
         script = hashlib.sha256((ROOT / "scripts" / "lp_rate_count.py").read_bytes()).hexdigest()
-        self.assertEqual(re.findall(r"`([0-9a-f]{64})`", decides), [script])
+        self.assertEqual(decides(4), [script])
+        self.assertEqual(decides(3), ["fa6b4fbaae27d9cef6313aecad09c0fbccf0372b771adb807a335349e52f147a"])
+        self.assertNotEqual(decides(3), decides(4))
 
     def test_side_counts_cover_the_same_dates_as_the_pool(self):
         """Revised and not-usable markets after Gate A's last date are not set against its usable markets."""
@@ -783,8 +835,9 @@ JSON_KEYS = {"schema", "registration", "script_sha256", "inputs", "sessions", "s
 
 class ProjectionTests(Case):
     def fixture(self, root, back, lay, market_id):
-        """Ten racing days of 30 usable markets, so every column is printed."""
+        """Ten racing days of 30 usable markets and a session started on a later date, so every column is printed."""
         rec = Recordings(root)
+        (Path(root) / "rec-20261120T070000Z-ffffffff").mkdir()
         rc = quotes(back, lay) + [{"id": SELECTIONS[2], "batb": [[0, 7.4, 3.5]], "batl": [[0, 8.0, 2.5]]},
                                   {"id": SELECTIONS[3], "batb": [[0, 4.6, 3.5]], "batl": [[0, 5.1, 2.5]]}]
         for day in range(10):
@@ -841,6 +894,15 @@ class ProjectionTests(Case):
         self.assertEqual(summary.pop("script_sha256"), hashlib.sha256(TOOL.read_bytes()).hexdigest())
         walk(summary)
         self.assertEqual((summary["gate_a"]["result"], summary["counts_withheld"]), ("PASS", False))
+
+    def test_limits_are_worded_as_the_page_words_them(self):
+        """Amendment 4: the count is mostly an upper bound, not a strict one, and the output says no more than that."""
+        page = (ROOT / "docs" / "lp-rate-count.md").read_text(encoding="utf-8")
+        self.assertTrue("It is mostly an upper bound, not a strict one" in page)
+        self.assertIn("mostly an upper bound on the bot's rate, not live recall", lp.LIMITS)
+        self.assertNotIn(": an upper bound", lp.LIMITS)
+        self.rec.session([market_lines(steady(3.0, 3.15))])
+        self.assertIn(f"Limits: {lp.LIMITS}. It decides nothing beyond Gate A.", self.run_tool()[1])
 
 
 class RecorderOutputTests(unittest.TestCase):

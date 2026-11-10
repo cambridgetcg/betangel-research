@@ -2302,10 +2302,11 @@ class LegacyPinTests(unittest.TestCase):
     ROLLOUT_OUTPUTS = "8fcc661b1174f0418434a1e13e22a13e87aa32adbe2567756c64373cddfdd3f0"
     ROLLOUT_EXITS = [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0]
 
-    # The kill's Keychain line (Yu, 2026-11-10: "yes go for removing never Always Allow"): cli.py dropped the
-    # "(not Always Allow)" that 2d3b092 printed. It is the one deliberate difference from 2d3b092 in a non-pilot
-    # command's own output, so no digest above is re-pinned: the test checks that today's line is printed once, by
-    # the kill and by nothing else, and puts 2d3b092's line back before it hashes the outputs.
+    # The kill's Keychain line (Yu, 2026-11-10: "yes go for removing never Always Allow when you have time"):
+    # cli.py dropped the "(not Always Allow)" that 2d3b092 printed. Apart from the recording lines that
+    # _manual_owned prints (docstring below), it is the one deliberate difference from 2d3b092 in a non-pilot
+    # command's output, and no digest above is re-pinned for it: the test checks that today's line is printed
+    # once, by the kill and by nothing else, and puts 2d3b092's line back before it hashes the outputs.
     KILL_KEYCHAIN_LINE = "Betfair kill: reading credentials from the Keychain; if macOS asks, click Allow\n"
     KILL_KEYCHAIN_LINE_2D3B092 = ("Betfair kill: reading credentials from the Keychain; if macOS asks, click Allow "
                                   "(not Always Allow)\n")

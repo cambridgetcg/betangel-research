@@ -9,7 +9,8 @@ resume) equals the fold with each of those events replaced by a plain note; a HA
 Pilot 1 (its ARM refuses, pilot_run.py:907-908, and so does its pilot-place open); and a Pilot 2 leg left resting halts
 a Pilot 1 open and refuses Pilot 1's ARM (pilot-run through cli.main, pilot_run.py:909-910). No /usr/bin/security,
 git or other child process runs, and nothing opens the network. Pilot 1's files and tests are byte-identical to
-c86764a's (sha256, by name; pilot_run.py also as PR #59 leaves it), and the names are every Pilot 1 test and support
+c86764a's, except pilot_run.py and tests/test_betfair_pilot_gateway.py, which are as PRs #59 and #63 left them on main
+(sha256, by name), and the names are every Pilot 1 test and support
 file in the tree and everything under research/pilots/. The shared core modules Pilot 2 leans on (risk.py, reconcile.py,
 arming.py, lifecycle.py, validate.py, killswitch.py) and the other test support modules are pinned the same way.
 """
@@ -42,13 +43,13 @@ DAY = "2027-01-04"
 DAY_NS = pilot.parse_utc_ns(DAY + "T00:00:00Z")
 ARM_NS = DAY_NS + 9 * 3600 * pilot.NS
 
-# Pilot 1's files at c86764a by sha256, listed by name (build spec §7; note §14), so a change to any of them fails here.
-# pilot_run.py may also be as PR #59 (25c1341) leaves it: one handoff line (:270) says the lab Mac, not the Air. #59
-# merges first; once it has, its hash alone stays.
+# Pilot 1's files by sha256, listed by name (build spec §7; note §14), so a change to any of them fails here. They are
+# c86764a's, except two that main changed on 2026-11-10 and that are pinned as main b9099ff has them: pilot_run.py as
+# PR #59 left it (one handoff line, :270, says the lab Mac, not the Air), and tests/test_betfair_pilot_gateway.py as
+# PR #63 left it (its invariance test names the kill's changed Keychain line and keeps its 2d3b092 digests).
 PILOT_1_SHA256 = {
     "betangel_research/betfair/pilot.py": ("c0e76246241b6ba2aaf9667cbd859ddea8081e6e90d0014a1e2cda4411bd69dd",),
-    "betangel_research/betfair/pilot_run.py": ("702cd4fb8825aa2f4dec05a99b0aecdb2d20eeff9ebbb2e8de70f225a05afb62",
-                                               "2388181915c1f723b60c5449717f19bf505892ffcc8e96d82ef5ebc746c37ec2"),
+    "betangel_research/betfair/pilot_run.py": ("2388181915c1f723b60c5449717f19bf505892ffcc8e96d82ef5ebc746c37ec2",),
     "betangel_research/betfair/pilot_gate.py": ("61a4e88365aa33e1f2fffe5c5f1e3d4f28b654b478aaa3036c31d108f62820e0",),
     "research/pilots/p1-fav-t5.json": ("4dbccb5a45f7a4779e0263d4df5048f582f10b8dc3bd22c5f2e93e791155de92",),
     "tests/test_betfair_p108_residuals.py": ("ddf3c93ef742d125962c1f284b8d1f7265e7ddd828a8dd5e5970958641e8cb5e",),
@@ -60,7 +61,7 @@ PILOT_1_SHA256 = {
     "tests/test_betfair_p110_open_ended.py": ("4b28774dabc85b962bcfdc4f48b19bf610bdcdad8ba8f03a45a59f37f6708720",),
     "tests/test_betfair_pilot.py": ("c1c9e26ce2a894c11f9620dc6de7a2eb0e606dfac9cfc1a9c131642e7d0b63fc",),
     "tests/test_betfair_pilot_carriers.py": ("21a66e8949a9d7f06c788fbbd953b2b98af9cefe8a13655898fa19d353d6ac06",),
-    "tests/test_betfair_pilot_gateway.py": ("8ac842f0c4e41234ab78cf75885193aa9ec107747ae0940808b22fe20c8e9758",),
+    "tests/test_betfair_pilot_gateway.py": ("059d46a3d47bde12b836ff53a50c07ee457f92f55652ef21e71f34171dd1ff5e",),
     "tests/test_betfair_pilot_ownership.py": ("d8f379497a93bf79ac8ccaf30551c219b8f38f59f3a6f3582874e5a50c4eb8c7",),
     "tests/test_betfair_pilot_review_fixes.py": ("ac3f6affc80d9ee6c269cdf4518bfc5a60fff0ff2066ee77e594d2f4adeaa163",),
     "tests/test_betfair_pilot_run.py": ("e77dccdf83646e7dd722aaf284f88f5d270dacc0621e011e8f80bc6ce318030a",),
@@ -73,7 +74,7 @@ PILOT_1_SHA256 = {
 
 # The other files this work treats as frozen, at c86764a by sha256: the core modules whose rules Pilot 2 relies on
 # without changing them (risk.py's R6, R10, R11 and its _gbp_floor_pence among them; note §6: "risk.py does not
-# change") and the shared test support modules. PR #59 changes none of them.
+# change") and the shared test support modules. PRs #59, #63 and #60 changed none of them.
 FROZEN_SHA256 = {
     "betangel_research/betfair/arming.py": "50ddeecb014461f74916ac6516ca6d2b3c5bec9d285db08a92bf699ac393e1cd",
     "betangel_research/betfair/killswitch.py": "0a91c7011330514a6873a094cba8ebd28546e7a8c1a283678d5825c173558575",
@@ -99,7 +100,7 @@ def p2_leg(ref, **changes):
 
 
 class PilotOneFiles(unittest.TestCase):
-    def test_pilot_1_files_sha256_at_c86764a(self):
+    def test_pilot_1_files_sha256_as_on_main_b9099ff(self):
         for name, allowed in PILOT_1_SHA256.items():
             with self.subTest(file=name):
                 self.assertIn(hashlib.sha256((support.REPO_ROOT / name).read_bytes()).hexdigest(), allowed)

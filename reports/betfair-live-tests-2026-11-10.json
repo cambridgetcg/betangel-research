@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-11-10",
+  "status": "delayed_key_first_live_tests_read_only_no_orders",
+  "scope": "Read-only first-live test T1 on the delayed application key, the first login from the lab Mac (the MacBook Pro) after Yu moved live trading there (Yu, 2026-11-05). Lab-Claude ran it with Yu's OK and Yu present at the lab Mac, from a clean checkout of main c86764a. This report covers only the T1 run of this day. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts and short notes only; clock times are left out (run_date gives the day).",
+  "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory",
+  "code_revision": "c86764a",
+  "key_type": "delayed",
+  "live_orders_placed": 0,
+  "first_live_tests_run": [
+    {
+      "test_id": "T1",
+      "receipt_sha256": "597385a185bed6446430104215dddeb2c79692ee3ed19b44b07f608ec0ba8492"
+    }
+  ],
+  "live_test_observations": {
+    "T1": {
+      "command": "doctor --network --bet-angel-paused",
+      "machine": "the lab Mac (the MacBook Pro)",
+      "run_by": "lab-Claude, with Yu's OK (\"go\", 2026-11-10) and Yu present at the lab Mac",
+      "python": "python3.13",
+      "result": "pass",
+      "login_status": "SUCCESS",
+      "can_bet": true,
+      "keep_alive_status": "SUCCESS",
+      "logout_status": "SUCCESS",
+      "market_data_read": false,
+      "live_app_key_in_keychain": true,
+      "live_app_key_read": false,
+      "offline_doctor_before": {
+        "command": "doctor",
+        "config_valid": true,
+        "cert_files": "cert_files_ok",
+        "keychain_items_expected": 5,
+        "keychain_items_present": 5,
+        "journal_anchor": "absent",
+        "note": "run the same day, after Yu's Keychain entries and init-config and before T1, without BETANGEL_BETFAIR_FORBID_NETWORK=1: under that switch doctor's Keychain presence queries do not run and keychain_queries.could_not_run counts them (from the code at c86764a, cli.py:262-264, :291-292, :941-945)"
+      },
+      "config_state": "credentials.key_path and credentials.key_passphrase_in_keychain set by Yu after init-config; coexistence.bet_angel still unverified, so the command needed --bet-angel-paused; orders.live and orders.pilot not yet set",
+      "values_copied": "only the four network values and the facts above; the other lines of the output are not copied here",
+      "receipt_note": "doctor has no --out at c86764a, so the command wrote no receipt; lab-Claude wrote the one receipt directory itself, with Yu's OK, from the command's printed output, and read nothing else in the state root"
+    }
+  },
+  "not_run": {
+    "T0": "not run on the lab Mac, so no T0 receipt: the offline doctor reported the journal anchor absent, which the code returns only when both anchor lookups exit 44 (inferred from the code, not seen); the -T \"\" dialog was not seen, because the live key was not read",
+    "T1_live_key": "this T1 logged in on the delayed key (doctor --network uses read.app_key_slot); the pilot engineering note asks for T1 on the live key on the lab Mac, and what stands as that receipt is open for Yu (docs/betfair-pilot-1-plan.md, Architecture)",
+    "T2": "not run on the lab Mac",
+    "T5": "not run on the lab Mac",
+    "T9": "not run on the lab Mac",
+    "other_tests": "outside this report: it lists only the T1 run of this day and says nothing about other first-live tests or their receipts"
+  },
+  "facts_relabelled_secondary_first_person_observation": {},
+  "facts_not_relabelled": {
+    "F01": "already secondary first_person_observation on the 2026-10-13 T1 receipt (ca943553...); this run repeats that observation from the lab Mac, shows no further part of the value, and is not added as a second source",
+    "F02": "as F01",
+    "F03": "as F01",
+    "F04": "one SUCCESS says nothing about the 45 documented statuses",
+    "F68": "no T0 receipt",
+    "F73": "no T0 receipt; the live key was not read, so the -T \"\" dialog was not seen"
+  },
+  "findings_for_next_register_round": {
+    "F68": "a second indirect observation, on a second Mac: the lab Mac's offline doctor reported the journal anchor absent, which anchor_read returns only when both lookups exit 44 (from the code, not seen); F68 is in the T0 row and there is no T0 receipt, so it is not relabelled",
+    "register_limitations": "the first limitation in research/betfair-facts.json still says T0, T5, T9 and T10 are pending and that no order has been placed; reports/betfair-live-tests-2026-10-21.json records T5, T9 and T10 and two cancelled probe orders; the register is not edited in this report"
+  },
+  "economic_result": null,
+  "limitations": [
+    "Delayed key only: the live key was not read, no market data was read and no order was placed; live_orders_placed counts this test only.",
+    "One login, keepAlive and logout on one account on one day, from the lab Mac; it shows behaviour seen, not a documented guarantee.",
+    "The receipt was written by lab-Claude from the command's printed output, not by the command; this report does not say which lines of the output the receipt keeps. Who writes receipts on the lab Mac is open for Yu (docs/betfair-pilot-1-plan.md, Architecture).",
+    "The offline doctor lines come from lab-Claude's session, from a run made before T1; this report does not say whether the T1 receipt also holds them.",
+    "The code is c86764a, main on that day. This report was written on the branch of PR #59 at 25c1341, whose code differs from c86764a in wording only: a comment in cli.py, one handoff string in pilot_run.py and a comment in the recording plist template.",
+    "Raw responses and the receipt stay private; only the SHA256SUMS digest, commands without ids, codes, booleans and counts are here."
+  ],
+  "amendments": []
+}

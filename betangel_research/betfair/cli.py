@@ -674,7 +674,7 @@ def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on
     held["journal"] = (_kill_journal(paths, clock) if kill
                        else OrderJournal(paths.journal_path("live"), mode="live", clock=clock))
     if kill:
-        _kill_line(ctx, "reading credentials from the Keychain; if macOS asks, click Allow (not Always Allow)")
+        _kill_line(ctx, "reading credentials from the Keychain; if macOS asks, click Allow")
     if credentials is None:
         credentials = load_credentials(config, purpose="live_orders", profile=paths.profile,
                                        runner=ctx.keychain_runner)
@@ -910,7 +910,9 @@ def cmd_keychain_setup(args, ctx):
     paths = _paths(args, ctx)
     ctx.print_json({"status": "commands_printed_not_run",
                     "note": "Run each by hand; -w is last so security prompts for the value. The live key uses "
-                            "-T \"\": answer Allow, never Always Allow (effect unverified, first-live-test T0).",
+                            "-T \"\": macOS asks when it is first read, and Allow or Always Allow is the "
+                            "operator's choice. After Always Allow a later read did not ask (observed, no "
+                            "receipt: first-live-test T0).",
                     "commands": keychain_setup_commands(paths.profile, include_passphrase=args.include_passphrase)})
     return 0
 

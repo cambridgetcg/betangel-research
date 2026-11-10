@@ -1348,8 +1348,7 @@ class LockFreeKillTests(unittest.TestCase):
                 expected = ['Betfair kill: KILL file engaged; no gateway sends a new order from now on. If this kill '
                             'does not end with "kill complete", cancel open bets on the Betfair website or in Bet '
                             'Angel.',
-                            "Betfair kill: reading credentials from the Keychain; if macOS asks, click Allow (not "
-                            "Always Allow)",
+                            "Betfair kill: reading credentials from the Keychain; if macOS asks, click Allow",
                             "Betfair kill: logging in (emergency session)"]
                 if coexistence == "unverified":
                     expected.append("Betfair kill: F67 (inferred, unverified): if a new login ends other sessions, "

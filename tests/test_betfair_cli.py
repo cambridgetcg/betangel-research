@@ -115,6 +115,12 @@ class InProcessCliTests(unittest.TestCase):
         code, out, err = run_main(["keychain-setup"], self.deps)
         self.assertEqual(code, 0, err)
         commands = json.loads(out)["commands"]
+        # The note names both answers for the live key's dialog and forbids neither (Yu, 2026-11-10).
+        self.assertEqual(json.loads(out)["note"],
+                         "Run each by hand; -w is last so security prompts for the value. The live key uses "
+                         "-T \"\": macOS asks when it is first read, and Allow or Always Allow is the operator's "
+                         "choice. After Always Allow a later read did not ask (observed, no receipt: "
+                         "first-live-test T0).")
         self.assertEqual(len(commands), 4)
         for command in commands:
             self.assertTrue(command.startswith("security add-generic-password -U -s betangel-research.betfair."))

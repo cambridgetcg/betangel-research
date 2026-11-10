@@ -659,6 +659,21 @@ class GateTests(Case):
                 self.day(11, 30, 30)                                           # a later date, every market qualifying
                 self.assertEqual(self.summary()["gate_a"], decided)
 
+    def test_a_later_date_is_later_across_a_month_and_a_year_end(self):
+        """Amendment 4: what closes D is a later UTC date, not a later day of the month. Ten days from 2026-12-27 to
+        2027-01-05: December's sessions, with their higher day numbers, do not close it; 2027-01-06 does."""
+        dates = [f"2026-12-{n}" for n in range(27, 32)] + [f"2027-01-{n:02d}" for n in range(1, 6)]
+        for index, date in enumerate(dates):
+            off = timestamp_ms(f"{date}T14:35:00.000Z")
+            markets = [(f"1.97{index:02d}{k:05d}", definition(off_text=_iso(off)), quotes(3.0, 3.15))
+                       for k in range(30)]
+            self.rec.session([[image(at(-690, off), *markets)] + beats(-690, 0, off)])
+        gate = self.assert_withheld()
+        self.assertEqual((gate["result"], gate["through"]), ("RECORDING_OPEN", "2027-01-05"))
+        (self.root / "rec-20270106T070000Z-fffffff3").mkdir()
+        gate = self.summary()["gate_a"]
+        self.assertEqual((gate["result"], gate["through"], gate["primary"]), ("PASS", "2027-01-05", 300))
+
     def test_gate_a_is_fixed_by_its_dates_whenever_the_script_runs(self):
         self.days(10, 4)                                                       # 4 of 300: FAIL
         first = self.summary()
@@ -903,6 +918,19 @@ class ProjectionTests(Case):
         self.assertNotIn(": an upper bound", lp.LIMITS)
         self.rec.session([market_lines(steady(3.0, 3.15))])
         self.assertIn(f"Limits: {lp.LIMITS}. It decides nothing beyond Gate A.", self.run_tool()[1])
+
+    def test_the_sha256_is_printed_where_the_page_says_to_check_it(self):
+        """The page has the reader check the sha256 before reading on: line 2 of the table, under the title, and line
+        4 of --json, under the schema and the registration. No count comes before it."""
+        self.fixture(self.root, 2.98, 3.1, MARKET)
+        sha256 = hashlib.sha256(TOOL.read_bytes()).hexdigest()
+        table, printed = self.run_tool()[1].splitlines(), self.run_tool("--json")[1].splitlines()
+        self.assertTrue(table[0].startswith(f"LP rate count ({lp.SCHEMA}; definitions in {lp.REGISTRATION})."))
+        self.assertEqual(table[1], f"script sha256 {sha256}")
+        self.assertEqual(printed[:4], ["{", f' "schema": "{lp.SCHEMA}",', f' "registration": "{lp.REGISTRATION}",',
+                                       f' "script_sha256": "{sha256}",'])
+        page = (ROOT / "docs" / "lp-rate-count.md").read_text(encoding="utf-8")
+        self.assertIn("It is the second line of the table and the fourth line of `--json`", page)
 
 
 class RecorderOutputTests(unittest.TestCase):

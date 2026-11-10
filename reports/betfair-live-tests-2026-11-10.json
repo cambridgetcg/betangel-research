@@ -1,12 +1,18 @@
 {
   "schema_version": 1,
   "run_date": "2026-11-10",
-  "status": "delayed_key_first_live_tests_read_only_no_orders",
-  "scope": "Read-only first-live test T1 on the delayed application key, the first login from the lab Mac (the MacBook Pro) after Yu moved live trading there (Yu, 2026-11-05). Lab-Claude ran it with Yu's OK and Yu present at the lab Mac, from a clean checkout of main c86764a. This report covers only the T1 run of this day. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts and short notes only; clock times are left out (run_date gives the day).",
-  "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory",
+  "status": "delayed_and_live_key_first_live_tests_one_probe_order_placed_and_cancelled_none_matched",
+  "scope": "First-live tests on the lab Mac (the MacBook Pro), the first there after Yu moved live trading to it (Yu, 2026-11-05): T1 on the delayed application key, which lab-Claude ran with Yu's OK and Yu present; T9, the live probe on the live key, which Yu ran at Yu's own terminal; and a T0 observation without a receipt. Both ran from a clean checkout of main c86764a. This report covers the whole day. T9 has a private receipt directory but no SHA256SUMS digest yet, so it is recorded under live_test_observations and not in first_live_tests_run. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts, durations and short notes only; clock times are left out (run_date gives the day).",
+  "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory. The CLI wrote T9's receipt directory without a SHA256SUMS file, so T9 has no receipt_sha256 yet and is not listed in first_live_tests_run.",
   "code_revision": "c86764a",
-  "key_type": "delayed",
-  "live_orders_placed": 0,
+  "key_types": {
+    "T1": "delayed",
+    "T9_preparation_reads": "delayed",
+    "T9": "live"
+  },
+  "live_orders_placed": 1,
+  "live_orders_matched": 0,
+  "live_orders_refused_before_send": 1,
   "first_live_tests_run": [
     {
       "test_id": "T1",
@@ -36,18 +42,90 @@
         "journal_anchor": "absent",
         "note": "run the same day, after Yu's Keychain entries and init-config and before T1, without BETANGEL_BETFAIR_FORBID_NETWORK=1: under that switch doctor's Keychain presence queries do not run and keychain_queries.could_not_run counts them (from the code at c86764a, cli.py:262-264, :291-292, :941-945)"
       },
-      "config_state": "credentials.key_path and credentials.key_passphrase_in_keychain set by Yu after init-config; coexistence.bet_angel still unverified, so the command needed --bet-angel-paused; orders.live and orders.pilot not yet set",
+      "config_state": "at T1: credentials.key_path and credentials.key_passphrase_in_keychain set by Yu after init-config; coexistence.bet_angel still unverified, so the command needed --bet-angel-paused; orders.live and orders.pilot not yet set",
       "values_copied": "only the four network values and the facts above; the other lines of the output are not copied here",
       "receipt_note": "doctor has no --out at c86764a, so the command wrote no receipt; lab-Claude wrote the one receipt directory itself, with Yu's OK, from the command's printed output, and read nothing else in the state root"
+    },
+    "T9": {
+      "command": "live-probe --market <id> --selection <id> --confirm-live <daily token> (other flags not recorded)",
+      "machine": "the lab Mac (the MacBook Pro)",
+      "run_by": "Yu at Yu's own terminal at the lab Mac",
+      "code_revision": "c86764a, a clean checkout of main",
+      "preparation": "with Yu's go-ahead, lab-Claude read catalogue and book on the delayed key to choose a race and a runner; read-only, no order",
+      "config_state": "before T9 Yu in person set coexistence.bet_angel to not_running_on_account, the eight acknowledgements and operator_attests_uk_egress true, each Yu's own statement; the config was armed only for the probe and disarmed straight after; orders.pilot and Pilot 1's caps not yet set",
+      "fixed_probe_shape": "LAY 1.00 @ 1.01, LIMIT, LAPSE (gateway constants)",
+      "attempts": [
+        {
+          "attempt": "refused",
+          "rule": "validation:V9b",
+          "failure_reason": "market_time_too_far",
+          "why": "more than 30 minutes before the off; max_minutes_before_off is 30 in the config init-config copies (c86764a research/betfair-config.example.json:34, validate.py:131-132)",
+          "place_submitted": false,
+          "state_after": "REFUSED",
+          "recording_admission": "taken and released",
+          "admission_generation": 1,
+          "lesson": "choose a race whose off is less than 30 minutes away before typing the probe"
+        },
+        {
+          "attempt": "probe",
+          "placed": true,
+          "matched_nothing": true,
+          "lookup": "before_cancel",
+          "found_by_ref": true,
+          "cancelled_in_full": true,
+          "ref_roundtrip_verified": true,
+          "a19_set": true,
+          "recording_admission": "taken and released",
+          "admission_generation": 2,
+          "receipt_directory": "written by the CLI under the private live-tests directory: four JSON files, no SHA256SUMS file (the CLI writes none)",
+          "receipt_sha256": "none yet: Yu would make the SHA256SUMS file and read its sha256; an amendment to this report can then list T9 in first_live_tests_run"
+        }
+      ],
+      "after_the_probe": {
+        "commands": [
+          "doctor",
+          "status"
+        ],
+        "run_by": "lab-Claude, offline; status once",
+        "no_open_position": true,
+        "halted": false,
+        "unresolved_markets": 0,
+        "recording_state": "clean",
+        "journal_lineage": {
+          "genesis_sha256": "8f6ce26cb9865f8487b7f9f9d4e8200f0d469eb98291e95e89a061f74ac42ba5",
+          "seq": 17,
+          "last_sha256": "59a965e3b3f3bc479efa3441775bbfdeaa1a5555e1f529bed9ef6bf8f80ca7fd",
+          "source": "the lab Mac's journal as the offline status printed it after the probe; nothing came from the Air's state root"
+        },
+        "note": "status prints order rows as well as codes, so lab-Claude does not run it routinely; only the codes, counts and digests above are copied here"
+      },
+      "live_key_evidence": "the probe's open needs A14 (a login that can bet, on the live key) and A18 (the gateway's own live-key book with isMarketDataDelayed false; c86764a arming.py:455-459, :414-415), and it placed its order; the lab proposes that Yu and Astra count it as the lab Mac's evidence for the live-key login and for T5's live half, with no separate test; a proposal, not decided (docs/betfair-pilot-1-plan.md, Architecture)",
+      "move_order": "run before the lab Mac's encrypted backup, by Yu's change of order on 2026-11-10; the backup still comes before the manual drills (docs/betfair-pilot-1-plan.md, Architecture steps 6-8)",
+      "customer_ref_echo": "not_answered: no agent read the receipt files, and they have no SHA256SUMS digest yet"
+    },
+    "T0": {
+      "receipt": "none",
+      "source": "lab-Claude's notes of the day, with Yu at the lab Mac",
+      "first_live_key_read_dialogs": 1,
+      "dialog_asked_for": "the Mac's login password",
+      "first_live_key_read_choice": "Always Allow",
+      "next_live_key_read_minutes_later": 3,
+      "next_live_key_read_dialog_seen": false,
+      "kept": "Yu decided on 2026-11-10 to keep Always Allow on the live key, after being told that it removes the prompt Yu chose on 2026-11-06 and with the lab recommending that the prompt be restored (docs/betfair-pilot-1-plan.md, Architecture step 4)",
+      "other_four_items_under_launchd_dialog_seen": false,
+      "other_four_items_source": "the recorder's 50-minute rehearsal on the test label",
+      "own_scope_kill_with_nobody_at_the_screen": "expected to read the live key with no dialog; not tested",
+      "locked_keychain_half": "not_run",
+      "missing_item_exit_44": "not_seen"
     }
   },
   "not_run": {
-    "T0": "not run on the lab Mac, so no T0 receipt: the offline doctor reported the journal anchor absent, which the code returns only when both anchor lookups exit 44 (inferred from the code, not seen); the -T \"\" dialog was not seen, because the live key was not read",
-    "T1_live_key": "this T1 logged in on the delayed key (doctor --network uses read.app_key_slot); the pilot engineering note asks for T1 on the live key on the lab Mac, and what stands as that receipt is open for Yu (docs/betfair-pilot-1-plan.md, Architecture)",
-    "T2": "not run on the lab Mac",
-    "T5": "not run on the lab Mac",
-    "T9": "not run on the lab Mac",
-    "other_tests": "outside this report: it lists only the T1 run of this day and says nothing about other first-live tests or their receipts"
+    "T0": "observation only, no receipt; see live_test_observations.T0. Before T1 the offline doctor reported the journal anchor absent, which the code returns only when both anchor lookups exit 44 (inferred from the code, not seen)",
+    "T1_live_key": "T1 logged in on the delayed key (doctor --network uses read.app_key_slot); the pilot engineering note asks for T1 on the live key on the lab Mac; the lab proposes counting the T9 probe for it (A14), which is not decided (docs/betfair-pilot-1-plan.md, Architecture)",
+    "T2": "not repeated on the lab Mac: T1's run used POST and its keepAlive succeeded; the lab proposes not to repeat the GET half there; not decided",
+    "T5": "not run as its own test on the lab Mac; the lab proposes counting the T9 probe for T5's live half (A18), which is not decided",
+    "T9_receipt": "T9 ran (live_test_observations.T9) but is not in first_live_tests_run: no SHA256SUMS digest exists for its receipt yet",
+    "other_tests": "outside this report: it covers only T1, T9 and the T0 observation of this day"
   },
   "facts_relabelled_secondary_first_person_observation": {},
   "facts_not_relabelled": {
@@ -55,21 +133,28 @@
     "F02": "as F01",
     "F03": "as F01",
     "F04": "one SUCCESS says nothing about the 45 documented statuses",
+    "F22": "T9 has no receipt digest and no agent read its files; F22 is captured from the raw place report in PT1 and PT4 (reports/betfair-live-tests-2026-10-21.json)",
     "F68": "no T0 receipt",
-    "F73": "no T0 receipt; the live key was not read, so the -T \"\" dialog was not seen"
+    "F73": "no T0 receipt; the observation of one dialog, then Always Allow, then no dialog is in live_test_observations.T0"
   },
   "findings_for_next_register_round": {
     "F68": "a second indirect observation, on a second Mac: the lab Mac's offline doctor reported the journal anchor absent, which anchor_read returns only when both lookups exit 44 (from the code, not seen); F68 is in the T0 row and there is no T0 receipt, so it is not relabelled",
-    "register_limitations": "the first limitation in research/betfair-facts.json still says T0, T5, T9 and T10 are pending and that no order has been placed; reports/betfair-live-tests-2026-10-21.json records T5, T9 and T10 and two cancelled probe orders; the register is not edited in this report"
+    "F73": "a second account, on a second Mac, of the live key's -T \"\" item: one dialog at the first read, Always Allow, and no dialog on a read three minutes later; no T0 receipt, so it is not relabelled",
+    "register_limitations": "the first limitation in research/betfair-facts.json still says T0, T5, T9 and T10 are pending and that no order has been placed; reports/betfair-live-tests-2026-10-21.json records T5, T9 and T10 and two cancelled probe orders, and this report one more; the register is not edited in this report"
   },
   "economic_result": null,
   "limitations": [
-    "Delayed key only: the live key was not read, no market data was read and no order was placed; live_orders_placed counts this test only.",
+    "T1 used the delayed key and read no market data. T9 used the live key: one live order, the fixed probe, cancelled in full with nothing matched; no strategy order and no open position.",
     "One login, keepAlive and logout on one account on one day, from the lab Mac; it shows behaviour seen, not a documented guarantee.",
-    "The receipt was written by lab-Claude from the command's printed output, not by the command; this report does not say which lines of the output the receipt keeps. Who writes receipts on the lab Mac is open for Yu (docs/betfair-pilot-1-plan.md, Architecture).",
+    "The T1 receipt was written by lab-Claude from the command's printed output, not by the command; this report does not say which lines of the output the receipt keeps. Who writes receipts on the lab Mac is open for Yu (docs/betfair-pilot-1-plan.md, Architecture).",
     "The offline doctor lines come from lab-Claude's session, from a run made before T1; this report does not say whether the T1 receipt also holds them.",
-    "The code is c86764a, main on that day. This report was written on the branch of PR #59 at 25c1341, whose code differs from c86764a in wording only: a comment in cli.py, one handoff string in pilot_run.py and a comment in the recording plist template.",
-    "Raw responses and the receipt stay private; only the SHA256SUMS digest, commands without ids, codes, booleans and counts are here."
+    "T9 has no SHA256SUMS digest yet, so it is not in first_live_tests_run. Its codes come from lab-Claude's notes of the day (the probe ran in Yu's terminal) and from the offline doctor and status run after it, not from its receipt files, which no agent read.",
+    "The refused T9 attempt sent nothing; its codes come from the same notes.",
+    "The T0 notes are an observation, not a receipt.",
+    "The code is c86764a, main on that day. This report was written on the branch of PR #59 at 25c1341 and extended to the whole day on top of 91a3a29; that branch's code differs from c86764a in wording only: a comment in cli.py, one handoff string in pilot_run.py and a comment in the recording plist template.",
+    "Raw responses and the receipts stay private; only the SHA256SUMS digest, the journal lineage digests, commands without ids, codes, booleans and counts are here."
   ],
-  "amendments": []
+  "amendments": [
+    "2026-11-10: extended before merge from the T1 run alone to the whole day: T9 with its refused attempt and the T0 observation added; status, scope, key types and order counts changed to match"
+  ]
 }

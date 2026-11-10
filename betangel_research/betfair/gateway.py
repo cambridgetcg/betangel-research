@@ -405,8 +405,11 @@ class OrderGateway:
                 # transports (rpc.transport, session.transport) are not checked: they must keep reading the
                 # monotonic clock only (transport.py's send-by and budget), never the wall clock.
                 raise ConfigError("pilot_gateway_needs_one_observed_clock")
-            if lp is not None and (pilot is not None or p2_lp.config_problems(config)):
-                raise ConfigError("p2_gateway_needs_config_p2")          # config-p2 exactly, never Pilot 1's
+            if lp is not None:
+                # config-p2 exactly, never Pilot 1's, and judged by a guard built on that same config.
+                if (pilot is not None or p2_lp.config_problems(config)
+                        or getattr(guard, "config_sha256", None) != config_sha256(config)):
+                    raise ConfigError("p2_gateway_needs_config_p2")
         self.config = config
         self.paths = paths
         self.mode = mode
@@ -1351,7 +1354,7 @@ class OrderGateway:
             if code is not None:
                 return self._result(None, [], decision="refused", refusal={"rule": code, "detail": {}})
             instructions, source = [instruction], p2_lp.SOURCE
-            lp_check = partial(self._lp_check, side=lp_side, off_ns=parse_utc_ns(book["market_time"]))
+            lp_check = partial(self._lp_check, side=lp_side, off_ns=parse_utc_ns(book["market_time"]), funds=funds)
         arming = self._live_arming(command, book)
         return self._place_core(market_id, instructions, book=book, source=source, intent_id=intent_id,
                                 arming=arming, probe=probe, funds=funds, funds_checked_at=checked_at, lp_check=lp_check)
@@ -1399,12 +1402,19 @@ class OrderGateway:
             self._lp_pair = self._lp_pending
         return result
 
-    def _lp_check(self, events, market_id, instruction, *, side, off_ns):
-        """p2_lp.leg_refusal on the events read that is the submit's basis (anything journaled after it makes the
-        submit refuse), with the cached fold, which is at or after it; then, for a BACK, the pair pre-check: R1, R3,
-        R6 and R8-R10 for one more PAIR_WORST_P BACK (risk.evaluate_pilot_reservation). -> a code or None. Only a LAY
-        leaves this open's legs out of the other-bet check: a BACK never goes while any bet of ours is open, this
-        open's own included."""
+    def _lp_check(self, events, market_id, instruction, *, side, off_ns, funds=None):
+        """First Yu's stop: once p2-run's stop_requested() answers True (a stop during this leg's funds or book read,
+        Ctrl-\\ and Ctrl-Z among them), the leg is refused p2_stop_before_send before any intent, as the first-byte
+        gate refuses one that lands later. Then p2_lp.leg_refusal on the events read that is the submit's basis
+        (anything journaled after it makes the submit refuse), with the cached fold, which is at or after it; then,
+        for a BACK, the pair pre-check: R1, R3, R6 and R8-R10 for one more PAIR_WORST_P BACK
+        (risk.evaluate_pilot_reservation), then p2_lp.pair_room, which that check leaves out: R6's room for both legs,
+        and funds for both on this leg's own funds read (funds, as _place_live read it; a read that failed refuses).
+        -> a code or None. Only a LAY leaves this open's legs out of the other-bet check: a BACK never goes while any
+        bet of ours is open, this open's own included."""
+        from .risk import _gbp_floor_pence                 # here, so no other gateway path needs risk's private name
+        if self._lp.get("stop_requested") is not None and self._lp["stop_requested"]():
+            return "p2_stop_before_send"
         state = self._state()
         now_ns = self.clock.time_ns()
         today = pilot_rules.utc_day(now_ns)
@@ -1421,7 +1431,16 @@ class OrderGateway:
             return code
         failures = self.guard.evaluate_pilot_reservation(market_id, state=state, now_ns=now_ns,
                                                          size_p=p2_lp.PAIR_WORST_P)
-        return f"p2_pair_precheck:{failures[0]['rule']}" if failures else None
+        if failures:
+            return f"p2_pair_precheck:{failures[0]['rule']}"
+        rule = p2_lp.pair_room(
+            lay_price_h=self._lp_pending["lay_price_h"],
+            available_p=_gbp_floor_pence(funds.get("availableToBetBalance")) if isinstance(funds, dict) else None,
+            reserve_p=self.guard.caps_p["funds_reserve"], submitted_ns=state["submitted_instruction_wall_ns"],
+            orders_today=state["orders_today"],
+            exchange_orders_today=(state["exchange_floor"] or {}).get("orders_today"),
+            caps=self.config["orders"]["caps"], now_ns=now_ns)
+        return f"p2_pair_precheck:{rule}" if rule else None
 
     def lp_legs(self):
         """{ref: the core fold's order record} for every leg ref this gateway drew; a ref with no order in a readable

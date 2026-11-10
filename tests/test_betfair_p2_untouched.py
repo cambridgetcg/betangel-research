@@ -9,7 +9,9 @@ resume) equals the fold with each of those events replaced by a plain note; a HA
 Pilot 1 (its ARM refuses, pilot_run.py:907-908, and so does its pilot-place open); and a Pilot 2 leg left resting halts
 a Pilot 1 open and refuses Pilot 1's ARM (pilot-run through cli.main, pilot_run.py:909-910). No /usr/bin/security,
 git or other child process runs, and nothing opens the network. Pilot 1's files and tests are byte-identical to
-c86764a's (sha256, by name; pilot_run.py also as PR #59 leaves it).
+c86764a's (sha256, by name; pilot_run.py also as PR #59 leaves it), and the names are every Pilot 1 test and support
+file in the tree and everything under research/pilots/. The shared core modules Pilot 2 leans on (risk.py, reconcile.py,
+arming.py, lifecycle.py, validate.py, killswitch.py) and the other test support modules are pinned the same way.
 """
 
 import contextlib
@@ -49,6 +51,13 @@ PILOT_1_SHA256 = {
                                                "2388181915c1f723b60c5449717f19bf505892ffcc8e96d82ef5ebc746c37ec2"),
     "betangel_research/betfair/pilot_gate.py": ("61a4e88365aa33e1f2fffe5c5f1e3d4f28b654b478aaa3036c31d108f62820e0",),
     "research/pilots/p1-fav-t5.json": ("4dbccb5a45f7a4779e0263d4df5048f582f10b8dc3bd22c5f2e93e791155de92",),
+    "tests/test_betfair_p108_residuals.py": ("ddf3c93ef742d125962c1f284b8d1f7265e7ddd828a8dd5e5970958641e8cb5e",),
+    "tests/test_betfair_p110_capture.py": ("c1546f96eb69f76107f7cc6491b6df6287da847c5b0a08184be541384c65192c",),
+    "tests/test_betfair_p110_fold_fresh.py": ("83c9c56bd31af445d8ab4b79152293244d95375537259f3cf6e0c0940f7a188b",),
+    "tests/test_betfair_p110_journal_guard.py": ("46345a2ecc6326dc59f33c6ad34957feda739b5fd439f87d987c85ad25b10cb1",),
+    "tests/test_betfair_p110_look.py": ("2cad62b268bf6ac25fe632a03e517ab03ee1b10bb6e7f970e04d7eb5d88767b9",),
+    "tests/test_betfair_p110_measurement.py": ("c8f4c58b5478a9ba550f1bf86807be25995b3e8646925cf614021b1172a0c68b",),
+    "tests/test_betfair_p110_open_ended.py": ("4b28774dabc85b962bcfdc4f48b19bf610bdcdad8ba8f03a45a59f37f6708720",),
     "tests/test_betfair_pilot.py": ("c1c9e26ce2a894c11f9620dc6de7a2eb0e606dfac9cfc1a9c131642e7d0b63fc",),
     "tests/test_betfair_pilot_carriers.py": ("21a66e8949a9d7f06c788fbbd953b2b98af9cefe8a13655898fa19d353d6ac06",),
     "tests/test_betfair_pilot_gateway.py": ("8ac842f0c4e41234ab78cf75885193aa9ec107747ae0940808b22fe20c8e9758",),
@@ -58,7 +67,24 @@ PILOT_1_SHA256 = {
     "tests/test_betfair_pilot_run_gaps.py": ("f3ebb2b5d2b88d6cc3137bc10d773d6aabb1a2f4763ddbef8332185691e0ceb7",),
     "tests/test_betfair_pilot_scope.py": ("3efee26ff5fe6eb371d44bb49f934a2ed22a5cfda6fe77be114db8025eb25500",),
     "tests/test_betfair_support_pilot.py": ("8885f3a737214815cf1d6450967354b9e58873794e1df73c19c0a6f7495a9b65",),
+    "tests/test_betfair_support_run.py": ("82044d24f969f4437bf658c857e8900751aa32f8f89d038be429f83e40ce3ff5",),
     "tests/test_betfair_rollout_pilot_lines.py": ("30905b59f98f1f4507bb09ad2d107198a37b55c9b0897d3787faa1e424a11dfe",),
+}
+
+# The other files this work treats as frozen, at c86764a by sha256: the core modules whose rules Pilot 2 relies on
+# without changing them (risk.py's R6, R10, R11 and its _gbp_floor_pence among them; note §6: "risk.py does not
+# change") and the shared test support modules. PR #59 changes none of them.
+FROZEN_SHA256 = {
+    "betangel_research/betfair/arming.py": "50ddeecb014461f74916ac6516ca6d2b3c5bec9d285db08a92bf699ac393e1cd",
+    "betangel_research/betfair/killswitch.py": "0a91c7011330514a6873a094cba8ebd28546e7a8c1a283678d5825c173558575",
+    "betangel_research/betfair/lifecycle.py": "9103587d9daf9bb551844132f79e953e34cf9b0ba59f7cb80c3f5b20ce8c67bf",
+    "betangel_research/betfair/reconcile.py": "12a9d584a2015e5aacd06f616c069e92b87e3a5388dc84ceeac75e2d5b33b7b7",
+    "betangel_research/betfair/risk.py": "645860d902b23a2d72bcc3177d29ccb03ed55925b8ca42c4c97ae9608b3509f5",
+    "betangel_research/betfair/validate.py": "1ed82d87f435a304d0c09555de2390e7519cdc88afa0782b5d17560469ea4aab",
+    "tests/test_betfair_support.py": "c7f6f346ebf32af57978d01e8344e89916ecd0ef43884ff16b58f0daea324f66",
+    "tests/test_betfair_support_gateway.py": "567e4d81806e1510c84b1d7ec32ba9e0ea4f430757e67494d76ae9f8c0fe9d2b",
+    "tests/test_betfair_support_orders.py": "5721d961e4aadf0322b5b58c0c705ceb1970c44cdeb79b6300ddcea45ae4e142",
+    "tests/test_betfair_support_stream.py": "b49ebee948785d5cc16d68d9d8befcfdae502a8a7532be121716c7ff3c4aae56",
 }
 
 
@@ -77,6 +103,27 @@ class PilotOneFiles(unittest.TestCase):
         for name, allowed in PILOT_1_SHA256.items():
             with self.subTest(file=name):
                 self.assertIn(hashlib.sha256((support.REPO_ROOT / name).read_bytes()).hexdigest(), allowed)
+
+    def test_frozen_core_and_support_files_sha256_at_c86764a(self):
+        for name, digest in FROZEN_SHA256.items():
+            with self.subTest(file=name):
+                self.assertEqual(hashlib.sha256((support.REPO_ROOT / name).read_bytes()).hexdigest(), digest)
+        self.assertEqual(len(FROZEN_SHA256), 10)
+
+    def test_every_pilot_1_test_file_and_pilot_record_is_pinned(self):
+        # By pattern, so a Pilot 1 test file, a test support module or a file under research/pilots/ that the lists
+        # above do not name fails here: tests/test_betfair_pilot*.py (Pilot 2's own documents test excepted),
+        # tests/test_betfair_p1NN_*.py, tests/test_betfair_support*.py and the rollout's pilot lines.
+        tests = support.REPO_ROOT / "tests"
+        found = {path for pattern in ("test_betfair_pilot*.py", "test_betfair_p1[0-9][0-9]_*.py",
+                                      "test_betfair_support*.py")
+                 for path in tests.glob(pattern)} - {tests / "test_betfair_pilot_2_docs.py"}
+        found |= {tests / "test_betfair_rollout_pilot_lines.py"}
+        found |= {path for path in (support.REPO_ROOT / "research" / "pilots").rglob("*")
+                  if path.is_file() and not path.name.startswith(".")}
+        named = {name for name in set(PILOT_1_SHA256) | set(FROZEN_SHA256) if not name.startswith("betangel_research/")}
+        self.assertEqual(sorted(path.relative_to(support.REPO_ROOT).as_posix() for path in found), sorted(named))
+        self.assertEqual(len(PILOT_1_SHA256), 22)
 
 
 class PilotOneSeesPilotTwo(unittest.TestCase):

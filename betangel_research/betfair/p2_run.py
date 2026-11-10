@@ -10,15 +10,18 @@ REST and PULL, with every failure edge), the handoff, the end and its release, a
 the live recording state goes through admission.live_ownership.
 
 What it reads: the journal on short-lived read-only connections (pilot_run.pilot_events_after), git for the commit and
-a clean tree, the Keychain once per session (pilot_run.load_session_credentials), and Betfair only through the gateways
-and the read session the CLI builds. What it writes: the ARM record (the core kind operator_confirm, compare-and-
-appended on the head Yu saw, under .gateway.lock), nothing else to the journal; screens, flags and SKIPs are printed,
-never journaled. caffeinate (injected as env.popen) keeps the Mac awake from the ARM to the end; it is process-scoped
-and changes no setting. A signal from the typed line on only sets a flag (pilot_run.StopFlag) outside an open.
+a clean tree, the Keychain once per session (pilot_run.load_session_credentials; ARM's static arming looks only at the
+anchor and at whether each item is present), and Betfair only through the gateways and the read session the CLI
+builds. What it writes: the ARM record (the core kind operator_confirm, compare-and-appended on the head Yu saw, under
+.gateway.lock), nothing else to the journal; screens, flags, SKIPs and a LAY's code are printed, never journaled.
+caffeinate (injected as env.popen) keeps the Mac awake from the ARM to the end; it is process-scoped and changes no
+setting. A signal from the typed line on only sets a flag (StopFlag: pilot_run's, with Ctrl-\\ and Ctrl-Z added)
+outside an open.
 """
 
 import os
 import secrets
+import signal
 import subprocess
 from types import SimpleNamespace
 
@@ -26,10 +29,11 @@ from . import admission, p2_lp, pilot, pilot_gate, pilot_run
 from .api import PILOT_ROW_PROJECTIONS
 from .config import config_sha256
 from .credentials import publish_anchor
-from .errors import AdmissionRefused, BetfairError, CredentialError, JournalError, LockBusy, safe_code
+from .errors import AdmissionRefused, BetfairError, CredentialError, JournalError, LockBusy, NotArmed, safe_code
 from .journal import OrderJournal, fold_events
 from .paths import file_lock, kill_engaged
-from .receipts import git_identity, utc_from_ns
+from .receipts import git_identity, utc_from_ns, utc_ms_from_ns
+from .risk import RiskGuard
 from .schemas import UNRESOLVED_STATES
 
 NS = p2_lp.NS
@@ -38,6 +42,24 @@ SSH_VARS = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")     # friction only (lab 
 UNTIL_LEAD_NS = 20 * 60 * NS                               # note §7: UNTIL after now + 20 min
 CAFFEINATE = "/usr/bin/caffeinate"
 CHECKOUT = str(pilot_gate.MODULE_ROOT)                     # the handoff's own-scope kill runs from here
+NO_MARKET = "1.0"                                          # ARM's pair pre-check: no race is chosen yet
+
+
+class StopFlag(pilot_run.StopFlag):
+    """pilot_run's sticky stop flag with Ctrl-\\ (SIGQUIT) and Ctrl-Z (SIGTSTP) added (note §8, Signals). With two legs
+    resting for minutes, the first would end the process with no pull and the second would freeze it holding
+    .gateway.lock; here both set the same flag as Ctrl-C, so the next 1 s slice pulls and the session ends stopped.
+    The gateway's own guard and mask leave these two signals alone, so the flag is set inside an open too, where the
+    leg's pair check (before any intent) and its first-byte gate read it. SIGKILL and SIGSTOP cannot be caught (the
+    page's "process gone")."""
+
+    SIGNALS = pilot_run.StopFlag.SIGNALS + (signal.SIGQUIT, signal.SIGTSTP)
+    NAMES = {signal.SIGQUIT: "SIGQUIT", signal.SIGTSTP: "SIGTSTP"}
+
+    def handler(self, signum, frame):
+        if self.name is None and signum in self.NAMES:     # pilot_run's handler names only its own three
+            self.name = self.NAMES[signum]
+        super().handler(signum, frame)
 
 
 def _code(exc):
@@ -71,15 +93,34 @@ def arm_view(env):
             "git": git_identity(pilot_gate.MODULE_ROOT, runner=env.git_runner)}
 
 
+def _static_problems(env):
+    """config-p2's static arming for place (A1-A13), the set each race's open checks at off -740 s -> its failure
+    codes, [] when armed. As there, only Keychain item presence and the anchor are read: no secret, no Betfair call.
+    A7 is kept: it also refuses a journal whose last event is ahead of the wall clock, as Pilot 1's ARM does. Any other
+    raise (the journal's anchor read, for one) is a refusal too, so after the line it goes through refuse(), which
+    releases the admission."""
+    try:
+        pilot_run.gates(env, "place")
+    except NotArmed as exc:
+        return list(exc.detail.get("failures") or [exc.rule])
+    except Exception:
+        return ["p2_arm_check_failed:static"]
+    return []
+
+
 def arm_problems(env, view, *, now_ns, until_ns, races):
     """ARM's content checks (note §7), read only, before the line and again after it -> [codes], [] when clean:
-    config-p2's pins; a known commit and a clean tree; release's clean live state, the login ledger and no Pilot 1
+    config-p2's pins and its static arming for place (_static_problems), so a config that could never open does not
+    use the day; a known commit and a clean tree; release's clean live state, the login ledger and no Pilot 1
     armed-session file; no Pilot 1 session today or open, and no P2 ARM record today (one pilot session a UTC day
-    across both pilots); none of our bets open or unsettled; the race counts and N (1 to min(5, 10 - total), and 1
-    while no race has run); UNTIL after now + 20 min; the login cap. An SSH session is refused before this, in run."""
+    across both pilots); none of our bets open or unsettled; room in today's booked loss for one race (the BACK's own
+    pair pre-check on this fold, for daily_loss alone: the minute and hour windows can clear, the UTC day cannot); the
+    race counts and N (1 to min(5, 10 - total), and 1 until one race has had both legs placed); UNTIL after
+    now + 20 min; the login cap. An SSH session is refused before this, in run."""
     paths, config, clock = env.paths, env.config, env.clock
     events, orders, git = view["events"], view["state"]["orders"], view["git"]
     problems = list(p2_lp.config_problems(config))
+    problems += [code for code in _static_problems(env) if code not in problems]
     if git["commit"] is None or git["dirty"] is None:
         problems.append("p2_code_unknown")
     elif git["dirty"]:
@@ -95,10 +136,21 @@ def arm_problems(env, view, *, now_ns, until_ns, races):
         problems.append("p2_arm_already_today")
     if pilot_gate.open_manual_refs([], orders):
         problems.append("p2_other_bet_open")
+    # The BACK's own pair pre-check (the gateway's call in _lp_check) on this fold, for daily_loss alone:
+    # settle-market books on the UTC day it is typed, and that rule cannot clear before the day ends. A raise refuses.
+    try:
+        failures = RiskGuard(config, mode="live", clock=clock, paths=paths).evaluate_pilot_reservation(
+            NO_MARKET, state=view["state"], now_ns=now_ns, size_p=p2_lp.PAIR_WORST_P)
+    except Exception:
+        problems.append("p2_arm_check_failed:daily_loss")
+    else:
+        if any(failure["rule"] == "daily_loss" for failure in failures):
+            problems.append("p2_pair_precheck:daily_loss")
     total = len(p2_lp.races(orders))
     if total >= p2_lp.RACES_TOTAL:
         problems.append("p2_races_total")
-    if not 1 <= races <= min(p2_lp.RACES_DAY, p2_lp.RACES_TOTAL - total) or (total == 0 and races != 1):
+    if (not 1 <= races <= min(p2_lp.RACES_DAY, p2_lp.RACES_TOTAL - total)
+            or (races != 1 and not p2_lp.pair_placed(orders))):
         problems.append("p2_races_invalid")
     if not until_ns > now_ns + UNTIL_LEAD_NS:
         problems.append("p2_until_invalid")
@@ -112,10 +164,12 @@ def banner(*, cfg12, commit, day, until, races, today, total):
             f"{cfg12}, code commit {commit[:12]}. Races so far: {today} today, {total} of {p2_lp.RACES_TOTAL} in "
             f"total; this session may run {races} until {until}Z. Each race is one £2 BACK and one £2 LAY with no "
             f"per-order line, decided about 10 minutes before the off and pulled at 5 minutes if unmatched; the "
-            f"session ends after any race with a matched leg. To stop: the Betfair phone app, Ctrl-C here, the KILL "
-            f"file, or the own-scope kill from {CHECKOUT}. While legs rest a typed cancel fails (this run holds "
-            f".gateway.lock). Nothing heavy runs on this Mac while the session is armed or an order rests. Keep it on "
-            f"mains power with the lid open. Each Keychain item is read once.")
+            f"session ends after any race with a matched leg. To stop at this Mac: Ctrl-C here or the KILL file (the "
+            f"bot cancels its own legs). Away from it: the Betfair phone app (the bot's pull then ends in a handoff, "
+            f"and each leg needs ACCEPT ABSENT or settle-market). The own-scope kill from {CHECKOUT} stops it too "
+            f"(the bot then cancels nothing itself and prints the handoff). While legs rest a typed cancel fails "
+            f"(this run holds .gateway.lock). Nothing heavy runs on this Mac while the session is armed or an order "
+            f"rests. Keep it on mains power with the lid open. Each Keychain item is read once.")
 
 
 def run(env):
@@ -129,7 +183,7 @@ def run(env):
         raise Refused("p2_profile_not_recorder_profile")
     if any(env.environ.get(name) for name in SSH_VARS):     # first: no Keychain anchor, journal or git read (note §7)
         raise Refused("p2_arm_refused:p2_over_ssh")
-    pilot_run.gates(env, "pilot-arm")                       # A2 on config-p2's token, A11, A13
+    pilot_run.gates(env, "pilot-arm")                       # A2 on config-p2's token, A11, A13; A1-A13 in arm_problems
     now = clock.time_ns()
     until_ns = _until_ns(env.args.until, now)
     races = env.args.races
@@ -143,7 +197,7 @@ def run(env):
                                                    until=env.args.until, races=races,
                                                    today=len(p2_lp.races(orders, day=day)),
                                                    total=len(p2_lp.races(orders))))
-    stop = pilot_run.StopFlag()
+    stop = StopFlag()
     stop.install()
     try:
         return _armed(env, view, stop, line=line, day=day, until_ns=until_ns, races=races)
@@ -162,7 +216,7 @@ def _armed(env, view, stop, *, line, day, until_ns, races):
             s = SimpleNamespace(session_id=f"p2s-{tag}", ticket=ticket, stop=stop, races=races, until_ns=until_ns,
                                 arm_seq=None, head=None, credentials=None, caffeinate=None, read_session=None,
                                 read=None, raced=0, streak=0, pulled=False, handoff=False, codes={}, listed=0,
-                                screened=0, flagged=0, clock0=None)
+                                screened=0, flagged=0, clock0=None, note=None)
             try:
                 _arm(env, s, view, line=line, day=day)
             except Refused:
@@ -258,8 +312,9 @@ def _races(env, s):
         return "markets_read_failed"
     s.listed = len(found)
     for market_id, off_ns in found:
+        s.note = None
         code = race(env, s, market_id, off_ns)
-        env.terminal.line(f"{market_id}: {code}")
+        env.terminal.line(f"{market_id}: {code}" + (f" ({s.note})" if s.note else ""))
         if code != "next":
             return code
         if s.raced >= s.races:
@@ -278,7 +333,7 @@ def markets(env, read, until_ns):
         rows = read.list_market_catalogue(
             {"eventTypeIds": rules["event_type_ids"], "marketCountries": list(p2_lp.COUNTRIES),
              "marketTypeCodes": rules["market_types"],
-             "marketStartTime": {"from": utc_from_ns(env.clock.time_ns()), "to": utc_from_ns(last)}},
+             "marketStartTime": {"from": utc_ms_from_ns(env.clock.time_ns()), "to": utc_ms_from_ns(last)}},
             projections=("MARKET_START_TIME", "MARKET_DESCRIPTION"), max_results=200, sort="FIRST_TO_START")
     except (BetfairError, ValueError):
         return None
@@ -318,9 +373,32 @@ def screen(env, read, market_id, off_ns):
 
 
 def _skip(s, code):
-    """A SKIP: counted for the end's summary and printed with the market, never journaled -> "next"."""
+    """A SKIP: counted for the end's summary and printed with the market (s.note, in the market's own line), never
+    journaled -> "next"."""
     s.codes[code] = s.codes.get(code, 0) + 1
+    s.note = code
     return "next"
+
+
+def _no_order(s, code):
+    """A SKIP after the race's open, whose login and reads were on the live key, with no order sent: a refused BACK,
+    a failed send-book read, or the decision window missed after the open. It also counts in the streak, which limits
+    live-key reads that end with no order (F46) -> "next", or "skip_streak" at SKIP_STREAK in a row."""
+    s.streak += 1
+    _skip(s, code)
+    return "skip_streak" if s.streak >= p2_lp.SKIP_STREAK else "next"
+
+
+def _leg_code(result, exc):
+    """A safe code for a leg that was not placed: the exception's, else the refusal's rule, else the order's error
+    code (a FAILED or unresolved leg). A code only: never a bet id, a ref, a price or an exception's text."""
+    if exc is not None:
+        return _code(exc)
+    rule = (result.get("refusal") or {}).get("rule")
+    if rule:
+        return safe_code(rule)
+    views = result.get("orders") or []
+    return safe_code((views[0].get("error_code") if views else None) or "no_code")
 
 
 def _idle(env, s, target_ns):
@@ -370,9 +448,12 @@ def _open(env, s, market_id, off_ns):
     code as it was."""
     s.pulled = False
 
-    def stop_requested():                                 # the first-byte gate refuses a leg once Yu's stop is pending
-        signals = getattr(env.ctx, "signals", None)        # this open's guard: a signal deferred after the BACK's send
-        return s.stop.requested or bool(signals is not None and signals.pending)
+    def stop_requested():                                 # the pair check and the first-byte gate refuse a leg once
+        signals = getattr(env.ctx, "signals", None)        # Yu's stop is pending: this open's guard (a signal deferred
+        held = signal.sigpending() & set(pilot_run.StopFlag.SIGNALS)    # after the BACK's send), or one a mask holds
+        if held:                                           # a held stop signal is Yu's stop: the flag, as if delivered
+            s.stop.handler(min(held), None)
+        return s.stop.requested or bool(signals is not None and signals.pending) or bool(held)
 
     lp = {"arm_seq": s.arm_seq, "session_id": s.session_id, "races": s.races, "stop_requested": stop_requested}
     done = {}
@@ -401,25 +482,29 @@ def in_open(env, s, gw, market_id, off_ns):
 
 
 def _legs(env, s, gw, market_id, off_ns):
-    """WAIT, BACK, BETWEEN, LAY, REST and PULL in one open (note §8)."""
+    """WAIT, BACK, BETWEEN, LAY, REST and PULL in one open (note §8). A LAY that is not placed is counted as
+    lay:<code> and named in the market's line; one that raised with nothing of it sent ends the session
+    (lay_raised:<code>) once the BACK is pulled, unless only its book read failed."""
     trigger = _wait(env, s, off_ns + p2_lp.DECIDE_S[0] * NS)
     if trigger is not None:
         return trigger
     if env.clock.time_ns() > off_ns + p2_lp.DECIDE_S[1] * NS:     # a slow open: no funds or book read for a refusal
-        return _skip(s, "missed_window")
+        return _no_order(s, "missed_window")
     result, exc = _place(env, s, gw, market_id, "BACK")
     if exc is not None:                                   # nothing of the BACK submitted
         if isinstance(exc, env.signal_stop):
             s.stop.requested = True
             return "stopped"
-        return _skip(s, "book_fetch_failed") if _code(exc) == "book_fetch_failed" else f"back_raised:{_code(exc)}"
+        return _no_order(s, "book_fetch_failed") if _code(exc) == "book_fetch_failed" else f"back_raised:{_code(exc)}"
     state = _state(result)
     if state in (None, "REFUSED"):                        # a choice, leg, V-, R- or A18 refusal: nothing sent
-        s.streak += 1
-        _skip(s, (result.get("refusal") or {}).get("rule") or "refused")
-        return "skip_streak" if s.streak >= p2_lp.SKIP_STREAK else "next"
+        s.stop.take_pending(getattr(env.ctx, "signals", None))
+        if s.stop.requested:                              # Yu's stop (p2_stop_before_send before any intent): no race
+            return "stopped"
+        return _no_order(s, (result.get("refusal") or {}).get("rule") or "refused")
     s.streak, s.raced = 0, s.raced + 1                    # a race from its first submit
     if state == "FAILED":
+        s.note = f"BACK failed {_leg_code(result, None)}"
         return "next"
     if state not in p2_lp.PLACED_STATES:                  # UNKNOWN or ABSENT_UNCONFIRMED after the in-line reconcile
         _handoff(env, s, gw, market_id)
@@ -430,12 +515,22 @@ def _legs(env, s, gw, market_id, off_ns):
     result, exc = _place(env, s, gw, market_id, "LAY")
     state = None if exc is not None else _state(result)
     if state not in p2_lp.PLACED_STATES:
+        code = _leg_code(result, exc)                      # counted, and printed in the market's line after the pull:
+        s.codes[f"lay:{code}"] = s.codes.get(f"lay:{code}", 0) + 1         # a choice code is journaled nowhere
+        s.note = f"LAY {'not placed' if state in (None, 'REFUSED', 'FAILED') else 'unresolved'} {code}"
         outcome = pull(env, s, gw, market_id)              # the BACK, at once
         if state in (None, "REFUSED", "FAILED"):
             s.stop.take_pending(getattr(env.ctx, "signals", None))      # a stop during the LAY ends the session
-            return _pulled(env, s, gw, market_id, outcome) or ("stopped" if s.stop.requested else "next")
+            ended = _pulled(env, s, gw, market_id, outcome) or ("stopped" if s.stop.requested else None)
+            if ended is None and exc is not None and code != "book_fetch_failed":
+                return f"lay_raised:{code}"                # as the BACK: only a failed book read moves on
+            return ended or "next"
         _pulled(env, s, gw, market_id, outcome)            # the LAY is unresolved: handed off with the pull's legs
         return "lay_unresolved"
+    # The one line of a resting race, after both sends: the market and the pull's due time only (no bet id). A bot
+    # that prints no market line after that time is hung.
+    env.terminal.line(f"{market_id}: BACK and LAY placed; resting, pull due "
+                      f"{utc_from_ns(off_ns + p2_lp.PULL_S * NS)[11:19]}Z")
     trigger = _wait(env, s, off_ns + p2_lp.PULL_S * NS)    # REST: no Betfair call
     if trigger is not None:
         return _with_legs(env, s, gw, market_id, trigger)
@@ -553,8 +648,9 @@ def pull(env, s, gw, market_id):
 
 
 def _pulled(env, s, gw, market_id, outcome):
-    """The pull's outcome -> None (complete, nothing matched); "matched_leg" with the settle-market line; else the
-    handoff, and kill_event, unreadable or pull_incomplete."""
+    """The pull's outcome -> None (complete, nothing matched); "matched_leg" with the settle-market line (and why to
+    type it on the race's own UTC day: ARM's daily_loss pre-check); else the handoff, and kill_event, unreadable or
+    pull_incomplete."""
     codes = outcome["codes"]
     if codes:
         env.terminal.line(f"{market_id} pull: " + ", ".join(codes))
@@ -563,7 +659,9 @@ def _pulled(env, s, gw, market_id, outcome):
         return codes[0] if codes[:1] in (["kill_event"], ["unreadable"]) else "pull_incomplete"
     if outcome["matched"]:
         env.terminal.line(f"{market_id}: a p2-lp leg matched; after its result run settle-market --market {market_id}"
-                          f"{env.paused_flag}. The next P2 ARM refuses until it is settled.")
+                          f"{env.paused_flag}. Type it on the race's own UTC day if you can: the booking falls on "
+                          f"the day it is typed, and more than £10 booked on a later day refuses that day's P2 ARM "
+                          f"(p2_pair_precheck:daily_loss). The next P2 ARM refuses until it is settled.")
         return "matched_leg"
     return None
 

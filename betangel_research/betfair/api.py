@@ -665,8 +665,10 @@ class ReadClient:
             if depth is not None:
                 projection["exBestOffersOverrides"] = {"bestPricesDepth": depth}
             if virtualise:
-                # PriceProjection's virtualise flag (virtual, cross-matched prices). Unverified: the field name is
-                # not in docs/betfair-facts.md; it is taken from Betfair's Betting API reference, not checked here.
+                # PriceProjection's virtualise flag (virtual, cross-matched prices). Documented in Betfair's Betting
+                # Type Definitions (DD/2687465, PriceProjection): boolean, default false, "Indicates if the returned
+                # prices should include virtual prices". Sent as JSON true (Betfair's examples send the string). Not
+                # yet sent to Betfair by this suite, and docs/betfair-facts.md has no row for it yet.
                 projection["virtualise"] = True
             base["priceProjection"] = projection
         if order_projection is not None:

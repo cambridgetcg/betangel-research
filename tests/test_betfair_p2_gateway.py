@@ -3,11 +3,14 @@
 These drive the real OrderGateway, journal, risk guard, JSON-RPC and read clients over the simulated exchange
 (test_betfair_support_gateway) with Pilot 1's per-market fixtures (test_betfair_support_pilot's PilotBetfair and
 Market), on config-p2.json beside the main config.json, and show: the Pilot 2 context refused in paper and with
-Pilot 1's config or context; place() refused on it and the typed place unchanged; the ARM record each leg needs; the
-request body; a choice code journaling only funds_check; virtual prices on its books only; the pair rules on the
-submit's own basis read; the pair pre-check (R1, R3, R10's room) and R5, R8 and R10 after settle-market; the race
-counts; own-leg cancels and a partial fill at the pull; the kill's extra ref on an untrusted journal; that a leg whose
-send or report raised is still listed; the screened start and country; and the three-UNKNOWN HALT after a round trip.
+Pilot 1's config or context, or with a guard built on another config; place() refused on it and the typed place
+unchanged; the ARM record each leg needs; the request body; a choice code journaling only funds_check; a pending stop
+refusing either leg before any intent; virtual prices on its books only, a refetched one included; the LAY refused
+when the best back fell since the BACK; the pair rules on the submit's own basis read; Pilot 1's own unsettled bet
+refusing a BACK; the pair pre-check (R1, R3, R10's room, and both legs' funds and R6 room before any
+intent), R12 at the LAY, and R5, R8 and R10 after settle-market; the race counts; own-leg cancels and a partial fill
+at the pull; the kill's extra ref on an untrusted journal; that a leg whose send or report raised is still listed;
+the screened start and country; and the three-UNKNOWN HALT after a round trip.
 No /usr/bin/security, git or other child process runs, and nothing opens the network. They do not show Betfair's real
 behaviour, the executor (p2_run) or the command line (test_betfair_p2_cli).
 """
@@ -148,6 +151,10 @@ def events(env):
     return list(env.journal.events())
 
 
+def kinds(env):
+    return [event["kind"] for event in events(env)]
+
+
 def kinds_after(env, seq):
     return [event["kind"] for event in events(env) if event["seq"] > seq]
 
@@ -234,6 +241,19 @@ def settle(env, market_id):
         gateway.close()
 
 
+def account(env, balance):
+    """getAccountFunds as Betfair would answer with `balance` pounds: each resting BACK of ours reserves its stake, so
+    the available figure drops by it and R12 still explains the exposure."""
+    def funds():
+        resting = sum(order["sizeRemaining"] for order in env.exchange.orders.values()
+                      if order["status"] == "EXECUTABLE" and order["side"] == "BACK")
+        return {"availableToBetBalance": round(balance - resting, 2), "exposure": -resting,
+                "retainedCommission": 0.0, "exposureLimit": -10000.0, "discountRate": 0.0, "pointsBalance": 0,
+                "wallet": "UK"}
+
+    env.exchange.funds = funds
+
+
 def session_start(env, *, until_ns):
     """A Pilot 1 session_start note today (contract p1)."""
     return env.journal.append("note", pilot.pilot_note(
@@ -300,6 +320,18 @@ class Context(P2Case):
                          clock=pilot_env.gateway.clock, env={}, keychain_runner=pilot_env.runner, pilot=pilot_env.ctx,
                          lp=lp)
         self.assertEqual(gateway_for(env, env.p2, guard=env.p2_guard, lp=lp).lp_legs(), {})      # config-p2: built
+
+    def test_guard_built_on_another_config_refused(self):
+        # The RiskGuard judges R5-R12: a Pilot 2 gateway takes only one built on the config it holds.
+        env = build(self)
+        other = copy.deepcopy(env.p2)
+        other["orders"]["caps"]["max_daily_loss"] = 50.0
+        loose = RiskGuard(other, mode="live", clock=env.clock, paths=env.paths)
+        with self.assertRaisesRegex(ConfigError, "p2_gateway_needs_config_p2"):
+            gateway_for(env, env.p2, guard=loose, lp=lp_of(env))
+        self.assertEqual(env.p2_guard.config_sha256, cfg.config_sha256(env.p2))
+        self.assertEqual(gateway_for(env, env.p2, guard=env.p2_guard, lp=lp_of(env)).lp_legs(), {})
+        gateway_for(env, env.p2, guard=loose)              # without lp the gateway is as it was
 
     def test_place_refused_on_lp_gateway(self):
         env = build(self)
@@ -396,6 +428,34 @@ class Legs(P2Case):
                 self.assertEqual(kinds_after(env, before), ["funds_check"])
         self.assertEqual((placed(env), gateway.lp_legs()), ([], {}))
 
+    def test_pending_stop_refuses_either_leg_before_any_intent(self):
+        # p2-run's stop_requested() is asked first in the pair check, after the leg's funds and book reads: a stop
+        # pending then refuses the leg with only funds_check journaled, so nothing of it is submitted or counted.
+        for side in ("BACK", "LAY"):
+            with self.subTest(side=side):
+                env = build(self)
+                race(env)
+                stop = {"requested": side == "BACK", "asked": 0}
+
+                def stop_requested(stop=stop):
+                    stop["asked"] += 1
+                    return stop["requested"]
+
+                gateway = open_p2(env, dict(lp_of(env), stop_requested=stop_requested))
+                set_time(env.clock, OFF - 590 * S)
+                if side == "LAY":
+                    self.back_placed(env, gateway)
+                    self.assertEqual(stop["asked"], 2)             # the BACK's pair check, then its first-byte gate
+                    stop["requested"] = True
+                asked, before = stop["asked"], head(env)
+                result = leg(env, gateway, side)
+                self.assertEqual((rule(result), result["orders"]), (("refused", "p2_stop_before_send"), []))
+                self.assertEqual((kinds_after(env, before), stop["asked"]), (["funds_check"], asked + 1))
+                self.assertEqual(([p["instructions"][0]["side"] for p in (r["params"] for r in placed(env))],
+                                  sorted(order["side"] for order in gateway.lp_legs().values()),
+                                  len(p2_lp.races(fold(env)["orders"]))),
+                                 ((["BACK"], ["BACK"], 1) if side == "LAY" else ([], [], 0)))
+
     def test_virtualise_only_on_lp_books(self):
         env = build(self)
         manual(env, cancel=True)                   # a typed place's own book, before the session's legs
@@ -419,6 +479,68 @@ class Legs(P2Case):
         with self.assertRaisesRegex(ValueError, "virtualise must be a boolean"):
             env.read.list_market_book([MARKET], virtualise=1)
         self.assertEqual(len(env.router.reads), count)
+
+    def test_refetched_send_book_is_virtualised_too(self):
+        # The first send book goes stale (over max_book_age_s), so the gateway reads again: with virtual prices too.
+        env = build(self)
+        race(env)
+        gateway = open_p2(env)
+        set_time(env.clock, OFF - 590 * S)
+        fetch, asked = env.read.market_snapshot, []
+
+        def first_book_goes_stale(market_id, **kwargs):
+            book = fetch(market_id, **kwargs)
+            asked.append(kwargs.get("virtualise", False))
+            if len(asked) == 1:
+                env.clock.advance(3)
+            return book
+
+        env.read.market_snapshot = first_book_goes_stale
+        self.back_placed(env, gateway)
+        self.assertEqual(asked, [True, True])
+        self.assertEqual([read["params"]["priceProjection"].get("virtualise")
+                          for read in env.router.reads_of(sp.BOOK) if read["params"]["marketIds"] == [MARKET]],
+                         [True, True])
+
+    def test_lp_place_needs_a_place_open(self):
+        env = build(self)
+        race(env)
+        gateway = gateway_for(env, env.p2, guard=env.p2_guard, lp=lp_of(env))
+        gateway.open(command="cancel", confirm_token=p2_token(env))
+        self.addCleanup(gateway.close)
+        set_time(env.clock, OFF - 590 * S)
+        before = head(env)
+        with self.assertRaisesRegex(OrderRefused, "gateway_opened_for_another_command"):
+            leg(env, gateway, "BACK")
+        self.assertEqual((head(env), placed(env)), (before, []))
+
+    def test_lay_refused_when_the_best_back_fell_since_the_back(self):
+        # Book 4.0 / 4.3: the BACK at 4.2 and the LAY planned at 4.1, one tick above that book's best back. On the
+        # LAY's own book our BACK is the best lay. The LAY goes only while the best back is still 4.0.
+        own = (("4.2", "2.00"),)
+        cases = (("unchanged", (("4.0", "15.00"),), ("accepted", None)),
+                 ("fell 1 tick", (("3.95", "15.00"),), ("refused", "p2_book_moved")),
+                 ("fell 6 ticks", (("3.75", "15.00"),), ("refused", "p2_book_moved")),
+                 ("rose to the LAY's price", (("4.1", "15.00"),), ("refused", "leg_not_passive")),
+                 ("no back side", (), ("refused", "leg_not_passive")))
+        for name, backs, expected in cases:
+            with self.subTest(case=name):
+                env = build(self)
+                market = race(env, back="4.0", lay="4.3")
+                gateway = open_p2(env)
+                set_time(env.clock, OFF - 590 * S)
+                self.back_placed(env, gateway)
+                market.backs[FAV], market.lays[FAV] = backs, own
+                set_time(env.clock, OFF - 588 * S)
+                before = head(env)
+                lay = leg(env, gateway, "LAY")
+                self.assertEqual(rule(lay), expected)
+                sent = [request["params"]["instructions"][0]["limitOrder"]["price"] for request in placed(env)]
+                if expected[0] == "refused":               # a choice code: nothing of the LAY but its funds read
+                    self.assertEqual((sent, kinds_after(env, before), len(gateway.lp_legs())),
+                                     ([4.2], ["funds_check"], 1))
+                else:
+                    self.assertEqual((sent, states(lay)), ([4.2, 4.1], ["EXECUTABLE"]))
 
     def test_lp_check_runs_on_submit_basis(self):
         env = build(self)
@@ -506,6 +628,37 @@ class Legs(P2Case):
         self.assertEqual(rule(leg(env, gateway, "LAY")), ("accepted", None))
         self.assertEqual([request["params"]["marketId"] for request in placed(env)], [MARKET, MARKET])
 
+    def test_pilot_1_matched_unsettled_bet_refuses_a_p2_back(self):
+        # Pilot 1's own bet, matched yesterday and not yet settled, in Pilot 1's registered world. It counts as a bet
+        # of ours because the check is given no events: with the journal's events, open_manual_refs leaves out every
+        # order whose intent source is "pilot" (pilot_gate.py:318-334).
+        env = sp.build_pilot_gateway(self, arm=False, start=pilot.utc_text_from_ns(OFF - pilot.DAY_NS - 3600 * S))
+        no_children(self)
+        env.test = self
+        sp.arm_session(env, until_ns=UNTIL - pilot.DAY_NS, session_id="s-20270103")
+        market = sp.add_market(env, off_ns=OFF - pilot.DAY_NS)
+        set_time(env.clock, OFF - pilot.DAY_NS - 299 * S)
+        sp.open_pilot(self, env)
+        fill(env)
+        first = sp.place(env, market)
+        env.exchange.place_handler = None
+        env.gateway.close()
+        self.assertEqual((first["decision"], first["pilot"]["state"]), ("accepted", "EXECUTION_COMPLETE"), first)
+        self.assertEqual([(o["customer_strategy_ref"], o["state"], o["size_matched_p"])
+                          for o in fold(env)["orders"].values()], [("p1-fav-t5", "EXECUTION_COMPLETE", 200)])
+        support.write_test_config(env.paths, support.deep_merge(gw.LIVE_OVERRIDES, p2_orders()),
+                                  path=env.paths.config_p2_path)
+        env.p2 = cfg.load_config_p2(paths=env.paths)
+        env.p2_guard = RiskGuard(env.p2, mode="live", clock=env.clock, paths=env.paths)
+        set_time(env.clock, START)
+        env.arm_seq = arm_record(env)
+        race(env)
+        gateway = open_p2(env)
+        set_time(env.clock, OFF - 590 * S)
+        before = head(env)
+        self.assertEqual(rule(leg(env, gateway, "BACK")), ("refused", "p2_other_bet_open"))
+        self.assertEqual((kinds_after(env, before), len(placed(env))), (["funds_check"], 1))   # Pilot 1's BACK only
+
     def test_pilot_1_day_and_window_refuse(self):
         env = build(self)
         session_start(env, until_ns=env.clock.time_ns() - 60 * S)          # today's Pilot 1 session, ended
@@ -569,6 +722,111 @@ class Limits(P2Case):
                                                                  size_p=p2_lp.PAIR_WORST_P)[0]["rule"],
                          "unresolved_orders")
         self.assertEqual(len(placed(env)), 1)
+
+    def test_pair_precheck_funds_for_both_legs(self):
+        # R11 judges each leg alone on a fresh funds read: the LAY needs its whole liability on top of the resting
+        # BACK's £2. The BACK's pre-check asks for both: £12.00 at a LAY of 6.0, £3.02 at 1.51. A penny short refuses
+        # the BACK before any intent, so nothing is sent and no race is used.
+        for prices, need_p in (({"back": "5.9", "lay": "6.4"}, 1200), ({"back": "1.5", "lay": "1.53"}, 302)):
+            for balance_p in (need_p - 1, need_p):
+                with self.subTest(prices=prices, balance_p=balance_p):
+                    env = build(self)
+                    account(env, balance_p / 100)
+                    race(env, **prices)
+                    gateway = open_p2(env)
+                    set_time(env.clock, OFF - 590 * S)
+                    before = head(env)
+                    back = leg(env, gateway, "BACK")
+                    if balance_p < need_p:
+                        self.assertEqual((rule(back), back["orders"]), (("refused", "p2_pair_precheck:funds"), []))
+                        self.assertEqual((kinds_after(env, before), placed(env), gateway.lp_legs(),
+                                          p2_lp.races(fold(env)["orders"])), (["funds_check"], [], {}, set()))
+                    else:
+                        self.assertEqual((rule(back), rule(leg(env, gateway, "LAY"))),
+                                         (("accepted", None), ("accepted", None)))
+                        self.assertEqual(len(placed(env)), 2)
+        # An available figure Betfair did not give, or a funds read that failed, refuses the BACK the same way.
+        for name in ("no_figure", "read_failed"):
+            with self.subTest(funds=name):
+                env = build(self)
+                race(env)
+                gateway = open_p2(env)
+                set_time(env.clock, OFF - 590 * S)
+                if name == "no_figure":
+                    env.exchange.funds = lambda: {"availableToBetBalance": None, "exposure": 0.0}
+                else:
+                    env.router.next_response["getAccountFunds"] = [support.rpc_error_response(-32602, "DSC-0018")]
+                back = leg(env, gateway, "BACK")
+                self.assertEqual((rule(back), placed(env), gateway.lp_legs()),
+                                 (("refused", "p2_pair_precheck:funds"), [], {}))
+                self.assertNotIn("intent", kinds(env))
+
+    def test_pair_precheck_r6_room_for_both_legs(self):
+        # One other order of ours today (typed, pulled), then four races: nine orders. The day's cap of 10 has room
+        # for one more order, not for a pair: the fifth BACK is refused before any intent and no race is used.
+        env = build(self)
+        manual(env, cancel=True)
+        results = []
+        for index in range(5):
+            market_id, off = f"1.30{index}", OFF + index * 600 * S
+            race(env, market_id, off_ns=off)
+            set_time(env.clock, off - 590 * S)
+            gateway = open_p2(env)
+            before = head(env)
+            back = leg(env, gateway, "BACK", market_id)
+            lay = leg(env, gateway, "LAY", market_id) if states(back) == ["EXECUTABLE"] else None
+            for result in (lay, back):                     # the pull, LAY first
+                if result is not None and states(result) == ["EXECUTABLE"]:
+                    gateway.cancel(market_id, [result["orders"][0]["bet_id"]], source="cli_manual")
+            results.append((rule(back), None if lay is None else rule(lay)))
+            journaled, legs = kinds_after(env, before), gateway.lp_legs()
+            gateway.close()
+        self.assertEqual(results, [(("accepted", None), ("accepted", None))] * 4
+                         + [(("refused", "p2_pair_precheck:rate_day"), None)])
+        self.assertEqual((journaled, legs), (["funds_check"], {}))
+        self.assertEqual((len(placed(env)), len(p2_lp.races(fold(env)["orders"]))), (9, 4))
+        # Each of R6's sources is the fold's own. The submit times: one typed order 30 s before the BACK leaves the
+        # minute's cap of 2 room for one order, not for a pair.
+        env = build(self)
+        race(env)
+        set_time(env.clock, OFF - 620 * S)
+        manual(env, cancel=True)
+        gateway = open_p2(env)
+        set_time(env.clock, OFF - 590 * S)
+        self.assertEqual(rule(leg(env, gateway, "BACK")), ("refused", "p2_pair_precheck:rate_minute"))
+        self.assertEqual(len(placed(env)), 1)
+        # The fold's count of today's orders, and the exchange's own count from the open's startup reconcile.
+        for key, value in (("orders_today", 9), ("exchange_floor", {"orders_today": 9, "realized_today_pence": 0})):
+            with self.subTest(source=key):
+                env = build(self)
+                race(env)
+                gateway = open_p2(env)
+                set_time(env.clock, OFF - 590 * S)
+                with patch.object(gateway, "_state", return_value=dict(gateway._state(), **{key: value})):
+                    self.assertEqual(rule(leg(env, gateway, "BACK")), ("refused", "p2_pair_precheck:rate_day"))
+                self.assertEqual(placed(env), [])
+
+    def test_r12_at_the_lay_with_the_backs_exposure(self):
+        # R12 at a £0 tolerance: with the BACK resting, Betfair's exposure figure of £2 (either sign) is explained by
+        # the journal and the LAY goes; a penny more is not, and the refusal HALTs.
+        def funds(exposure):
+            return lambda: {"availableToBetBalance": 1000.0, "exposure": exposure, "retainedCommission": 0.0,
+                            "exposureLimit": -10000.0, "discountRate": 0.0, "pointsBalance": 0, "wallet": "UK"}
+
+        for exposure, expected in ((-2.0, ("accepted", None)), (2.0, ("accepted", None)),
+                                   (-2.01, ("refused", "unexplained_account_exposure"))):
+            with self.subTest(exposure=exposure):
+                env = build(self)
+                race(env)
+                gateway = open_p2(env)
+                set_time(env.clock, OFF - 590 * S)
+                self.back_placed(env, gateway)
+                env.exchange.funds = funds(exposure)
+                self.assertEqual(rule(leg(env, gateway, "LAY")), expected)
+                state = fold(env)
+                self.assertEqual((state["halted"], state["halt_reasons"], len(placed(env))),
+                                 (False, [], 2) if expected[0] == "accepted"
+                                 else (True, ["unexplained_account_exposure"], 1))
 
     def test_r5_lay_600_passes_620_refused(self):
         env = build(self)

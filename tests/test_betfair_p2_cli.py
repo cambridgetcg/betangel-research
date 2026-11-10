@@ -3,7 +3,9 @@
 These run cli.main in process over the gateway fakes (test_betfair_support_gateway) and show: init-config --p2 writes
 config-p2.json once (O_EXCL) and leaves config.json alone; --config naming config-p2.json is refused outside the test
 harness; the own-scope kill adds p2-lp to its sweep, even on an untrusted journal, only when config-p2.json exists,
-and also when that check raises; and p2-run and p2-summary are live only and reach the executor with config-p2 and a
+and also when that check raises, and that a p2_lp that cannot be imported ends the kill exit 3 before any sweep (as
+on d26c6bd); and p2-run and p2-summary are live only, need
+--bet-angel-paused wherever they log in while coexistence is unverified, and reach the executor with config-p2 and a
 factory that opens an armed place gateway holding the Pilot 2 context. The executor (p2_run) is a stand-in here: its
 own behaviour, p2-summary's counts and --cleared's figures among it, is tested with it (test_betfair_p2_run). No
 /usr/bin/security, git or other child process runs, and nothing opens the network.
@@ -154,7 +156,9 @@ class Kill(unittest.TestCase):
 
     def test_kill_exit_3_when_p2_lp_cannot_be_imported(self):
         # The p2_lp import sits inside the kill's try, as the gateway's own import of it does: exit 3 with the advice
-        # and HALT kill_incomplete, never exit 4. Only that one sys.modules entry changes, and it is put back.
+        # and HALT kill_incomplete, never exit 4. Only that one sys.modules entry changes, and it is put back. The
+        # round's fallback to a literal ref (gateway-10) would have let this kill log in and cancel; it was withdrawn
+        # because a fix may not add a cancel, so nothing is swept here.
         name = "betangel_research.betfair.p2_lp"
         module = sys.modules[name]
         sys.modules[name] = None
@@ -165,6 +169,7 @@ class Kill(unittest.TestCase):
         self.assertEqual((code, out["status"], out["journal_halt_kill_incomplete"]),
                          (3, "kill_incomplete_no_session", "appended"))
         self.assertTrue(out["kill_file_engaged"])
+        self.assertEqual({env.exchange.orders[bet]["status"] for bet in (ours, leg)}, {"EXECUTABLE"})
 
 
 class Commands(unittest.TestCase):
@@ -210,6 +215,32 @@ class Commands(unittest.TestCase):
                 self.assertEqual(run_main(argv, self.deps)[0], 0)
                 self.assertEqual(self.calls[-1], ("summary", cleared, True))
         self.assertEqual([request["method"] for request in env.router.order_requests], [])
+
+    def test_unverified_coexistence_needs_the_flag_wherever_a_command_logs_in(self):
+        # config-p2 as the example ships it: Bet Angel's coexistence unverified (A12). p2-run and p2-summary --cleared
+        # log in, so each needs --bet-angel-paused before the executor is reached; the offline p2-summary does not.
+        env = self.env
+        config = json.loads(env.paths.config_p2_path.read_text(encoding="utf-8"))
+        config["coexistence"]["bet_angel"] = "unverified"
+        env.paths.config_p2_path.write_text(json.dumps(config), encoding="utf-8")
+        env.p2 = cfg.load_config_p2(paths=env.paths)
+
+        def reached(p2_env):
+            self.calls.append((p2_env.args.command, p2_env.args.bet_angel_paused))
+            return 0
+
+        stand_in_executor(self, run=reached, summary=reached)
+        refusal = ("Betfair input error: bet_angel_coexistence_unverified; add --bet-angel-paused (you state Bet "
+                   "Angel is logged out or not managing positions); kill needs no flag")
+        code, out, err = self.run_p2("--mode", "live", "--confirm-live", p2_token(env))
+        self.assertEqual((code, err.strip(), self.calls), (2, refusal, []))
+        code, out, err = run_main(["p2-summary", "--mode", "live", "--cleared"], self.deps)
+        self.assertEqual((code, err.strip(), self.calls), (2, refusal, []))
+        self.assertEqual((env.confirmer.prompts, env.transport.requests), ([], []))
+        self.assertEqual(self.run_p2("--mode", "live", "--confirm-live", p2_token(env), "--bet-angel-paused")[0], 0)
+        self.assertEqual(run_main(["p2-summary", "--mode", "live", "--cleared", "--bet-angel-paused"], self.deps)[0], 0)
+        self.assertEqual(run_main(["p2-summary", "--mode", "live"], self.deps)[0], 0)
+        self.assertEqual(self.calls, [("p2-run", True), ("p2-summary", True), ("p2-summary", False)])
 
     def test_p2_commands_refuse_paper_another_profile_and_a_refused_arm(self):
         def refused(p2_env):

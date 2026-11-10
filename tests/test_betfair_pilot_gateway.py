@@ -2302,6 +2302,14 @@ class LegacyPinTests(unittest.TestCase):
     ROLLOUT_OUTPUTS = "8fcc661b1174f0418434a1e13e22a13e87aa32adbe2567756c64373cddfdd3f0"
     ROLLOUT_EXITS = [0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0]
 
+    # The kill's Keychain line (Yu, 2026-11-10: "yes go for removing never Always Allow"): cli.py dropped the
+    # "(not Always Allow)" that 2d3b092 printed. It is the one deliberate difference from 2d3b092 in a non-pilot
+    # command's own output, so no digest above is re-pinned: the test checks that today's line is printed once, by
+    # the kill and by nothing else, and puts 2d3b092's line back before it hashes the outputs.
+    KILL_KEYCHAIN_LINE = "Betfair kill: reading credentials from the Keychain; if macOS asks, click Allow\n"
+    KILL_KEYCHAIN_LINE_2D3B092 = ("Betfair kill: reading credentials from the Keychain; if macOS asks, click Allow "
+                                  "(not Always Allow)\n")
+
     def non_pilot_world(self):
         import io as io_module
         import itertools
@@ -2349,9 +2357,10 @@ class LegacyPinTests(unittest.TestCase):
         --continue-admission 4 (refused while the market is open), cancel, recording-release 4, settle-market (settled
         once it is CLOSED and our bets are no longer current), kill, and resume after the KILL file is removed, through
         cli.main. The journal events (without event ids, chain hashes and monotonic stamps) and the order requests
-        are those of 2d3b092, byte for byte (admission writes no journal event); the cancel, kill and resume outputs
-        are unchanged, and the place, live-probe, reconcile and settle-market outputs differ only by the recording
-        lines _manual_owned prints. Refs, customer refs and intent ids are made deterministic."""
+        are those of 2d3b092, byte for byte (admission writes no journal event); the cancel and resume outputs are
+        unchanged, the kill's differs only by its Keychain line (KILL_KEYCHAIN_LINE, above), and the place,
+        live-probe, reconcile and settle-market outputs differ only by the recording lines _manual_owned prints.
+        Refs, customer refs and intent ids are made deterministic."""
         env, run, outputs, place = self.non_pilot_world()
         release = ["recording-release", "--confirm-live", env.token]
         bet = json.loads(run(*place)[1])["orders"][0]["bet_id"]
@@ -2379,6 +2388,14 @@ class LegacyPinTests(unittest.TestCase):
         found = {"events": self.journal_digests(env)[0],
                  "orders": canonical_sha256([(r["method"], r["params"]) for r in env.router.order_requests])}
         self.assertEqual(found, {k: self.NON_PILOT_DIGESTS[k] for k in ("events", "orders")})
+        # The kill's Keychain line: today's wording once, in the kill's stderr (index 10) and nowhere else, and
+        # 2d3b092's wording nowhere. Then 2d3b092's line goes back in, so both output digests stay as pinned.
+        self.assertEqual([(index, name) for index, o in enumerate(outputs) for name, text in (("out", o[1]),
+                                                                                              ("err", o[2]))
+                          for _ in range(text.count(self.KILL_KEYCHAIN_LINE))], [(10, "err")])
+        self.assertFalse(any(self.KILL_KEYCHAIN_LINE_2D3B092 in o[1] + o[2] for o in outputs))
+        outputs = [[code, out, err.replace(self.KILL_KEYCHAIN_LINE, self.KILL_KEYCHAIN_LINE_2D3B092), released]
+                   for code, out, err, released in outputs]
         base = [[code, out, "".join(line for line in err.splitlines(keepends=True)
                                     if not line.startswith("Betfair recording: "))]
                 for code, out, err, released in outputs if not released]

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "run_date": "2026-11-10",
   "status": "delayed_and_live_key_first_live_tests_one_probe_order_placed_and_cancelled_none_matched",
-  "scope": "First-live tests on the lab Mac (the MacBook Pro), the first there after Yu moved live trading to it (Yu, 2026-11-05): T1 on the delayed application key, which lab-Claude ran with Yu's OK and Yu present; T9, the live probe on the live key, which Yu ran at Yu's own terminal; and a T0 observation without a receipt. Both ran from a clean checkout of main c86764a. This report covers the whole day. T9 has a private receipt directory but no SHA256SUMS digest yet, so it is recorded under live_test_observations and not in first_live_tests_run. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, CLI commands without ids, codes, field names, booleans, counts, durations and short notes only; clock times are left out (run_date gives the day).",
+  "scope": "First-live tests on the lab Mac (the MacBook Pro), the first there after Yu moved live trading to it (Yu, 2026-11-05): T1 on the delayed application key, which lab-Claude ran with Yu's OK and Yu present; T9, the live probe on the live key, which Yu ran at Yu's own terminal; and a T0 observation without a receipt. Both ran from a clean checkout of main c86764a. This report covers the whole day. T9 has a private receipt directory but no SHA256SUMS digest yet, so it is recorded under live_test_observations and not in first_live_tests_run. Raw responses stay private under STATE_ROOT/profiles/<p>/live-tests/; this file holds test ids, receipt digests, the lab Mac's journal lineage digests, CLI commands without ids, codes, field names, booleans, counts, durations and short notes only; clock times are left out (run_date gives the day).",
   "receipt_sha256_convention": "sha256 of the SHA256SUMS file in the private receipt directory. The CLI wrote T9's receipt directory without a SHA256SUMS file, so T9 has no receipt_sha256 yet and is not listed in first_live_tests_run.",
   "code_revision": "c86764a",
   "key_types": {
@@ -63,8 +63,7 @@
           "place_submitted": false,
           "state_after": "REFUSED",
           "recording_admission": "taken and released",
-          "admission_generation": 1,
-          "lesson": "choose a race whose off is less than 30 minutes away before typing the probe"
+          "admission_generation": 1
         },
         {
           "attempt": "probe",
@@ -145,7 +144,7 @@
   "economic_result": null,
   "limitations": [
     "T1 used the delayed key and read no market data. T9 used the live key: one live order, the fixed probe, cancelled in full with nothing matched; no strategy order and no open position.",
-    "One login, keepAlive and logout on one account on one day, from the lab Mac; it shows behaviour seen, not a documented guarantee.",
+    "T1 is one login, keepAlive and logout on one account on one day, from the lab Mac; it shows behaviour seen, not a documented guarantee.",
     "The T1 receipt was written by lab-Claude from the command's printed output, not by the command; this report does not say which lines of the output the receipt keeps. Who writes receipts on the lab Mac is open for Yu (docs/betfair-pilot-1-plan.md, Architecture).",
     "The offline doctor lines come from lab-Claude's session, from a run made before T1; this report does not say whether the T1 receipt also holds them.",
     "T9 has no SHA256SUMS digest yet, so it is not in first_live_tests_run. Its codes come from lab-Claude's notes of the day (the probe ran in Yu's terminal) and from the offline doctor and status run after it, not from its receipt files, which no agent read.",

@@ -17,8 +17,9 @@ that read the same data; registrations cite the ids).
 parse_split takes the file's raw bytes. It refuses bytes that are not exactly file_bytes(value) (sorted keys,
 indent 2, ASCII, one final newline; so no duplicate key survives), any key set that is not the expected one,
 ranges that overlap or are out of order, a label used by two ranges, a salt that is not 16 to 128 printable
-ASCII characters without a space or "|", and a residue outside 0 .. modulus - 1. PartitionError's text is
-"partition:<place>:<reason>".
+ASCII characters without a space or "|", and a residue outside 0 .. modulus - 1. The byte-form comparison comes
+last, when every value is known to be small: indenting deeply nested lists would build a very large text.
+PartitionError's text is "partition:<place>:<reason>".
 
 What this does not do: it reads no file and no data, and it cannot stop a later split file with another
 salt. The controls for that are the merged file, its sha256 pinned in tests/test_backtest_lane.py and named
@@ -194,8 +195,6 @@ def parse_split(raw):
     except (ValueError, UnicodeDecodeError, RecursionError):
         _fail("file", "not_json")
     top = _object(value, "top", TOP_KEYS)
-    if file_bytes(value) != raw:
-        _fail("file", "not_canonical")
     for key, expected in (("schema", SCHEMA), ("split_by", CLUSTER)):
         if top[key] != expected:
             _fail(key, "not_supported")
@@ -236,6 +235,9 @@ def parse_split(raw):
             not EXPOSURE_ID_RE.fullmatch(key) or not isinstance(text, str) or not text.strip()
             for key, text in exposure.items()):
         _fail("prior_exposure", "not_ids_with_a_sentence_each")
-    return Split(sha256=hashlib.sha256(raw).hexdigest(), ranges=tuple(ranges), roles=roles, explore_budgets=budgets,
-                 alpha_lifetimes=lifetimes, halves=tuple(halves), max_looks=_int(top["max_looks"], "max_looks", 1, 100),
-                 prior_exposure=dict(exposure))
+    split = Split(sha256=hashlib.sha256(raw).hexdigest(), ranges=tuple(ranges), roles=roles, explore_budgets=budgets,
+                  alpha_lifetimes=lifetimes, halves=tuple(halves),
+                  max_looks=_int(top["max_looks"], "max_looks", 1, 100), prior_exposure=dict(exposure))
+    if file_bytes(value) != raw:                # last: every value is now known to be small (module docstring)
+        _fail("file", "not_canonical")
+    return split

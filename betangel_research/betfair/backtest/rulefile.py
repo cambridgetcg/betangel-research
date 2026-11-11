@@ -13,15 +13,21 @@ read as exact Fractions; counts are JSON integers; a float is refused.
   turn_in_play_enabled, persistence_enabled), each true or null (null = not gated). It is parsed and kept on
   the Rule. decide does not read it: checking a market against it is the caller's job.
 - times: {at_s, pull_s} rows in time order. at_s is whole seconds before the first-published off (-86,400 to
-  -1). pull_s is when the order is taken back, later than at_s and at most -1, or null for an order that is kept.
+  -1). pull_s is when the order is taken back, later than at_s and at most -1, or null for an order that is not
+  taken back before the off.
 - select: "favourite" (the only runner with the lowest best back among priced runners) or "each_active" (every
   runner in the view).
 - when: {feature, op, value, code} rows; all must hold (a plain AND). feature is one of FEATURES, op one of
-  >=, <=, ==, value one constant, code the text decide gives when the row fails. Rows on a market feature
-  (market_open, active_runners) come before rows on a runner feature.
+  >=, <=, ==, value one constant, code the text decide gives when the row fails. A code may not be one of
+  decide's own (EVALUATOR_CODES); nothing here knows the codes a caller adds, so a caller must refuse a clash
+  with its own. Rows on a market feature (market_open, active_runners) come before rows on a runner feature.
 - intents: {side, price, stake, persist} rows. side is BACK or LAY; price is {"ref": "best_back"},
   {"ref": "best_lay"} or {"ref": "fixed", "value": "1.01"}; stake is GBP of backer's stake; persist is "lapse"
-  or "keep" (keep is for simulation only).
+  or "keep" (keep is for simulation only). decide hands pull_s and persist back unchanged; they are for the
+  caller that walks the orders. The pull time alone says when an order is taken back. persist says what the
+  in-play turn does to an order still resting then: "lapse" ends it, "keep" leaves it in the market. So "lapse"
+  with a null pull_s is an order that rests until the market turns in play. "keep" in a rule where any time has
+  a pull_s could never matter and is refused (keep_with_a_pull_time).
 
 The view. RuleView holds what a rule may read at one time t: at_s, market_open (1 or 0), active_runners,
 ladder_malformed, and one RunnerView per runner ACTIVE and listed at t (selection_id, best_back,
@@ -37,7 +43,9 @@ no_reference_price when an intent's price ref has no value. A feature with no va
 each_active a runner that fails gets no intent; when every runner fails, the code is the first runner's.
 
 parse_rule takes the file's raw bytes and refuses any that are not exactly file_bytes(value) (sorted keys,
-indent 2, ASCII, one final newline; so no duplicate key survives). RuleError's text is "rule:<place>:<reason>".
+indent 2, ASCII, one final newline; so no duplicate key survives). That comparison comes last, when every value
+is known to be small: indenting deeply nested lists would build a very large text. RuleError's text is
+"rule:<place>:<reason>".
 
 What this does not do: it reads no file and no clock, makes no draw and keeps no state; it does not check a
 price against the price ladder, the market block against a market, or the view against the data. It imports
@@ -289,21 +297,26 @@ def parse_rule(raw):
     except (ValueError, RecursionError):
         _fail("file", "not_strict_json")
     top = _object(value, "top", TOP_KEYS)
-    if file_bytes(value) != raw:
-        _fail("file", "not_canonical")
     if top["schema"] != SCHEMA:
         _fail("schema", "not_supported")
     if top["status"] != FROZEN:
         _fail("status", "not_frozen")
     if top["parent_sha256"] is not None:
         _match(top["parent_sha256"], "parent_sha256", SHA256_RE, "not_a_sha256_or_null")
-    return Rule(sha256=hashlib.sha256(raw).hexdigest(), id=_match(top["id"], "id", NAME_RE, "name_malformed"),
+    rule = Rule(sha256=hashlib.sha256(raw).hexdigest(), id=_match(top["id"], "id", NAME_RE, "name_malformed"),
                 lineage=_match(top["lineage"], "lineage", NAME_RE, "name_malformed"),
                 parent_sha256=top["parent_sha256"], claim=_sentence(top["claim"], "claim"),
                 counter_claim=_sentence(top["counter_claim"], "counter_claim"), market=_market(top["market"]),
                 times=_times(top["times"]),
                 select=_one_of(top["select"], "select", SELECTORS, "selector_not_supported"),
                 when=_when(top["when"]), intents=_intents(top["intents"]))
+    if any(pull_s is not None for _, pull_s in rule.times):
+        for index, row in enumerate(rule.intents):
+            if row.persist == KEEP:
+                _fail(f"intents[{index}]", "keep_with_a_pull_time")
+    if file_bytes(value) != raw:                # last: every value is now known to be small (module docstring)
+        _fail("file", "not_canonical")
+    return rule
 
 
 def _failing(rule, features, source):

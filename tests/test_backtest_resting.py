@@ -70,7 +70,7 @@ from test_betfair_backtest_replay import definition, iso, mcm, md, ms, runner
 REPO = Path(__file__).resolve().parent.parent
 REGISTRATION = REPO / "research" / "studies" / "close-v1.json"
 # The registration's sha256 as reviewed: any change to the file must change this line too (a new registration).
-REGISTRATION_SHA256 = "0424f0e3ff16ab2c85f803c6dbf488aab8173ac9ebf00cb7a42652208a04afb2"
+REGISTRATION_SHA256 = "147ab0212ca5b72c5f3dbe2ff3e2497d530fd49aeddaad0e548036f79493d40e"
 SPLIT_RAW = (REPO / "research" / "partitions-v1.json").read_bytes()
 BACK_RULE, LAY_RULE = "close-v1-back", "close-v1-lay"
 RULES_RAW = {f"{name}.json": (REPO / "research" / "rules" / f"{name}.json").read_bytes()

@@ -1180,8 +1180,9 @@ class BacktestBoundaryTests(unittest.TestCase):
         self.assertNotIn(READINESS, closure)
         # 21 at dda38a8, plus movement.py and movement_study.py (registered measurement movement-v1), plus lp.py and
         # lp_study.py (registered measurement lp-v1), plus partition.py and study_ledger.py (the research lane's data
-        # split and study ledger), plus rulefile.py (the lane's rule-file parser and evaluator).
-        self.assertEqual(len(descriptor["files"]), 28)
+        # split and study ledger), plus rulefile.py (the lane's rule-file parser and evaluator), plus fills.py and
+        # resting.py (registered measurement close-v1: the fill models, and the registration and the walk).
+        self.assertEqual(len(descriptor["files"]), 30)
 
     def test_offline_syntax_floor_is_python_3_10(self):
         for module in sorted([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]):

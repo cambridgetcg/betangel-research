@@ -19,10 +19,12 @@ named by the registration, must be the bytes it names (resting.parse_registratio
 and --out as movement_study checks them; the blind pass takes no --blind-receipt and the registered pass needs the
 blind pass's canonical, completed receipt of this study, registration, split file, --code-commit, backtest-source
 sha256 and input sha256; every manifest's read limits must be the replay's. Then the study ledger
-(study_ledger.py): --out may not lie inside the ledger directory nor hold it; the ledger is opened with the head the
-operator typed, and for a registered pass with the blind receipt's ledger head as the anchor, where the entry at
-that seq must be a look of this study, registration, input, backtest sources and commit; then the budgets are
-checked. A pass whose identity the ledger already holds is a repeat.
+(study_ledger.py): --out may not lie inside the ledger directory nor hold it, under any spelling of that directory
+(the folders above --out are compared with it by file identity, since a file system may ignore letter case); the
+ledger is opened with the head the operator typed, and for a registered pass with the entry the blind receipt names
+as its own (ledger_entry) as the anchor, where the entry at that seq must be a look of this study, registration,
+input, backtest sources and commit; then the budgets are checked. A pass whose identity the ledger already holds
+is a repeat.
 
 The read is lp_study's: every record's months pass the current month gate (sealed months are never read), a market
 id seen twice in the registered tier fails the run (duplicate_market), and the member's path is guarded and its
@@ -36,28 +38,39 @@ After the read the summary's bytes are built in memory; then the ledger gets its
 pass, the registered entry for a registered pass) before any file or stdout write; then the outputs are written. A
 repeat appends nothing, and its summary must hash to the stored tables hash (ledger:repeat_differs otherwise). A
 pass that fails or is stopped during the read has appended and written nothing. If an output cannot be written
-after the append, the entry stands, the result names the new head, and the re-run is a repeat. The summary has no
-clock, so the same registration, input and code give the same bytes. The receipt names the hashes, the commit, the
-ledger head after the pass, the lineage's counts of looks and registered passes, started_at and recorded_at, and
-two totals: bytes_walked, the compressed bytes the walks consumed, and bytes_drained, the rest of those members,
-hashed and not parsed.
+after the append, or the code faults there, the entry stands, the result names the new head (ledger_head) beside
+the failure, and the re-run is a repeat. If the entry was written and only its lock file could not be removed, the
+outputs are still written and the result says ledger_lock_left: a person removes the lock file before the next
+pass. The summary has no clock, so the same registration, input and code give the same bytes. The receipt names the
+hashes, the commit, the ledger head after the pass, the pass's own entry (ledger_entry: the head for a new entry,
+the stored entry for a repeat, so a repeat's receipt still leads the registered pass to the look), the lineage's
+counts of looks and registered passes, started_at and recorded_at, and two totals: bytes_walked, the compressed
+bytes the walks consumed, and bytes_drained, the rest of those members, hashed and not parsed.
 
 Tables. Both passes (registration blind_pass.releases): B1 coverage by registered month and partition label,
 records with no anchor and with no registered label; per cell B2 the codes, B3 the classes by label, B4 the fill
-counts by label and model and the fill counts of the classes that are not scored, B5 the sample SD and symmetric
+counts by label and model (among them the fills in a batch that left the market not OPEN and those in the batch
+that turned it in play) and the fill counts of the classes that are not scored, B5 the sample SD and symmetric
 ranges of gross g at the BSP as written over each model's filled part (both labels pooled, part and rest), the SD
 over all scored orders, quantiles of the size shown at t ahead of the order and of the seconds to a fill, B6 the
-detectable effect on the test label, B7 the diagnostics' counts. The blind summary holds no location of an
+detectable effect on the test label, B7 the diagnostics' counts (among them the scored orders with a batch that
+began with no market status). The blind summary holds no location of an
 outcome: no average, middle value, raw quantile, sign, interval, test, label or selection
 (tests/test_backtest_resting.py walks every key and the Markdown). The registered pass adds: T5 the
 intent-to-treat figures per cell and label at both BSP ends (resting.figures); T7 the same by half-year, every cell
 on the explore label and the primaries on the test label; T8 the selection; T9 per primary the test, Holm, both
 bounds, the gap, the null and the label; T10 the filled figures without the fills in the first registered second,
 and the quantiles of the sum of 1 / BSP per market with a scored order. A p-value, test or label exists only under
-a primary; every other figure is descriptive. Part and rest is also applied across a split: a half-year's figure is
-given only when the other half-year gives it too, and a kill's pooled figures only when each label holds
-statistics.min_values of the orders they are over (the label a kill decided is printed either way). Markdown
-tables print 100 x g as points of stake; summary.json keeps fractions of stake, floats rounded to 6 places.
+a primary; every other figure is descriptive, and a primary's own rows in T5, T7 and T10 are headed as tested in
+T9 only. Part and rest is also applied across a split, always after the labels are decided on the full values:
+across the fill models (resting.given_figures; a model's figures that are held back show rest_not_given); a
+half-year's figure is given only when the other half-year gives it too and both take it over the same kind of
+group (the same filled_is_all_placed flag); a kill's pooled figures are given only when, on each label, the orders
+they are over number statistics.min_values and are the orders that stand for that label's own optimistic fills,
+and the label gives its own optimistic figures (the label a kill decided is printed either way); and the null's
+main mean over the same orders is withheld when 1 to statistics.min_values - 1 of the claim's orders have no null
+value. Markdown tables print 100 x g as points of stake; summary.json keeps fractions of stake, floats rounded to 6
+places.
 
 Standard library only; it imports the backtest modules named above and nothing outside the package but what they
 import (tests/test_betfair_backtest_boundaries.py). It never logs in, reads an account or sends anything.
@@ -83,11 +96,12 @@ from .movement_study import (COMMIT_RE, MAX_RECEIPT_BYTES, SHA256_RE, StudyRefus
                              _read_regular, _refuse, _table, _write)
 from .partition import HALVES, MAX_SPLIT_BYTES
 from .replay import ReplayProblem, _member
-from .resting import (AS_WRITTEN, BSP_ENDS, CLASSES, ENDS, FILLED_IS_ALL_PLACED, FLAG_GATES, G, MEASURES,
-                      NET_CLOSED, NET_HELD, NULL_UNDEFINED, SCORED, STUDY_ID, TRD_COUNTS, OrderRow, blind_outcome,
-                      described, ends_apart, figures, filled_part, gap, named_files, parse_registration,
-                      quantile_table, race_label, record_code, rounded, scored, select_primaries, series, spread,
-                      verdicts, walk, whole_hundredths, without_first_fills)
+from .resting import (AS_WRITTEN, BSP_ENDS, CLASSES, ENDS, FILLED, FILLED_IS_ALL_PLACED, FLAG_GATES, G, LATER,
+                      MEASURES, NET_CLOSED, NET_HELD, NULL_UNDEFINED, SCORED, STATISTICS, STUDY_ID, TRD_COUNTS,
+                      OrderRow, blind_outcome, described, ends_apart, figures, filled_part, gap, given_figures,
+                      named_files, parse_registration, quantile_table, race_label, record_code, rounded, scored,
+                      select_primaries, series, spread, verdicts, walk, whole_hundredths, withheld,
+                      without_first_fills)
 from .rulefile import MAX_RULE_BYTES
 from .runner import RunRefused, _inputs, _record_months, _records, utc_now_text
 from .study_ledger import COMPLETED, LOOK, PassRequest, StudyLedger, head_text, identity, ledger_dir, parse_head
@@ -106,10 +120,8 @@ WITHHELD = ("every location statistic of an outcome (an average, a middle value,
             "and any statistic by price band or half-year: the registration's blind_pass.withholds")
 INDEPENDENCE = "under independence; clustering makes it larger"
 EXPLORATORY, NOT_TESTED = "exploratory", "not tested, unadjusted"
+PRIMARY = "primary: tested in T9 only; this row is descriptive"     # a primary cell's rows on the test label
 NO_ANCHOR, OUTSIDE, NO_LABEL = "no_anchor", "outside_registered_months", "no_registered_label"
-REST_NOT_GIVEN = "rest_not_given"                   # a figure withheld because another part of its split is
-# What part and rest withholds of a figure: every statistic, never a count.
-STATISTICS = ("mean", "estimate", "se", "df", "t_critical", "ci_low", "ci_high", "sd", "bound")
 RECORD_ERRORS = (KeyError, TypeError, AttributeError, IndexError, ValueError)
 
 
@@ -137,8 +149,8 @@ def _plan(study, path, expected):
 
 
 def _blind_receipt(path, plan):
-    """(receipt, sha256 of its bytes, its ledger head as (seq, sha256)) of a completed blind-pass receipt of this
-    registration and split file; StudyRefused otherwise."""
+    """(receipt, sha256 of its bytes, its own ledger entry as (seq, sha256)) of a completed blind-pass receipt of
+    this registration and split file; StudyRefused otherwise."""
     if path is None:
         _refuse("blind_receipt:missing")
     data = _read_regular(path, "blind_receipt", MAX_RECEIPT_BYTES)
@@ -156,24 +168,36 @@ def _blind_receipt(path, plan):
     if receipt.get("partitions_sha256") != plan.split.sha256:
         _refuse("blind_receipt:another_split")
     try:
-        anchor = parse_head(receipt.get("ledger_head"))
+        anchor = parse_head(receipt.get("ledger_entry"))
     except LedgerError:
         anchor = None
     if anchor is None:
-        _refuse("blind_receipt:ledger_head_malformed")
+        _refuse("blind_receipt:ledger_entry_malformed")
     return receipt, hashlib.sha256(data).hexdigest(), anchor
 
 
+def _same_directory(path, other):
+    """Whether two existing paths are one directory, by file identity: a file system that ignores letter case or
+    Unicode form gives one directory several spellings. A path that cannot be inspected counts as the same."""
+    try:
+        return path.samefile(other)
+    except OSError:
+        return True
+
+
 def _ledger(directory, expected, root, target, request, split_raw, anchor):
-    """(the opened StudyLedger, whether this pass is a repeat) after the ledger's checks in the module docstring;
-    LedgerError or StudyRefused otherwise. anchor: the blind receipt's ledger head, for a registered pass."""
+    """(the opened StudyLedger, the stored entry when this pass is a repeat, else None) after the ledger's checks
+    in the module docstring; LedgerError or StudyRefused otherwise. anchor: the entry the blind receipt names as
+    its own, for a registered pass."""
     resolved = ledger_dir(directory, root)
     if resolved in target.parents or target == resolved or target in resolved.parents:
+        _refuse("out:not_apart_from_the_ledger")
+    if any(_same_directory(above, resolved) for above in (target.parent, *target.parent.parents)):
         _refuse("out:not_apart_from_the_ledger")
     ledger = StudyLedger.open(directory, expected, root=root, anchor=anchor)
     if anchor is not None and identity(ledger.entries()[anchor[0]]) != identity(replace(request, kind=LOOK)):
         _refuse("blind_receipt:not_this_ledgers_look")
-    return ledger, ledger.check(request, split_raw) is not None
+    return ledger, ledger.check(request, split_raw)
 
 
 class Tally:
@@ -290,6 +314,7 @@ def _fill_counts(plan, rows, model):
             "after_the_hour": {kind: sum(1 for fill in filled if fill.kind == kind and fill.after_the_hour)
                                for kind in FILL_KINDS},
             "left_the_market_not_open": sum(1 for fill in filled if fill.transition),
+            "turned_the_market_in_play": sum(1 for fill in filled if fill.turn),
             "ended_by": {end: sum(1 for fill in found if fill.ended == end) for end in ENDS}}
 
 
@@ -323,6 +348,7 @@ def _cell_tables(plan, tally, cell):
                         "undefined": {reason: sum(1 for row in good if row.null_reason == reason)
                                       for reason in NULL_UNDEFINED}},
         "flags_missing_at_t": dict(tally.flags_missing[cell]),
+        "scored_orders_with_a_batch_begun_with_no_status": sum(1 for row in good if row.no_status),
     }
 
 
@@ -330,30 +356,46 @@ def _seconds(plan, values):
     return {"fills": len(values), "seconds_quantiles": quantile_table(plan, values)}
 
 
+def _all_withheld(tree):
+    """A tree of figures with every figure in it withheld (resting.withheld); counts and flags stay."""
+    if not isinstance(tree, dict):
+        return tree
+    if "mean" in tree or "estimate" in tree:
+        return withheld(tree)
+    return {key: _all_withheld(item) for key, item in tree.items()}
+
+
 def _together(parts):
     """Part and rest across the parts of one split. parts: {part: a tree of figures}, every tree of one shape. A
     figure (a dict with a mean or an estimate) is given for a part only when every part gives it; else each part
     keeps its counts and loses its statistics, so that a small part's figure cannot be worked out from the
-    whole's and the other part's."""
+    whole's and the other part's. Where the parts' filled_is_all_placed flags differ, their figures under that
+    flag are over different kinds of group (one part's fills, another part's every order), and none is given."""
     first = next(iter(parts.values()))
     if not isinstance(first, dict):
         return parts
+    if len({item.get(FILLED_IS_ALL_PLACED) for item in parts.values()}) > 1:
+        return {name: _all_withheld(item) for name, item in parts.items()}
     value = next((key for key in ("mean", "estimate") if key in first), None)
     if value is None:
         merged = {key: _together({name: item[key] for name, item in parts.items()}) for key in first}
         return {name: {key: merged[key][name] for key in first} for name in parts}
     if all(item[value] is not None for item in parts.values()):
         return parts
-    return {name: {key: None if key in STATISTICS else REST_NOT_GIVEN if key == "reason" and item[value] is not None
-                   else entry for key, entry in item.items()} for name, item in parts.items()}
+    return {name: withheld(item) for name, item in parts.items()}
 
 
 def _kill(plan, kill, rows):
     """A primary's kill block as it is printed. Its figures are over both labels pooled, so they are given only
-    when each label holds min_values of those orders (part and rest); figures_given says which."""
-    part = filled_part(plan, scored(rows), fills.OPTIMISTIC)
+    when, for each label, the pooled orders on it number min_values, are the very orders that stand for the
+    label's own optimistic fills, and the label gives its own optimistic filled figures (given_figures): part and
+    rest. figures_given says which."""
+    front = fills.OPTIMISTIC
+    part = filled_part(plan, scored(rows), front)
     sizes = {label: sum(1 for row in part.rows if row.label == label) for label in plan.labels}
-    if min(sizes.values()) >= plan.min_values:
+    own = {label: scored(rows, label) for label in plan.labels}
+    if all(sizes[label] >= plan.min_values and sizes[label] == len(filled_part(plan, found, front).rows)
+           and (FILLED, front) in given_figures(plan, found) for label, found in own.items()):
         return dict(kill, orders_by_label=sizes, figures_given=True)
     return dict({key: None if key in STATISTICS else item for key, item in kill.items()}, orders_by_label=sizes,
                 both={end: dict.fromkeys(nets) for end, nets in kill["both"].items()}, figures_given=False)
@@ -373,8 +415,11 @@ def _registered(plan, tally, apart):
 
     def later(rows, model):
         found, stands = without_first_fills(plan, rows, model)
-        return {"filled_figure_stands": stands, "ends": {end: {what: described(plan, series(plan, found, what, end))
-                                                               for what in (G, NET_HELD)} for end in BSP_ENDS}}
+        given = (LATER, model) in given_figures(plan, rows)
+        return {"filled_figure_stands": stands, "ends": {end: {
+            what: figure if given else withheld(figure)
+            for what, figure in ((what, described(plan, series(plan, found, what, end))) for what in (G, NET_HELD))}
+            for end in BSP_ENDS}}
 
     explore, test = plan.labels
     counts = {}
@@ -386,11 +431,18 @@ def _registered(plan, tally, apart):
     found = verdicts(plan, selection.primaries, {cell: _both(plan, tally, cell) for cell in plan.cells}, apart)
     primaries = {}
     for rule_id, verdict in found.items():
-        primaries[rule_id] = verdict and dict(
+        if verdict is None:
+            primaries[rule_id] = None
+            continue
+        held = scored(tally.rows[verdict["cell"]][test])
+        given = given_figures(plan, held)
+        primaries[rule_id] = dict(
             verdict, cell=_key(verdict["cell"]), half_years=_together(verdict["half_years"]),
+            models={model: item if (FILLED, model) in given else withheld(item)
+                    for model, item in verdict["models"].items()},
             kill=_kill(plan, verdict["kill"], _both(plan, tally, verdict["cell"])),
-            gap=gap(plan, scored(tally.rows[verdict["cell"]][test]), fills.PESSIMISTIC, verdict["test"]["bsp_end"]))
-    headings = {explore: EXPLORATORY, test: NOT_TESTED}
+            gap=gap(plan, held, fills.PESSIMISTIC, verdict["test"]["bsp_end"]))
+    headings = {explore: EXPLORATORY, test: NOT_TESTED, "primary": PRIMARY}     # primary: a chosen cell on test
     return {
         "figures": dict(_exploratory(len(plan.cells)), headings=headings, by_cell={
             _key(cell): {label: ends(scored(tally.rows[cell][label])) for label in plan.labels}
@@ -509,10 +561,11 @@ def _primary_lines(rule_id, item):
                     [[name, part["fills"], part[FILLED_IS_ALL_PLACED], _points(part["mean"])]
                      for group in (item["models"], item["half_years"]) for name, part in group.items()])
     if null is not None:
-        lines += _table(["null", "n", "null mean", "null p two-sided", "main over the same orders", "undefined",
-                         "blocks", "why"],
+        lines += _table(["null", "n", "null mean", "null p two-sided", "main over the same orders", "main: note",
+                         "null at least the fraction of main", "undefined", "blocks", "why"],
                         [["random time", null["null"]["bets"], _points(null["null"]["mean"]),
-                          null["null"]["p_two_sided"], _points(null["main_same_orders"]["mean"]), null["undefined"],
+                          null["null"]["p_two_sided"], _points(null["main_same_orders"]["mean"]),
+                          null["main_same_orders"]["reason"], null["at_least_the_fraction"], null["undefined"],
                           null["blocks"], null["why"]]])
     return lines + _table(["gap (pessimistic, test label, gross g)", "filled", "unfilled", "gap", "CI low", "CI high",
                            "note"], [["filled less unfilled", *_gap_cells(item["gap"])]])
@@ -521,6 +574,11 @@ def _primary_lines(rule_id, item):
 def _registered_lines(value):
     """The registered pass's tables T8, T9, T5, T7 and T10."""
     labels = value["partitions"]
+    chosen = {cell for cell in value["selection"]["primaries"].values() if cell is not None}
+
+    def heading(table, cell, label):            # a primary's rows on the test label are not "not tested"
+        return table["headings"]["primary" if label == labels["test_label"] and cell in chosen else label]
+
     lines = ["## T8 Selection (on the explore label's figures and the test label's counts)", "",
              f"- eligible cells: {', '.join(value['selection']['eligible']) or 'none'}",
              *(f"- {rule_id}: {cell or 'no primary'}" for rule_id, cell in value["selection"]["primaries"].items()),
@@ -534,15 +592,15 @@ def _registered_lines(value):
                   f"Cells in this table: c = {table['cells']}; sqrt(2 ln c) = {table['sqrt_2_ln_c']}.", ""]
         for cell, by_label in table["by_cell"].items():
             for label, group in by_label.items():
-                heading = f"### {cell}, {label}: {table['headings'][label]}"
+                head = f"### {cell}, {label}: {heading(table, cell, label)}"
                 if key == "figures":
                     classes = value["cells"][cell]["classes"][label]
-                    lines += [heading, "", "Classes: " + ", ".join(f"{name} {count}"
-                                                                    for name, count in classes.items()) + ".", ""]
+                    lines += [head, "", "Classes: " + ", ".join(f"{name} {count}"
+                                                                 for name, count in classes.items()) + ".", ""]
                     lines += _figure_lines(group)
                 else:
                     for half, ends in group.items():
-                        lines += [f"{heading}, {half}", ""] + _figure_lines(ends)
+                        lines += [f"{head}, {half}", ""] + _figure_lines(ends)
     table = value["sensitivity"]
     lines += ["## T10 Sensitivity (points of stake; descriptive, no p)", "",
               f"Cells in this table: c = {table['cells']}; sqrt(2 ln c) = {table['sqrt_2_ln_c']}. Filled figures "
@@ -550,7 +608,7 @@ def _registered_lines(value):
               "figure stands.", ""]
     columns = [f"{name} ({end})" for end in BSP_ENDS for name in ("mean", "SD", "CI low", "CI high")]
     lines += _table(["cell", "label", "heading", "model", "figure", "stands", "n", "race dates", *columns, "note"],
-                    [[cell, label, table["headings"][label], model, what, item["filled_figure_stands"],
+                    [[cell, label, heading(table, cell, label), model, what, item["filled_figure_stands"],
                       item["ends"][AS_WRITTEN][what]["bets"], item["ends"][AS_WRITTEN][what]["race_dates"],
                       *(part for end in BSP_ENDS for part in _figure_cells(item["ends"][end][what])),
                       item["ends"][AS_WRITTEN][what]["reason"]]
@@ -598,10 +656,11 @@ def markdown(plan, value):
     within = [f"within {seconds} s of t" for seconds in plan.within_s]
     lines += _table(["cell", "label", "model", "scored", "fills", "fill rate", *FILL_KINDS, *within,
                      *(f"after the hour: {kind}" for kind in FILL_KINDS), "left the market not OPEN",
-                     *(f"ended by {end}" for end in ENDS)],
+                     "turned the market in play", *(f"ended by {end}" for end in ENDS)],
                     [[cell, label, model, item["scored"], item["fills"], item["fill_rate"], *item["by_kind"].values(),
                       *item["within_s_of_t"].values(), *item["after_the_hour"].values(),
-                      item["left_the_market_not_open"], *item["ended_by"].values()]
+                      item["left_the_market_not_open"], item["turned_the_market_in_play"],
+                      *item["ended_by"].values()]
                      for cell, tables in cells.items() for label, models in tables["fills"].items()
                      for model, item in models.items()])
     lines += ["Fills of the orders that are not scored, by class (a class with none is left out here, not in "
@@ -650,10 +709,11 @@ def markdown(plan, value):
               f"are not: {precision['scored_bsps_not_whole_hundredths']}; the two BSP ends decide apart: "
               f"{'yes' if precision['bsp_ends_decide_apart'] else 'no'}", ""]
     flags = sorted({name for tables in cells.values() for name in tables["flags_missing_at_t"]})
-    lines += _table(["cell", *TRD_COUNTS, "null values", *(f"no null: {reason}" for reason in NULL_UNDEFINED),
+    lines += _table(["cell", *TRD_COUNTS, "scored orders with a batch begun with no status", "null values",
+                     *(f"no null: {reason}" for reason in NULL_UNDEFINED),
                      *(f"no value at t: {name}" for name in flags)],
-                    [[cell, *tables["trd_changes"].values(), tables["null_values"]["defined"],
-                      *tables["null_values"]["undefined"].values(),
+                    [[cell, *tables["trd_changes"].values(), tables["scored_orders_with_a_batch_begun_with_no_status"],
+                      tables["null_values"]["defined"], *tables["null_values"]["undefined"].values(),
                       *(tables["flags_missing_at_t"].get(name) for name in flags)]
                      for cell, tables in cells.items()])
     if registered:
@@ -739,7 +799,7 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
         if pass_name == REGISTERED:
             request = replace(request, kind=REGISTERED_KIND, m=plan.family_m, alpha=alpha)
         try:
-            handle, repeat = _ledger(ledger, ledger_head, root, target, request, split_raw, blind and blind[2])
+            handle, stored = _ledger(ledger, ledger_head, root, target, request, split_raw, blind and blind[2])
         except LedgerError as error:
             raise StudyRefused(str(error)) from None
     except StudyRefused as error:
@@ -754,13 +814,17 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
     counts = _counts(plan, tally)
     outputs = {SUMMARY_JSON: {"sha256": hashlib.sha256(summary_bytes).hexdigest(), "bytes": len(summary_bytes)},
                SUMMARY_MD: {"sha256": hashlib.sha256(markdown_bytes).hexdigest(), "bytes": len(markdown_bytes)}}
+    lock_left = False
     try:                                            # the one ledger entry, before any file or stdout write
-        head = head_text(handle.record(request, split_raw, outputs[SUMMARY_JSON]["sha256"], COMPLETED, clock))
-    except UnlockError as error:                    # the entry was written; the lock file is left
-        return {"status": "failed", "failure": str(error), "ledger_head": head_text(error.head)}
+        head = handle.record(request, split_raw, outputs[SUMMARY_JSON]["sha256"], COMPLETED, clock)
+    except UnlockError as error:                    # the entry was written and confirmed; the lock file is left
+        head, lock_left = error.head, True
     except LedgerError as error:
         return {"status": "failed", "failure": str(error)}
+    # From here the entry stands: whatever happens, the result names the head, and the re-run is a repeat from it.
+    head, repeat = head_text(head), stored is not None
     try:
+        own = head if stored is None else head_text((stored["seq"], stored["entry_sha256"]))
         passes = handle.counts(plan.lineage)
         receipt = {"kind": RECEIPT_KIND, "schema_version": SCHEMA_VERSION, "study": plan.study, "pass": pass_name,
                    "status": "completed", "registration_sha256": plan.sha256,
@@ -768,18 +832,21 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
                    "code_commit": code_commit, "source_descriptor_sha256": sources_sha256,
                    "interpreter": "{0} {1}.{2}.{3}".format(sys.implementation.name, *sys.version_info[:3]),
                    "blind_receipt_sha256": None if blind is None else blind[1], "ledger_head": head,
-                   "ledger_repeat": repeat, "ledger_counts": passes, "bytes_walked": tally.bytes_walked,
-                   "bytes_drained": tally.bytes_drained, "counts": counts, "outputs": outputs,
-                   "started_at": started_at, "recorded_at": clock()}
+                   "ledger_entry": own, "ledger_repeat": repeat, "ledger_counts": passes,
+                   "bytes_walked": tally.bytes_walked, "bytes_drained": tally.bytes_drained, "counts": counts,
+                   "outputs": outputs, "started_at": started_at, "recorded_at": clock()}
         receipt_bytes = canonical_json(receipt) + b"\n"
         target = _out_path(out, root)
         _write(target, [(SUMMARY_JSON, summary_bytes), (SUMMARY_MD, markdown_bytes), (RECEIPT_JSON, receipt_bytes)])
-    except (LedgerError, StudyRefused) as error:    # the entry stands: the re-run is a repeat from this head
-        return {"status": "failed", "failure": str(error), "ledger_head": head}
+    except (LedgerError, StudyRefused) as error:
+        return {"status": "failed", "failure": str(error), "ledger_head": head, "ledger_lock_left": lock_left}
+    except Exception as error:      # a fault of the code: its class name only (main), with the head that stands
+        return {"status": "failed", "failure": f"internal:{type(error).__name__}", "ledger_head": head,
+                "ledger_lock_left": lock_left}
     return {"status": "completed", "study": plan.study, "pass": pass_name, "registration_sha256": plan.sha256,
             "input_sha256": input_sha256, "summary_sha256": outputs[SUMMARY_JSON]["sha256"],
             "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(), "ledger_head": head,
-            "ledger_repeat": repeat, "ledger_counts": passes, **counts}
+            "ledger_repeat": repeat, "ledger_lock_left": lock_left, "ledger_counts": passes, **counts}
 
 
 def build_parser():

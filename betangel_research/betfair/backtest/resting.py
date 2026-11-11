@@ -52,10 +52,14 @@ seed and label, uniform over the whole milliseconds of (t, pull time].
 
 Per cell the walk returns a code or one OrderRow. A row holds no market id and no selection id: the side and
 price; per model a Fill (the queue at t, the fill kind or None, seconds from t to the fill, whether it came within
-each of the registered seconds of t, in the after-the-hour seconds, in a batch that left the market not OPEN, and
-for an unfilled order whether the pull or the lapse ended it); the mid at t; the mid at u or the reason it has
-none (NULL_UNDEFINED); three counts of the runner's trd rises over (t, pull time] (TRD_COUNTS); the class; the BSP
-as written when the class is scored; the partition label, the half-year and the race date (the cluster key).
+each of the registered seconds of t, in the after-the-hour seconds, in a batch that left the market not OPEN, in
+the batch that turned the market in play, and for an unfilled order whether the pull or the lapse ended it: the
+lapse when inPlay was true in force after some batch at or after t and before the pull time); the mid at t; the
+mid at u or the reason it has none (NULL_UNDEFINED); three counts of the runner's trd rises over (t, pull time]
+(TRD_COUNTS); whether some batch in (t, pull time] began with no market status at all (no_status: a definition
+that carried none, or an image with no definition, came before it; such a batch is not open, so nothing fills in
+it); the class; the BSP as written when the class is scored; the partition label, the half-year and the race date
+(the cluster key).
 
 Classes (CLASSES), from facts that do not depend on a fill, the first that applies: movement.measure's five
 (outcome_unknown, void_own_runner_removed, post_decision_removal, result_revised_after_close, missing_bsp); then
@@ -71,8 +75,12 @@ share of scored BSPs are whole hundredths (ends_apart), else the as-written figu
 
 Part and rest (filled_part): a model's "filled" figures are taken over its filled scored orders only when the
 unfilled ones number statistics.min_values; else over every scored order, flagged filled_is_all_placed. A size
-gate always counts the model's own fills. figures gives the four intent-to-treat figures of a group, gap the
-filled-minus-unfilled contrast, blind_outcome the spread and the detectable effect the blind pass may give.
+gate always counts the model's own fills. The three models' fills lie inside one another, so the rule is also
+applied across them (given_figures, given_together): one group's figures are given model by model, in
+GIVEN_FIRST's order, and a model's only when no set of fewer than min_values orders can then be told apart by the
+groups given; a figure held back keeps its counts (withheld, reason rest_not_given). figures gives the four
+intent-to-treat figures of a group, gap the filled-minus-unfilled contrast, blind_outcome the spread and the
+detectable effect the blind pass may give.
 
 Statistics: CR1 by race date with t(G - 1) (movement.cr1_mean); the one-sided p for a mean above 0
 (one_sided_p, cr1_test); the kill bound and the lower bound (bound); Holm (movement.holm); 100 values to give a
@@ -147,6 +155,14 @@ G, NET_CLOSED, NET_HELD = MEASURES = ("g", "net_closed", SELECT_MEASURE)
 # Why the null blocks a claim: it or the main mean over the same orders has no test; or it is too large.
 NULL_BLOCKS = ("not_computed", "at_least_the_fraction_of_main")
 COUNTS_ONLY, UNDERPOWERED = "counts_only", "underpowered"
+REST_NOT_GIVEN = "rest_not_given"                   # a figure withheld so that a small group's cannot be worked out
+# What part and rest withholds of a figure: every statistic, never a count.
+STATISTICS = ("mean", "estimate", "se", "df", "t_critical", "ci_low", "ci_high", "sd", "bound")
+# Part and rest across the models: whose figures are given first (the model a claim reads, the model a kill reads,
+# then the one between them), and the two kinds of group a model has: what stands for its filled orders, and its
+# fills after the first registered second.
+GIVEN_FIRST = (fills.PESSIMISTIC, fills.OPTIMISTIC, fills.CENTRAL)
+FILLED, LATER = "filled", "later"
 FLOAT_PLACES, QUANTILE_PLACES = 6, 4
 MAX_SECONDS = 3600
 FILE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\.json")
@@ -163,9 +179,9 @@ Cell = namedtuple("Cell", ("rule_id", "at_s", "pull_s"))
 Part = namedtuple("Part", ("rows", "fills", "fill_dates", "all_placed"))
 Selection = namedtuple("Selection", ("eligible", "primaries"))
 # One model's answer for one order (module docstring). within: one bool per Plan.within_s.
-Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "ended"))
+Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn", "ended"))
 OrderRow = namedtuple("OrderRow", ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid", "fills",
-                                   "null_mid", "null_reason", "trd"))
+                                   "null_mid", "null_reason", "trd", "no_status"))
 _Gate = namedtuple("_Gate", ("tiers", "start_month", "end_month", "countries", "event_type_id", "market_type",
                              "betting_type", "number_of_winners", "min_active_runners"))
 
@@ -622,12 +638,13 @@ class _Order:
     """One placed order while it is walked: its cell, the rulefile.Intent, t and the pull time in ms, one lp.Leg per
     model, the runners ACTIVE and listed at t, the mid at t, and what the walk fills in."""
 
-    __slots__ = ("cell", "intent", "t", "end", "legs", "active", "mid", "lapsed", "transition", "null", "trd")
+    __slots__ = ("cell", "intent", "t", "end", "legs", "active", "mid", "lapsed", "transition", "null", "trd",
+                 "no_status")
 
     def __init__(self, cell, intent, t, end, legs, active, centre):
         self.cell, self.intent, self.t, self.end, self.legs, self.active = cell, intent, t, end, legs, active
         self.mid, self.lapsed, self.transition, self.null = centre, False, {}, None
-        self.trd = dict.fromkeys(TRD_COUNTS, 0)
+        self.trd, self.no_status = dict.fromkeys(TRD_COUNTS, 0), False
 
 
 def _mid(plan, quote):
@@ -659,22 +676,24 @@ def _row(plan, record, placed, dated, malformed, in_play):
     klass, bsp = measure(record, t, intent.selection_id, placed.active)
     if klass == ELIGIBLE:
         klass = MALFORMED_AFTER if any(t < pt <= end for pt in malformed) else SCORED
+    # The value in force after each pt batch, as the walk reads it: a batch that publishes inPlay true and then
+    # false leaves it false.
     lapsed = intent.persist == LAPSE and (_as_of(in_play, t) is True
-                                          or any(t < pt < end and value is True for pt, value in in_play))
+                                          or any(t < pt < end and _as_of(in_play, pt) is True for pt, _ in in_play))
     found = {}
     for model, leg in placed.legs.items():
         if leg.fill_pt is None:
-            found[model] = Fill(leg.queue, None, None, (False,) * len(plan.within_s), False, False,
+            found[model] = Fill(leg.queue, None, None, (False,) * len(plan.within_s), False, False, False,
                                 LAPSED if lapsed else PULLED)
             continue
         took = leg.fill_pt - t
         found[model] = Fill(leg.queue, leg.fill_kind, took / 1000, tuple(took <= s * 1000 for s in plan.within_s),
-                            after_the_hour(leg.fill_pt, plan.after_the_hour_s), placed.transition[model], None)
+                            after_the_hour(leg.fill_pt, plan.after_the_hour_s), *placed.transition[model], None)
     null_mid, null_reason = _null(plan, placed.null)
     day, label, half = dated
     return OrderRow(side=intent.side, price=intent.price, label=label, half=half, race_date=day, klass=klass,
                     bsp=bsp if klass == SCORED else None, mid=placed.mid, fills=found, null_mid=null_mid,
-                    null_reason=null_reason, trd=dict(placed.trd))
+                    null_reason=null_reason, trd=dict(placed.trd), no_status=placed.no_status)
 
 
 def walk(stream, record, plan, limits):
@@ -743,15 +762,18 @@ def walk(stream, record, plan, limits):
             time, _, kind, payload = heapq.heappop(events)
             handle(time, kind, payload)
 
-    def close(pt, batch, prior, was_open, was_in_play):     # one pt batch is complete: count its trades, then fill
+    def close(pt, batch, prior, before):        # one pt batch is complete: count its trades, then fill
+        was_open, was_in_play = fills.is_open(before[0]), before[1] is True     # (status, inPlay) before the batch
         counted = {}
         for rid, price, rise in fills.counted_rises(batch, was_open):
             traded.count(rid, price, rise)
             counted.setdefault(rid, set()).add(price)
-        hour, left_open = after_the_hour(pt, plan.after_the_hour_s), fills.is_open(state()[0])
+        hour, after = after_the_hour(pt, plan.after_the_hour_s), state()
+        left = (not fills.is_open(after[0]), after[1] is True and not was_in_play)  # not OPEN now; turned in play
         for placed in orders:
             if not placed.t < pt <= placed.end:
                 continue
+            placed.no_status = placed.no_status or before[0] is None
             intent = placed.intent
             sid, now = intent.selection_id, counted.get(intent.selection_id, ())
             for rid, price, _ in batch.rises:
@@ -773,12 +795,12 @@ def walk(stream, record, plan, limits):
                     continue
                 kind = fills.judge(leg, intent.stake, plan.divisor, now, at_price, shown)
                 if kind is not None:
-                    leg.fill_pt, leg.fill_kind, placed.transition[model] = pt, kind, not left_open
+                    leg.fill_pt, leg.fill_kind, placed.transition[model] = pt, kind, left
 
     # A batch no order's window holds is folded but not kept: fills and the counts read counted volume only as its
     # rise since t, and only in (t, pull time].
     unreadable_from, applied, batch, pending, prior, fresh = None, None, None, None, {}, False
-    was_open = was_in_play = False
+    before = (None, None)
     messages = _messages(stream, limits)
     while True:
         try:                                    # only reading the stream can make the member unreadable
@@ -795,7 +817,7 @@ def walk(stream, record, plan, limits):
         pt, message = item
         if pt != batch:
             if pending is not None:
-                close(batch, pending, prior, was_open, was_in_play)
+                close(batch, pending, prior, before)
             batch, pending, fresh = pt, None, True
         fire(pt)
         if pt > until:
@@ -809,8 +831,7 @@ def walk(stream, record, plan, limits):
             runners, fresh = {placed.intent.selection_id for placed in orders if placed.t < pt <= placed.end}, False
             prior = {sid: top(ladders, sid) for sid in runners}
             pending = _Batch() if runners else None
-            status, in_play = state()
-            was_open, was_in_play = fills.is_open(status), in_play is True
+            before = state()
         for mid_, change in checked:
             if mid_ != market_id:
                 continue
@@ -824,7 +845,7 @@ def walk(stream, record, plan, limits):
                 pending.note(ladders.keys, change, moved)
         applied = pt
     if pending is not None:
-        close(batch, pending, prior, was_open, was_in_play)
+        close(batch, pending, prior, before)
     if unreadable_from is not None and unreadable_from > until:
         unreadable_from = None
     if unreadable_from is None:
@@ -911,6 +932,55 @@ def filled_part(plan, rows, model):
     filled = [row for row in rows if row.fills[model].kind is not None]
     chosen, flag = part_and_rest(plan, rows, filled)
     return Part(chosen, len(filled), _dates(filled), flag)
+
+
+def _standing(plan, rows, model):
+    """The positions in rows of the rows that stand for a model's filled orders (filled_part's rows)."""
+    if filled_part(plan, rows, model).all_placed:
+        return set(range(len(rows)))
+    return {place for place, row in enumerate(rows) if row.fills[model].kind is not None}
+
+
+def _later(plan, rows, model):
+    """(positions, stands) of a model's fills that did not come within the first registered seconds of t
+    (within_s[0]), under part_and_rest against what stands for its filled orders: when fewer than min_values of
+    those fall outside, they all stand (stands is True)."""
+    held = _standing(plan, rows, model)
+    later = {place for place, row in enumerate(rows)
+             if row.fills[model].kind is not None and not row.fills[model].within[0]}
+    return (later, False) if len(held) - len(later) >= plan.min_values else (held, True)
+
+
+def given_together(plan, count, groups):
+    """Part and rest across several groups of the same count rows (registration measurement.part_and_rest).
+    groups: [(name, the positions of its rows)], the first to be given first. Rows that are in exactly the same
+    given groups are one class, and no figure given can tell the rows of one class apart. A group is given only if
+    every class then holds min_values rows, so no sum over fewer rows can be worked out from the figures given.
+    The names given, in order. It asks more than is needed when two groups cross without one holding the other."""
+    given, classes = [], [set(range(count))]
+    for name, members in groups:
+        split = [part for held in classes for part in (held & members, held - members) if part]
+        if min(map(len, split), default=0) >= plan.min_values:
+            given.append(name)
+            classes = split
+    return given
+
+
+def given_figures(plan, rows):
+    """Which by-model figures one group of scored rows gives (one cell on a label, or a half-year of it): a list of
+    (FILLED, model) for the model's filled figures and (LATER, model) for its figure without the first fills.
+    The filled groups come first, in GIVEN_FIRST's order, so the later ones never cost a filled figure."""
+    groups = [((FILLED, model), _standing(plan, rows, model)) for model in GIVEN_FIRST]
+    groups += [((LATER, model), _later(plan, rows, model)[0]) for model in GIVEN_FIRST]
+    return given_together(plan, len(rows), groups)
+
+
+def withheld(figure):
+    """A figure as part and rest withholds it: its counts and flags stay, every statistic is None, and the reason
+    is rest_not_given. A figure that gave no mean or estimate keeps its own reason."""
+    given = any(figure.get(key) is not None for key in ("mean", "estimate"))
+    return {key: None if key in STATISTICS else REST_NOT_GIVEN if key == "reason" and given else item
+            for key, item in figure.items()}
 
 
 def gate(plan, values, race_dates):
@@ -1016,12 +1086,17 @@ def detectable(plan, sd, values, race_dates):
 def blind_outcome(plan, rows, model, end):
     """What the blind pass gives of one cell's outcome under one model. rows: the cell's rows of both labels.
     spread() of gross g over the pooled filled part, its flag, and the detectable effect on the test label from
-    that SD and the test label's own part (its rows and their race dates)."""
+    that SD and the test label's own part (its rows and their race dates). When the test label's part is every
+    scored order and the pooled part is not, the SD is the one over every scored order of both labels: the
+    registered figure is then an all-placed one."""
     pooled, test = (filled_part(plan, scored(rows, label), model) for label in (None, plan.test_label))
     result = spread(plan, series(plan, pooled.rows, G, end))
+    sd = result["sd"]
+    if test.all_placed and not pooled.all_placed:
+        sd = spread(plan, series(plan, scored(rows), G, end))["sd"]
     return dict(result, **{FILLED_IS_ALL_PLACED: pooled.all_placed}, detectable={
         "values": len(test.rows), "race_dates": _dates(test.rows), FILLED_IS_ALL_PLACED: test.all_placed,
-        "effect": detectable(plan, result["sd"], len(test.rows), _dates(test.rows))})
+        "effect": detectable(plan, sd, len(test.rows), _dates(test.rows))})
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1052,19 +1127,23 @@ def figures(plan, rows, end):
     one BSP end, each as described(): placed, mean g over every order at its own price, with no fill model; mid,
     the mid at t valued the same way; and per model: fills and their race dates, the flag, filled {g, net_closed,
     net_held} over the filled part, value_per_placed (net_held when filled, 0 when not; given only when the
-    filled figures are), and the gap."""
+    filled figures are), and the gap. A model that given_figures does not give keeps its counts and flag, and
+    its three figures are withheld()."""
     out = {"placed": described(plan, series(plan, rows, G, end)),
            "mid": described(plan, series(plan, rows, G, end, "mid")), "models": {}}
-    held = series(plan, rows, NET_HELD, end)
+    held, given = series(plan, rows, NET_HELD, end), given_figures(plan, rows)
     for model in plan.models:
         part = filled_part(plan, rows, model)
         per_placed = [(day, value if part.all_placed or row.fills[model].kind is not None else 0.0)
                       for row, (day, value) in zip(rows, held)]
-        out["models"][model] = {
-            "fills": part.fills, "fill_race_dates": part.fill_dates, FILLED_IS_ALL_PLACED: part.all_placed,
-            "filled": {what: described(plan, series(plan, part.rows, what, end)) for what in MEASURES},
-            "value_per_placed": described(plan, per_placed, len(part.rows) >= plan.min_values),
-            "gap": gap(plan, rows, model, end)}
+        found = {"filled": {what: described(plan, series(plan, part.rows, what, end)) for what in MEASURES},
+                 "value_per_placed": described(plan, per_placed, len(part.rows) >= plan.min_values),
+                 "gap": gap(plan, rows, model, end)}
+        if (FILLED, model) not in given:
+            found = {"filled": {what: withheld(item) for what, item in found["filled"].items()},
+                     "value_per_placed": withheld(found["value_per_placed"]), "gap": withheld(found["gap"])}
+        out["models"][model] = {"fills": part.fills, "fill_race_dates": part.fill_dates,
+                                FILLED_IS_ALL_PLACED: part.all_placed, **found}
     return out
 
 
@@ -1072,8 +1151,8 @@ def without_first_fills(plan, rows, model):
     """(rows, stands) for the sensitivity line: the model's fills that did not come within the first registered
     seconds of t (within_s[0]). Under part_and_rest against what stands for its filled orders: when fewer than
     min_values of those fall outside, they all stand (stands is True)."""
-    later = [row for row in rows if row.fills[model].kind is not None and not row.fills[model].within[0]]
-    return part_and_rest(plan, filled_part(plan, rows, model).rows, later)
+    later, stands = _later(plan, rows, model)
+    return [row for place, row in enumerate(rows) if place in later], stands
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1110,21 +1189,28 @@ def select_primaries(plan, explore, test_counts, apart):
 
 def null_gate(plan, rows, end):
     """The random-time null over the rows a claim reads (registration null.rule): {null, main_same_orders,
-    undefined, blocks, why}. null is the two-sided test of the mean null value (the mid at u valued as g) and
-    main_same_orders the mean g, both over the rows with a null value. It blocks (why, one of NULL_BLOCKS) when
-    those rows fail the size gate, or when |mean null| >= null_fraction x |mean g| and the null's p is below
-    null_alpha or undefined. It can only block a claim."""
+    undefined, at_least_the_fraction, blocks, why}. null is the two-sided test of the mean null value (the mid at
+    u valued as g) and main_same_orders the mean g, both over the rows with a null value; at_least_the_fraction
+    says whether |mean null| >= null_fraction x |mean g| (None when either has no mean). It blocks (why, one of
+    NULL_BLOCKS) when those rows fail the size gate, or when at_least_the_fraction holds and the null's p is
+    below null_alpha or undefined. It can only block a claim. Part and rest: when 1 to min_values - 1 rows have
+    no null value, main_same_orders is decided on as before and then withheld(): the claim's own mean g over
+    every row is given elsewhere, and the two would give those few rows' mean."""
     same = [row for row in rows if row.null_mid is not None]
     null = cr1_test(plan, series(plan, same, G, end, "null_mid"), two_sided=True)
     main = gated(plan, series(plan, same, G, end))
-    why = None
+    why = large = None
     if null["mean"] is None or main["mean"] is None:
         why = NULL_BLOCKS[0]
-    elif abs(null["mean"]) >= plan.null_fraction * abs(main["mean"]) and (
-            null["p_two_sided"] is None or null["p_two_sided"] < plan.null_alpha):
-        why = NULL_BLOCKS[1]
-    return {"null": null, "main_same_orders": main, "undefined": len(rows) - len(same), "blocks": why is not None,
-            "why": why}
+    else:
+        large = bool(abs(null["mean"]) >= plan.null_fraction * abs(main["mean"]))
+        if large and (null["p_two_sided"] is None or null["p_two_sided"] < plan.null_alpha):
+            why = NULL_BLOCKS[1]
+    undefined = len(rows) - len(same)
+    if 0 < undefined < plan.min_values:
+        main = withheld(main)
+    return {"null": null, "main_same_orders": main, "undefined": undefined, "at_least_the_fraction": large,
+            "blocks": why is not None, "why": why}
 
 
 def _held_mean(plan, part, end):

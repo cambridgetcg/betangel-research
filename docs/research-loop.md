@@ -182,7 +182,7 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 
 - **Each cell is its own what-if.** Its order is our only order in that market. It is never re-priced. "Off" is the first-published scheduled start.
 - **Codes.** Per cell, every market gets one code: the first reason it got no order, or `issued`. The codes add up to the number of records. First come reasons from the index record alone (wrong country or market type, no label for its race date, no BSP market). The index record is the one-line summary of a market that the index step wrote earlier. A market with such a code at every cell is never opened. Then come reasons from the book at the time: a ladder that cannot be read, the rule file's own rows, a price off the price ladder.
-- **Classes.** Every order placed ends in one class, set by facts that do not depend on a fill: `outcome_unknown`, `void_own_runner_removed`, `post_decision_removal`, `result_revised_after_close`, `missing_bsp`, `stream_malformed_after_placement`, else `scored`. Only `scored` orders enter a statistic. The others stay in the counts, with their fills.
+- **Classes.** Every order placed ends in one class, set by facts that do not depend on a fill: `outcome_unknown`, `void_own_runner_removed`, `post_decision_removal`, `result_revised_after_close`, `missing_bsp`, `stream_malformed_after_placement`, else `scored`. Only `scored` orders enter an outcome statistic (an SD, a mean, a test, a label). The others stay in the counts, with their fills. The queue sizes and the traded-volume counts are over every order placed.
 - **Nothing is dropped for what happened later.** A suspension, an early off or a changed schedule after the order is placed does not drop it. lp-v1 dropped those.
 - **Removals are classed, not re-priced.** When another horse is withdrawn, Betfair cuts matched prices by a reduction factor. This study does not model that. The order is classed `post_decision_removal` and is not scored. Withdrawals come when the best-informed people act, so leaving them out flatters the result by an unknown amount. The size of each class is printed per cell and label (table B3), and again with each cell's T5 figures.
 
@@ -226,14 +226,14 @@ The numbers are placeholders from the lab's design notes. They involve no money.
   - *Across half-years.* A half-year's figure is given only if the other half-year's is, and only if both are over the same kind of group (both over fills, or both over all orders placed).
   - *Across the two partition labels.* A kill's figures are over `PRO-D` and `PRO-V` together. They are given only if `PRO-D` and `PRO-V` each hold 100 of those orders, and each one's own optimistic figures are given over the same orders. The kill verdict is printed either way.
   - *The null.* If 1 to 99 of a claim's orders have no null value, the mean over the other orders is not printed.
-  - *Not covered.* The blind pass gives one SD per fill rule. Two SDs over groups a few orders apart can bound how far those orders lie from the mean, but not on which side.
+  - *Not covered.* The blind pass gives one SD per fill rule. Two SDs over groups a few orders apart can bound how far those orders lie from the mean, but not on which side. The registered pass repeats those pooled SDs beside each label's own mean and SD. If exactly one order separates two such groups, its g can be worked out to one of two values. This is a known residual release, and the registration says so.
 - **Sizes.** Under 100 values a group gives counts only. A test, a bound or a selection needs 200 values on 15 race dates. An interval is the range the true mean plausibly lies in; it needs 15 race dates. Intervals group orders by race date (the method is called CR1), because orders on one day move together.
 
 ### Selection, the null and the labels
 
 - **Selection on `PRO-D`.** For each rule file, one "primary" cell is chosen by a fixed rule: among its cells with 200 central-rule fills on 15 race dates on `PRO-D`, and 200 pessimistic-rule fills on 15 race dates on `PRO-V` (counts only), the one with the highest mean `net_held` on `PRO-D`. A tie goes to the later time. No such cell means no primary for that rule file.
 - **The family.** Two primaries, one per rule file. A p-value is the chance of a mean this high if the true mean were 0. Alpha 0.02 in all, with Holm's correction for two tests (the smaller p-value must pass at 0.01). Each test is one-sided: it asks only whether the mean is above 0. A rule file with no primary still counts as one of the two.
-- **The random-time null.** A check for fooling ourselves. For each order a random moment between placing and pulling is drawn by a fixed hash. The middle of the favourite's quote at that moment is scored against BSP as if it were our price. If that "result" is at least half as big as the real one, and clearly not zero, the claim is blocked (`claim_blocked_by_placebo`). It is also blocked when the null cannot be worked out. The null can block a claim. It never kills. The table says yes or no to "at least half as big" even when the mean beside it is held back (part and rest, above).
+- **The random-time null.** A check for fooling ourselves. For each order a random moment between placing and pulling is drawn by a fixed hash. The middle of the favourite's quote at that moment is scored against BSP as if it were our price. If that "result" is at least half as big as the real one, and clearly not zero, the claim is blocked (`claim_blocked_by_placebo`). It is also blocked when the null cannot be worked out. The null can block a claim. It never kills. It is read, and printed in table T9, only for a primary whose other three claim conditions hold. The table says yes or no to "at least half as big" even when the mean beside it is held back (part and rest, above).
 - **The labels**, per primary, the first that applies:
   1. `kill_optimistic`: on `PRO-D` and `PRO-V` together, under the front-of-queue rule, with 200 fills on 15 race dates, the upper bound of mean `net_closed` (one-sided, 97.5%) is below 0. Dead even with the best luck.
   2. `underpowered`: the pessimistic rule has under 200 fills or 15 race dates on `PRO-V`.
@@ -251,7 +251,7 @@ The numbers are placeholders from the lab's design notes. They involve no money.
   |---|---|
   | B1 | records by month and label; records with no off time; records with no registered label |
   | B2, B3 | codes per cell; classes per cell and label |
-  | B4 | per cell, label and rule: scored orders, fills, fills by kind, fills within 1 s and 2 s, fills just after a whole hour (when some volume updates are not trades), fills in a batch that suspended the market, fills in the batch that turned the market in play, orders ended by the pull and by the lapse, the fill rate; fills of the orders that are not scored |
+  | B4 | per cell, label and rule: scored orders, fills, fills by kind, fills within 1 s and 2 s, fills just after a whole hour (when some volume updates are not trades), fills in a batch that left the market not OPEN (a suspension, a close, or a batch with no status), fills in the batch that turned the market in play, orders ended by the pull and by the lapse, the fill rate; fills of the orders that are not scored |
   | B5 | both labels together: how spread out g is over filled orders (SD and three ranges), at the written BSP; the SD over all scored orders; the size shown ahead of the order and the seconds to a fill, as quantiles (a quantile is the value below which that share of the orders lies) |
   | B6 | the smallest effect the test on `PRO-V` could detect, "under independence; clustering makes it larger" |
   | B7 | checks of the machinery: whole-hundredth BSPs, trades counted and not, scored orders whose market lost its status, null values missing by reason, flags with no value |
@@ -273,7 +273,7 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 
 ### The runner
 
-- **Command.** `python3 -m betangel_research.betfair.backtest.resting_study`, with these arguments:
+- **Command.** `python3.13 -B -m betangel_research.betfair.backtest.resting_study`, with these arguments:
 
   | Argument | Meaning |
   |---|---|
@@ -305,12 +305,14 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 9. **Blind, read, registered.** Run the blind pass. People read its `summary.md`. Then run the registered pass once, with `--blind-receipt` and the head the blind pass printed. A pass is expected to take about 3 hours; this is a guess from lp-v1's 2 h 36 min, not a measurement. Both commands, run from the clean clone. `<LAB RUNS>` stands for the full path of `~/.local/state/lab-runs`, and `<PRO ROOT>` for the data root of step 5:
 
    ```sh
-   python3 -m betangel_research.betfair.backtest.resting_study --study close-v1 --pass blind \
+   PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 \
+     python3.13 -B -m betangel_research.betfair.backtest.resting_study --study close-v1 --pass blind \
      --registration-sha256 <sha256 from step 4> --archive-root <PRO ROOT> --code-commit <commit from step 4> \
      --ledger <LAB RUNS>/ledger --ledger-head <none, or the last head> \
      --out <LAB RUNS>/close-v1/blind
 
-   python3 -m betangel_research.betfair.backtest.resting_study --study close-v1 --pass registered \
+   PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 \
+     python3.13 -B -m betangel_research.betfair.backtest.resting_study --study close-v1 --pass registered \
      --registration-sha256 <the same sha256> --archive-root <PRO ROOT> --code-commit <the same commit> \
      --ledger <LAB RUNS>/ledger --ledger-head <the head the blind pass printed> \
      --blind-receipt <LAB RUNS>/close-v1/blind/receipt.json \

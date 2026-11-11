@@ -1,11 +1,12 @@
-# Research lane: the data split, the study ledger and rule files
+# Research lane: the data split, the study ledger, rule files and close-v1
 
-Status: proposed (PR A of three stacked PRs), not merged. Nothing here has read a data file, run a study or written a ledger entry. This page covers the three parts of PR A: frozen rule files, a data split and a ledger of every pass. The two studies planned to use them (close-v1 and inplay-v1) come in later PRs and get their own sections here.
+Status: proposed (PR A and PR B of three stacked PRs), not merged. No pass has run: nothing here has read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The second half, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. A second study, inplay-v1, is planned for PR C and is not built.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, against betangel-research main b9099ff.
 
-- The code is three new modules in `betangel_research/betfair/backtest/`: `partition.py` (the split), `study_ledger.py` (the ledger) and `rulefile.py` (rule files). They are tested by `tests/test_backtest_lane.py` on synthetic values only.
-- The data files are [research/partitions-v1.json](../research/partitions-v1.json) and the three files in [research/rules/](../research/rules/). The files hold the rules; this page explains them and does not override them.
+- PR A's code is three modules in `betangel_research/betfair/backtest/`: `partition.py` (the split), `study_ledger.py` (the ledger) and `rulefile.py` (rule files). They are tested by `tests/test_backtest_lane.py` on synthetic values only.
+- PR B adds three more: `fills.py` (the fill rules), `resting.py` (the study's logic) and `resting_study.py` (the pass runner). They are tested by `tests/test_backtest_resting.py` on synthetic markets only.
+- The data files are [research/partitions-v1.json](../research/partitions-v1.json), the three files in [research/rules/](../research/rules/) and the registration [research/studies/close-v1.json](../research/studies/close-v1.json). The files hold the rules; this page explains them and does not override them.
 - A "pass" is one run of a study over real data. A "lineage" is one idea (for example `close`); several study ids can belong to it.
 - A "rule file" is not a strategy card. That name belongs to research/strategy-cards.json ([edge framework](edge-framework.md)).
 - An "order" on this page is a simulated intent inside the backtest package. Nothing here can reach an exchange.
@@ -17,9 +18,9 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, agai
 
 - A way to test an idea on history without fooling ourselves. Three things make it:
   1. **A split.** Each race date gets a label before anything new is read. Some dates are for looking around. Others are locked away for one test.
-  2. **A ledger.** One file on the lab that gets one line per pass. It counts looks and tests, and refuses a second test of the same lineage on the locked dates. That holds only while the same ledger file is used and a runner calls it. No runner does yet. The other limits are under "What it cannot do" below.
+  2. **A ledger.** One file on the lab that gets one line per pass. It counts looks and tests, and refuses a second test of the same lineage on the locked dates. That holds only while the same ledger file is used and a runner calls it. close-v1's runner does. The other limits are under "What it cannot do" below.
   3. **Rule files.** A strategy is a small frozen JSON file. One fixed function reads it and says what to order. No code is written per idea.
-- What exists now is the three modules and four data files. There is no runner yet, so no command uses them. They change no existing source file.
+- PR A is the three modules and four data files. PR B adds the first runner that uses them. Neither changes an existing source file.
 
 ## The split
 
@@ -41,7 +42,7 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, agai
 - **Roles.** `explore`: look around. `holdout`: locked away, tested once per lineage (within the ledger's limits, below). `sealed` and `never`: no pass may name them. The code treats these two alike; the words say what is meant. `sealed` is shut until a later split file opens it. `never` is not meant for any lane pass. The label named `SEALED` has the role `never`, and `BASIC-T` has the role `sealed`. A label with no budget cannot be named either, so no pass can use the BASIC rows until a later split file gives them budgets.
 - **Dates with no label.** Everything before 2015-05-01, 2016-05-01 to 2022-12-31, and everything after 2026-12-31. A new split file, merged on Yu's word, is the only way to give them one.
 - **Also in the file.** `max_looks` (2 blind passes per study) and `prior_exposure`: one sentence for each earlier read of the same year (`p0`, `movement-v1`, `lp-v1`, `suite-counts`). A later study's registration cites those ids.
-- **The older words stay.** [Backtest plan](backtest-plan.md) §3 still calls 2015-05..2016-04 the engineering corpus, 2023-01..2025-12 the research corpus and 2026-01..2026-08 the holdout. The lane adds labels inside the first two. It also labels every 2026 date `SEALED` (role `never`). That covers §3's holdout, and also 2026-09 and 2026-10 to 2026-12, which §3 calls exposed and prospective. So no lane pass may use a 2026 date, the lab's own recordings included, until a new split file says otherwise. What the code does today: the ledger refuses a pass that names `SEALED`. The runner that gives each record its label is not built yet (next section). §3's roles and the month gate are unchanged.
+- **The older words stay.** [Backtest plan](backtest-plan.md) §3 still calls 2015-05..2016-04 the engineering corpus, 2023-01..2025-12 the research corpus and 2026-01..2026-08 the holdout. The lane adds labels inside the first two. It also labels every 2026 date `SEALED` (role `never`). That covers §3's holdout, and also 2026-09 and 2026-10 to 2026-12, which §3 calls exposed and prospective. So no lane pass may use a 2026 date, the lab's own recordings included, until a new split file says otherwise. What the code does today: the ledger refuses a pass that names `SEALED`, and close-v1's runner never opens a file whose race date has a label its registration does not name (next section). §3's roles and the month gate are unchanged.
 
 ## What is enforced, and what is not
 
@@ -49,9 +50,9 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, agai
   - `Split.label` is the only place that knows the rule. The split file's sha256 is pinned in `tests/test_backtest_lane.py`, with the counts above.
   - `parse_split` takes one byte form only (sorted keys, indent 2, ASCII, one final newline) and refuses an unknown key, ranges that overlap or are out of order, a label used twice, a bad salt or a bad residue.
   - The ledger refuses a pass that names a label that is unknown, `sealed`, `never` or without a budget, or whose split hash is not the hash of the split bytes it was given. It parses those bytes itself. So the budgets it applies are the ones in the file whose hash the entry names, and a split object built by hand is refused (`ledger:split_malformed`).
-- **Not built yet.** The runner that gives each record its label, keeps every tally apart by label and never opens a file whose label is not registered. It comes with close-v1. Until then the only gate that runs on data is the old month gate, which seals 2026-01 onward and the exposed months.
+- **Built with close-v1 (PR B).** Its runner gives each record its label, keeps its value rows apart by label and never opens a file whose label is not registered (code `partition_not_registered`). The selection is handed the explore label's rows and two counts per cell from the holdout, nothing else. The old month gate still runs first; it seals 2026-01 onward and the exposed months. movement-v1, lp-v1 and P0 know nothing of labels.
 - **Limits, stated plainly.**
-  - The planned passes read both partitions in one run, and every index record already holds BSP and results. So the split is kept by code paths and tests, not by separate files.
+  - A pass reads both partitions in one run, and every index record already holds BSP and results. So the split is kept by code paths and tests, not by separate files.
   - A later split file with another salt is refused by nothing in the ledger. The controls are the merged file, its pinned hash, the count tests, and the split hash written into every ledger entry.
   - The 2015-16 year is not fresh. `prior_exposure` says what earlier studies already read from all of it, `PRO-V` dates included.
 
@@ -91,7 +92,7 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, agai
   - Nothing is synced to disk, so a power loss can lose the last line.
   - Looks are counted per study id. A new study id in the same lineage gets two fresh looks; the explore and one-test budgets are per lineage and do not reset.
   - The ledger knows an idea only by its lineage text. The same idea under another lineage name gets a new test, until `alpha_lifetime` is spent.
-  - Only a lane runner writes to it, and none exists yet. movement-v1, lp-v1 and P0 runs do not call it, so they read `PRO-V` dates and leave no entry.
+  - Only a lane runner writes to it. close-v1's is the first. movement-v1, lp-v1 and P0 runs do not call it, so they read `PRO-V` dates and leave no entry.
   - One pass at a time per ledger. A pass that started from a head another pass has since moved is refused at the end, after its read (`ledger:head_moved`), and has written nothing.
   - It does not test before the read that it can write. Opening and `check` only read. If the ledger directory or the ledger file cannot be written, the pass is refused at the end (`ledger:lock_failed` or `ledger:not_writable`). It has written nothing and must be run again. So before a pass the operator checks that the directory is mode 700 and that the file, once it exists, can be written.
 
@@ -120,13 +121,13 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, agai
   | `best_lay` | the runner's best price to lay at t |
   | `spread_ticks` | price steps (ticks) from `best_back` to `best_lay`; no value when either is off the price ladder |
 
-- **The language.** Operators `>=`, `<=`, `==`. One feature against one constant. `when` is a plain AND: no OR, no tick offsets. A feature with no value fails its row. A row's `code` may not be one of `decide`'s own six codes. It can still clash with a code a runner adds, such as `issued`. The runner must refuse that, and none exists yet.
+- **The language.** Operators `>=`, `<=`, `==`. One feature against one constant. `when` is a plain AND: no OR, no tick offsets. A feature with no value fails its row. A row's `code` may not be one of `decide`'s own six codes. It could still clash with a code a runner adds, such as `issued`. close-v1's registration parser refuses that: a row may use none of the runner's own codes, and every row's code must be in the registration's code list.
   - `favourite`: the only runner with the lowest `best_back` among priced runners. A tie gives `favourite_tie`; none priced gives `no_priced_active_runner`. This is `movement.favourite`'s rule.
   - `each_active`: every runner in the view (`no_active_runner` when it holds none). Rows on a runner feature are applied per runner: a runner that fails gets no order, and when every runner fails the code is the first runner's.
   - `price`: `{"ref": "best_back"}`, `{"ref": "best_lay"}` or `{"ref": "fixed", "value": "1.01"}`. `side`: `BACK` or `LAY`. `stake`: GBP of backer's stake.
   - `persist`: `lapse` or `keep`. `decide` only hands the pull time and `persist` back; the runner that will walk the orders acts on them. They mean this. The pull time alone says when an order is taken back. `persist` says what the in-play turn does to an order still resting then: `lapse` ends it, `keep` leaves it in the market. So `lapse` with no pull time is an order that rests until the market turns in play. `keep` in a rule file where any time has a pull time could never matter, and the parser refuses it. `keep` is for simulation only: the repository's live surface is LAPSE only.
 - **`rulefile.decide(view, rule)`** gives orders and no code, or no order and one code. In this order: `time_not_in_rule`; `ladder_malformed`; the code of the first failing market row (`market_open`, `active_runners`); the selector's code; then the code of the runner's first failing row, or `no_reference_price` when an order's price has no value. It is pure: it reads no file and no clock, draws nothing and keeps no state. `rulefile.py` imports only the standard library, and a test checks that.
-- **What `decide` does not check.** The `market` block is parsed and kept, but checking a market against it is the caller's job. So is checking a price against the price ladder, and building the view from data. No code here builds a view.
+- **What `decide` does not check.** The `market` block is parsed and kept, but checking a market against it is the caller's job. So is checking a price against the price ladder, and building the view from data. `rulefile.py` builds no view; close-v1's `resting.view_of` does.
 - **The three files.**
 
   | File | Lineage | Runner | Times (pull) | Orders |
@@ -162,8 +163,145 @@ Not fixed here: the alpha one study spends. 0.02 is planned, and each registrati
 
 The numbers are placeholders from the lab's design notes. They involve no money. The ledger's 18 keys are fixed too, but by its first entry, not by the merge.
 
+## close-v1: resting orders on the favourite
+
+- **The question.** We leave a £2 order on the favourite a few minutes before the race and take it back before the off. Does it get a better price than the Betfair Starting Price (BSP, the price SP bets settle at)? It counts only if that holds for the orders that would really have been filled.
+- **Why "really filled" matters.** A resting order is filled when someone else wants out at our price. That happens more often when the price is about to move against us. So the orders that fill can be worse than the orders that do not. The gap between the two is the new thing this study measures.
+- **What it cannot show.** PRO 2015-16: a kill gate and a prior, never confirmation. A bad result can close the idea. A good result is only a reason to try something live at small stakes. The level of g was known from the whole year. Only the gap is new: movement-v1 already showed how the favourite's price sits against BSP, on every date, the locked dates included.
+- **Where the rules are.** [research/studies/close-v1.json](../research/studies/close-v1.json) is the registration: the file that fixes every rule before any pass. Its sha256 is pinned in `tests/test_backtest_resting.py`. A change to it is a new registration.
+
+### Cells and orders
+
+- **Two rule files, six cells.** `close-v1-back.json` puts a £2 BACK at the best lay price. `close-v1-lay.json` puts a £2 LAY at the best back price. Each has three times. A "cell" is one rule file at one time.
+
+  | Placed | Pulled | BACK cell | LAY cell |
+  |---|---|---|---|
+  | off − 600 s | off − 120 s | `close-v1-back@-600` | `close-v1-lay@-600` |
+  | off − 300 s | off − 120 s | `close-v1-back@-300` | `close-v1-lay@-300` |
+  | off − 120 s | off − 10 s | `close-v1-back@-120` | `close-v1-lay@-120` |
+
+- **Each cell is its own what-if.** Its order is our only order in that market. It is never re-priced. "Off" is the first-published scheduled start.
+- **Codes.** Per cell, every market gets one code: the first reason it got no order, or `issued`. The codes add up to the number of records. First come reasons from the index record alone (wrong country or market type, no label for its race date, no BSP market). A market with such a code at every cell is never opened. Then come reasons from the book at the time: a ladder that cannot be read, the rule file's own rows, a price off the price ladder.
+- **Classes.** Every order placed ends in one class, set by facts that do not depend on a fill: `outcome_unknown`, `void_own_runner_removed`, `post_decision_removal`, `result_revised_after_close`, `missing_bsp`, `stream_malformed_after_placement`, else `scored`. Only `scored` orders enter a statistic. The others stay in the counts, with their fills.
+- **Nothing is dropped for what happened later.** A suspension, an early off or a changed schedule after the order is placed does not drop it. lp-v1 dropped those.
+- **Removals are classed, not re-priced.** When another horse is withdrawn, Betfair cuts matched prices by a reduction factor. This study does not model that. The order is classed `post_decision_removal` and is not scored. Withdrawals come when the best-informed people act, so leaving them out flatters the result by an unknown amount. The size of each class is printed beside every mean.
+
+### The three fill rules
+
+- **Why three.** History does not show our place in the queue. So every order is judged three times. The rules differ only in the queue: how much of the size shown at our price stood ahead of us.
+
+  | Rule | Queue ahead of us |
+  |---|---|
+  | `optimistic` | none: front of the queue |
+  | `central` | half the size shown |
+  | `pessimistic` | all the size shown (lp-v1's rule for joining a price) |
+
+- **When an order fills.** Messages with the same publish time are one batch. After each batch, the first of these that holds fills the order, in full, at its own price:
+  1. `trade_through`: a trade at a price beyond ours (below a LAY, above a BACK), of any size.
+  2. `quote_cross`: the other side now shows at least £2 at or through our price.
+  3. `volume_at_price`: enough has traded at our price since we joined: our queue plus our £2.
+- **What counts as a trade.** A rise in traded volume counts only in a batch that began with the market OPEN, and only if that batch also carries a ladder entry at that price for that runner (lp-v1's rule). So the batch that suspends the market still credits its trades, and the batch that reopens it does not.
+- **The cross test differs from lp-v1's.** lp-v1 asked for our queue plus our stake on the other side. Here the stake alone is enough. An opposing order can come to rest at our price only after everyone ahead of us is matched or gone, so asking for the queue again would count it twice. This is reasoning, not something checked on real files.
+- **No latency.** The order is in the book from the batch at the decision time, with no delay. A home connection would be slower. The tables count the fills within 1 s and 2 s of placing, which a delay could change, and give one line without the first-second fills.
+- **Lapse.** If the market turns in play before the pull time, the order ends there.
+
+### The score
+
+- **g.** A BACK at price P scores `g = P / BSP − 1`. A LAY at L scores `g = 1 − L / BSP`. It is per £1 of backer's stake, and positive is good for us. Tables print `100 × g` as "points of stake". These are not lp-v1's points.
+- **Two nets** ("net" = after the 2% commission):
+  - `net_closed`: as if the order were closed at BSP. Commission is paid on a gain only. It is the kinder of the two.
+  - `net_held`: as if the order were held to the result. Commission is then paid on the winnings, not on the gain against BSP. In this price band that is roughly 0.7 to 1.5 points lower.
+- **Which net decides.** A kill reads `net_closed`: an idea that fails on the kinder net also fails when held. A claim reads `net_held`. The rule files have no closing order, and a £2 BACK cannot be closed at BSP, because a BSP lay needs £10 of liability.
+- **Two BSP ends.** The files seem to cut BSP to two decimals. So the true BSP lies between the written value and that plus 0.01. Every figure is worked out at both ends. The "kill end" is the one that favours the order; the "claim end" is the other. So a kill and a claim each have to hold at the end that is hardest for them.
+- **The 99% switch.** That reading holds only if BSPs really are whole hundredths. If at least 99% of scored orders' BSPs are, kills read the kill end and claims the claim end. If not, the written value decides alone. Both ends are printed either way.
+- **Four figures per cell**, over scored orders:
+  1. the mean over filled orders, per fill rule: g and both nets;
+  2. the mean g over all orders placed, filled or not;
+  3. the value per order placed: `net_held` when filled, 0 when not;
+  4. the gap: mean g of filled orders minus mean g of unfilled ones.
+- **Part and rest.** A figure for part of a group is given only if the part and the rest each hold 100 orders. Otherwise two printed means would give away a handful of orders. If fewer than 100 orders are unfilled under a rule, its "filled" figures are the all-placed figures, flagged `filled_is_all_placed`. The runner applies the same idea to half-years (one is given only if the other is) and to a kill's pooled figures (given only if each label holds 100 of those orders; the label is printed either way).
+- **Sizes.** Under 100 values a group gives counts only. A test, a bound or a selection needs 200 values on 15 race dates. An interval needs 15 race dates. Intervals group orders by race date (the method is called CR1), because orders on one day move together.
+
+### Selection, the null and the labels
+
+- **Selection on `PRO-D`.** For each rule file, one "primary" cell is chosen by a fixed rule: among its cells with 200 central-rule fills on 15 race dates on `PRO-D`, and 200 pessimistic-rule fills on 15 race dates on `PRO-V` (counts only), the one with the highest mean `net_held` on `PRO-D`. A tie goes to the later time. No such cell means no primary for that rule file.
+- **The family.** Two primaries, one per rule file. Alpha 0.02 in all, with Holm's correction for two tests (the smaller p-value must pass at 0.01). Each test is one-sided: it asks only whether the mean is above 0. A rule file with no primary still counts as one of the two.
+- **The random-time null.** A check for fooling ourselves. For each order a random moment between placing and pulling is drawn by a fixed hash. The middle of the favourite's quote at that moment is scored against BSP as if it were our price. If that "result" is at least half as big as the real one, and clearly not zero, the claim is blocked (`claim_blocked_by_placebo`). It is also blocked when the null cannot be worked out. The null can block a claim. It never kills.
+- **The labels**, per primary, the first that applies:
+  1. `kill_optimistic`: on `PRO-D` and `PRO-V` together, under the front-of-queue rule, with 200 fills on 15 race dates, the upper bound of mean `net_closed` (one-sided, 97.5%) is below 0. Dead even with the best luck.
+  2. `underpowered`: the pessimistic rule has under 200 fills or 15 race dates on `PRO-V`.
+  3. `edge_candidate`: on `PRO-V`, on `net_held`: the pessimistic mean passes its test; the mean is above 0 under all three rules; it is above 0 in each half-year, with 100 fills in each; and the null does not block.
+  4. `measurement_pilot_candidate`: on `PRO-V`, the pessimistic lower bound of mean `net_held` (one-sided, 98%) is above −1.5 points. A small live test would then cost little: 600 fills at £2 would lose at most about £18 on average.
+  5. `unresolved`.
+- **Printed with every label:** "PRO 2015-16: a kill gate and a prior, never confirmation"; "The level of g was known from the whole year. Only the gap is new."; both nets; both BSP ends; the pessimistic fill rate; any `filled_is_all_placed` flag.
+- **The prediction, written before any pass** (it is in the registration, signed by lab-Claude, 2026-11-11): no primary is an `edge_candidate`. The pessimistic mean `net_held` on `PRO-V` is below 0 for both rule files. The labels are `measurement_pilot_candidate` or `unresolved`, and `unresolved` is the likelier because the held net decides. A `kill_optimistic` ends that side of the idea.
+
+### The two passes
+
+- **Blind first.** It gives counts and spreads only. People read it. Then nothing in the registration or the code may change.
+
+  | Table | What it gives |
+  |---|---|
+  | B1 | records by month and label; records with no off time; records with no registered label |
+  | B2, B3 | codes per cell; classes per cell and label |
+  | B4 | per cell, label and rule: scored orders, fills, fills by kind, fills within 1 s and 2 s, fills just after a whole hour (when some volume updates are not trades), fills in a batch that suspended the market, orders ended by the pull and by the lapse, the fill rate; fills of the orders that are not scored |
+  | B5 | both labels together: how spread out g is over filled orders (SD and three ranges), at the written BSP; the SD over all scored orders; the size shown ahead of the order; seconds to a fill |
+  | B6 | the smallest effect the test on `PRO-V` could detect, "under independence; clustering makes it larger" |
+  | B7 | checks of the machinery: whole-hundredth BSPs, trades counted and not, null values missing by reason, flags with no value |
+
+- **What the blind pass withholds.** Every average, middle value, raw quantile, sign, interval, test, label and selection of an outcome. Any SD of a net. The SD over unfilled orders. Anything by price band or half-year. A test checks every key and the text.
+- **Registered second, once.** Everything above, plus:
+
+  | Table | What it adds |
+  |---|---|
+  | T5 | the four figures per cell and label, at both BSP ends, with the mid at the decision time and each class's size |
+  | T7 | the same by half-year: every cell on `PRO-D`, the primaries only on `PRO-V` |
+  | T8 | the selection: which cells passed the gates and which were chosen |
+  | T9 | per primary: the test, Holm, both bounds, the gap, the null, the label |
+  | T10 | the filled figures without first-second fills; quantiles of the sum of 1 / BSP per market (how far the BSP book is from 100%) |
+
+- **Only the primaries are tested.** A p-value, a test or a label is printed only for a primary on `PRO-V`. Other `PRO-V` rows are headed "not tested, unadjusted". `PRO-D` rows are headed "exploratory" and carry no p. Each such table prints its number of cells c and `sqrt(2 ln c)`: about how large the best of c pure-noise results looks.
+- **No table by price band.** One was planned (T6) and cut.
+- **Not measured.** Latency. Partial fills (a fill is all or nothing). Cross-matched prices, which the files leave out. Our real queue place. Removals (classed, never re-priced). A closing order and its rounding.
+
+### The runner
+
+- **Command.** `python3 -m betangel_research.betfair.backtest.resting_study`, with these arguments:
+
+  | Argument | Meaning |
+  |---|---|
+  | `--study close-v1` | the only study it runs; anything else is refused before a file is read |
+  | `--pass blind\|registered` | blind first |
+  | `--registration-sha256 HEX` | must equal the sha256 of the registration file |
+  | `--registration PATH` | optional; the default is `research/studies/close-v1.json`. The split file is read beside the `studies/` folder and the rule files in `rules/` beside it; each must be the bytes the registration names |
+  | `--archive-root DIR`, `--out DIR`, `--code-commit HEX` | the data root; a new output directory; the commit the code was checked out at |
+  | `--ledger DIR`, `--ledger-head none\|SEQ:SHA256` | the ledger directory and its last head; both required |
+  | `--blind-receipt PATH` | registered pass only: the blind pass's `receipt.json` |
+
+- **Before it reads a record** it refuses: a wrong hash; a registration, rule file or split it cannot parse; an `--out` that exists, lies in a Git worktree or a data tree, or lies inside the ledger directory; a blind receipt of another study, registration, split, commit, set of sources or input; a ledger with a broken chain, a head other than the one typed, or a spent budget. For a registered pass the ledger must hold the blind pass's entry, at the head the blind receipt names, and that entry must be a look of the same run.
+- **The read.** As lp-v1: the old month gate, one market id once, every file's bytes checked against its manifest. Rows hold no market or runner id and stay in memory.
+- **Then, in this order:** the tables are built in memory; the ledger gets its one line; the files are written. A pass that stops during the read leaves no ledger line and no file. If the ledger line is written and the files then fail, the line stands, the result names the new head, and running the pass again is a repeat.
+- **Outputs.** `summary.json` and `summary.md` (totals only) and `receipt.json`, in a new mode-700 directory. The same registration, input and code give the same summary bytes. The receipt names the hashes, the commit, the new ledger head, how many looks and tests the lineage has had, when the pass started and ended, and two totals: `bytes_walked` (file bytes the replay read) and `bytes_drained` (the rest of those files, hashed but not parsed).
+- **What it prints.** One JSON line of counts, codes and hashes. Exit 0 when the pass completed, 2 when it was refused or failed. A fault in the code prints `internal:` and the error's class name only: a traceback could show a market id.
+
+### Operator steps for a pass (on the lab, after the PR merges)
+
+1. **Who starts it.** lab-Claude itself or Yu, after Yu's OK for that pass. Never a subagent or another agent. The lab's rule 1 says no agent runs Python that imports the Betfair package outside the test suite. A pass is such Python, though it is offline and reads only the historical files. So it runs only on Yu's word, pass by pass.
+2. **When.** Between 23:00 and 06:45 London. The recorder runs 07:00 to 23:00 and must not be slowed. Start the pass at low priority under a plain shell guard that ends it at 06:45. A pass ended during the read has written nothing. lab-Claude checks the result in the morning and tells Yu.
+3. **Ask first.** Before starting, ask Yu whether a session will be armed or an order will rest before the pass ends. If yes, do not start.
+4. **A clean clone.** Check out the merged commit in a new directory of its own. Never the live clone, and never at the top of the home folder. Note the commit (`git rev-parse HEAD`) and pin the registration (`shasum -a 256 research/studies/close-v1.json`).
+5. **The data root.** The PRO root, already ingested and indexed, in a root of its own ([lp study](lp-study.md), operator step 2).
+6. **The ledger.** Make its directory once: `mkdir -m 700 -p ~/.local/state/lab-runs/ledger`. Run one pass at a time per ledger. Before each pass check that the directory is mode 700 and can be written, and that the ledger file, once it exists, can be written: the runner finds out only at the end of the read. Pass `--ledger` and the last head (`none` for the very first pass). Copy the new head from the printed line into the results note after every pass.
+7. **The run marker.** Write `~/.local/state/lab-runs/ACTIVE` before the pass and remove it after, whatever the result. No code reads it; it is a sign to the other jobs on the lab.
+8. **Where outputs go.** A new directory under `~/.local/state/lab-runs/close-v1/` (`blind`, then `registered`), never inside the ledger directory. The runner's path check knows three data-tree names only, so keeping outputs and the ledger under `lab-runs` is the control.
+9. **Blind, read, registered.** Run the blind pass. People read its `summary.md`. Then run the registered pass once, with `--blind-receipt` and the head the blind pass printed. A pass is expected to take about 3 hours; this is a guess from lp-v1's 2 h 36 min, not a measurement.
+10. **Afterwards.** The outputs stay on the lab. Nothing enters Git or `reports/` without Yu's OK on the exact fields. A stop between the two passes is written into the next PR body.
+11. **After PR C merges** (planned), the package sources differ from PR B's. A close-v1 registered pass must then run from a clean clone at PR B's commit if its blind pass ran there. From a later commit it refuses (`blind_receipt:another_code`).
+- **Planned, not built:** the blind receipt's two byte totals are meant to size inplay-v1, which must read past the off. If the estimate is over 7 hours it will not run at night, and the choice is Yu's.
+
 ## What it changes elsewhere
 
-- Three modules are added to `betangel_research/betfair/backtest/`, and no existing source file changes. The engine certificate covers every module in that directory, so its key moves again. Any later `run-backtest` needs `certify-engine` at the new sources. The boundary test's count of certified files goes from 25 to 28.
+- PR A adds three modules to `betangel_research/betfair/backtest/` and PR B three more. No existing source file changes. The engine certificate covers every module in that directory, so its key moves again with each PR. Any later `run-backtest` needs `certify-engine` at the new sources. The boundary test's count of certified files goes from 25 to 28 (PR A) and to 31 (PR B).
+- The runner is its own module, not a subcommand of the backtest CLI: that CLI's `__main__.py` is a certified source and stays byte-identical.
 - movement-v1 and lp-v1 are untouched. As before, a re-run of either study's registered pass works only from a clean clone at its own commit ([lp study](lp-study.md), operator step 9).
 - One dated line in [backtest plan](backtest-plan.md) §13.

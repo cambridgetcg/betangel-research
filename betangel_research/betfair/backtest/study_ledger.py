@@ -1,4 +1,5 @@
-"""The study ledger of the research lane: one append-only, hash-chained file that counts every pass over real data.
+"""The study ledger of the research lane: one append-only, hash-chained file that counts every pass a lane runner
+makes over real data. It counts nothing else: a pass that does not call it leaves no entry.
 
 File: <ledger dir>/study-ledger-v1.jsonl. One entry per line: the entry's canonical JSON (contract.canonical_json)
 and a newline. An entry has exactly ENTRY_KEYS, and no value is ever null or a float:
@@ -6,23 +7,25 @@ ledger_schema (1); seq (0, 1, 2, ...); prev_sha256 (the entry before, GENESIS fo
 the canonical JSON of every other key); kind (look: a blind pass; explore: a pass over explore labels only;
 registered: the one test); study (the study id); lineage (the idea the study belongs to); partitions (the sorted
 labels the pass touched); partitions_sha256 (sha256 of the split file); registration_sha256, input_sha256,
-source_descriptor_sha256 and code_commit (as a study receipt names them); m and alpha (family size and alpha spent
-as decimal text; 0 and "0" unless registered); tables_sha256 (sha256 of the pass's summary.json bytes); result
-(completed, or engine_check_failed for a look only); recorded_at (UTC text from the caller's clock). The file holds
-hashes, counts and codes only. The format is fixed for good by the first entry.
+source_descriptor_sha256 and code_commit (as a study receipt names them); m and alpha (family size, 1 to MAX_FAMILY,
+and alpha spent as decimal text; 0 and "0" unless registered); tables_sha256 (sha256 of the pass's summary.json
+bytes); result (completed, or engine_check_failed for a look only); recorded_at (UTC text from the caller's clock).
+The file holds hashes, counts and codes only. The format is fixed for good by the first entry.
 
 A run's identity is IDENTITY_KEYS. A run whose identity is already in the ledger is a repeat: it appends nothing
 and counts against no budget, and its tables hash and result must equal the stored ones (ledger:repeat_differs).
 
-Budgets (their sizes come from the parsed split file, partition.Split), checked before the read and again at the
-append:
+Budgets, checked before the read and again at the append. Their sizes come from the split file. check and record
+take that file's raw bytes and parse them here (partition.parse_split), so the hash an entry names and the budgets
+it was checked against come from the same bytes; a Split built or changed by hand is refused
+(ledger:split_malformed).
 - look: at most max_looks identities per study (ledger:looks_spent).
 - explore or registered: for each explore label touched, at most explore_budget such entries per lineage
   (ledger:explore_budget_spent). A registered entry counts as one.
 - registered: no earlier registered entry of the same lineage on the same holdout label, whatever its study id
   (ledger:lineage_already_tested); and the alpha of every registered entry on that label plus this one may not
   pass alpha_lifetime (ledger:alpha_spent; exact fractions).
-A request is also refused (ledger:entry:<reason>) when its split hash is not the given split's, when a label is
+A request is also refused (ledger:entry:<reason>) when its split hash is not the given bytes', when a label is
 unknown, sealed, never or has no budget, when an explore entry touches a label that is not an explore label, or
 when a registered entry touches no holdout label.
 
@@ -32,22 +35,27 @@ data-tree name in the path, apart from the data root), refuses a directory that 
 (ledger:trial_ledger_present; the lock file below is shared) or a lock file (ledger:locked), verifies the whole chain
 and compares its head with expected, the text the operator typed: "none" when the file must be absent, else
 "SEQ:SHA256" (ledger:head_not_expected otherwise; so a fresh or mistyped directory refuses). An anchor (seq, sha256)
-kept elsewhere must be in the file as well. Then check(request, split) refuses a spent budget and returns the stored
-entry for a repeat, else None. After the read, when the summary bytes exist and before anything is written:
-record(request, split, tables_sha256, result, clock) appends one entry in one write, or for a repeat compares the
-hashes and appends nothing. It returns the head, which the operator keeps for the next pass.
+kept elsewhere must be in the file as well. Then check(request, split_raw) refuses a spent budget and returns the
+stored entry for a repeat, else None. After the read, when the summary bytes exist and before anything is written:
+record(request, split_raw, tables_sha256, result, clock) appends one entry in one write, or for a repeat compares
+the hashes and appends nothing. It returns the head, which the operator keeps for the next pass.
 
 The chain helpers are trial_ledger's, imported unchanged: the lock file is trial_ledger's LOCK_FILE in the ledger
 directory (an existing one refuses; a person removes a leftover one after checking no pass is running), the
 append is compare-and-append against the head seen at open (ledger:head_moved), the line is verified before it is
-written and confirmed after, and a failure once writing began is WriteUncertainError. verify_bytes makes every
-check trial_ledger.verify_bytes makes except the P0 fields and the trial lifecycle. Every refusal is
-LedgerError("ledger:<reason>"); a bad line is "ledger:line <n>:<reason>".
+written and confirmed after, and a failure once writing began is WriteUncertainError. A ledger file that cannot be
+opened for writing is ledger:not_writable, and a lock file that cannot be made is ledger:lock_failed; nothing was
+written in either case. verify_bytes makes every check trial_ledger.verify_bytes makes except the P0 fields and the
+trial lifecycle. Every refusal is LedgerError("ledger:<reason>"); a bad line is "ledger:line <n>:<reason>".
 
 What this does not do. Nothing repairs a broken chain: a person keeps the bad file unchanged and moves it aside.
 Nothing is synced to disk. The budgets hold for one ledger file only: a new directory starts from zero, so keeping
-the file and typing its last head is the operator's duty. A cut at a line boundary is seen only by the expected
-head or an anchor. This module reads no clock, no data and no registration. Standard library only.
+the file and typing its last head is the operator's duty. The chain has no secret: a cut at a line boundary, or a
+rewrite with every later hash recomputed, is seen only by the expected head or an anchor. An idea is known only by
+its lineage text, so the same idea under another lineage is a new one here until alpha_lifetime is spent. open and
+check only read, so a directory or file that cannot be written is found at the append, after the read. Two passes
+opened at one head cannot both append: the second is refused at its append (ledger:head_moved). This module reads no
+clock, no data and no registration. Standard library only.
 """
 
 from dataclasses import dataclass
@@ -60,7 +68,7 @@ from .archive import check_data_root
 from .contract import canonical_json
 from .movement import RATE_RE
 from .movement_study import COMMIT_RE, SHA256_RE, _in_data_tree
-from .partition import EXPLORE, HOLDOUT, LABEL_RE
+from .partition import EXPLORE, HOLDOUT, LABEL_RE, PartitionError, parse_split
 from .path_guard import PathDenied, guard_path
 from .trial_ledger import LEDGER_FILE as TRIAL_LEDGER_FILE
 from .trial_ledger import (GENESIS, LOCK_FILE, MAX_LEDGER_BYTES, MAX_LINE_BYTES, LedgerError, UnlockError,
@@ -79,6 +87,7 @@ SHA_KEYS = ("entry_sha256", "input_sha256", "partitions_sha256", "prev_sha256", 
             "source_descriptor_sha256", "tables_sha256")
 IDENTITY_KEYS = ("study", "kind", "registration_sha256", "input_sha256", "source_descriptor_sha256", "code_commit")
 NO_HEAD = "none"
+MAX_FAMILY = 1000                   # the largest m of a registered entry; a wider one would not fit a ledger line
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 
@@ -165,7 +174,7 @@ def _field_problem(entry):
     if type(m) is not int or not isinstance(alpha, str):
         return "m_or_alpha_malformed"
     if kind == REGISTERED:
-        if m < 1 or not RATE_RE.fullmatch(alpha) or not Fraction(Decimal(alpha)):
+        if not 1 <= m <= MAX_FAMILY or not RATE_RE.fullmatch(alpha) or not Fraction(Decimal(alpha)):
             return "m_or_alpha_malformed"
     elif (m, alpha) != (0, "0"):
         return "m_or_alpha_not_zero"
@@ -290,8 +299,13 @@ def _budget_problem(entries, request, split):
     return None
 
 
-def _standing(entries, request, split):
-    """The stored entry when the request repeats a run in entries, else None after the budget checks."""
+def _standing(entries, request, split_raw):
+    """The stored entry when the request repeats a run in entries, else None after the budget checks. split_raw is
+    the split file's raw bytes, parsed here so that its hash and its budgets cannot part."""
+    try:
+        split = parse_split(split_raw)
+    except PartitionError:
+        raise LedgerError("ledger:split_malformed") from None
     draft = dict(_entry(request, 0, GENESIS, GENESIS, COMPLETED, "2000-01-01T00:00:00Z"), entry_sha256=GENESIS)
     problem = _request_problem(draft, split)
     if problem:
@@ -357,12 +371,13 @@ class StudyLedger:
         kinds = [e["kind"] for e in self.entries() if e["lineage"] == lineage]
         return {"looks": kinds.count(LOOK), "registered": kinds.count(REGISTERED)}
 
-    def check(self, request, split):
+    def check(self, request, split_raw):
         """Before the read: the stored entry when the request is a repeat, else None; LedgerError for a request the
-        ledger would refuse to record."""
-        return _standing(self.entries(), request, split)
+        ledger would refuse to record. split_raw is the split file's raw bytes. Nothing is written or created, so
+        this does not show that the directory or the file can be written."""
+        return _standing(self.entries(), request, split_raw)
 
-    def record(self, request, split, tables_sha256, result, clock):
+    def record(self, request, split_raw, tables_sha256, result, clock):
         """After the read: append the pass's one entry, or for a repeat compare tables_sha256 and result with the
         stored ones and append nothing. Returns the head (seq, entry_sha256). clock() gives recorded_at.
         WriteUncertainError once writing began; every other LedgerError but UnlockError leaves the file as it was."""
@@ -378,7 +393,7 @@ class StudyLedger:
                 entries = verify_bytes(data)
                 if (entries[-1]["seq"], entries[-1]["entry_sha256"]) != self._head:
                     raise LedgerError("ledger:head_moved")
-            stored = _standing(entries, request, split)
+            stored = _standing(entries, request, split_raw)
             if stored is not None:
                 if (stored["tables_sha256"], stored["result"]) != (tables_sha256, result):
                     raise LedgerError("ledger:repeat_differs")
@@ -404,10 +419,14 @@ class StudyLedger:
         if len(data) + len(line) > MAX_LEDGER_BYTES:
             raise LedgerError("ledger:entry:ledger_full")
         try:
-            with self.path.open("xb" if self._head is None else "ab", buffering=0) as handle:
-                _write_all(handle, line)
+            handle = self.path.open("xb" if self._head is None else "ab", buffering=0)
         except FileExistsError:
             raise LedgerError("ledger:head_moved") from None
+        except OSError:                                             # not opened, so nothing was written
+            raise LedgerError("ledger:not_writable") from None
+        try:
+            with handle:
+                _write_all(handle, line)
         except OSError:
             raise WriteUncertainError("ledger:write_failed") from None
         try:

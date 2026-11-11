@@ -38,7 +38,8 @@ REPO = Path(__file__).resolve().parent.parent
 SPLIT_FILE = REPO / "research" / "partitions-v1.json"
 # The split file's sha256 as reviewed: any change to the file must change this line too (a new split).
 SPLIT_SHA256 = "dafa34416d704b24f66b540f754fa7681ca8fcb188a2327cb72fd40340ee3f2e"
-SPLIT = parse_split(SPLIT_FILE.read_bytes())
+SPLIT_RAW = SPLIT_FILE.read_bytes()
+SPLIT = parse_split(SPLIT_RAW)
 SALT = "betangel-research/partitions-v1/PRO-2015-05..2016-04"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 CLOCK = "2026-11-11T12:00:00.000000Z"
@@ -59,6 +60,20 @@ def days(first, last):
 
 def sha(text):
     return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def other_split(change):
+    """(raw bytes, sha256) of another split file: the merged file's value, changed, in the one byte form."""
+    value = json.loads(SPLIT_RAW)
+    change(value)
+    raw = file_bytes(value)
+    return raw, hashlib.sha256(raw).hexdigest()
+
+
+def nested(raw, depth=3000):
+    """raw with the text "DEEP" (quotes included) swapped for depth lists, one inside the other, on one line."""
+    assert raw.count(b'"DEEP"') == 1
+    return raw.replace(b'"DEEP"', b"[" * depth + b"]" * depth)
 
 
 class PartitionShares(unittest.TestCase):
@@ -239,6 +254,23 @@ class PartitionParse(unittest.TestCase):
             with self.subTest(code=code, size=len(data)):
                 self.assertRefused(code, raw=data)
 
+    def test_deep_nesting_is_refused_by_its_field_and_the_byte_form_is_never_built(self):
+        """The byte form is compared last, when every value is known to be small: indenting 3,000 nested lists
+        would build an 18 MB text, and the cost grows with the square of the depth."""
+        cases = (("prior_exposure:not_ids_with_a_sentence_each", lambda v: v["prior_exposure"].update(p0="DEEP")),
+                 ("prior_exposure:not_ids_with_a_sentence_each", lambda v: v.update(prior_exposure="DEEP")),
+                 ("labels.PRO-D:role_not_supported", lambda v: v["labels"]["PRO-D"].update(role="DEEP")),
+                 ("ranges[0]:salt_malformed", lambda v: v["ranges"][0].update(salt="DEEP")),
+                 ("ranges[1]:label_malformed", lambda v: v["ranges"][1].update(label="DEEP")),
+                 ("halves.H1:not_a_date", lambda v: v["halves"]["H1"].update(first="DEEP")),
+                 ("max_looks:not_an_int_in_range", lambda v: v.update(max_looks="DEEP")),
+                 ("schema:not_supported", lambda v: v.update(schema="DEEP")))
+        for code, change in cases:
+            value = copy.deepcopy(self.value)
+            change(value)
+            with self.subTest(code=code), mock.patch.object(partition, "file_bytes", side_effect=AssertionError):
+                self.assertRefused(code, raw=nested(file_bytes(value)))
+
 
 class LedgerCase(unittest.TestCase):
     def setUp(self):
@@ -265,7 +297,7 @@ class LedgerCase(unittest.TestCase):
     def open(self, **kwargs):
         return StudyLedger.open(self.directory, head_text(self.head), **kwargs)
 
-    def run_pass(self, request, tables=None, result="completed", split=SPLIT):
+    def run_pass(self, request, tables=None, result="completed", split=SPLIT_RAW):
         """One pass as a runner makes it: open with the last head, check, then record. Returns what check gave."""
         ledger = self.open()
         stored = ledger.check(request, split)
@@ -383,11 +415,11 @@ class LedgerChain(LedgerCase):
         ledger = self.open()
         (self.directory / LOCK_FILE).write_bytes(b"")
         self.assertRefused("ledger:locked", self.open)
-        self.assertRefused("ledger:locked", ledger.record, self.request(run=1), SPLIT, sha("t"), "completed",
+        self.assertRefused("ledger:locked", ledger.record, self.request(run=1), SPLIT_RAW, sha("t"), "completed",
                            lambda: CLOCK)
         self.assertEqual(self.path.read_bytes(), before)
         (self.directory / LOCK_FILE).unlink()                               # a person, after checking no pass runs
-        ledger.record(self.request(run=1), SPLIT, sha("t"), "completed", lambda: CLOCK)
+        ledger.record(self.request(run=1), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
         self.assertEqual(len(verify(self.path)), 2)
         self.assertFalse((self.directory / LOCK_FILE).exists())
 
@@ -432,6 +464,7 @@ class LedgerChain(LedgerCase):
                  (0, dict(alpha="0.02"), "m_or_alpha_not_zero"), (2, dict(alpha="0"), "m_or_alpha_malformed"),
                  (2, dict(alpha="0.000"), "m_or_alpha_malformed"), (2, dict(m=0), "m_or_alpha_malformed"),
                  (2, dict(m=True), "m_or_alpha_malformed"), (2, dict(alpha="2e-2"), "m_or_alpha_malformed"),
+                 (2, dict(m=study_ledger.MAX_FAMILY + 1), "m_or_alpha_malformed"),
                  (0, dict(partitions=["PRO-V", "PRO-D"]), "partitions_malformed"),
                  (0, dict(partitions=["PRO-D", "PRO-D"]), "partitions_malformed"),
                  (0, dict(partitions=[]), "partitions_malformed"),
@@ -446,6 +479,9 @@ class LedgerChain(LedgerCase):
             with self.subTest(reason=reason, change=str(change)[:40]):
                 self.write_lines(self.rehashed(index, lines, **change))
                 self.assertRefused(f"ledger:line {index + 1}:{reason}", verify, self.path)
+        self.assertEqual(study_ledger.MAX_FAMILY, 1000)
+        self.write_lines(self.rehashed(2, lines, m=1000))                   # the largest family is taken
+        self.assertEqual(verify(self.path)[2]["m"], 1000)
         self.write_lines(lines)
         entry = json.loads(lines[0])
         look_failed = self.rehashed(0, lines, result="engine_check_failed")     # allowed for a look
@@ -466,6 +502,8 @@ class LedgerChain(LedgerCase):
 
     def test_a_request_with_a_bad_value_is_refused_before_anything_is_written(self):
         cases = ((dict(alpha=0.02, m=2, kind="registered"), "m_or_alpha_malformed"),
+                 (dict(m=2 ** 63, kind="registered"), "m_or_alpha_malformed"),      # too wide for a ledger line
+                 (dict(m=study_ledger.MAX_FAMILY + 1, kind="registered"), "m_or_alpha_malformed"),
                  (dict(m=None), "m_or_alpha_malformed"), (dict(m=1), "m_or_alpha_not_zero"),
                  (dict(study=None), "study_malformed"), (dict(code_commit="main"), "code_commit_malformed"),
                  (dict(input_sha256=None), "input_sha256_malformed"), (dict(kind="prior"), "kind_not_allowed"),
@@ -477,15 +515,15 @@ class LedgerChain(LedgerCase):
         for change, reason in cases:
             with self.subTest(reason=reason, change=str(change)[:40]):
                 request = self.request(**change)
-                self.assertRefused(f"ledger:entry:{reason}", ledger.check, request, SPLIT)
-                self.assertRefused(f"ledger:entry:{reason}", ledger.record, request, SPLIT, sha("t"), "completed",
+                self.assertRefused(f"ledger:entry:{reason}", ledger.check, request, SPLIT_RAW)
+                self.assertRefused(f"ledger:entry:{reason}", ledger.record, request, SPLIT_RAW, sha("t"), "completed",
                                    lambda: CLOCK)
         for tables, result, clock, reason in ((None, "completed", CLOCK, "tables_sha256_malformed"),
                                               (sha("t"), "failed", CLOCK, "result_not_allowed"),
                                               (sha("t"), "completed", "2026-11-11 12:00", "recorded_at_malformed"),
                                               (sha("t"), "completed", None, "recorded_at_malformed")):
             with self.subTest(reason=reason):
-                self.assertRefused(f"ledger:entry:{reason}", ledger.record, self.request(), SPLIT, tables, result,
+                self.assertRefused(f"ledger:entry:{reason}", ledger.record, self.request(), SPLIT_RAW, tables, result,
                                    lambda: clock)
         self.assertEqual(list(self.directory.iterdir()), [])
         self.assertIsNone(ledger.head)
@@ -525,14 +563,14 @@ class LedgerChain(LedgerCase):
 
     def test_two_handles_at_one_head_cannot_both_append(self):
         first, second = self.open(), self.open()
-        first.record(self.request(), SPLIT, sha("t"), "completed", lambda: CLOCK)
+        first.record(self.request(), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
         before = self.path.read_bytes()
-        self.assertRefused("ledger:head_moved", second.record, self.request(run=1), SPLIT, sha("t"), "completed",
+        self.assertRefused("ledger:head_moved", second.record, self.request(run=1), SPLIT_RAW, sha("t"), "completed",
                            lambda: CLOCK)
         self.head = first.head
         third, fourth = self.open(), self.open()
-        third.record(self.request(run=1), SPLIT, sha("t"), "completed", lambda: CLOCK)
-        self.assertRefused("ledger:head_moved", fourth.record, self.request(run=2), SPLIT, sha("t"), "completed",
+        third.record(self.request(run=1), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
+        self.assertRefused("ledger:head_moved", fourth.record, self.request(run=2), SPLIT_RAW, sha("t"), "completed",
                            lambda: CLOCK)
         self.assertEqual(self.path.read_bytes()[:len(before)], before)
         self.assertEqual(len(verify(self.path)), 2)
@@ -542,16 +580,16 @@ class LedgerChain(LedgerCase):
         self.run_pass(self.request())
         ledger, before = self.open(), self.path.read_bytes()
         with mock.patch.object(study_ledger, "MAX_LEDGER_BYTES", 2 * len(before) - 1):
-            self.assertRefused("ledger:entry:ledger_full", ledger.record, self.request(run=1), SPLIT, sha("t"),
+            self.assertRefused("ledger:entry:ledger_full", ledger.record, self.request(run=1), SPLIT_RAW, sha("t"),
                                "completed", lambda: CLOCK)
         self.assertEqual(self.path.read_bytes(), before)
         with mock.patch.object(study_ledger, "verify", side_effect=LedgerError("ledger:unreadable")):
             with self.assertRaises(WriteUncertainError) as caught:
-                ledger.record(self.request(run=1), SPLIT, sha("t"), "completed", lambda: CLOCK)
+                ledger.record(self.request(run=1), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
         self.assertEqual(str(caught.exception), "ledger:append_not_confirmed")
         self.assertEqual(ledger.head, self.head)                            # not advanced: reopen with the true head
         self.assertEqual(len(verify(self.path)), 2)
-        self.assertRefused("ledger:head_moved", ledger.record, self.request(run=2), SPLIT, sha("t"), "completed",
+        self.assertRefused("ledger:head_moved", ledger.record, self.request(run=2), SPLIT_RAW, sha("t"), "completed",
                            lambda: CLOCK)
 
     def test_a_write_that_fails_part_way_is_uncertain_and_leaves_a_cut_line(self):
@@ -565,12 +603,46 @@ class LedgerChain(LedgerCase):
 
         with mock.patch.object(study_ledger, "_write_all", partial):
             with self.assertRaises(WriteUncertainError) as caught:
-                ledger.record(self.request(run=1), SPLIT, sha("t"), "completed", lambda: CLOCK)
+                ledger.record(self.request(run=1), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
         self.assertEqual(str(caught.exception), "ledger:write_failed")
         self.assertEqual(ledger.head, self.head)                            # the head did not advance
         self.assertTrue(self.path.read_bytes().startswith(before))
         self.assertFalse((self.directory / LOCK_FILE).exists())
         self.assertRefused("ledger:line 2:truncated_line", self.open)       # every later pass refuses: no repair
+
+    def test_a_ledger_that_cannot_be_written_passes_the_checks_and_is_refused_at_the_append(self):
+        """Nothing before the read tries to write, so a directory or file the pass cannot write is found only at the
+        append. Nothing was written then, so neither refusal is a WriteUncertainError."""
+        real = Path.open
+
+        def denied(name, modes):
+            def opener(path, mode="r", *args, **kwargs):
+                if path.name == name and mode in modes:
+                    raise PermissionError("synthetic")
+                return real(path, mode, *args, **kwargs)
+            return opener
+
+        def refused(code, ledger, request):
+            error = self.assertRefused(code, ledger.record, request, SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
+            self.assertNotIsInstance(error, (WriteUncertainError, UnlockError))
+
+        with mock.patch.object(Path, "open", denied(LEDGER_FILE, ("xb", "ab"))):
+            fresh = self.open()
+            self.assertIsNone(fresh.check(self.request(), SPLIT_RAW))
+            refused("ledger:not_writable", fresh, self.request())
+        self.assertEqual(list(self.directory.iterdir()), [])
+        self.run_pass(self.request())
+        before = self.path.read_bytes()
+        for name, modes, code in ((LEDGER_FILE, ("xb", "ab"), "ledger:not_writable"),
+                                  (LOCK_FILE, ("x",), "ledger:lock_failed")):
+            with self.subTest(code=code), mock.patch.object(Path, "open", denied(name, modes)):
+                ledger = self.open()                                        # open and check only read: both pass
+                self.assertIsNone(ledger.check(self.request(run=1), SPLIT_RAW))
+                refused(code, ledger, self.request(run=1))
+                self.assertEqual((self.path.read_bytes(), ledger.head), (before, self.head))
+                self.assertEqual(sorted(p.name for p in self.directory.iterdir()), [LEDGER_FILE])
+        self.run_pass(self.request(run=1))                                  # once it can be written, the pass records
+        self.assertEqual(len(verify(self.path)), 2)
 
     def test_an_unremovable_lock_after_a_written_entry_reports_the_new_head(self):
         ledger = self.open()
@@ -583,7 +655,7 @@ class LedgerChain(LedgerCase):
 
         with mock.patch.object(Path, "unlink", stuck):
             with self.assertRaises(UnlockError) as caught:
-                ledger.record(self.request(), SPLIT, sha("t"), "completed", lambda: CLOCK)
+                ledger.record(self.request(), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
         entries = verify(self.path)
         self.assertEqual(caught.exception.head, (0, entries[0]["entry_sha256"]))
         self.assertEqual(ledger.head, caught.exception.head)
@@ -596,7 +668,7 @@ class LedgerHead(LedgerCase):
         ledger = StudyLedger.open(self.directory, "none")
         self.assertIsNone(ledger.head)
         self.assertEqual(ledger.entries(), ())
-        head = ledger.record(self.request(), SPLIT, sha("t"), "completed", lambda: CLOCK)
+        head = ledger.record(self.request(), SPLIT_RAW, sha("t"), "completed", lambda: CLOCK)
         self.assertEqual((head, ledger.head), ((0, verify(self.path)[0]["entry_sha256"]), head))
         self.assertRefused("ledger:head_not_expected", StudyLedger.open, self.directory, "none")
         self.assertEqual(StudyLedger.open(self.directory, head_text(head)).head, head)
@@ -638,7 +710,7 @@ class LedgerHead(LedgerCase):
 
 
 class LedgerBudgets(LedgerCase):
-    def refused(self, code, request, split=SPLIT):
+    def refused(self, code, request, split=SPLIT_RAW):
         """Refused before the read (check) and at the append (record), and nothing is written."""
         before = self.path.read_bytes() if self.path.exists() else None
         ledger = self.open()
@@ -696,15 +768,69 @@ class LedgerBudgets(LedgerCase):
         self.run_pass(self.request(kind="registered", alpha="0.10"))
         self.refused("ledger:alpha_spent", self.request("inplay-v1", kind="registered", alpha="0.01"))
 
-    def test_budgets_are_the_given_splits_plain_values(self):
+    def test_budgets_are_the_ones_in_the_split_bytes(self):
         self.run_pass(self.request())
-        self.refused("ledger:looks_spent", self.request(run=1), replace(SPLIT, max_looks=1))
+        raw, digest = other_split(lambda v: v.update(max_looks=1))
+        self.refused("ledger:looks_spent", self.request(run=1, partitions_sha256=digest), raw)
         self.run_pass(self.request(kind="explore"))
-        self.refused("ledger:explore_budget_spent", self.request(kind="explore", run=1),
-                     replace(SPLIT, explore_budgets={"PRO-D": 1}))
-        self.refused("ledger:alpha_spent", self.request(kind="registered"),
-                     replace(SPLIT, alpha_lifetimes={"PRO-V": Fraction(1, 100)}))
+        raw, digest = other_split(lambda v: v["labels"]["PRO-D"].update(explore_budget=1))
+        self.refused("ledger:explore_budget_spent", self.request(kind="explore", run=1, partitions_sha256=digest), raw)
+        raw, digest = other_split(lambda v: v["labels"]["PRO-V"].update(alpha_lifetime="0.01"))
+        self.refused("ledger:alpha_spent", self.request(kind="registered", partitions_sha256=digest), raw)
         self.run_pass(self.request(run=1))
+
+    def test_the_ledger_parses_the_split_bytes_itself(self):
+        """The hash an entry names and the budgets it was checked against come from the same bytes: a Split built
+        or edited by hand is not taken, and bytes with larger budgets have another hash."""
+        self.run_pass(self.request())
+        self.run_pass(self.request(run=1))
+        generous = replace(SPLIT, max_looks=99)
+        self.assertEqual(generous.sha256, SPLIT_SHA256)                     # the hash alone says nothing of budgets
+        for split in (generous, SPLIT, None, SPLIT_RAW.decode("ascii"), SPLIT_RAW + b"\n", b"{}\n", b""):
+            with self.subTest(split=str(split)[:30]):
+                self.refused("ledger:split_malformed", self.request(run=2), split)
+        raw, digest = other_split(lambda v: v.update(max_looks=99))
+        self.refused("ledger:entry:split_not_the_requests", self.request(run=2), raw)
+        self.assertNotEqual(digest, SPLIT_SHA256)
+        self.refused("ledger:looks_spent", self.request(run=2))
+        self.run_pass(self.request(run=2, partitions_sha256=digest), split=raw)     # another split file, by its name
+        self.assertEqual([e["partitions_sha256"] for e in verify(self.path)], [SPLIT_SHA256] * 2 + [digest])
+
+    def test_a_look_does_not_use_the_explore_budget(self):
+        raw, digest = other_split(lambda v: v["labels"]["PRO-D"].update(explore_budget=1))
+        self.run_pass(self.request(partitions_sha256=digest), split=raw)   # a look at PRO-D and PRO-V
+        self.run_pass(self.request(kind="explore", partitions_sha256=digest), split=raw)
+        self.refused("ledger:explore_budget_spent", self.request(kind="explore", run=1, partitions_sha256=digest), raw)
+        self.assertEqual([e["kind"] for e in verify(self.path)], ["look", "explore"])
+
+    def test_each_budget_is_kept_per_label(self):
+        """A split with two budgeted explore labels and two budgeted holdout labels: a pass on one label spends
+        nothing on the other."""
+        def budgets(value):
+            value["labels"]["PRO-D"]["explore_budget"] = value["labels"]["BASIC-D"]["explore_budget"] = 1
+            value["labels"]["PRO-V"]["alpha_lifetime"] = "0.02"
+            value["labels"]["BASIC-V"]["alpha_lifetime"] = "0.04"
+
+        raw, digest = other_split(budgets)
+
+        def ask(study, kind, label, **changes):
+            return self.request(study, kind=kind, partitions=(label,), partitions_sha256=digest, **changes)
+
+        self.run_pass(ask("close-v1", "explore", "PRO-D"), split=raw)
+        self.run_pass(ask("close-v1", "explore", "BASIC-D", run=1), split=raw)      # not an explore of PRO-D
+        self.refused("ledger:explore_budget_spent", ask("close-v1", "explore", "PRO-D", run=2), raw)
+        self.refused("ledger:explore_budget_spent", ask("close-v1", "explore", "BASIC-D", run=2), raw)
+        self.run_pass(ask("close-v1", "registered", "PRO-V"), split=raw)            # all of PRO-V's 0.02
+        self.run_pass(ask("close-v1", "registered", "BASIC-V", run=1), split=raw)   # the lineage, on the other label
+        self.run_pass(ask("inplay-v1", "registered", "BASIC-V"), split=raw)         # 0.04 on BASIC-V, none of PRO-V's
+        self.refused("ledger:lineage_already_tested", ask("close-v2", "registered", "PRO-V"), raw)
+        self.refused("ledger:lineage_already_tested", ask("close-v2", "registered", "BASIC-V"), raw)
+        self.refused("ledger:alpha_spent", ask("inplay-v1", "registered", "PRO-V", run=1), raw)
+        self.refused("ledger:alpha_spent", ask("other-v1", "registered", "BASIC-V", alpha="0.01"), raw)
+        self.assertEqual([(e["kind"], e["lineage"], e["partitions"]) for e in verify(self.path)],
+                         [("explore", "close", ["PRO-D"]), ("explore", "close", ["BASIC-D"]),
+                          ("registered", "close", ["PRO-V"]), ("registered", "close", ["BASIC-V"]),
+                          ("registered", "inplay", ["BASIC-V"])])
 
     def test_a_repeat_appends_nothing_and_must_match_the_stored_hash(self):
         self.run_pass(self.request(), tables=sha("blind"))
@@ -721,12 +847,12 @@ class LedgerBudgets(LedgerCase):
                 self.assertEqual(self.run_pass(request, tables=tables), entries[index])
                 self.assertEqual((self.head, self.path.read_bytes()), (head, before))
                 ledger = self.open()
-                self.assertEqual(ledger.check(request, SPLIT), entries[index])
-                self.assertRefused("ledger:repeat_differs", ledger.record, request, SPLIT, sha("other"), "completed",
-                                   lambda: CLOCK)
+                self.assertEqual(ledger.check(request, SPLIT_RAW), entries[index])
+                self.assertRefused("ledger:repeat_differs", ledger.record, request, SPLIT_RAW, sha("other"),
+                                   "completed", lambda: CLOCK)
                 self.assertEqual((ledger.head, self.path.read_bytes()), (head, before))
         ledger = self.open()
-        self.assertRefused("ledger:repeat_differs", ledger.record, self.request(), SPLIT, sha("blind"),
+        self.assertRefused("ledger:repeat_differs", ledger.record, self.request(), SPLIT_RAW, sha("blind"),
                            "engine_check_failed", lambda: CLOCK)
         self.refused("ledger:repeat_differs", self.request(lineage="inplay"))
         self.refused("ledger:repeat_differs", self.request(partitions=("PRO-D",)))
@@ -738,7 +864,7 @@ class LedgerBudgets(LedgerCase):
     def test_a_repeat_never_reads_the_clock_into_the_file(self):
         self.run_pass(self.request())
         ledger = self.open()
-        ledger.record(self.request(), SPLIT, sha("tables"), "completed", lambda: "2027-01-01T00:00:00Z")
+        ledger.record(self.request(), SPLIT_RAW, sha("tables"), "completed", lambda: "2027-01-01T00:00:00Z")
         self.assertEqual([e["recorded_at"] for e in verify(self.path)], [CLOCK])
 
     def test_labels_and_kinds_the_split_does_not_allow(self):
@@ -989,6 +1115,52 @@ class RuleParse(unittest.TestCase):
                            ("file:not_bytes_or_too_large", b" " * ((1 << 20) + 1)), ("top:not_an_object", b"[]\n")):
             with self.subTest(code=code, size=len(data)):
                 self.assertRefused(code, raw=data)
+
+    def test_deep_nesting_is_refused_by_its_field_and_the_byte_form_is_never_built(self):
+        """As for the split file: the byte form is compared last, when every value is known to be small."""
+        cases = (("claim:not_a_sentence", lambda v: v.update(claim="DEEP")),
+                 ("parent_sha256:not_a_sha256_or_null", lambda v: v.update(parent_sha256="DEEP")),
+                 ("id:name_malformed", lambda v: v.update(id="DEEP")),
+                 ("market:not_an_object", lambda v: v.update(market="DEEP")),
+                 ("market.countries:country_malformed", lambda v: v["market"].update(countries=["DEEP"])),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(pull_s="DEEP")),
+                 ("select:selector_not_supported", lambda v: v.update(select="DEEP")),
+                 ("when[0]:not_an_int_in_range", lambda v: v["when"][0].update(value="DEEP")),
+                 ("intents[0].price:price_ref_not_supported", lambda v: v["intents"][0].update(price="DEEP")),
+                 ("intents[0]:not_decimal_text", lambda v: v["intents"][0].update(stake="DEEP")))
+        for code, change in cases:
+            raw = nested(rule_bytes(change=change))
+            with self.subTest(code=code), mock.patch.object(rulefile, "file_bytes", side_effect=AssertionError):
+                self.assertRefused(code, raw=raw)
+
+    def test_keep_needs_a_rule_with_no_pull_time(self):
+        """The pull time alone says when an order is taken back, and persist says what the in-play turn does to
+        an order still resting then. keep on an order that is pulled before the off could never matter: refused."""
+        def keep(value):
+            value["intents"][0].update(persist="keep")
+
+        def one_kept_time(value):
+            value["times"][2].update(pull_s=None)
+            keep(value)
+
+        self.assertRefused("intents[0]:keep_with_a_pull_time", keep)
+        self.assertRefused("intents[0]:keep_with_a_pull_time", one_kept_time)   # one time with a pull is enough
+        self.assertRefused("intents[0]:keep_with_a_pull_time", lambda v: v["times"][0].update(pull_s=-60),
+                           name="inplay-v1-lay")
+        self.assertRefused("intents[1]:keep_with_a_pull_time", lambda v: v["intents"].append(
+            dict(v["intents"][0], persist="keep")))
+        kept = parse_rule(rule_bytes(change=lambda v: (v.update(times=[{"at_s": -300, "pull_s": None}]), keep(v))))
+        self.assertEqual(decide(field(), kept).intents, (Intent(11, "BACK", Fraction("2.52"), Fraction(2), None,
+                                                                "keep"),))
+        # lapse with no pull time: the order rests until the off and lapses at the in-play turn.
+        resting = parse_rule(rule_bytes("inplay-v1-lay", lambda v: [row.update(persist="lapse")
+                                                                    for row in v["intents"]]))
+        found = decide(view_of(horse(21), horse(22), at_s=-600), resting)
+        self.assertEqual({(intent.pull_s, intent.persist) for intent in found.intents}, {(None, "lapse")})
+        self.assertEqual(len(found.intents), 16)
+        for rule in RULES.values():                                         # the three merged files obey it
+            pulled = any(pull_s is not None for _, pull_s in rule.times)
+            self.assertFalse(pulled and any(row.persist == "keep" for row in rule.intents), rule.id)
 
 
 class RuleDecide(unittest.TestCase):

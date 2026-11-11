@@ -1,0 +1,117 @@
+{
+  "claim": "A kept 2 pound LAY at a short fixed price is filled on enough losers to beat its break-even share.",
+  "counter_claim": "Winners fill every such order and losers fill only the front of the queue, so a late order loses.",
+  "id": "inplay-v1-lay",
+  "intents": [
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.01"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.02"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.03"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.05"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.10"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.20"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "1.50"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    },
+    {
+      "persist": "keep",
+      "price": {
+        "ref": "fixed",
+        "value": "2.00"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    }
+  ],
+  "lineage": "inplay",
+  "market": {
+    "betting_type": "ODDS",
+    "bsp_market": null,
+    "countries": [
+      "GB",
+      "IE"
+    ],
+    "event_type_id": "7",
+    "market_type": "WIN",
+    "number_of_winners": 1,
+    "persistence_enabled": true,
+    "turn_in_play_enabled": true
+  },
+  "parent_sha256": null,
+  "schema": "betangel.rule/v1",
+  "select": "each_active",
+  "status": "frozen",
+  "times": [
+    {
+      "at_s": -600,
+      "pull_s": null
+    }
+  ],
+  "when": [
+    {
+      "code": "market_not_open",
+      "feature": "market_open",
+      "op": "==",
+      "value": 1
+    },
+    {
+      "code": "too_few_active_runners",
+      "feature": "active_runners",
+      "op": ">=",
+      "value": 2
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "claim": "A resting LAY at the best back price is filled by impatient backers and beats BSP before commission.",
+  "counter_claim": "It fills mostly when the price is about to shorten, so filled orders score below BSP and unfilled ones above it.",
+  "id": "close-v1-lay",
+  "intents": [
+    {
+      "persist": "lapse",
+      "price": {
+        "ref": "best_back"
+      },
+      "side": "LAY",
+      "stake": "2.00"
+    }
+  ],
+  "lineage": "close",
+  "market": {
+    "betting_type": "ODDS",
+    "bsp_market": true,
+    "countries": [
+      "GB",
+      "IE"
+    ],
+    "event_type_id": "7",
+    "market_type": "WIN",
+    "number_of_winners": 1,
+    "persistence_enabled": null,
+    "turn_in_play_enabled": null
+  },
+  "parent_sha256": null,
+  "schema": "betangel.rule/v1",
+  "select": "favourite",
+  "status": "frozen",
+  "times": [
+    {
+      "at_s": -600,
+      "pull_s": -120
+    },
+    {
+      "at_s": -300,
+      "pull_s": -120
+    },
+    {
+      "at_s": -120,
+      "pull_s": -10
+    }
+  ],
+  "when": [
+    {
+      "code": "market_not_open",
+      "feature": "market_open",
+      "op": "==",
+      "value": 1
+    },
+    {
+      "code": "too_few_active_runners",
+      "feature": "active_runners",
+      "op": ">=",
+      "value": 5
+    },
+    {
+      "code": "best_back_out_of_range",
+      "feature": "best_back",
+      "op": ">=",
+      "value": "1.50"
+    },
+    {
+      "code": "best_back_out_of_range",
+      "feature": "best_back",
+      "op": "<=",
+      "value": "4.00"
+    },
+    {
+      "code": "depth_below_min",
+      "feature": "best_back_size",
+      "op": ">=",
+      "value": "10.00"
+    },
+    {
+      "code": "spread_not_1_or_2_ticks",
+      "feature": "spread_ticks",
+      "op": ">=",
+      "value": 1
+    },
+    {
+      "code": "spread_not_1_or_2_ticks",
+      "feature": "spread_ticks",
+      "op": "<=",
+      "value": 2
+    }
+  ]
+}

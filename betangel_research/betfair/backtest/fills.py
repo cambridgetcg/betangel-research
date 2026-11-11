@@ -19,7 +19,8 @@ The rules, for every model:
    leg's own price has risen since placement by at least divisor x (queue + stake).
 5. One fill, in full, at the leg's own price. Nothing at or before placement fills a leg, and no fill comes from a
    batch that is not open (judged).
-6. A leg that lapses is not judged in a batch when inPlay was true before that batch (judged).
+6. A leg that lapses is not judged in a batch when inPlay was true before that batch (judged). So the batch that
+   itself turns the market in play is still judged; the walk marks a fill that comes in it.
 
 The cross test differs from lp-v1's on purpose. lp-v1 asked for queue + stake on the opposite side. By price-time
 priority an opposing order can come to rest at or through our price only after every order ahead of ours at that

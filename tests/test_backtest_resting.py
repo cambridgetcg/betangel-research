@@ -11,6 +11,7 @@ Betfair files or results.
 
 import bz2
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
 import hashlib
@@ -42,16 +43,17 @@ from betangel_research.betfair.backtest.movement import (MARKET_CODES, Moment, R
 from betangel_research.betfair.backtest.movement import parse_registration as parse_movement
 from betangel_research.betfair.backtest.replay import ReplayProblem, _member
 from betangel_research.betfair.backtest.resting import (AS_WRITTEN, BLOCKED, BSP_ENDS, CLAIM_END, CLASSES,
-                                                        COUNTS_ONLY, FILLED_IS_ALL_PLACED, G, HARNESS_CODES, KILL_END,
-                                                        NET_CLOSED, NET_HELD, NULL_BLOCKS, NULL_LABEL, NULL_UNDEFINED,
-                                                        PLUS_STEP, SCORED, TRD_COUNTS, UNDERPOWERED, VERDICTS, Cell,
-                                                        Fill, OrderRow, blind_outcome, bound, cr1_test, deciding_end,
-                                                        described, detectable, ends_apart, figures, filled_part, gap,
-                                                        gate, gated, named_files, null_gate, one_sided_p,
-                                                        parse_registration, population_codes, quantile_table,
-                                                        record_code, rounded, score, scored, select_primaries, series,
-                                                        spread, verdicts, view_of, walk, whole_hundredths,
-                                                        without_first_fills)
+                                                        COUNTS_ONLY, FILLED, FILLED_IS_ALL_PLACED, G, GIVEN_FIRST,
+                                                        HARNESS_CODES, KILL_END, LATER, NET_CLOSED, NET_HELD,
+                                                        NULL_BLOCKS, NULL_LABEL, NULL_UNDEFINED, PLUS_STEP,
+                                                        REST_NOT_GIVEN, SCORED, TRD_COUNTS, UNDERPOWERED, VERDICTS,
+                                                        Cell, Fill, OrderRow, blind_outcome, bound, cr1_test,
+                                                        deciding_end, described, detectable, ends_apart, figures,
+                                                        filled_part, gap, gate, gated, given_figures, given_together,
+                                                        named_files, null_gate, one_sided_p, parse_registration,
+                                                        population_codes, quantile_table, record_code, rounded, score,
+                                                        scored, select_primaries, series, spread, verdicts, view_of,
+                                                        walk, whole_hundredths, withheld, without_first_fills)
 from betangel_research.betfair.backtest.resting_study import (Tally, decide_record, main, record_facts,
                                                               run_study, summary)
 from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide
@@ -68,7 +70,7 @@ from test_betfair_backtest_replay import definition, iso, mcm, md, ms, runner
 REPO = Path(__file__).resolve().parent.parent
 REGISTRATION = REPO / "research" / "studies" / "close-v1.json"
 # The registration's sha256 as reviewed: any change to the file must change this line too (a new registration).
-REGISTRATION_SHA256 = "0d5b290a69e60a482812c0f54ae016e893f45c780f4f424dc9f1519ca5e446d3"
+REGISTRATION_SHA256 = "0424f0e3ff16ab2c85f803c6dbf488aab8173ac9ebf00cb7a42652208a04afb2"
 SPLIT_RAW = (REPO / "research" / "partitions-v1.json").read_bytes()
 BACK_RULE, LAY_RULE = "close-v1-back", "close-v1-lay"
 RULES_RAW = {f"{name}.json": (REPO / "research" / "rules" / f"{name}.json").read_bytes()
@@ -155,8 +157,15 @@ class RestingCase(fx.Workspace):
             return walk(stream, records[market_id], plan, DEFAULT_LIMITS)
 
     def rows(self, messages, **kwargs):
-        """{Cell: OrderRow or code} of one market's walk."""
-        return self.walked(messages, **kwargs).outcomes
+        """{Cell: OrderRow or code} of one market's walk. Every order row is checked on the way: a fill behind a
+        longer queue implies a fill behind a shorter one, no later than it."""
+        outcomes = self.walked(messages, **kwargs).outcomes
+        for row in outcomes.values():
+            if isinstance(row, OrderRow):
+                taken = [row.fills[model].seconds for model in MODELS]          # front of the queue first
+                for ahead, behind in zip(taken, taken[1:]):
+                    self.assertTrue(behind is None or (ahead is not None and ahead <= behind), taken)
+        return outcomes
 
     def filled(self, messages, **kwargs):
         """{(side, at_s): {model: kind}} of every order with a fill under some model."""
@@ -240,6 +249,20 @@ class Registration(unittest.TestCase):
         self.assertEqual([name for name in ("B1", "B2", "B3", "B4", "B5", "B6", "B7", "T5", "T7", "T8", "T9", "T10")
                           if f"{name}:" not in released], [])
         self.assertNotIn("T6", json.dumps(value))                                  # the table by price band is cut
+        # Part and rest across the models, the half-years, the labels and the null, in the code's own words.
+        part_and_rest = value["measurement"]["part_and_rest"]
+        self.assertIn(f"in the order {', '.join(GIVEN_FIRST)}", part_and_rest)
+        for phrase in (REST_NOT_GIVEN, "(1) Across the fill models", "(2) Across half-years", "(3) Across labels",
+                       "(4) The null's main mean", "after the selection and the labels are decided", "Not covered"):
+            self.assertIn(phrase, part_and_rest)
+        self.assertIn("the main mean over the same orders is decided on as before and not printed",
+                      value["null"]["rule"])
+        self.assertIn("the SD is the pooled one over all scored orders", value["statistics"]["rule"])
+        self.assertIn("the batch that itself turns the market in play is still judged", value["fill_models"]["rule"])
+        for phrase in ("fills in the batch that turned the market in play", "began with no market status at all"):
+            self.assertIn(phrase, value["diagnostics"]["rule"])
+        self.assertIn("fills in the batch that turns the market in play", released)
+        self.assertIn("a primary's own rows are headed as tested in T9 only", released)
         self.assertIn("no table by price band", value["registered_pass"]["rule"])
         # The grid's text names the rule files' own times; the values live in the rule files alone.
         for rule in PLAN.rules:
@@ -798,6 +821,117 @@ class OpenBatches(RestingCase):
         other = ladder_move(150, atb=[[4.0, 40.0]], sid=R2)
         self.assertEqual(self.filled(lp_market(extra=extra + [other])), {})
 
+    def test_a_quote_cross_on_the_back_side(self):
+        # The best back comes up to the BACK's price of 2.52 with GBP 2 shown: a cross under every model.
+        def crossing(size):
+            return ladder_move(200, atl=[[2.52, 0], [2.56, 75.0]], atb=[[2.52, size]], sid=FAV)
+
+        rows = self.rows(lp_market(extra=[crossing(2.0)]))
+        for cell, seconds in zip(BACK_CELLS[:2], (400.0, 100.0)):
+            self.assertEqual(kinds(rows[cell]), dict.fromkeys(MODELS, CROSS))
+            self.assertEqual({fill.seconds for fill in rows[cell].fills.values()}, {seconds})
+            self.assertEqual(kinds(rows[LAY_CELLS[cell.at_s == -300]]), UNFILLED)     # nothing reached the LAY
+        self.assertEqual(self.filled(lp_market(extra=[crossing(1.99)])), {})          # a fill is all or nothing
+        # Through the BACK's price is a cross too: a best back of 2.54.
+        through = ladder_move(200, atl=[[2.52, 0], [2.56, 75.0]], atb=[[2.54, 2.0]], sid=FAV)
+        self.assertEqual(self.filled(lp_market(extra=[through]))[BACK, -300], dict.fromkeys(MODELS, CROSS))
+        back = leg(BACK, 2.52, queue=75)
+        self.assertEqual([fills.judge(back, Fraction(2), 2, set(), Fraction(0), shown)
+                          for shown in (None, Fraction(199, 100), Fraction(2))], [None, None, CROSS])
+
+    def test_a_batch_begun_with_no_status_is_not_open_and_is_counted(self):
+        trade = ladder_move(200, atb=[[2.48, 0]], trd=[[2.48, 1.0]], sid=FAV)
+        # A definition that carries no status at off - 250 s: from then on the market has no status at all. The
+        # order stays scored, nothing can fill it, and it is marked.
+        blank = status_at(250, status=fx.DROP)
+        rows = self.rows(lp_market(extra=[blank, trade]))
+        for cell in LAY_CELLS[:2] + BACK_CELLS[:2]:
+            row = rows[cell]
+            self.assertEqual((kinds(row), row.no_status, row.klass), (UNFILLED, True, SCORED))
+            self.assertEqual({fill.ended for fill in row.fills.values()}, {"pull"})
+        self.assertEqual(rows[LAY_CELLS[1]].trd, dict(zip(TRD_COUNTS, (0, 0, 1))))
+        self.assertEqual(rows[LAY_CELLS[2]], "market_not_open")
+        # An image with no definition does the same to the status. It also unlists every runner, so the order's
+        # outcome cannot be assessed: it is marked and it is not scored.
+        image = mcm(before(250), [{"id": M, "img": True, "rc": [
+            {"id": sid, "atb": [[back, 50.0]], "atl": [[lay, 75.0]]} for sid, (back, lay) in BOOK.items()]}])
+        rows = self.rows(lp_market(extra=[image, trade]))
+        self.assertEqual((kinds(rows[LAY_CELLS[1]]), rows[LAY_CELLS[1]].no_status, rows[LAY_CELLS[1]].klass),
+                         (UNFILLED, True, "outcome_unknown"))
+        # The batch that takes the status away began OPEN: with nothing after it in the window, no order is marked,
+        # and a trade it carries itself still fills.
+        rows = self.rows(lp_market(extra=[status_at(120, status=fx.DROP)]))
+        self.assertEqual([rows[cell].no_status for cell in LAY_CELLS[:2]], [False, False])
+        rows = self.rows(lp_market(extra=[suspended(200, fx.DROP, self.THROUGH_LAY)]))
+        self.assertEqual((kinds(rows[LAY_CELLS[1]]), rows[LAY_CELLS[1]].no_status),
+                         (dict.fromkeys(MODELS, THROUGH), False))
+        # A real suspension is not this: the status is known.
+        rows = self.rows(lp_market(extra=[status_at(250, "SUSPENDED"), suspended(200, "SUSPENDED", self.THROUGH_LAY)]))
+        self.assertEqual((rows[LAY_CELLS[1]].no_status, rows[LAY_CELLS[1]].trd),
+                         (False, dict(zip(TRD_COUNTS, (0, 0, 1)))))
+        self.assertEqual({row.no_status for row in self.rows(lp_market()).values()}, {False})
+
+
+class OnePtOneBatch(RestingCase):
+    """Messages that share a pt are one batch, and what was in force before its first message decides whether it
+    is open and whether a lapse order is still judged. Every case here splits one pt over two or three messages."""
+
+    TRADE = dict(atb=[[2.48, 0]], trd=[[2.48, 1.0]], sid=FAV)                   # a trade through the LAY at 2.5
+
+    def test_the_suspension_then_the_trade_at_one_pt_is_an_open_batch(self):
+        rows = self.rows(lp_market(extra=[status_at(200, "SUSPENDED"), ladder_move(200, **self.TRADE)]))
+        for cell, seconds in zip(LAY_CELLS[:2], (400.0, 100.0)):
+            self.assertEqual(kinds(rows[cell]), dict.fromkeys(MODELS, THROUGH))
+            self.assertEqual([(fill.seconds, fill.transition, fill.turn) for fill in rows[cell].fills.values()],
+                             [(seconds, True, False)] * 3)
+            self.assertEqual(rows[cell].trd, dict(zip(TRD_COUNTS, (1, 0, 0))))
+        self.assertEqual(kinds(rows[BACK_CELLS[1]]), UNFILLED)
+
+    def test_the_reopening_then_the_trade_at_one_pt_is_not_an_open_batch(self):
+        extra = [status_at(250, "SUSPENDED"), status_at(200), ladder_move(200, **self.TRADE)]
+        rows = self.rows(lp_market(extra=extra))
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual(kinds(rows[cell]), UNFILLED)
+            self.assertEqual(rows[cell].trd, dict(zip(TRD_COUNTS, (0, 0, 1))))
+        # One ms later the market was OPEN before the batch, and the same trade fills.
+        extra = [status_at(250, "SUSPENDED"), status_at(200), ladder_move(199.999, **self.TRADE)]
+        self.assertEqual(self.filled(lp_market(extra=extra))[LAY, -300], dict.fromkeys(MODELS, THROUGH))
+
+    def test_a_rise_and_its_ladder_entry_in_two_messages_of_one_pt_count_together(self):
+        rise, entry = ladder_move(200, trd=[[2.48, 1.0]], sid=FAV), ladder_move(200, atb=[[2.48, 0]], sid=FAV)
+        for extra in ([rise, entry], [entry, rise]):
+            found = self.filled(lp_market(extra=extra))
+            self.assertEqual(found, {(LAY, at_s): dict.fromkeys(MODELS, THROUGH) for at_s in (-600, -300)})
+        self.assertEqual(self.filled(lp_market(extra=[rise])), {})              # the rise alone is not a trade
+        # The entry 1 ms later is another batch: the rise is not counted then, nor later.
+        late = ladder_move(199.999, atb=[[2.48, 0]], sid=FAV)
+        self.assertEqual(self.filled(lp_market(extra=[rise, late])), {})
+
+    def test_the_in_play_turn_then_the_trade_at_one_pt_is_still_judged(self):
+        rows = self.rows(lp_market(extra=[status_at(200, in_play=True), ladder_move(200, **self.TRADE)]))
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual(kinds(rows[cell]), dict.fromkeys(MODELS, THROUGH))
+            self.assertEqual([(fill.transition, fill.turn) for fill in rows[cell].fills.values()], [(False, True)] * 3)
+        self.assertEqual({fill.ended for fill in rows[BACK_CELLS[1]].fills.values()}, {"lapse"})
+        # The same trade 1 ms later: inPlay was true before its batch, so the lapse order is no longer judged.
+        rows = self.rows(lp_market(extra=[status_at(200, in_play=True), ladder_move(199.999, **self.TRADE)]))
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual(kinds(rows[cell]), UNFILLED)
+            self.assertEqual({fill.ended for fill in rows[cell].fills.values()}, {"lapse"})
+            self.assertEqual(rows[cell].trd, dict(zip(TRD_COUNTS, (1, 0, 0))))    # the market was OPEN: a trade
+
+    def test_in_play_published_true_then_false_at_one_pt_leaves_the_order_resting(self):
+        """What ended an unfilled order is read from the value in force after each batch, as the walk reads it."""
+        both = [status_at(200, in_play=True), status_at(200)]
+        rows = self.rows(lp_market(extra=both, trades=[(150, FAV, [[2.48, 1.0]])]))
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual(kinds(rows[cell]), dict.fromkeys(MODELS, THROUGH))       # judged to the pull
+            self.assertEqual({fill.ended for fill in rows[BACK_CELLS[1]].fills.values()}, {"pull"})
+        # False then true at one pt leaves it true: the order lapsed.
+        rows = self.rows(lp_market(extra=both[::-1], trades=[(150, FAV, [[2.48, 1.0]])]))
+        self.assertEqual(kinds(rows[LAY_CELLS[1]]), UNFILLED)
+        self.assertEqual({fill.ended for fill in rows[LAY_CELLS[1]].fills.values()}, {"lapse"})
+
 
 def lp_like(rule):
     """A rule file changed to lp-v1's shape: any spread up to 20 ticks, every order pulled at off - 10 s."""
@@ -807,21 +941,23 @@ def lp_like(rule):
 
 
 class AgreesWithLp(RestingCase):
-    """The pessimistic model is lp-v1's join rule but for the cross test. On markets where lp-v1 selects the
-    favourite (a five-tick spread here), its join legs and this walk's pessimistic legs fill in the same batch by
-    the same kind, unless a cross shows at least the stake but less than queue + stake."""
+    """The pessimistic model is lp-v1's join rule but for three things. On markets that stay OPEN and out of play,
+    where lp-v1 selects the favourite (a five-tick spread here), its join legs and this walk's pessimistic legs
+    fill in the same batch by the same kind, unless a cross shows at least the stake but less than queue + stake.
+    The other two differences: lp-v1's walk credits a fill in a batch that is not open, and after the market has
+    turned in play; this walk does neither (lp-v1 classed such a market out afterwards instead)."""
 
     WIDE = {3600: book(FAV=(2.5, 2.6))}
     LP_PLAN = plan_of(rules={BACK_RULE: lp_like, LAY_RULE: lp_like})
 
-    def both(self, messages):
+    def both(self, messages, times=(-600, -300, -120)):
         """({(side, at_s): (kind, seconds)} of lp's join legs, the same of this walk's pessimistic legs), over
-        the decision times at which lp selected the favourite."""
+        those of the decision times at which lp selected the favourite."""
         root, manifest, records = self.build([(path(M), messages)])
         record = records[M]
         lp = lp_walk(root, manifest, record, LP_REG, [-600, -300, -120], DEFAULT_LIMITS)
         times = [at_s for at_s, (code, selection) in lp.selections.items()
-                 if selection is not None and selection.selection_id == FAV]
+                 if at_s in times and selection is not None and selection.selection_id == FAV]
         ours, theirs = {}, {}
         for item in lp.legs:
             if item.role == JOIN and item.offset_s in times:
@@ -858,13 +994,29 @@ class AgreesWithLp(RestingCase):
         theirs, _ = self.both(lp_market(books=self.WIDE, **fixtures["a restatement between trades"]))
         self.assertEqual(theirs[LAY, -600], (VOLUME, 500.0))
 
-    def test_the_one_difference_is_a_cross_below_queue_plus_stake(self):
+    def test_a_cross_below_queue_plus_stake_fills_here_and_not_in_lp(self):
         cross = ladder_move(200, atb=[[2.5, 0], [2.48, 50.0]], atl=[[2.6, 0], [2.5, 10.0]], sid=FAV)
         theirs, ours = self.both(lp_market(books=self.WIDE, extra=[cross]))
         for at_s, seconds in ((-600, 400.0), (-300, 100.0)):
             self.assertEqual(theirs[LAY, at_s], (None, None))                   # lp-v1: 10 shown, 52 needed
             self.assertEqual(ours[LAY, at_s], (CROSS, seconds))
             self.assertEqual(theirs[BACK, at_s], ours[BACK, at_s])
+
+    def test_lp_fills_in_a_batch_that_is_not_open_and_after_an_in_play_turn_and_this_walk_does_not(self):
+        through = {"atb": [[2.48, 0]], "trd": [[2.48, 1.0]]}
+        fixtures = {
+            "the batch that reopens the market": [status_at(250, "SUSPENDED"), suspended(200, "OPEN", through)],
+            "a batch after the in-play turn": [status_at(200, in_play=True),
+                                               ladder_move(150, sid=FAV, **through)],
+        }
+        for name, extra in fixtures.items():
+            theirs, ours = self.both(lp_market(books=self.WIDE, extra=extra), times=(-600, -300))
+            with self.subTest(fixture=name):
+                for at_s, seconds in ((-600, 400.0 if "reopens" in name else 450.0),
+                                      (-300, 100.0 if "reopens" in name else 150.0)):
+                    self.assertEqual(theirs[LAY, at_s], (THROUGH, seconds))     # lp-v1's walk has neither check
+                    self.assertEqual(ours[LAY, at_s], (None, None))
+                    self.assertEqual(theirs[BACK, at_s], ours[BACK, at_s])
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -901,7 +1053,9 @@ class PopulationCodes(RestingCase):
 
     def test_a_row_holds_no_market_or_selection_id(self):
         self.assertEqual(OrderRow._fields, ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid",
-                                            "fills", "null_mid", "null_reason", "trd"))
+                                            "fills", "null_mid", "null_reason", "trd", "no_status"))
+        self.assertEqual(Fill._fields, ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn",
+                                        "ended"))
         text = repr(sorted(self.rows(lp_market(trades=[(200, FAV, [[2.48, 1.0]])])).items()))
         for token in (M, M.split(".")[1], fx.EVENT, *map(str, SIDS)):
             self.assertNotIn(token, text)
@@ -1124,6 +1278,17 @@ class WalkBeforeOff(RestingCase):
         rows = self.rows(lp_market(extra=[turn]))
         self.assertEqual(kinds(rows[LAY_CELLS[1]]), dict.fromkeys(MODELS, THROUGH))
         self.assertEqual({fill.ended for fill in rows[BACK_CELLS[1]].fills.values()}, {"lapse"})
+        # Such a fill is marked: the market stayed OPEN, so it is no transition fill, but the batch turned it in play.
+        self.assertEqual([(fill.transition, fill.turn) for fill in rows[LAY_CELLS[1]].fills.values()],
+                         [(False, True)] * 3)
+        # A quote that crosses only in the turn batch (the first in-running ladder) fills too, and is marked.
+        crossing = mcm(before(200), [{"id": M, "rc": [{"id": FAV, "atl": [[2.46, 5.0]]}],
+                                      "marketDefinition": definition(OFF, [runner(s) for s in SIDS], in_play=True)}])
+        rows = self.rows(lp_market(extra=[crossing]))
+        self.assertEqual([(fill.kind, fill.turn) for fill in rows[LAY_CELLS[1]].fills.values()], [(CROSS, True)] * 3)
+        # A fill in a batch before the turn is not marked.
+        rows = self.rows(lp_market(extra=[status_at(150, in_play=True)], trades=[(200, FAV, [[2.48, 1.0]])]))
+        self.assertEqual([(fill.kind, fill.turn) for fill in rows[LAY_CELLS[1]].fills.values()], [(THROUGH, False)] * 3)
         # The lapse is for good: inPlay published false again does not bring the order back.
         back_again = lp_market(extra=[status_at(200, in_play=True), status_at(190)],
                                trades=[(150, FAV, [[2.48, 1.0]])])
@@ -1280,12 +1445,13 @@ NONE = ()
 def order(bsp, filled=MODELS, side=LAY, price=2.5, day=V_DAYS[0], label=V, half="H1", null=None, mid=None,
           first_second=False):
     """One scored OrderRow: filled names the models it filled under; null and mid are prices or None."""
-    found = {model: Fill(Fraction(0), VOLUME, 0.5 if first_second else 5.0, (first_second, True), False, False, None)
-             if model in filled else Fill(Fraction(0), None, None, (False, False), False, False, "pull")
+    found = {model: Fill(Fraction(0), VOLUME, 0.5 if first_second else 5.0, (first_second, True), False, False,
+                         False, None)
+             if model in filled else Fill(Fraction(0), None, None, (False, False), False, False, False, "pull")
              for model in MODELS}
     return OrderRow(side, P(price), label, half, day, SCORED, P(bsp), None if mid is None else P(mid), found,
                     None if null is None else P(null), None if null is not None else "not_two_sided",
-                    dict.fromkeys(TRD_COUNTS, 0))
+                    dict.fromkeys(TRD_COUNTS, 0), False)
 
 
 def block(count, days, bsps, label=V, nulls=(None,), **kwargs):
@@ -1490,6 +1656,118 @@ class PartAndRest(unittest.TestCase):
         self.assertEqual((len(rows), stands), (249, True))
 
 
+class PartAndRestAcrossModels(unittest.TestCase):
+    """The models' fills lie inside one another: every pessimistic fill is a central fill, and every central fill
+    an optimistic one. Two filled means over groups that differ by a few orders would give those orders' mean."""
+
+    def group(self, front_only, half_only=0, behind=499, unfilled=300):
+        """behind rows filled under every model, half_only more under the optimistic and central models,
+        front_only more under the optimistic model alone, and unfilled rows."""
+        return block(behind, V_DAYS, [2.7, 2.8]) + block(half_only, V_DAYS, [2.5], filled=(OPTIMISTIC, CENTRAL)) + \
+            block(front_only, V_DAYS, [2.3], filled=(OPTIMISTIC,)) + block(unfilled, V_DAYS, [2.4], filled=NONE)
+
+    def given(self, rows):
+        return [model for kind, model in given_figures(PLAN, rows) if kind == FILLED]
+
+    def test_classes_of_orders_under_100_stop_a_group(self):
+        def names(*groups):
+            return given_together(PLAN, 400, [(name, set(range(*span))) for name, span in groups])
+
+        self.assertEqual(GIVEN_FIRST, (PESSIMISTIC, OPTIMISTIC, CENTRAL))
+        # b holds a and 50 more: with a given, the 50 could be worked out. c holds a and 100 more.
+        self.assertEqual(names(("a", (0, 100)), ("b", (0, 150)), ("c", (0, 200))), ["a", "c"])
+        self.assertEqual(names(("b", (0, 150)), ("a", (0, 100)), ("c", (0, 200))), ["b"])       # the first is kept
+        self.assertEqual(names(("a", (0, 100)), ("same", (0, 100)), ("all", (0, 400))), ["a", "same", "all"])
+        self.assertEqual(names(("small", (0, 99)), ("a", (0, 100))), ["a"])
+        self.assertEqual(names(("rest of 99", (0, 301)), ("a", (0, 300))), ["a"])
+        # Two groups that leave 100 rows each, and cut a class of 50 between them.
+        self.assertEqual(names(("a", (0, 200)), ("crossing", (150, 300))), ["a"])
+        self.assertEqual(given_together(PLAN, 99, [("a", set(range(99)))]), [])
+        self.assertEqual(given_together(PLAN, 0, [("a", set())]), [])
+
+    def test_500_and_499_fills_do_not_both_give_a_mean(self):
+        rows = self.group(1)
+        self.assertEqual({model: filled_part(PLAN, rows, model).fills for model in MODELS},
+                         {OPTIMISTIC: 500, CENTRAL: 499, PESSIMISTIC: 499})
+        self.assertEqual(self.given(rows), [PESSIMISTIC, CENTRAL])
+        for end in BSP_ENDS:
+            found = figures(PLAN, rows, end)["models"]
+            for model in (PESSIMISTIC, CENTRAL):                # one and the same group of 499 orders
+                self.assertEqual((found[model]["filled"][G]["bets"], found[model]["filled"][G]["reason"]), (499, None))
+                self.assertIsNotNone(found[model]["value_per_placed"]["mean"])
+                self.assertIsNotNone(found[model]["gap"]["estimate"])
+            self.assertEqual(found[PESSIMISTIC]["filled"], found[CENTRAL]["filled"])
+            front = found[OPTIMISTIC]
+            self.assertEqual((front["fills"], front["fill_race_dates"], front[FILLED_IS_ALL_PLACED]), (500, 16, False))
+            for item in (*front["filled"].values(), front["value_per_placed"]):
+                self.assertEqual((item["mean"], item["sd"], item["se"], item["ci_low"], item["ci_high"],
+                                  item["reason"]), (None, None, None, None, None, REST_NOT_GIVEN))
+            self.assertEqual(front["filled"][NET_HELD]["bets"], 500)             # the counts stay
+            self.assertEqual((front["gap"]["estimate"], front["gap"]["ci_low"], front["gap"]["reason"],
+                              front["gap"]["bets"]), (None, None, REST_NOT_GIVEN, [500, 300]))
+        # The figure withheld is the one whose group could be told apart; what it would have been is known here.
+        full = described(PLAN, series(PLAN, rows[:500], G, AS_WRITTEN))
+        self.assertEqual(withheld(full), dict(full, mean=None, se=None, df=None, t_critical=None, ci_low=None,
+                                              ci_high=None, sd=None, reason=REST_NOT_GIVEN))
+        self.assertEqual(withheld(described(PLAN, [])), described(PLAN, []))    # counts only keeps its own reason
+
+    def test_the_models_are_given_in_the_order_a_claim_a_kill_then_the_one_between(self):
+        cases = {
+            (0, 0): [PESSIMISTIC, OPTIMISTIC, CENTRAL],         # three times the same group
+            (99, 0): [PESSIMISTIC, CENTRAL],
+            (100, 0): [PESSIMISTIC, OPTIMISTIC, CENTRAL],
+            (0, 1): [PESSIMISTIC],                              # central and optimistic each hold one order more
+            (0, 100): [PESSIMISTIC, OPTIMISTIC, CENTRAL],
+            (60, 60): [PESSIMISTIC, OPTIMISTIC],                # 120 more at the front; central lies 60 from both
+            (100, 100): [PESSIMISTIC, OPTIMISTIC, CENTRAL],
+            (100, 99): [PESSIMISTIC, OPTIMISTIC],
+        }
+        for (front_only, half_only), given in cases.items():
+            with self.subTest(front_only=front_only, half_only=half_only):
+                self.assertEqual(self.given(self.group(front_only, half_only)), given)
+        # A model with under 100 fills gives counts only, and stops no other model.
+        rows = self.group(60, behind=50)
+        self.assertEqual(self.given(rows), [OPTIMISTIC])
+        found = figures(PLAN, rows, AS_WRITTEN)["models"]
+        self.assertEqual([found[model]["filled"][G]["reason"] for model in MODELS], [None, COUNTS_ONLY, COUNTS_ONLY])
+        # Under the flag a model's group is every scored order: 40 unfilled here, under every model.
+        rows = self.group(1, unfilled=40)
+        self.assertEqual(self.given(rows), [PESSIMISTIC, OPTIMISTIC, CENTRAL])
+        self.assertEqual({figures(PLAN, rows, AS_WRITTEN)["models"][model]["filled"][G]["bets"] for model in MODELS},
+                         {540})
+        # 150 unfilled under the pessimistic model, 99 of them filled at the front: the front is flagged, and
+        # its all-placed mean with the pessimistic mean gives nothing new (the placed mean is given anyway).
+        rows = self.group(99, unfilled=51)
+        self.assertEqual({model: filled_part(PLAN, rows, model).all_placed for model in MODELS},
+                         {OPTIMISTIC: True, CENTRAL: False, PESSIMISTIC: False})
+        self.assertEqual(self.given(rows), [PESSIMISTIC, OPTIMISTIC, CENTRAL])
+
+    def test_the_figure_without_the_first_fills_follows_the_same_rule(self):
+        def later(rows):
+            return [model for kind, model in given_figures(PLAN, rows) if kind == LATER]
+
+        def group(first_behind, first_front):
+            """150 later fills and first_behind first-second fills under every model, and first_front orders
+            that fill in the first second at the front of the queue and later behind it."""
+            both = block(first_front, V_DAYS, [2.6])
+            mixed = [row._replace(fills={**row.fills, OPTIMISTIC: row.fills[OPTIMISTIC]._replace(
+                seconds=0.5, within=(True, True))}) for row in both]
+            return block(150, V_DAYS, [2.8]) + block(first_behind, V_DAYS, [2.7], first_second=True) + mixed + \
+                block(100, V_DAYS, [2.4], filled=NONE)
+
+        self.assertEqual(later(group(100, 0)), [PESSIMISTIC, OPTIMISTIC, CENTRAL])
+        # 30 orders are first-second fills at the front only: the pessimistic and central later groups hold them,
+        # the optimistic one does not, so only the first of the three is given.
+        rows = group(100, 30)
+        self.assertEqual(given_figures(PLAN, rows)[:3], [(FILLED, model) for model in GIVEN_FIRST])
+        self.assertEqual(later(rows), [PESSIMISTIC, CENTRAL])
+        self.assertEqual([len(without_first_fills(PLAN, rows, model)[0]) for model in MODELS], [150, 180, 180])
+        # Where the filled figure stands, the later figure is that figure: given when it is.
+        rows = group(99, 0)
+        self.assertEqual([without_first_fills(PLAN, rows, model)[1] for model in MODELS], [True] * 3)
+        self.assertEqual(later(rows), [PESSIMISTIC, OPTIMISTIC, CENTRAL])
+
+
 class Statistics(unittest.TestCase):
     def test_the_one_sided_p_against_hand_values(self):
         # Student's t with 1 degree of freedom is the Cauchy law, cdf 1/2 + atan(t) / pi; with 2 degrees it is
@@ -1622,6 +1900,18 @@ class Statistics(unittest.TestCase):
         self.assertEqual(blind["detectable"], {"values": 200, "race_dates": 15, FILLED_IS_ALL_PLACED: False,
                                                "effect": detectable(PLAN, sd, 200, 15)})
         self.assertEqual(set(blind), {"values", "race_dates", "sd", "ranges", FILLED_IS_ALL_PLACED, "detectable"})
+        # 160 unfilled orders on the explore label and 60 on the test label: the pooled SD is over the fills, but
+        # the test label's figure will be its all-placed one. The effect is then worked out from the SD over every
+        # scored order, which the blind pass gives too, and never from the fills' SD with the all-placed count.
+        rows = block(300, D_DAYS, [2.7, 2.8], label=D) + block(200, V_DAYS[:15], [2.6, 2.9]) + \
+            block(160, D_DAYS, [2.4], label=D, filled=NONE) + block(60, V_DAYS, [2.4], filled=NONE)
+        blind = blind_outcome(PLAN, rows, CENTRAL, AS_WRITTEN)
+        everything = sample_sd([x for _, x in series(PLAN, rows, G, AS_WRITTEN)])
+        self.assertEqual((blind["values"], blind["sd"], blind[FILLED_IS_ALL_PLACED]), (500, sd, False))
+        self.assertNotAlmostEqual(everything, sd, places=3)
+        self.assertEqual(blind["detectable"], {"values": 260, "race_dates": 16, FILLED_IS_ALL_PLACED: True,
+                                               "effect": detectable(PLAN, everything, 260, 16)})
+        self.assertEqual(everything, spread(PLAN, series(PLAN, rows, G, AS_WRITTEN))["sd"])
 
 
 class SelectionIsBlindToHoldout(unittest.TestCase):
@@ -1692,6 +1982,35 @@ class SelectionIsBlindToHoldout(unittest.TestCase):
                 BACK_CELLS[2]: self.explore([4], BACK, 4.3)}
         self.assertEqual(select_primaries(PLAN, rows, self.COUNTS, True).primaries[BACK_RULE], BACK_CELLS[2])
         self.assertEqual(select_primaries(PLAN, rows, self.COUNTS, False).primaries[BACK_RULE], BACK_CELLS[0])
+
+    def test_a_pass_hands_the_99_percent_switch_to_the_selection_and_the_labels(self):
+        """The rows of test_the_mean_is_read_at_the_claim_end, through summary(): with every scored BSP a whole
+        hundredth the two ends decide apart; with 2.5% of them off the grid the as-written figure decides alone."""
+        def ends(value):
+            return {rule: (item["kill"]["bsp_end"], item["test"]["bsp_end"])
+                    for rule, item in value["primaries"].items()}
+
+        rows = self.passed([2.8, 2.9])
+        for cell, bsp, price in ((BACK_CELLS[0], 1.5, 1.6), (BACK_CELLS[2], 4, 4.3)):
+            rows[cell] = self.explore([bsp], BACK, price) + [row for row in rows[cell] if row.label == V]
+        # Half a hundredth more on every 20th row of the LAY cells: 117 of 4,680 scored BSPs.
+        off_grid = {cell: [row._replace(bsp=row.bsp + Fraction(1, 200)) if cell.rule_id == LAY_RULE and place % 20 == 0
+                           else row for place, row in enumerate(found)] for cell, found in rows.items()}
+        on, off = (summary(PLAN, tally_of(found), "registered", "0" * 64) for found in (rows, off_grid))
+        self.assertEqual([value["bsp_precision"] for value in (on, off)], [
+            {"scored_bsps_whole_hundredths": 4680, "scored_bsps_not_whole_hundredths": 0,
+             "bsp_ends_decide_apart": True},
+            {"scored_bsps_whole_hundredths": 4563, "scored_bsps_not_whole_hundredths": 117,
+             "bsp_ends_decide_apart": False}])
+        self.assertEqual([value["selection"]["primaries"] for value in (on, off)], [
+            {BACK_RULE: "close-v1-back@-120", LAY_RULE: "close-v1-lay@-300"},
+            {BACK_RULE: "close-v1-back@-600", LAY_RULE: "close-v1-lay@-300"}])
+        self.assertEqual(ends(on), {BACK_RULE: (AS_WRITTEN, PLUS_STEP), LAY_RULE: (PLUS_STEP, AS_WRITTEN)})
+        self.assertEqual(ends(off), {BACK_RULE: (AS_WRITTEN, AS_WRITTEN), LAY_RULE: (AS_WRITTEN, AS_WRITTEN)})
+        # Both ends are printed either way.
+        for value in (on, off):
+            self.assertEqual({tuple(item[block]["both"]) for item in value["primaries"].values()
+                              for block in ("kill", "test")}, {BSP_ENDS})
 
     def test_changing_every_test_label_value_leaves_the_chosen_cells_unchanged(self):
         def inputs(rows):
@@ -1940,6 +2259,43 @@ class Verdicts(unittest.TestCase):
             self.assertEqual((with_null["null"], with_null["blocked"]), (None, None))
             self.assertEqual(with_null, without)
 
+    def test_the_main_mean_over_the_same_orders_is_withheld_when_a_few_orders_have_no_null_value(self):
+        def without(rows, count):
+            """rows with the first count of the test label's fills left without a null value."""
+            return [row._replace(null_mid=None, null_reason="market_not_open") for row in rows[:count]] + rows[count:]
+
+        whole = self.verdict(self.rows(fills_=340))
+        claim = figures(PLAN, scored(self.rows(fills_=340), V), AS_WRITTEN)["models"][PESSIMISTIC]["filled"][G]
+        self.assertEqual((whole["null"]["main_same_orders"]["mean"], claim["bets"]), (claim["mean"], 340))
+        self.assertIs(whole["null"]["at_least_the_fraction"], False)
+        # 1 or 99 of the 340 have no null value: the mean over the other 339 or 241, beside the claim's mean over
+        # all 340, would give the mean g of those few. The gate is decided as before; the mean is not printed.
+        for count in (1, 99):
+            found = self.verdict(without(self.rows(fills_=340), count))
+            null = found["null"]
+            self.assertEqual((found["label"], null["blocks"], null["why"], null["undefined"]),
+                             (self.EDGE, False, None, count))
+            main = null["main_same_orders"]
+            self.assertEqual((main["bets"], main["race_dates"], main["mean"], main["se"], main["ci_low"],
+                              main["reason"]), (340 - count, 16, None, None, None, REST_NOT_GIVEN))
+            self.assertEqual((null["null"]["bets"], null["null"]["mean"], null["at_least_the_fraction"]),
+                             (340 - count, 0.0, False))
+            # A null that blocks still blocks, and says that it reached the fraction.
+            blocked = self.verdict(without(self.rows(fills_=340, nulls=[2.5]), count))["null"]
+            self.assertEqual((blocked["blocks"], blocked["why"], blocked["at_least_the_fraction"],
+                              blocked["main_same_orders"]["mean"]), (True, NULL_BLOCKS[1], True, None))
+            self.assertIsNotNone(blocked["null"]["mean"])
+        # With none or 100 undefined, no small group can be worked out, and the mean is given.
+        for count in (0, 100):
+            null = null_gate(PLAN, without(block(340, V_DAYS, [2.7, 2.8], nulls=[2.7, 2.8]), count), AS_WRITTEN)
+            self.assertEqual((null["undefined"], null["main_same_orders"]["bets"],
+                              null["main_same_orders"]["reason"]), (count, 340 - count, None))
+            self.assertIsNotNone(null["main_same_orders"]["mean"])
+        # Too few null values to compute it: no fraction, and it keeps its own reason.
+        null = null_gate(PLAN, without(block(240, V_DAYS, [2.7, 2.8], nulls=[2.7, 2.8]), 60), AS_WRITTEN)
+        self.assertEqual((null["why"], null["at_least_the_fraction"], null["main_same_orders"]["reason"]),
+                         (NULL_BLOCKS[0], None, UNDERPOWERED))
+
     def test_measurement_pilot_candidate_and_unresolved(self):
         # At BSP or a hair above it: a small loss after commission, with a lower bound above -1.5 points.
         found = self.verdict(self.rows(bsps=(2.5, 2.52)))
@@ -2013,6 +2369,15 @@ def offs_of(label, start, count):
     return found
 
 
+EDGE = datetime(2016, 4, 30, 23, 30, tzinfo=timezone.utc)                    # 1 May in London: no label
+
+
+def study_offs():
+    """The eight offs of the study archive's dated markets: two race dates for each partition label in each
+    half-year, the explore label's four first."""
+    return offs_of(D, OFF, 2) + offs_of(D, WINTER, 2) + offs_of(V, OFF, 2) + offs_of(V, WINTER, 2)
+
+
 def study_members():
     """[(member path, messages)] and the market ids. Eight race dates, two for each partition label in each
     half-year, with three markets each: one with a trade through both orders' prices at off - 200 s and at
@@ -2022,8 +2387,7 @@ def study_members():
     the second market. Then five single markets: four runners; a runner removed at off - 200 s after a trade
     through; a BASIC file; a race date with no label; and a file with no definition."""
     members = []
-    dated = [(off, 2.6 + index % 2 / 10) for index, off in enumerate(offs_of(D, OFF, 2) + offs_of(D, WINTER, 2))] + \
-        [(off, 2.7 + index % 2 / 10) for index, off in enumerate(offs_of(V, OFF, 2) + offs_of(V, WINTER, 2))]
+    dated = [(off, (2.6 if index < 4 else 2.7) + index % 2 / 10) for index, off in enumerate(study_offs())]
     through = [(200, FAV, [[2.48, 1.0], [2.54, 1.0]]), (60, FAV, [[2.46, 1.0], [2.56, 1.0]])]
     for day, (off, bsp) in enumerate(dated):
         for kind, (trades, more) in enumerate(((through, 0), ([(200, FAV, [[2.5, 54.0]])], 0.05), ((), 0))):
@@ -2034,7 +2398,7 @@ def study_members():
     removal = md("1.181099001", ms(off) - 200_000,
                  definition(off, [runner(s, "REMOVED" if s == R6 else "ACTIVE") for s in SIDS]))
     statuses = {s: "REMOVED" if s == R6 else "WINNER" if s == FAV else "LOSER" for s in SIDS}
-    edge = datetime(2016, 4, 30, 23, 30, tzinfo=timezone.utc)                # 1 May in London: no label
+    edge = EDGE
     members += [
         (path("1.181098001", off), lp_market("1.181098001", off, runners=SIDS[:4])),
         (path("1.181099001", off), lp_market("1.181099001", off, extra=[removal], statuses=statuses,
@@ -2222,13 +2586,14 @@ class Run(unittest.TestCase):
             self.assertEqual(set(receipt), {
                 "kind", "schema_version", "study", "pass", "status", "registration_sha256", "partitions_sha256",
                 "input_sha256", "input", "code_commit", "source_descriptor_sha256", "interpreter",
-                "blind_receipt_sha256", "ledger_head", "ledger_repeat", "ledger_counts", "bytes_walked",
-                "bytes_drained", "counts", "outputs", "started_at", "recorded_at"})
+                "blind_receipt_sha256", "ledger_head", "ledger_entry", "ledger_repeat", "ledger_counts",
+                "bytes_walked", "bytes_drained", "counts", "outputs", "started_at", "recorded_at"})
             self.assertEqual((receipt["study"], receipt["pass"], receipt["status"], receipt["registration_sha256"],
                               receipt["partitions_sha256"], receipt["code_commit"], receipt["ledger_head"],
-                              receipt["ledger_counts"]),
+                              receipt["ledger_entry"], receipt["ledger_counts"]),
                              (STUDY, name, "completed", given.sha, PLAN.split.sha256, COMMIT, result["ledger_head"],
-                              result["ledger_counts"]))
+                              result["ledger_head"], result["ledger_counts"]))
+            self.assertIs(result["ledger_lock_left"], False)
             self.assertEqual(receipt["outputs"]["summary.json"],
                              {"sha256": sha(files[name]["summary.json"]), "bytes": len(files[name]["summary.json"])})
             for key in ("started_at", "recorded_at"):
@@ -2276,7 +2641,8 @@ class Run(unittest.TestCase):
             "scored": 12, "fills": 8, "fill_rate": round(8 / 12, 6),
             "by_kind": {THROUGH: 4, CROSS: 0, VOLUME: 4}, "within_s_of_t": {"1": 0, "2": 0},
             "after_the_hour": dict.fromkeys(FILL_KINDS, 0), "left_the_market_not_open": 0,
-            "ended_by": {"pull": 4, "lapse": 0}})
+            "turned_the_market_in_play": 0, "ended_by": {"pull": 4, "lapse": 0}})
+        self.assertEqual(tables["scored_orders_with_a_batch_begun_with_no_status"], 0)
         self.assertEqual((tables["fills"]["PRO-V"][PESSIMISTIC]["fills"],
                           tables["fills"]["PRO-D"][OPTIMISTIC]["fills"]), (4, 8))
         self.assertEqual(tables["fills_not_scored"]["PRO-V"]["post_decision_removal"], dict.fromkeys(MODELS, 1))
@@ -2303,16 +2669,19 @@ class Run(unittest.TestCase):
         for item in (back, lay):
             self.assertEqual(item["printed_with"], [PLAN.label_note, PLAN.exposure_note])
             self.assertTrue(item["kill"]["figures_given"])
+        # Every scored BSP here is a whole hundredth, so the ends decide apart: a BACK's claim and a LAY's kill
+        # read BSP + 0.01, a BACK's kill and a LAY's claim the BSP as written.
+        self.assertEqual([(item["kill"]["bsp_end"], item["test"]["bsp_end"]) for item in (back, lay)],
+                         [(AS_WRITTEN, PLUS_STEP), (PLUS_STEP, AS_WRITTEN)])
         # The BACK at 2.52 against BSPs of 2.6 to 2.8: below 0 at every fill, so the bound is too.
         closed = [2.52 / bsp - 1 for bsp in (2.6, 2.7, 2.6, 2.7, 2.7, 2.8, 2.7, 2.8)]
-        self.assertEqual((back["kill"]["bets"], back["kill"]["fills"], back["kill"]["bsp_end"]), (8, 8, AS_WRITTEN))
+        self.assertEqual((back["kill"]["bets"], back["kill"]["fills"]), (8, 8))
         self.assertAlmostEqual(back["kill"]["mean"], sum(closed) / 8, places=6)
         self.assertLess(back["kill"]["bound"], 0)
         self.assertEqual(back["kill"]["orders_by_label"], {"PRO-D": 4, "PRO-V": 4})
         # The LAY at 2.5, held: (1 - 2.5 / BSP) - 0.02 x (1 - 1 / BSP) over the test label's four full fills.
         held = [(1 - 2.5 / bsp) - 0.02 * (1 - 1 / bsp) for bsp in (2.7, 2.8, 2.7, 2.8)]
-        self.assertEqual((lay["test"]["bets"], lay["test"]["fills"], lay["test"]["race_dates"], lay["test"]["bsp_end"]),
-                         (4, 4, 4, AS_WRITTEN))
+        self.assertEqual((lay["test"]["bets"], lay["test"]["fills"], lay["test"]["race_dates"]), (4, 4, 4))
         self.assertAlmostEqual(lay["test"]["mean"], sum(held) / 4, places=6)
         self.assertTrue(lay["test"]["holm_rejected"])
         self.assertAlmostEqual(lay["test"]["holm_p_adjusted"], 2 * lay["test"]["p_one_sided"], places=5)
@@ -2329,7 +2698,10 @@ class Run(unittest.TestCase):
         figures_ = value["figures"]
         self.assertEqual((figures_["cells"], figures_["sqrt_2_ln_c"], figures_["headings"]),
                          (6, round(math.sqrt(2 * math.log(6)), 6),
-                          {"PRO-D": "exploratory", "PRO-V": "not tested, unadjusted"}))
+                          {"PRO-D": "exploratory", "PRO-V": "not tested, unadjusted",
+                           "primary": "primary: tested in T9 only; this row is descriptive"}))
+        self.assertEqual(value["half_years"]["headings"], figures_["headings"])
+        self.assertEqual(value["sensitivity"]["headings"], figures_["headings"])
         self.assertEqual(sorted(figures_["by_cell"]), sorted(cells))
         placed = [1 - 2.5 / bsp for bsp in (2.6, 2.65, 2.6, 2.7, 2.75, 2.7)]
         group = figures_["by_cell"]["close-v1-lay@-300"]["PRO-D"]
@@ -2364,6 +2736,16 @@ class Run(unittest.TestCase):
                        "both nets at both BSP ends", "points of stake"):
             self.assertIn(phrase, text)
         self.assertEqual(text.count("| p one-sided |"), 2)                       # the two primaries' tests
+        # A primary's own rows on the test label are not headed "not tested": T9 tests that cell.
+        tested = "primary: tested in T9 only; this row is descriptive"
+        for cell in cells:
+            chosen = cell in ("close-v1-back@-120", "close-v1-lay@-300")
+            self.assertIn(f"### {cell}, PRO-V: {tested if chosen else 'not tested, unadjusted'}\n", text)
+            self.assertNotIn(f"### {cell}, PRO-V: {'not tested, unadjusted' if chosen else tested}", text)
+            self.assertIn(f"### {cell}, PRO-D: exploratory\n", text)
+            self.assertIn(f"| {cell} | PRO-V | {tested if chosen else 'not tested, unadjusted'} |", text)
+        self.assertEqual(text.count(f"PRO-V: {tested}, H"), 4)                   # T7: two primaries, two half-years
+        self.assertNotIn(f"PRO-D: {tested}", text)
 
     def test_a_repeat_appends_nothing_and_gives_the_same_bytes(self):
         given = self.given
@@ -2469,6 +2851,39 @@ class Run(unittest.TestCase):
                          {"status": "refused", "problems": ["out:already_exists"]})
         self.assertEqual(list((holder / "ledger").iterdir()), [])
 
+    def test_the_out_directory_is_refused_under_another_spelling_of_the_ledger_directory(self):
+        (self.ledger / "kept").mkdir()
+        (self.tmp / "elsewhere").mkdir()
+        # A file system that ignores letter case gives the ledger directory other spellings; the path text differs
+        # and the directory is the same. Where case is told apart, that folder does not exist.
+        same = (self.tmp / "LEDGER").exists()
+        for out in (self.tmp / "LEDGER" / "out", self.tmp / "Ledger" / "KEPT" / "out"):
+            with self.subTest(out=str(out)):
+                self.assertRefused(self.run_pass("blind", out),
+                                   "out:not_apart_from_the_ledger" if same else "out:unresolvable")
+        self.assertEqual(sorted(item.name for item in self.ledger.iterdir()), ["kept"])
+        # The same on any file system, with the identity check answered by hand: the folder above --out is the
+        # ledger directory under another name, or cannot be inspected.
+        real = Path.samefile
+
+        def same_as_the_ledger(path, other):
+            return (other == self.ledger and path.name == "elsewhere") or real(path, other)
+
+        def unreadable(path, other):
+            if other == self.ledger:
+                raise PermissionError(13, "no")
+            return real(path, other)
+
+        for answer in (same_as_the_ledger, unreadable):
+            with self.subTest(answer=answer.__name__), mock.patch.object(Path, "samefile", answer):
+                self.assertRefused(self.run_pass("blind", self.tmp / "elsewhere" / "out"),
+                                   "out:not_apart_from_the_ledger")
+        self.assertEqual(list((self.tmp / "elsewhere").iterdir()), [])
+        # A folder beside the ledger directory is apart from it.
+        with mock.patch.object(resting_study, "_tally", side_effect=ReplayProblem("replay:x:stopped")):
+            self.assertEqual(self.run_pass("blind", self.tmp / "elsewhere" / "out"),
+                             {"status": "failed", "failure": "replay:stopped"})
+
     def test_the_ledger_is_checked_before_the_read(self):
         out = self.tmp / "out"
 
@@ -2502,6 +2917,96 @@ class Run(unittest.TestCase):
         self.assertEqual((self.ledger / LEDGER_FILE).read_bytes(), before)
         self.assertFalse(out.exists())
 
+    def test_an_entry_whose_lock_file_stays_still_gives_its_outputs(self):
+        """The entry is written and confirmed and only the lock file cannot be removed: the read is not thrown
+        away. The outputs are written, the result says so, and every later pass refuses until a person has removed
+        the lock file."""
+        root, out, lock = one_market_root(self.tmp), self.tmp / "out", self.ledger / "trial-ledger-v1.jsonl.lock"
+        remove = Path.unlink
+
+        def unlink(path, *arguments, **named):
+            if path == lock:
+                raise PermissionError(13, "the lock file stays")
+            return remove(path, *arguments, **named)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            result = self.run_pass("blind", out, root=root)
+        entry = verify(self.ledger / LEDGER_FILE)[0]
+        self.assertEqual((result["status"], result["ledger_lock_left"], result["ledger_head"], result["ledger_repeat"]),
+                         ("completed", True, f"0:{entry['entry_sha256']}", False))
+        self.assertEqual(sorted(item.name for item in self.ledger.iterdir()), sorted([LEDGER_FILE, lock.name]))
+        receipt = json.loads(outputs_of(out)["receipt.json"])
+        self.assertEqual((receipt["ledger_head"], receipt["ledger_entry"]), (result["ledger_head"],) * 2)
+        self.assertEqual(receipt["outputs"]["summary.json"]["sha256"], entry["tables_sha256"])
+        self.assertEqual(self.run_pass("blind", self.tmp / "next", result["ledger_head"], root=root),
+                         {"status": "refused", "problems": ["ledger:locked"]})
+        lock.unlink()
+        again = self.run_pass("blind", self.tmp / "next", result["ledger_head"], root=root)
+        self.assertEqual((again["status"], again["ledger_repeat"], again["ledger_lock_left"]),
+                         ("completed", True, False))
+        # Had the outputs failed too, the result would name both the head and the lock.
+        with mock.patch.object(StudyLedger, "record", side_effect=UnlockError((0, entry["entry_sha256"]))), \
+                mock.patch.object(resting_study, "_write", side_effect=resting_study.StudyRefused("out:unwritable")):
+            self.assertEqual(self.run_pass("blind", self.tmp / "both", result["ledger_head"], root=root),
+                             {"status": "failed", "failure": "out:unwritable", "ledger_head": result["ledger_head"],
+                              "ledger_lock_left": True})
+
+    def test_the_month_gate_the_read_limits_and_a_moved_head_stop_a_pass(self):
+        root = one_market_root(self.tmp)
+        # The month gate runs on every record before anything of it is used: no member is opened.
+        with mock.patch.object(resting_study, "month_gate", return_value="month_sealed_holdout") as gate_, \
+                mock.patch.object(resting_study, "_walk", side_effect=AssertionError("a member was opened")), \
+                mock.patch.object(resting_study, "record_facts", side_effect=AssertionError("a record was used")):
+            result = self.run_pass("blind", self.tmp / "sealed", root=root)
+        self.assertEqual(gate_.call_args_list, [mock.call("2015-06")])
+        self.assertEqual((result["status"], set(result)), ("failed", {"status", "failure"}))
+        self.assertRegex(result["failure"], r"^input:[0-9a-f]{64}:stale_gate$")
+        # An archive ingested under other read limits than this run's is refused before the read.
+        with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+            result = self.run_pass("blind", self.tmp / "limits", root=root,
+                                   limits=replace(DEFAULT_LIMITS, max_line_bytes=DEFAULT_LIMITS.max_line_bytes - 1))
+        self.assertEqual(result["status"], "refused", result)
+        self.assertRegex(result["problems"][0], r"^input:[0-9a-f]{64}:limits_not_the_runs$")
+        self.assertEqual((list(self.ledger.iterdir()), (self.tmp / "sealed").exists(), (self.tmp / "limits").exists()),
+                         ([], False, False))
+        # Another pass moved the ledger's head during this pass's read: it fails at the end and writes nothing.
+        read = resting_study._tally
+
+        def moved(*given):
+            tally = read(*given)
+            entry_in(self.ledger)
+            return tally
+
+        with mock.patch.object(resting_study, "_tally", moved):
+            result = self.run_pass("blind", self.tmp / "moved", root=root)
+        self.assertEqual(result, {"status": "failed", "failure": "ledger:head_moved"})
+        self.assertFalse((self.tmp / "moved").exists())
+        self.assertEqual([entry["registration_sha256"] for entry in verify(self.ledger / LEDGER_FILE)], ["1" * 64])
+        self.assertEqual(sorted(item.name for item in self.ledger.iterdir()), [LEDGER_FILE])
+
+    def test_a_repeats_receipt_still_leads_the_registered_pass_to_the_look(self):
+        """A blind pass whose outputs were lost is run again after another entry was appended. Its receipt names
+        the head then, and beside it the look itself: the registered pass anchors on the look."""
+        root, ledger, blind = self.small()
+        other = entry_in(ledger, blind["ledger_head"], kind="registered", lineage="other", study="other-v1", m=1,
+                         alpha="0.02")
+        again = self.run_pass("blind", self.tmp / "again", other, root=root, ledger=ledger)
+        receipt = json.loads((self.tmp / "again" / "receipt.json").read_bytes())
+        self.assertEqual((again["status"], again["ledger_repeat"], again["ledger_head"]), ("completed", True, other))
+        self.assertEqual((receipt["ledger_repeat"], receipt["ledger_head"], receipt["ledger_entry"]),
+                         (True, other, blind["ledger_head"]))
+        first = json.loads((self.tmp / "small-blind" / "receipt.json").read_bytes())
+        self.assertEqual((first["ledger_head"], first["ledger_entry"]), (blind["ledger_head"],) * 2)
+        done = self.run_pass("registered", self.tmp / "registered", other, root=root, ledger=ledger,
+                             blind_receipt=self.tmp / "again" / "receipt.json")
+        self.assertEqual((done["status"], done["ledger_repeat"], done["ledger_counts"]),
+                         ("completed", False, {"looks": 1, "registered": 1}))
+        self.assertEqual([entry["kind"] for entry in verify(ledger / LEDGER_FILE)],
+                         ["look", "registered", "registered"])
+        # The registered pass's receipt names its own entry too, the new head.
+        receipt = json.loads((self.tmp / "registered" / "receipt.json").read_bytes())
+        self.assertEqual((receipt["ledger_entry"], receipt["ledger_head"]), (done["ledger_head"],) * 2)
+
     def small(self):
         """(a data root with one market, a ledger directory holding its blind pass's look, that pass's result)."""
         root, ledger = one_market_root(self.tmp), self.tmp / "small-ledger"
@@ -2526,7 +3031,7 @@ class Run(unittest.TestCase):
         self.assertEqual(self.run_pass("blind", out, head, root=root, ledger=ledger, blind_receipt=forged),
                          {"status": "refused", "problems": ["blind_receipt:not_for_the_blind_pass"]})
         other = entry_in(ledger, head, kind="registered", lineage="other", study="other-v1", m=1, alpha="0.02")
-        no_head = {key: item for key, item in receipt.items() if key != "ledger_head"}
+        no_head = {key: item for key, item in receipt.items() if key != "ledger_entry"}
         for change, problem in (({"registration_sha256": "1" * 64}, "blind_receipt:another_registration"),
                                 ({"partitions_sha256": "1" * 64}, "blind_receipt:another_split"),
                                 ({"input_sha256": "2" * 64}, "blind_receipt:another_input"),
@@ -2535,19 +3040,25 @@ class Run(unittest.TestCase):
                                 ({"study": "lp-v1"}, "blind_receipt:not_a_completed_blind_receipt"),
                                 ({"pass": "registered"}, "blind_receipt:not_a_completed_blind_receipt"),
                                 ({"status": "failed"}, "blind_receipt:not_a_completed_blind_receipt"),
-                                ({"ledger_head": "none"}, "blind_receipt:ledger_head_malformed"),
-                                ({"ledger_head": "0:zz"}, "blind_receipt:ledger_head_malformed"),
-                                ({"ledger_head": 0}, "blind_receipt:ledger_head_malformed"),
-                                # A head the ledger does not hold, and an entry that is not this pass's look.
-                                ({"ledger_head": "0:" + "f" * 64}, "ledger:anchor_mismatch"),
-                                ({"ledger_head": "7:" + "f" * 64}, "ledger:truncated_before_anchor"),
-                                ({"ledger_head": other}, "blind_receipt:not_this_ledgers_look")):
+                                ({"ledger_entry": "none"}, "blind_receipt:ledger_entry_malformed"),
+                                ({"ledger_entry": "0:zz"}, "blind_receipt:ledger_entry_malformed"),
+                                ({"ledger_entry": 0}, "blind_receipt:ledger_entry_malformed"),
+                                # An entry the ledger does not hold, and an entry that is not this pass's look.
+                                ({"ledger_entry": "0:" + "f" * 64}, "ledger:anchor_mismatch"),
+                                ({"ledger_entry": "7:" + "f" * 64}, "ledger:truncated_before_anchor"),
+                                ({"ledger_entry": other}, "blind_receipt:not_this_ledgers_look"),
+                                # The head after the pass is not what the registered pass reads.
+                                ({"ledger_head": other}, None)):
             with self.subTest(change=change):
                 forged.write_bytes(canonical_json({**receipt, **change}) + b"\n")
+                if problem is None:
+                    with mock.patch.object(resting_study, "_tally", side_effect=ReplayProblem("replay:x:stopped")):
+                        self.assertEqual(registered(head=other), {"status": "failed", "failure": "replay:stopped"})
+                    continue
                 self.assertEqual(registered(head=other), {"status": "refused", "problems": [problem]})
         forged.write_bytes(canonical_json(no_head) + b"\n")
         self.assertEqual(registered(head=other),
-                         {"status": "refused", "problems": ["blind_receipt:ledger_head_malformed"]})
+                         {"status": "refused", "problems": ["blind_receipt:ledger_entry_malformed"]})
         forged.write_bytes(json.dumps(receipt, indent=2).encode())
         self.assertEqual(registered(head=other), {"status": "refused", "problems": ["blind_receipt:not_canonical"]})
         forged.write_bytes(b"{")
@@ -2557,7 +3068,7 @@ class Run(unittest.TestCase):
         elsewhere.mkdir(mode=0o700)
         look = entry_in(elsewhere, registration_sha256=self.given.sha, input_sha256="2" * 64,
                         source_descriptor_sha256=receipt["source_descriptor_sha256"])
-        forged.write_bytes(canonical_json({**receipt, "ledger_head": look}) + b"\n")
+        forged.write_bytes(canonical_json({**receipt, "ledger_entry": look}) + b"\n")
         self.assertEqual(registered(ledger=elsewhere, head=look),
                          {"status": "refused", "problems": ["blind_receipt:not_this_ledgers_look"]})
         # The true receipt against a ledger that does not hold its look.
@@ -2649,16 +3160,30 @@ class Run(unittest.TestCase):
             failed = self.run_pass("blind", out, root=root)
         entry = verify(self.ledger / LEDGER_FILE)[0]
         self.assertEqual(failed, {"status": "failed", "failure": "out:unwritable",
-                                  "ledger_head": f"0:{entry['entry_sha256']}"})
+                                  "ledger_head": f"0:{entry['entry_sha256']}", "ledger_lock_left": False})
         self.assertFalse(out.exists())
         again = self.run_pass("blind", out, failed["ledger_head"], root=root)
         self.assertEqual((again["status"], again["ledger_repeat"], again["ledger_head"], again["summary_sha256"]),
                          ("completed", True, failed["ledger_head"], entry["tables_sha256"]))
         self.assertEqual(len(verify(self.ledger / LEDGER_FILE)), 1)
-        # So does an entry whose lock file could not be removed: the result names the head it reached.
-        with mock.patch.object(StudyLedger, "record", side_effect=UnlockError((1, "a" * 64))):
-            self.assertEqual(self.run_pass("blind", self.tmp / "locked", failed["ledger_head"], root=root),
-                             {"status": "failed", "failure": "ledger:unlock_failed", "ledger_head": "1:" + "a" * 64})
+        # A fault of the code after the append: the class name only, beside the head that stands.
+        changed, digest = write_registration(self.tmp / "changed", registration=lambda value: (
+            lowered(value), value.update(summary=value["summary"] + " Changed.")))
+        with mock.patch.object(resting_study, "_write", side_effect=KeyError(M)):
+            code, printed = cli("--study", STUDY, "--pass", "blind", "--registration-sha256", digest,
+                                "--registration", str(changed), "--archive-root", str(root), "--out",
+                                str(self.tmp / "fault"), "--code-commit", COMMIT, "--ledger", str(self.ledger),
+                                "--ledger-head", failed["ledger_head"])
+        second = verify(self.ledger / LEDGER_FILE)[1]
+        self.assertEqual((code, json.loads(printed)), (2, {
+            "status": "failed", "failure": "internal:KeyError", "ledger_head": f"1:{second['entry_sha256']}",
+            "ledger_lock_left": False}))
+        self.assertNotIn(M, printed)
+        self.assertFalse((self.tmp / "fault").exists())
+        again = self.run_pass("blind", self.tmp / "fault", f"1:{second['entry_sha256']}", root=root,
+                              registration_path=changed, sha=digest)
+        self.assertEqual((again["status"], again["ledger_repeat"], len(verify(self.ledger / LEDGER_FILE))),
+                         ("completed", True, 2))
         # A ledger directory that cannot be written is found only at the append, after the read: nothing is written.
         closed = self.tmp / "closed"
         closed.mkdir(mode=0o500)
@@ -2713,6 +3238,37 @@ class RecordsAndTallies(RestingCase):
                              {"PRO-D": [("PRO-D", "H1")], "PRO-V": [("PRO-V", "H1"), ("PRO-V", "H2")]})
         self.assertEqual({label: len(values) for label, values in tally.books.items()}, {"PRO-D": 1, "PRO-V": 2})
         self.assertAlmostEqual(tally.books["PRO-D"][0], sum(1 / bsp for bsp in BSPS.values()))
+
+    def test_fills_in_the_turn_batch_and_orders_with_no_status_are_counted(self):
+        through = {"atb": [[2.48, 0]], "trd": [[2.48, 1.0]]}
+        turn = mcm(before(200), [{"id": M, "rc": [{"id": FAV, **through}],
+                                  "marketDefinition": definition(OFF, [runner(s) for s in SIDS], in_play=True)}])
+        blank = [status_at(250, status=fx.DROP), ladder_move(200, sid=FAV, **through)]
+        tally = Tally(PLAN)
+        for index, extra in enumerate(([turn], blank, [suspended(200, "SUSPENDED", through)], [])):
+            market_id = f"1.18000000{index + 2}"
+            messages = [json.loads(json.dumps(message).replace(M, market_id))
+                        for message in lp_market(extra=extra)]
+            root, manifest, records = self.build([(path(market_id), messages)])
+            decide_record(PLAN, records[market_id], record_facts(PLAN, records[market_id]), root, manifest, tally)
+        value = summary(PLAN, tally, "blind", "0" * 64)
+        tables = value["cells"]["close-v1-lay@-300"]
+        for model in MODELS:
+            counts = tables["fills"]["PRO-V"][model]
+            self.assertEqual((counts["scored"], counts["fills"], counts["left_the_market_not_open"],
+                              counts["turned_the_market_in_play"], counts["ended_by"]),
+                             (4, 2, 1, 1, {"pull": 2, "lapse": 0}))
+        self.assertEqual(tables["fills"]["PRO-V"][OPTIMISTIC]["by_kind"], {THROUGH: 2, CROSS: 0, VOLUME: 0})
+        self.assertEqual(tables["scored_orders_with_a_batch_begun_with_no_status"], 1)
+        self.assertEqual(tables["trd_changes"], dict(zip(TRD_COUNTS, (2, 0, 1))))
+        # The BACK placed at the same time was ended by the lapse in the first market, and marked in the second.
+        back = value["cells"]["close-v1-back@-300"]
+        self.assertEqual((back["fills"]["PRO-V"][CENTRAL]["ended_by"],
+                          back["scored_orders_with_a_batch_begun_with_no_status"]), ({"pull": 3, "lapse": 1}, 1))
+        shown = markdown_columns(resting_study.markdown(PLAN, value))
+        self.assertEqual((sum(map(int, shown["turned the market in play"])),
+                          sum(map(int, shown["left the market not OPEN"])),
+                          sum(map(int, shown["scored orders with a batch begun with no status"]))), (6, 6, 4))
 
 
 class BlindReleases(unittest.TestCase):
@@ -2817,15 +3373,65 @@ class PartAndRestAcrossASplit(unittest.TestCase):
         self.assertEqual(together({"H1": {"fills": 150, "mean": 0.01}, "H2": {"fills": 50, "mean": None}}),
                          {"H1": {"fills": 150, "mean": None}, "H2": {"fills": 50, "mean": None}})
 
-    def halves(self, second):
-        """A registered summary's T7 for the cell on the test label: 240 fills and 200 unfilled orders in H1, and
-        in H2 `second` fills and 150 unfilled orders."""
+    def registered(self, second, unfilled=150):
+        """A registered summary whose LAY primary has, on the test label: 240 fills and 200 unfilled orders in H1,
+        and in H2 `second` fills and `unfilled` unfilled orders."""
         rows = block(240, V_DAYS[:8], [2.7, 2.8]) + block(200, V_DAYS[:8], [2.5], filled=NONE) + \
-            block(second, V_DAYS[8:], [2.7, 2.8]) + block(150, V_DAYS[8:], [2.5], filled=NONE) + \
+            block(second, V_DAYS[8:], [2.7, 2.8]) + block(unfilled, V_DAYS[8:], [2.5], filled=NONE) + \
             block(240, D_DAYS, [2.7, 2.8], label=D) + block(100, D_DAYS, [2.5], label=D, filled=NONE)
         value = summary(PLAN, tally_of({self.CELL: rows}), "registered", "0" * 64)
         self.assertEqual(value["selection"]["primaries"][LAY_RULE], "close-v1-lay@-300")
+        return value
+
+    def halves(self, second, unfilled=150):
+        """(T7 for the primary on the test label, its T9 block) of registered()."""
+        value = self.registered(second, unfilled)
         return value["half_years"]["by_cell"]["close-v1-lay@-300"]["PRO-V"], value["primaries"][LAY_RULE]
+
+    def test_half_years_whose_filled_figures_are_over_different_kinds_of_group_give_none(self):
+        """H1: 240 fills and 200 unfilled, so its filled mean is over the 240. H2: 150 fills and 50 unfilled, so
+        its filled mean is over all 200 (the flag). The label's own filled mean is over its 390 fills. The three
+        together would give the mean of H2's 50 unfilled orders; so neither half-year's filled figure is given."""
+        value = self.registered(150, unfilled=50)
+        both, verdict = (value["half_years"]["by_cell"]["close-v1-lay@-300"]["PRO-V"], value["primaries"][LAY_RULE])
+        whole = value["figures"]["by_cell"]["close-v1-lay@-300"]["PRO-V"]
+        for end in BSP_ENDS:
+            for model in MODELS:
+                self.assertEqual((whole[end]["models"][model][FILLED_IS_ALL_PLACED],
+                                  whole[end]["models"][model]["filled"][NET_HELD]["bets"]), (False, 390))
+                self.assertIsNotNone(whole[end]["models"][model]["filled"][NET_HELD]["mean"])
+                for half, fills_, flag, bets in (("H1", 240, False, 240), ("H2", 150, True, 200)):
+                    item = both[half][end]["models"][model]
+                    self.assertEqual((item["fills"], item[FILLED_IS_ALL_PLACED]), (fills_, flag))
+                    for figure in (*item["filled"].values(), item["value_per_placed"]):
+                        self.assertEqual((figure["mean"], figure["sd"], figure["ci_low"], figure["reason"]),
+                                         (None, None, None, "rest_not_given"))
+                    self.assertEqual(item["filled"][G]["bets"], bets)
+                    self.assertIsNone(item["gap"]["estimate"])
+            for half in ("H1", "H2"):                                           # what has no fill model is given
+                self.assertIsNotNone(both[half][end]["placed"]["mean"])
+        self.assertEqual(verdict["half_years"], {"H1": {"fills": 240, FILLED_IS_ALL_PLACED: False, "mean": None},
+                                                 "H2": {"fills": 150, FILLED_IS_ALL_PLACED: True, "mean": None}})
+        # The label was decided on the full values before anything was withheld.
+        self.assertTrue(verdict["checks"]["mean_above_0_in_each_half_year"])
+        # With 100 unfilled in H2 both half-years are over their fills, and both are given.
+        both, verdict = self.halves(150, unfilled=100)
+        for half, fills_ in (("H1", 240), ("H2", 150)):
+            model = both[half][AS_WRITTEN]["models"][PESSIMISTIC]
+            self.assertEqual((model[FILLED_IS_ALL_PLACED], model["filled"][NET_HELD]["bets"]), (False, fills_))
+            self.assertIsNotNone(model["filled"][NET_HELD]["mean"])
+            self.assertIsNotNone(verdict["half_years"][half]["mean"])
+        together = resting_study._together
+        figure = dict(bets=150, race_dates=16, mean=0.01, se=0.001, df=15, t_critical=2.1, ci_low=0.0, ci_high=0.02,
+                      reason=None, sd=0.05)
+        trees = {half: {"fills": 150, FILLED_IS_ALL_PLACED: flag, "filled": {"g": figure}, "gap": dict(
+            estimate=0.01, se=0.001, df=15, bets=[150, 150], race_dates=16, reason=None, ci_low=0.0, ci_high=0.02)}
+            for half, flag in (("H1", False), ("H2", True))}
+        self.assertEqual({(item["filled"]["g"]["mean"], item["filled"]["g"]["reason"], item["gap"]["estimate"],
+                           item["gap"]["reason"], item["fills"]) for item in together(trees).values()},
+                         {(None, "rest_not_given", None, "rest_not_given", 150)})
+        self.assertEqual(together({half: dict(tree, **{FILLED_IS_ALL_PLACED: True}) for half, tree in trees.items()}),
+                         {half: dict(tree, **{FILLED_IS_ALL_PLACED: True}) for half, tree in trees.items()})
 
     def test_a_half_year_is_given_only_when_the_other_is(self):
         both, verdict = self.halves(100)
@@ -2868,12 +3474,60 @@ class PartAndRestAcrossASplit(unittest.TestCase):
                          {"mean", "se", "df", "t_critical", "ci_low", "ci_high", "bound", "reason"})
         self.assertEqual(printed["both"], {end: {NET_CLOSED: None, NET_HELD: None} for end in BSP_ENDS})
 
+    def test_a_kills_pooled_figures_need_each_labels_own_figure_over_the_same_orders(self):
+        def killed(explore, test, front_only=0):
+            """A LAY primary with (fills, unfilled) per label under the optimistic model; front_only of the test
+            label's fills are fills under that model alone, the others fill under every model."""
+            rows = block(explore[0], D_DAYS, [2.3, 2.4], label=D, filled=(OPTIMISTIC,)) + \
+                block(explore[1], D_DAYS, [3.5], label=D, filled=NONE) + \
+                block(test[0] - front_only, V_DAYS, [2.3, 2.4]) + \
+                block(front_only, V_DAYS, [2.3, 2.4], filled=(OPTIMISTIC,)) + block(test[1], V_DAYS, [3.5], filled=NONE)
+            found = verdicts(PLAN, {BACK_RULE: None, LAY_RULE: self.CELL}, {self.CELL: rows}, True)[LAY_RULE]
+            return found, resting_study._kill(PLAN, found["kill"], rows), rows
+
+        # 450 fills and 150 unfilled on the explore label, 299 and 1 on the test label. The pooled figures are
+        # over the 749 fills. T5 gives the explore label's mean over its 450 fills and the test label's over all
+        # its 300 orders (the flag): the three would give the one unfilled order's net. 60 unfilled is the same.
+        for test in ((299, 1), (240, 60)):
+            found, printed, rows = killed((450, 150), test)
+            with self.subTest(test=test):
+                self.assertEqual((found["label"], found["kill"]["fills"], found["kill"][FILLED_IS_ALL_PLACED]),
+                                 ("kill_optimistic", 450 + test[0], False))
+                self.assertIsNotNone(found["kill"]["mean"])                     # decided on the full values
+                self.assertEqual((printed["figures_given"], printed["orders_by_label"], printed["mean"],
+                                  printed["bound"]), (False, {"PRO-D": 450, "PRO-V": test[0]}, None, None))
+                self.assertEqual(printed["both"], {end: {NET_CLOSED: None, NET_HELD: None} for end in BSP_ENDS})
+                front = figures(PLAN, scored(rows, V), AS_WRITTEN)["models"][OPTIMISTIC]
+                self.assertEqual((front[FILLED_IS_ALL_PLACED], front["filled"][NET_CLOSED]["bets"]), (True, sum(test)))
+                self.assertIsNotNone(front["filled"][NET_CLOSED]["mean"])
+        # 100 unfilled on each label: every figure is over fills, and the pooled ones are given.
+        found, printed, _ = killed((450, 150), (200, 100))
+        self.assertEqual((printed["figures_given"], printed["mean"]), (True, found["kill"]["mean"]))
+        # Fewer than 100 unfilled in all: every figure is over every order, on each label and pooled.
+        found, printed, _ = killed((450, 30), (299, 1))
+        self.assertEqual((found["kill"][FILLED_IS_ALL_PLACED], printed["figures_given"],
+                          printed["orders_by_label"]), (True, True, {"PRO-D": 480, "PRO-V": 300}))
+        # The test label's own optimistic figure is withheld beside its pessimistic one (50 fills between them):
+        # the pooled figures less the explore label's would give it back, so they are withheld too.
+        found, printed, rows = killed((450, 150), (300, 100), front_only=50)
+        self.assertNotIn((FILLED, OPTIMISTIC), given_figures(PLAN, scored(rows, V)))
+        self.assertEqual((found["label"], printed["figures_given"], printed["orders_by_label"]),
+                         ("kill_optimistic", False, {"PRO-D": 450, "PRO-V": 300}))
+        found, printed, rows = killed((450, 150), (300, 100), front_only=100)
+        self.assertIn((FILLED, OPTIMISTIC), given_figures(PLAN, scored(rows, V)))
+        self.assertTrue(printed["figures_given"])
+
 
 class NoIds(unittest.TestCase):
     def test_no_output_holds_a_market_or_selection_id(self):
         given = shared()
         ids = given.ids + [market_id.split(".")[1] for market_id in given.ids] + [str(sid) for sid in SIDS] + \
             [fx.EVENT]
+        # Nor a market's date or time: each race date, and each off as ms and as ISO text, to the minute.
+        offs = study_offs() + [EDGE, OFF]
+        ids += sorted({off.date().isoformat() for off in offs} | {"2016-05-01"}) + \
+            [str(ms(off))[:-3] for off in offs] + [iso(off)[:16] for off in offs]
+        self.assertLessEqual({"2015-06-01", "2016-04-30", "2015-06-01T14:00", "1433167200"}, set(ids))
         self.assertEqual((len(given.ids), given.blind[0], given.registered[0]), (29, 0, 0))
         for name in ("blind", "registered"):
             for item, data in outputs_of(given.base / name).items():

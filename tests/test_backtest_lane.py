@@ -1,14 +1,18 @@
-"""The research lane's data split and study ledger (betangel_research.betfair.backtest.partition and study_ledger).
+"""The research lane's data split, study ledger and rule files (betangel_research.betfair.backtest.partition,
+study_ledger and rulefile).
 
-Everything here is synthetic: race dates are calendar text, ledger entries carry made-up hashes, and every ledger
-lives in a temporary directory that the test removes. No data root is read. These tests show the split rule, the
-split file's checks, the ledger's chain, its head check and its budgets. They do not show durability across a power
-loss (nothing is synced), or that an operator keeps one ledger file: a new directory starts every budget from zero.
+Everything here is synthetic: race dates are calendar text, ledger entries carry made-up hashes, every ledger lives
+in a temporary directory that the test removes, and every view a rule reads is built by hand. No data root is read.
+These tests show the split rule, the split file's checks, the ledger's chain, its head check and its budgets, the
+rule file's checks and what decide answers for a given view. They do not show durability across a power loss
+(nothing is synced), that an operator keeps one ledger file (a new directory starts every budget from zero), or
+that a view built from real messages is right: no code here builds one, and decide trusts the view it is given.
 """
 
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date, timedelta
 from fractions import Fraction
+import ast
 import copy
 import hashlib
 import json
@@ -19,9 +23,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from betangel_research.betfair.backtest import partition, study_ledger
+from betangel_research.betfair.backtest import movement, partition, rulefile, study_ledger
 from betangel_research.betfair.backtest.contract import canonical_json
 from betangel_research.betfair.backtest.partition import PartitionError, file_bytes, parse_split
+from betangel_research.betfair.backtest.rulefile import (Decision, Intent, Market, Predicate, RuleError, RuleView,
+                                                         RunnerView, Template, decide, parse_rule)
 from betangel_research.betfair.backtest.study_ledger import (ENTRY_KEYS, LEDGER_FILE, PassRequest, StudyLedger,
                                                              head_text, identity, parse_head, verify)
 from betangel_research.betfair.backtest.trial_ledger import (GENESIS, LOCK_FILE, LedgerError, UnlockError,
@@ -36,6 +42,12 @@ SPLIT = parse_split(SPLIT_FILE.read_bytes())
 SALT = "betangel-research/partitions-v1/PRO-2015-05..2016-04"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 CLOCK = "2026-11-11T12:00:00.000000Z"
+RULES_DIR = REPO / "research" / "rules"
+# Each rule file's sha256 as reviewed: any change to a file must change its line here too (a new rule file).
+RULE_SHA256 = {"close-v1-back": "401a69f403a8651f919d43696fdcd367f203ec1babc9b36668935bfcbae9be24",
+               "close-v1-lay": "fab9fbf5e99e38c3b14839526959608d8461cc3511b8a3fc2e06d429d963fb65",
+               "inplay-v1-lay": "7a5dea217c5d4fec164e67f151d14e1f3f2fa45fe16b81ad31166c982ac1e9b6"}
+RULES = {name: parse_rule((RULES_DIR / f"{name}.json").read_bytes()) for name in RULE_SHA256}
 
 
 def days(first, last):
@@ -744,8 +756,545 @@ class LedgerBudgets(LedgerCase):
         self.assertEqual(verify(self.path)[0]["partitions"], ["PRO-D", "PRO-V"])
 
 
+def rule_bytes(name="close-v1-back", change=None):
+    """A rule file's value, changed, in the one byte form."""
+    value = json.loads((RULES_DIR / f"{name}.json").read_bytes())
+    if change is not None:
+        change(value)
+    return rulefile.file_bytes(value)
+
+
+def horse(selection_id, back=None, size=None, lay=None, ticks=None):
+    """One runner of a view; prices and sizes are decimal text, read exactly."""
+    return RunnerView(selection_id, *(None if text is None else Fraction(text) for text in (back, size, lay)), ticks)
+
+
+def view_of(*runners, at_s=-300, market_open=1, active=None, malformed=False):
+    return RuleView(at_s, market_open, len(runners) if active is None else active, malformed, tuple(runners))
+
+
+def field(favourite=None, **kwargs):
+    """Five runners; the favourite (id 11) is 2.50 to back for 50.00 with a lay one tick above, unless given."""
+    first = horse(11, "2.50", "50.00", "2.52", 1) if favourite is None else favourite
+    return view_of(first, horse(12, "5.00", "20.00", "5.10", 1), horse(13, "8.00", "5.00", "8.40", 2),
+                   horse(14, "12.00", "3.00", "13.00", 2), horse(15), **kwargs)
+
+
+class RuleParse(unittest.TestCase):
+    def assertRefused(self, code, change=None, raw=None, name="close-v1-back"):
+        with self.assertRaises(RuleError) as caught:
+            parse_rule(rule_bytes(name, change) if raw is None else raw)
+        self.assertEqual(str(caught.exception), f"rule:{code}")
+
+    def test_a_copy_parses_and_decimals_are_exact(self):
+        rule = parse_rule(rule_bytes())
+        self.assertEqual(rule, RULES["close-v1-back"])
+        self.assertEqual(rule.when[2], Predicate("best_back", ">=", Fraction(3, 2), "best_back_out_of_range"))
+        self.assertEqual(rule.when[1], Predicate("active_runners", ">=", 5, "too_few_active_runners"))
+        self.assertEqual([type(row.value) for row in rule.when], [int, int, Fraction, Fraction, Fraction, int, int])
+        self.assertEqual(rule.intents, (Template("BACK", "best_lay", None, Fraction(2), "lapse"),))
+        self.assertEqual(RULES["inplay-v1-lay"].intents[0], Template("LAY", "fixed", Fraction(101, 100), Fraction(2),
+                                                                     "keep"))
+        with self.assertRaises(FrozenInstanceError):
+            rule.select = "each_active"
+
+    def test_exact_keys_at_every_level(self):
+        places = (("top", lambda v: v), ("market", lambda v: v["market"]), ("times[1]", lambda v: v["times"][1]),
+                  ("when[3]", lambda v: v["when"][3]), ("intents[0]", lambda v: v["intents"][0]))
+        for place, find in places:
+            with self.subTest(place=place, case="unknown key"):
+                self.assertRefused(f"{place}:keys_not_the_expected_set", lambda v: find(v).update(note="x"))
+            for key in sorted(find(json.loads(rule_bytes()))):
+                with self.subTest(place=place, case="missing key", key=key):
+                    self.assertRefused(f"{place}:keys_not_the_expected_set", lambda v: find(v).pop(key))
+        cut = ("exit", "min_active_runners", "best_lay_size")              # keys an earlier draft had
+        self.assertEqual([key for key in cut if key in rulefile.TOP_KEYS + rulefile.MARKET_KEYS + rulefile.FEATURES],
+                         [])
+        self.assertRefused("intents[0].price:keys_not_the_expected_set",
+                           lambda v: v["intents"][0].update(price={"ref": "fixed"}))
+        self.assertRefused("intents[0].price:keys_not_the_expected_set",
+                           lambda v: v["intents"][0].update(price={"ref": "best_lay", "ticks": 1}))
+        self.assertRefused("intents[0].price:keys_not_the_expected_set",
+                           lambda v: v["intents"][0].update(price={"ref": "best_lay", "value": "2.00"}))
+        self.assertRefused("intents[0].price:price_ref_not_supported", lambda v: v["intents"][0].update(price={}))
+        for place, find in (("market", lambda v: v.update(market=[])), ("times[0]", lambda v: v["times"].insert(0, 5)),
+                            ("when[0]", lambda v: v["when"].insert(0, "market_open")),
+                            ("intents[0]", lambda v: v.update(intents=["BACK"]))):
+            with self.subTest(place=place, case="not an object"):
+                self.assertRefused(f"{place}:not_an_object", find)
+
+    def test_an_unknown_feature_operator_selector_or_price_ref(self):
+        cases = (("when[0]:feature_not_supported", lambda v: v["when"][0].update(feature="ltp")),
+                 ("when[0]:feature_not_supported", lambda v: v["when"][0].update(feature="bsp")),
+                 ("when[0]:feature_not_supported", lambda v: v["when"][0].update(feature="traded_volume")),
+                 ("when[0]:feature_not_supported", lambda v: v["when"][0].update(feature="best_lay_size")),
+                 ("when[0]:feature_not_supported", lambda v: v["when"][0].update(feature=["market_open"])),
+                 ("when[2]:operator_not_supported", lambda v: v["when"][2].update(op=">")),
+                 ("when[2]:operator_not_supported", lambda v: v["when"][2].update(op="!=")),
+                 ("when[2]:operator_not_supported", lambda v: v["when"][2].update(op="or")),
+                 ("when[2]:operator_not_supported", lambda v: v["when"][2].update(op=None)),
+                 ("select:selector_not_supported", lambda v: v.update(select="second_favourite")),
+                 ("select:selector_not_supported", lambda v: v.update(select=["favourite"])),
+                 ("intents[0].price:price_ref_not_supported", lambda v: v["intents"][0]["price"].update(ref="ltp")),
+                 ("intents[0].price:price_ref_not_supported", lambda v: v["intents"][0]["price"].update(ref="bsp")),
+                 ("intents[0].price:price_ref_not_supported", lambda v: v["intents"][0].update(price="2.00")),
+                 ("intents[0]:side_not_supported", lambda v: v["intents"][0].update(side="back")),
+                 ("intents[0]:persist_not_supported", lambda v: v["intents"][0].update(persist="market_on_close")))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+
+    def test_status_schema_names_and_parent(self):
+        cases = (("status:not_frozen", lambda v: v.update(status="draft")),
+                 ("status:not_frozen", lambda v: v.update(status=None)),
+                 ("schema:not_supported", lambda v: v.update(schema="betangel.rule/v2")),
+                 ("id:name_malformed", lambda v: v.update(id="Close V1")),
+                 ("id:name_malformed", lambda v: v.update(id="")),
+                 ("lineage:name_malformed", lambda v: v.update(lineage=None)),
+                 ("lineage:name_malformed", lambda v: v.update(lineage="x" * 65)),
+                 ("parent_sha256:not_a_sha256_or_null", lambda v: v.update(parent_sha256="AB" * 32)),
+                 ("parent_sha256:not_a_sha256_or_null", lambda v: v.update(parent_sha256="")),
+                 ("parent_sha256:not_a_sha256_or_null", lambda v: v.update(parent_sha256=0)),
+                 ("claim:not_a_sentence", lambda v: v.update(claim="")),
+                 ("claim:not_a_sentence", lambda v: v.update(claim=" padded ")),
+                 ("counter_claim:not_a_sentence", lambda v: v.update(counter_claim="two\nlines")),
+                 ("counter_claim:not_a_sentence", lambda v: v.update(counter_claim="x" * 401)),
+                 ("counter_claim:not_a_sentence", lambda v: v.update(counter_claim=None)))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+        parent = RULE_SHA256["close-v1-back"]
+        child = parse_rule(rule_bytes(change=lambda v: v.update(id="close-v2-back", parent_sha256=parent)))
+        self.assertEqual((child.parent_sha256, child.lineage), (parent, "close"))
+        self.assertNotEqual(child.sha256, parent)
+        self.assertEqual(rulefile.NAME_RE.pattern, study_ledger._NAME_RE.pattern)   # a lineage the ledger will take
+
+    def test_bad_times(self):
+        cases = (("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(at_s=0)),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(at_s=600)),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(at_s=-86401)),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(at_s="-600")),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(at_s=True)),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(at_s=None)),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(pull_s=0)),
+                 ("times[0]:not_an_int_in_range", lambda v: v["times"][0].update(pull_s="-120")),
+                 ("times[0]:pull_not_after_at", lambda v: v["times"][0].update(pull_s=-600)),
+                 ("times[0]:pull_not_after_at", lambda v: v["times"][0].update(pull_s=-601)),
+                 ("times[1]:not_after_the_one_before", lambda v: v["times"][1].update(at_s=-600)),
+                 ("times[1]:not_after_the_one_before", lambda v: v["times"][1].update(at_s=-700)),
+                 ("times[1]:not_after_the_one_before", lambda v: v["times"].reverse()),
+                 ("times:not_a_list", lambda v: v.update(times=[])),
+                 ("times:not_a_list", lambda v: v.update(times={"at_s": -600, "pull_s": -120})),
+                 ("times:not_a_list", lambda v: v.update(times=[{"at_s": -100 - n, "pull_s": None}
+                                                                for n in range(65, 0, -1)])))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+        edge = parse_rule(rule_bytes(change=lambda v: v.update(times=[{"at_s": -86400, "pull_s": -1},
+                                                                      {"at_s": -2, "pull_s": -1},
+                                                                      {"at_s": -1, "pull_s": None}])))
+        self.assertEqual(edge.times, ((-86400, -1), (-2, -1), (-1, None)))
+
+    def test_constants_counts_are_integers_and_decimals_are_text(self):
+        cases = (("when[1]:not_an_int_in_range", lambda v: v["when"][1].update(value="5")),
+                 ("when[1]:not_an_int_in_range", lambda v: v["when"][1].update(value=-1)),
+                 ("when[0]:not_an_int_in_range", lambda v: v["when"][0].update(value=True)),
+                 ("when[5]:not_an_int_in_range", lambda v: v["when"][5].update(value="1.00")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value=2)),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value="1.5")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value="1.500")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value="01.50")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value="1,50")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value="-1.50")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value="1e2")),
+                 ("when[2]:not_decimal_text", lambda v: v["when"][2].update(value=None)),
+                 ("file:not_strict_json", lambda v: v["when"][2].update(value=1.5)),
+                 ("file:not_strict_json", lambda v: v["when"][1].update(value=5.0)),
+                 ("intents[0]:not_decimal_text", lambda v: v["intents"][0].update(stake=2)),
+                 ("intents[0]:not_decimal_text", lambda v: v["intents"][0].update(stake="2")),
+                 ("intents[0]:stake_not_positive", lambda v: v["intents"][0].update(stake="0.00")))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+
+    def test_when_codes_and_the_order_of_rows(self):
+        cases = (("when[0]:code_malformed", lambda v: v["when"][0].update(code="Market Not Open")),
+                 ("when[0]:code_malformed", lambda v: v["when"][0].update(code="")),
+                 ("when[0]:code_malformed", lambda v: v["when"][0].update(code=None)),
+                 ("when[1]:market_feature_after_a_runner_feature", lambda v: v["when"].insert(0, v["when"].pop(2))),
+                 ("when[6]:market_feature_after_a_runner_feature", lambda v: v["when"].append(v["when"].pop(0))),
+                 ("when:not_a_list", lambda v: v.update(when=None)),
+                 ("when:not_a_list", lambda v: v.update(when=v["when"] * 10)))
+        cases += tuple(("when[0]:code_reserved", lambda v, code=code: v["when"][0].update(code=code))
+                       for code in rulefile.EVALUATOR_CODES)
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+        self.assertEqual(parse_rule(rule_bytes(change=lambda v: v.update(when=[]))).when, ())   # no condition
+
+    def test_intents_and_fixed_prices(self):
+        def fixed(value):
+            return lambda v: v["intents"][0].update(price={"ref": "fixed", "value": value})
+        cases = (("intents[0].price:fixed_price_out_of_range", fixed("1.00")),
+                 ("intents[0].price:fixed_price_out_of_range", fixed("0.50")),
+                 ("intents[0].price:fixed_price_out_of_range", fixed("1000.01")),
+                 ("intents[0].price:not_decimal_text", fixed(2)), ("intents[0].price:not_decimal_text", fixed("2")),
+                 ("intents[0].price:not_decimal_text", fixed(None)),
+                 ("intents:row_used_twice", lambda v: v["intents"].append(dict(v["intents"][0]))),
+                 ("intents:not_a_list", lambda v: v.update(intents=[])),
+                 ("intents:not_a_list", lambda v: v.update(intents=v["intents"][0])))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+        for value in ("1.01", "1000.00", "3.33"):                          # 3.33 is no ladder price: not checked here
+            self.assertEqual(parse_rule(rule_bytes(change=fixed(value))).intents[0].fixed, Fraction(value))
+
+    def test_the_market_block(self):
+        cases = (("market.bsp_market:not_true_or_null", lambda v: v["market"].update(bsp_market=False)),
+                 ("market.turn_in_play_enabled:not_true_or_null",
+                  lambda v: v["market"].update(turn_in_play_enabled="true")),
+                 ("market.persistence_enabled:not_true_or_null", lambda v: v["market"].update(persistence_enabled=1)),
+                 ("market.countries:not_sorted_and_unique", lambda v: v["market"].update(countries=["IE", "GB"])),
+                 ("market.countries:not_sorted_and_unique", lambda v: v["market"].update(countries=["GB", "GB"])),
+                 ("market.countries:country_malformed", lambda v: v["market"].update(countries=["gb"])),
+                 ("market.countries:country_malformed", lambda v: v["market"].update(countries=["GBR"])),
+                 ("market.countries:not_a_list", lambda v: v["market"].update(countries=[])),
+                 ("market.countries:not_a_list", lambda v: v["market"].update(countries="GB")),
+                 ("market.event_type_id:not_an_id", lambda v: v["market"].update(event_type_id=7)),
+                 ("market.event_type_id:not_an_id", lambda v: v["market"].update(event_type_id="07")),
+                 ("market.market_type:not_a_token", lambda v: v["market"].update(market_type="win")),
+                 ("market.betting_type:not_a_token", lambda v: v["market"].update(betting_type=None)),
+                 ("market.number_of_winners:not_an_int_in_range", lambda v: v["market"].update(number_of_winners=0)),
+                 ("market.number_of_winners:not_an_int_in_range",
+                  lambda v: v["market"].update(number_of_winners="1")))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+
+    def test_only_the_one_byte_form_is_taken(self):
+        raw = rule_bytes()
+        value = json.loads(raw)
+        doubled = raw.replace(b'"select": "favourite",', b'"select": "each_active",\n  "select": "favourite",', 1)
+        self.assertEqual(json.loads(doubled), value)                        # a duplicate key json.loads lets through
+        for code, data in (("file:not_canonical", canonical_json(value)), ("file:not_canonical", raw + b"\n"),
+                           ("file:not_canonical", raw[:-1]), ("file:not_canonical", doubled),
+                           ("file:not_canonical", json.dumps(dict(reversed(list(value.items()))), indent=2)
+                            .encode("ascii") + b"\n"),
+                           ("file:not_canonical", json.dumps(dict(value, claim="caf" + chr(233)), sort_keys=True,
+                                                             indent=2, ensure_ascii=False).encode("utf-8") + b"\n"),
+                           ("file:not_strict_json", raw[:-3]), ("file:not_strict_json", b"\xff"),
+                           ("file:not_strict_json", b""),
+                           ("file:not_strict_json", raw.replace(b'"parent_sha256": null', b'"parent_sha256": NaN', 1)),
+                           ("file:not_bytes_or_too_large", raw.decode("ascii")),
+                           ("file:not_bytes_or_too_large", b" " * ((1 << 20) + 1)), ("top:not_an_object", b"[]\n")):
+            with self.subTest(code=code, size=len(data)):
+                self.assertRefused(code, raw=data)
+
+
+class RuleDecide(unittest.TestCase):
+    BACK, LAY, INPLAY = (RULES[name] for name in ("close-v1-back", "close-v1-lay", "inplay-v1-lay"))
+
+    def rule(self, name="close-v1-back", **changes):
+        return parse_rule(rule_bytes(name, lambda v: v.update(changes)))
+
+    def test_a_back_at_the_best_lay_and_a_lay_at_the_best_back(self):
+        back, lay = decide(field(), self.BACK), decide(field(), self.LAY)
+        self.assertEqual(back, Decision((Intent(11, "BACK", Fraction("2.52"), Fraction(2), -120, "lapse"),), None))
+        self.assertEqual(lay, Decision((Intent(11, "LAY", Fraction("2.50"), Fraction(2), -120, "lapse"),), None))
+        self.assertEqual([type(value) for value in (back.intents[0].price, back.intents[0].stake)], [Fraction] * 2)
+
+    def test_the_time_must_be_one_of_the_rules_and_gives_its_pull(self):
+        self.assertEqual([decide(field(at_s=at_s), self.BACK).intents[0].pull_s for at_s in (-600, -300, -120)],
+                         [-120, -120, -10])
+        for at_s in (-601, -599, -301, -119, -10, 0, 600, None):
+            with self.subTest(at_s=at_s):
+                self.assertEqual(decide(field(at_s=at_s), self.BACK), Decision((), "time_not_in_rule"))
+        self.assertEqual(decide(field(at_s=-300), self.INPLAY).code, "time_not_in_rule")
+        self.assertEqual({intent.pull_s for intent in decide(field(at_s=-600), self.INPLAY).intents}, {None})
+
+    def test_each_feature_at_its_bounds(self):
+        def favourite(back="2.50", size="50.00", lay="2.52", ticks=1):
+            return decide(field(horse(11, back, size, lay, ticks)), self.BACK).code
+
+        cases = ((decide(field(market_open=0), self.BACK).code, "market_not_open"),
+                 (decide(field(market_open=1), self.BACK).code, None),
+                 (decide(field(active=4), self.BACK).code, "too_few_active_runners"),
+                 (decide(field(active=5), self.BACK).code, None),
+                 (favourite(back="1.49", lay="1.50"), "best_back_out_of_range"), (favourite(back="1.50"), None),
+                 (favourite(back="4.00", lay="4.10"), None),
+                 (favourite(back="4.10", lay="4.20"), "best_back_out_of_range"),
+                 (favourite(size="9.99"), "depth_below_min"), (favourite(size="10.00"), None),
+                 (favourite(size=None), "depth_below_min"),
+                 (favourite(ticks=0), "spread_not_1_or_2_ticks"), (favourite(ticks=1), None),
+                 (favourite(ticks=2), None),
+                 (favourite(ticks=3), "spread_not_1_or_2_ticks"),
+                 (favourite(ticks=None), "spread_not_1_or_2_ticks"),          # a price off the ladder has no tick count
+                 (favourite(lay=None, ticks=None), "spread_not_1_or_2_ticks"))
+        for index, (found, expected) in enumerate(cases):
+            with self.subTest(index=index, expected=expected):
+                self.assertEqual(found, expected)
+        best_lay = self.rule(when=[{"code": "lay_too_long", "feature": "best_lay", "op": "<=", "value": "2.52"}])
+        self.assertIsNone(decide(field(), best_lay).code)
+        self.assertEqual(decide(field(horse(11, "2.50", "50.00", "2.54", 2)), best_lay).code, "lay_too_long")
+        self.assertEqual(decide(field(horse(11, "2.50", "50.00")), best_lay).code, "lay_too_long")
+
+    def test_the_three_operators(self):
+        for op, passing in ((">=", ("2.50", "2.52")), ("<=", ("2.48", "2.50")), ("==", ("2.50",))):
+            rule = self.rule(when=[{"code": "not_it", "feature": "best_back", "op": op, "value": "2.50"}])
+            for back in ("2.48", "2.50", "2.52"):
+                with self.subTest(op=op, back=back):
+                    found = decide(field(horse(11, back, "50.00", "2.54", 1)), rule).code
+                    self.assertEqual(found, None if back in passing else "not_it")
+        count = self.rule(when=[{"code": "not_six", "feature": "active_runners", "op": "==", "value": 6}])
+        self.assertEqual([decide(field(active=n), count).code for n in (5, 6, 7)], ["not_six", None, "not_six"])
+
+    def test_one_code_per_failure_in_a_fixed_order(self):
+        """A view that fails everything gives the first code only; mending each failure in turn shows the order:
+        the time, the ladder, market rows, the selector, then runner rows in file order."""
+        bad = dict(at_s=-299, malformed=True, market_open=0, active=4)
+        tied = (horse(11, "1.40", "5.00", "1.50", 5), horse(12, "1.40", "5.00", "1.50", 5))
+        longer = horse(12, "6.00", "5.00", "6.20", 1)
+        seen = []
+        for mend in (dict(), dict(at_s=-300), dict(malformed=False), dict(market_open=1), dict(active=5)):
+            bad.update(mend)
+            seen.append(decide(view_of(*tied, **bad), self.BACK))
+        for favourite in (horse(11, "1.39", "5.00", "1.50", 5), horse(11, "1.50", "5.00", "1.60", 5),
+                          horse(11, "1.50", "50.00", "1.60", 5), horse(11, "1.50", "50.00", "1.52", 2)):
+            seen.append(decide(view_of(favourite, longer, **bad), self.BACK))
+        self.assertEqual([found.code for found in seen],
+                         ["time_not_in_rule", "ladder_malformed", "market_not_open", "too_few_active_runners",
+                          "favourite_tie", "best_back_out_of_range", "depth_below_min", "spread_not_1_or_2_ticks",
+                          None])
+        self.assertEqual([len(found.intents) for found in seen], [0] * 8 + [1])
+
+    def test_and_every_row_must_hold(self):
+        rows = self.BACK.when
+        passing = {"market_open": 1, "active_runners": 5, "best_back": Fraction("2.50"),
+                   "best_back_size": Fraction(50), "spread_ticks": 1}
+        failing = {0: ("market_open", 0), 1: ("active_runners", 4), 2: ("best_back", Fraction("1.40")),
+                   3: ("best_back", Fraction("4.10")), 4: ("best_back_size", Fraction(1)), 5: ("spread_ticks", 0),
+                   6: ("spread_ticks", 3)}
+        for index, (feature, value) in failing.items():
+            values = dict(passing, **{feature: value})
+            favourite = RunnerView(11, values["best_back"], values["best_back_size"], Fraction("4.20"),
+                                   values["spread_ticks"])
+            found = decide(view_of(favourite, at_s=-300, market_open=values["market_open"],
+                                   active=values["active_runners"]), self.BACK)
+            with self.subTest(row=index):
+                self.assertEqual(found, Decision((), rows[index].code))
+
+    def test_the_favourite_and_its_ties(self):
+        def chosen(*runners):
+            found = decide(view_of(*runners, active=5), self.BACK)
+            return found.code if found.code else found.intents[0].selection_id
+
+        first, other = horse(11, "2.50", "50.00", "2.52", 1), horse(12, "3.00", "50.00", "3.05", 1)
+        unpriced, lay_only = horse(13), horse(14, None, None, "1.20")
+        self.assertEqual(chosen(first, other), 11)
+        self.assertEqual(chosen(other, unpriced, first), 11)                # the place in the view does not matter
+        self.assertEqual(chosen(lay_only, first, other), 11)                # a runner with no best back is not priced
+        self.assertEqual(chosen(first, horse(12, "2.50", "5.00", "2.56", 3)), "favourite_tie")
+        self.assertEqual(chosen(first, horse(12, "2.50", "50.00", "2.52", 1), other), "favourite_tie")
+        self.assertEqual(chosen(other, horse(15, "4.00", "50.00", "4.10", 1), horse(16, "4.00", "50.00", "4.10", 1)),
+                         12)                                               # a tie further out is no tie
+        self.assertEqual(chosen(unpriced, lay_only), "no_priced_active_runner")
+        self.assertEqual(chosen(), "no_priced_active_runner")
+        # The favourite is chosen first and then judged: the second runner never stands in for it.
+        self.assertEqual(chosen(horse(11, "1.20", "50.00", "1.21", 1), first), "best_back_out_of_range")
+        self.assertEqual(chosen(horse(11, Fraction(5, 2), "50.00", "2.52", 1), horse(12, "2.5", "50.00", "2.52", 1)),
+                         "favourite_tie")                                   # exact values, however they were written
+
+    def test_each_active_orders_every_fixed_price_on_every_runner(self):
+        runners = (horse(21, "1.50", "9.00", "1.51", 1), horse(22), horse(23, "40.00", "2.00"))
+        found = decide(view_of(*runners, at_s=-600), self.INPLAY)
+        prices = [Fraction(text) for text in ("1.01", "1.02", "1.03", "1.05", "1.10", "1.20", "1.50", "2.00")]
+        self.assertIsNone(found.code)
+        self.assertEqual(found.intents, tuple(Intent(runner.selection_id, "LAY", price, Fraction(2), None, "keep")
+                                              for runner in runners for price in prices))
+        self.assertEqual(len(found.intents), 24)                            # an unpriced runner too: no book is read
+        self.assertEqual(decide(view_of(*runners, at_s=-600, market_open=0), self.INPLAY),
+                         Decision((), "market_not_open"))
+        self.assertEqual(decide(view_of(runners[0], at_s=-600), self.INPLAY), Decision((), "too_few_active_runners"))
+        self.assertEqual(len(decide(view_of(*runners[:2], at_s=-600), self.INPLAY).intents), 16)
+        self.assertEqual(decide(view_of(at_s=-600, active=2), self.INPLAY), Decision((), "no_active_runner"))
+        self.assertEqual(decide(view_of(*runners, at_s=-600, malformed=True), self.INPLAY).code, "ladder_malformed")
+
+    def test_each_active_applies_runner_rows_per_runner(self):
+        rule = self.rule("inplay-v1-lay", when=[
+            {"code": "market_not_open", "feature": "market_open", "op": "==", "value": 1},
+            {"code": "too_long", "feature": "best_back", "op": "<=", "value": "3.00"},
+            {"code": "too_thin", "feature": "best_back_size", "op": ">=", "value": "10.00"}],
+            intents=[{"persist": "lapse", "price": {"ref": "best_back"}, "side": "LAY", "stake": "2.00"},
+                     {"persist": "keep", "price": {"ref": "best_lay"}, "side": "BACK", "stake": "3.00"}])
+        thin, good, long, bare = (horse(31, "2.00", "5.00", "2.02", 1), horse(32, "2.50", "20.00", "2.52", 1),
+                                  horse(33, "9.00", "20.00", "9.20", 1), horse(34))
+        found = decide(view_of(thin, good, long, bare, at_s=-600), rule)
+        self.assertEqual(found, Decision((Intent(32, "LAY", Fraction("2.50"), Fraction(2), None, "lapse"),
+                                          Intent(32, "BACK", Fraction("2.52"), Fraction(3), None, "keep")), None))
+        self.assertEqual(decide(view_of(long, thin, bare, at_s=-600), rule), Decision((), "too_long"))
+        self.assertEqual(decide(view_of(thin, long, at_s=-600), rule), Decision((), "too_thin"))
+        self.assertEqual(decide(view_of(bare, thin, at_s=-600), rule), Decision((), "too_long"))    # no value fails
+        # A runner that passes every row but lacks a price an intent asks for gets no intent at all.
+        no_lay = horse(35, "2.50", "20.00")
+        self.assertEqual(decide(view_of(no_lay, at_s=-600), rule), Decision((), "no_reference_price"))
+        self.assertEqual(decide(view_of(no_lay, good, at_s=-600), rule).intents, found.intents)
+        self.assertEqual(decide(field(horse(11, "2.50", "50.00")), self.rule(when=[])),
+                         Decision((), "no_reference_price"))
+
+    def test_a_fixed_price_needs_no_book_and_a_rule_with_no_rows_orders(self):
+        rule = self.rule(when=[], intents=[{"persist": "lapse", "price": {"ref": "fixed", "value": "3.35"},
+                                           "side": "BACK", "stake": "2.50"}])
+        self.assertEqual(decide(view_of(horse(11, "2.00"), horse(12), market_open=0, active=0), rule),
+                         Decision((Intent(11, "BACK", Fraction("3.35"), Fraction(5, 2), -120, "lapse"),), None))
+
+    def test_intents_or_one_code_never_both_and_never_neither(self):
+        views = [field(), field(market_open=0), field(at_s=-600), field(at_s=-1), field(malformed=True), view_of(),
+                 view_of(horse(1), horse(2)), view_of(horse(1, "2.00", "20.00", "2.02", 1), active=9),
+                 view_of(horse(1, "2.00", "20.00", "2.02", 1), horse(2, "2.00"), at_s=-600)]
+        for rule in RULES.values():
+            for index, view in enumerate(views):
+                with self.subTest(rule=rule.id, view=index):
+                    found = decide(view, rule)
+                    self.assertEqual(bool(found.intents), found.code is None)
+                    self.assertIsInstance(found.intents, tuple)
+                    self.assertTrue(found.code is None or isinstance(found.code, str))
+
+    def test_decide_is_pure(self):
+        view, rule = field(), self.BACK
+        before = (copy.deepcopy(view), copy.deepcopy(rule))
+        first = decide(view, rule)
+        self.assertEqual([decide(view, rule) for _ in range(3)], [first] * 3)
+        self.assertEqual(decide(copy.deepcopy(view), parse_rule(rule_bytes())), first)       # equal values, same answer
+        self.assertEqual((view, rule), before)
+        self.assertEqual(hash(view), hash(before[0]))
+        for item, name in ((view, "at_s"), (rule, "select"), (first, "code"), (first.intents[0], "price")):
+            with self.subTest(item=type(item).__name__), self.assertRaises(FrozenInstanceError):
+                setattr(item, name, None)
+        with self.assertRaises(AttributeError):
+            view.runners[0].best_back = None
+        tree = ast.parse(Path(rulefile.__file__).read_text(encoding="utf-8"))
+        self.assertEqual([node.lineno for node in ast.walk(tree) if isinstance(node, (ast.Global, ast.Nonlocal))], [])
+        called = {node.func.id for node in ast.walk(tree) if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)}
+        self.assertEqual(called & {"open", "print", "input", "exec", "eval", "__import__"}, set())
+        # Module-level names are constants and classes: nothing a call to decide could change is kept between calls.
+        state = [name for name, value in vars(rulefile).items() if not name.startswith("__")
+                 and isinstance(value, (list, set, bytearray))]
+        self.assertEqual(state, [])
+        self.assertEqual([name for name, value in vars(rulefile).items() if isinstance(value, dict)
+                          and not name.startswith("__")], ["OPERATORS"])
+
+
+class RuleViewHoldsNoOutcome(unittest.TestCase):
+    def test_the_fields_are_exactly_the_listed_ones(self):
+        self.assertEqual([item.name for item in fields(RuleView)],
+                         ["at_s", "market_open", "active_runners", "ladder_malformed", "runners"])
+        self.assertEqual(RunnerView._fields, ("selection_id", "best_back", "best_back_size", "best_lay",
+                                              "spread_ticks"))
+        self.assertEqual([item.name for item in fields(Intent)],
+                         ["selection_id", "side", "price", "stake", "pull_s", "persist"])
+        self.assertEqual([item.name for item in fields(Decision)], ["intents", "code"])
+
+    def test_every_feature_is_a_field_and_none_is_an_outcome_or_a_later_fact(self):
+        names = [item.name for item in fields(RuleView)] + list(RunnerView._fields)
+        self.assertEqual(rulefile.MARKET_FEATURES, ("market_open", "active_runners"))
+        self.assertEqual(rulefile.RUNNER_FEATURES, ("best_back", "best_back_size", "best_lay", "spread_ticks"))
+        self.assertTrue(set(rulefile.MARKET_FEATURES) <= {item.name for item in fields(RuleView)})
+        self.assertTrue(set(rulefile.RUNNER_FEATURES) <= set(RunnerView._fields))
+        self.assertTrue(set(rulefile.COUNT_FEATURES) <= set(rulefile.FEATURES))
+        self.assertTrue({"best_back", "best_lay"} <= set(RunnerView._fields))      # the two price refs that read a book
+        for word in ("bsp", "sp_", "ltp", "last", "traded", "volume", "tv", "result", "status", "winner", "settled",
+                     "in_play", "after", "final", "outcome", "removal"):
+            with self.subTest(word=word):
+                self.assertEqual([name for name in names if word in name], [])
+
+    def test_a_view_takes_nothing_else(self):
+        with self.assertRaises(TypeError):
+            RuleView(-300, 1, 5, False, (), bsp=Fraction(3))
+        with self.assertRaises(TypeError):
+            RunnerView(11, None, None, None, None, None)
+        with self.assertRaises(TypeError):
+            RunnerView(11, None, None, None, None, bsp=None)
+        self.assertFalse(hasattr(field().runners[0], "__dict__"))               # a plain tuple: no room for more
+
+
+class RuleFilesFrozen(unittest.TestCase):
+    def test_the_files_are_the_reviewed_ones_in_their_one_byte_form(self):
+        self.assertEqual(sorted(path.name for path in RULES_DIR.glob("*.json")),
+                         sorted(f"{name}.json" for name in RULES))
+        for name, digest in RULE_SHA256.items():
+            raw = (RULES_DIR / f"{name}.json").read_bytes()
+            with self.subTest(name=name):
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+                self.assertEqual(RULES[name].sha256, digest)
+                raw.decode("ascii")
+                self.assertEqual(raw, rulefile.file_bytes(json.loads(raw)))
+                self.assertTrue(raw.endswith(b"}\n") and not raw.endswith(b"\n\n"))
+                value = json.loads(raw)
+                self.assertEqual((value["schema"], value["status"], value["id"], value["parent_sha256"]),
+                                 ("betangel.rule/v1", "frozen", name, None))
+                self.assertEqual(sorted(value), sorted(rulefile.TOP_KEYS))
+
+    def test_the_two_close_files_differ_only_by_side(self):
+        back, lay = (json.loads((RULES_DIR / f"close-v1-{side}.json").read_bytes()) for side in ("back", "lay"))
+        self.assertEqual({key for key in back if back[key] != lay[key]}, {"claim", "counter_claim", "id", "intents"})
+        self.assertEqual((back["intents"], lay["intents"]),
+                         ([{"persist": "lapse", "price": {"ref": "best_lay"}, "side": "BACK", "stake": "2.00"}],
+                          [{"persist": "lapse", "price": {"ref": "best_back"}, "side": "LAY", "stake": "2.00"}]))
+        for rule in (RULES["close-v1-back"], RULES["close-v1-lay"]):
+            with self.subTest(rule=rule.id):
+                self.assertEqual((rule.lineage, rule.select), ("close", "favourite"))
+                self.assertEqual(rule.times, ((-600, -120), (-300, -120), (-120, -10)))
+                self.assertEqual(rule.market, Market(("GB", "IE"), "7", "WIN", "ODDS", 1, True, None, None))
+                self.assertEqual([(row.feature, row.op, row.value, row.code) for row in rule.when], [
+                    ("market_open", "==", 1, "market_not_open"),
+                    ("active_runners", ">=", 5, "too_few_active_runners"),
+                    ("best_back", ">=", Fraction("1.50"), "best_back_out_of_range"),
+                    ("best_back", "<=", Fraction("4.00"), "best_back_out_of_range"),
+                    ("best_back_size", ">=", Fraction(10), "depth_below_min"),
+                    ("spread_ticks", ">=", 1, "spread_not_1_or_2_ticks"),
+                    ("spread_ticks", "<=", 2, "spread_not_1_or_2_ticks")])
+
+    def test_the_close_gates_are_movement_v1s(self):
+        registered = movement.parse_registration((REPO / "research" / "studies" / "movement-v1.json").read_bytes())
+        rule = RULES["close-v1-back"]
+        gates = {(row.feature, row.op): row.value for row in rule.when}
+        self.assertEqual((gates["active_runners", ">="], gates["best_back", ">="] * 100,
+                          gates["best_back", "<="] * 100, gates["best_back_size", ">="] * 100,
+                          gates["spread_ticks", ">="], gates["spread_ticks", "<="]),
+                         (registered.min_active_runners, registered.best_back_min_h, registered.best_back_max_h,
+                          registered.min_available_p, 1, registered.max_lay_ticks))
+        self.assertEqual((rule.market.countries, rule.market.event_type_id, rule.market.market_type,
+                          rule.market.betting_type, rule.market.number_of_winners),
+                         (registered.countries, registered.event_type_id, registered.market_type,
+                          registered.betting_type, registered.number_of_winners))
+        self.assertTrue(all(-movement.MAX_OFFSET_S <= at_s <= -1 for at_s, _ in rule.times))
+        self.assertEqual(rulefile.MAX_OFFSET_S, movement.MAX_OFFSET_S)
+
+    def test_the_in_play_file(self):
+        rule = RULES["inplay-v1-lay"]
+        self.assertEqual((rule.lineage, rule.select, rule.times), ("inplay", "each_active", ((-600, None),)))
+        self.assertEqual(rule.market, Market(("GB", "IE"), "7", "WIN", "ODDS", 1, None, True, True))
+        self.assertEqual([(row.feature, row.op, row.value, row.code) for row in rule.when],
+                         [("market_open", "==", 1, "market_not_open"),
+                          ("active_runners", ">=", 2, "too_few_active_runners")])
+        self.assertEqual(list(rule.intents),
+                         [Template("LAY", "fixed", Fraction(price), Fraction(2), "keep")
+                          for price in ("1.01", "1.02", "1.03", "1.05", "1.10", "1.20", "1.50", "2.00")])
+        self.assertEqual([movement.tick_index(row.fixed) is not None for row in rule.intents], [True] * 8)
+
+    def test_claims_are_one_sentence_each_and_lineages_are_two(self):
+        for rule in RULES.values():
+            for text in (rule.claim, rule.counter_claim):
+                with self.subTest(rule=rule.id, text=text[:30]):
+                    self.assertTrue(text.endswith(".") and text.count(". ") == 0 and 40 <= len(text) <= 200)
+        self.assertEqual(sorted({rule.lineage for rule in RULES.values()}), ["close", "inplay"])
+        self.assertEqual(len({rule.claim for rule in RULES.values()} | {r.counter_claim for r in RULES.values()}), 6)
+
+
 class LaneBoundaries(unittest.TestCase):
-    MODULES = ("partition", "study_ledger")
+    MODULES = ("partition", "study_ledger", "rulefile")
+    RULEFILE_IMPORTS = {"collections", "dataclasses", "decimal", "fractions", "hashlib", "json", "operator", "re"}
 
     def test_the_lane_stays_inside_the_backtest_closure(self):
         from test_betfair_backtest_boundaries import (BACKTEST, BETFAIR, FORBIDDEN_BETFAIR, REAL, TOP,
@@ -754,11 +1303,35 @@ class LaneBoundaries(unittest.TestCase):
         self.assertEqual({module for module in closure if not module.startswith(BACKTEST)},
                          {TOP, BETFAIR, f"{TOP}.temporal"})
         self.assertEqual(backtest_violations(REAL, betfair=BETFAIR, forbidden=FORBIDDEN_BETFAIR), [])
+        # rulefile's internal imports are empty: the graph holds only the parent packages that any import of it runs.
+        self.assertEqual(REAL.internal[f"{BACKTEST}.rulefile"], {TOP, BETFAIR, BACKTEST})
+        self.assertEqual(REAL.external[f"{BACKTEST}.rulefile"], self.RULEFILE_IMPORTS)
+        self.assertEqual(set(REAL.closure([f"{BACKTEST}.rulefile"])), {TOP, BETFAIR, BACKTEST, f"{BACKTEST}.rulefile"})
+
+    def test_the_rule_module_imports_nothing_from_the_package(self):
+        """As for path_guard: every import statement in rulefile.py is absolute and names a standard-library module,
+        and importing it alone loads no other module of the package."""
+        tree = ast.parse(Path(rulefile.__file__).read_text(encoding="utf-8"))
+        imports = [node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
+        self.assertEqual([node.lineno for node in imports if isinstance(node, ast.ImportFrom) and node.level], [])
+        self.assertEqual({node.module for node in imports if isinstance(node, ast.ImportFrom)}
+                         | {alias.name for node in imports if isinstance(node, ast.Import) for alias in node.names},
+                         self.RULEFILE_IMPORTS)
+        self.assertEqual([node.lineno for node in imports if node not in tree.body], [])     # none inside a function
+        probe = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                 "import betangel_research.betfair.backtest.rulefile; "
+                 "print('\\n'.join(sorted(m for m in sys.modules if m.startswith('betangel_research'))))")
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(REPO)], capture_output=True, text=True,
+                                check=True)
+        self.assertEqual(set(result.stdout.split()),
+                         {"betangel_research", "betangel_research.betfair", "betangel_research.betfair.backtest",
+                          "betangel_research.betfair.backtest.rulefile"})
 
     def test_importing_the_lane_loads_no_other_betfair_module(self):
         probe = ("import sys; sys.path.insert(0, sys.argv[1]); "
                  "import betangel_research.betfair.backtest.partition; "
                  "import betangel_research.betfair.backtest.study_ledger; "
+                 "import betangel_research.betfair.backtest.rulefile; "
                  "print('\\n'.join(sorted(m for m in sys.modules if m.startswith('betangel_research'))))")
         result = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(REPO)], capture_output=True, text=True,
                                 check=True)
@@ -767,7 +1340,7 @@ class LaneBoundaries(unittest.TestCase):
                          {"betangel_research", "betangel_research.betfair", "betangel_research.temporal"})
 
     def test_the_modules_read_no_clock_start_no_process_and_name_no_lab_folder(self):
-        for module in (partition, study_ledger):
+        for module in (partition, study_ledger, rulefile):
             source = Path(module.__file__).read_text(encoding="utf-8")
             for word in ("import time", "import os", "subprocess", "now(", "today(", "fsync", "random", "lab-runs",
                          ".local"):

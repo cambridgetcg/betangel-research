@@ -3,14 +3,17 @@
 Every archive here is synthetic and goes through the real ingest, index and replay, with the fixture helpers of
 tests/test_betfair_backtest_replay.py and tests/test_backtest_lp.py (lp_market and its PRO ladder deltas). These
 tests show the registration's checks, the view a rule file reads, the fill rules and the walk to the pull time on
-these synthetic shapes only. They say nothing about real Betfair files or results.
+these synthetic shapes only. The metric, the statistics, the selection and the labels are shown on order rows built
+by hand. They say nothing about real Betfair files or results.
 """
 
 import bz2
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
 import hashlib
+import inspect
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -23,12 +26,21 @@ from betangel_research.betfair.backtest.lp import spread_ticks
 from betangel_research.betfair.backtest.lp_study import _walk as lp_walk
 from betangel_research.betfair.backtest.metrics import HashStream
 from betangel_research.betfair.backtest.movement import (MARKET_CODES, Moment, RegistrationError, active_ids,
-                                                         decision_time, exact, replay_market, select)
+                                                         cr1_mean, decision_time, exact, holm, nclv, replay_market,
+                                                         sample_sd, select, student_t_quantile)
 from betangel_research.betfair.backtest.movement import parse_registration as parse_movement
 from betangel_research.betfair.backtest.replay import ReplayProblem, _member
-from betangel_research.betfair.backtest.resting import (CLASSES, HARNESS_CODES, NULL_LABEL, NULL_UNDEFINED, SCORED,
-                                                        TRD_COUNTS, Cell, OrderRow, named_files, parse_registration,
-                                                        population_codes, record_code, view_of, walk)
+from betangel_research.betfair.backtest.resting import (AS_WRITTEN, BLOCKED, BSP_ENDS, CLAIM_END, CLASSES,
+                                                        COUNTS_ONLY, FILLED_IS_ALL_PLACED, G, HARNESS_CODES, KILL_END,
+                                                        NET_CLOSED, NET_HELD, NULL_BLOCKS, NULL_LABEL, NULL_UNDEFINED,
+                                                        PLUS_STEP, SCORED, TRD_COUNTS, UNDERPOWERED, VERDICTS, Cell,
+                                                        Fill, OrderRow, blind_outcome, bound, cr1_test, deciding_end,
+                                                        described, detectable, ends_apart, figures, filled_part, gap,
+                                                        gate, gated, named_files, null_gate, one_sided_p,
+                                                        parse_registration, population_codes, quantile_table,
+                                                        record_code, rounded, score, scored, select_primaries, series,
+                                                        spread, verdicts, view_of, walk, whole_hundredths,
+                                                        without_first_fills)
 from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide
 
 import test_betfair_backtest_replay as fx
@@ -40,7 +52,7 @@ from test_betfair_backtest_replay import definition, iso, mcm, md, ms, runner
 REPO = Path(__file__).resolve().parent.parent
 REGISTRATION = REPO / "research" / "studies" / "close-v1.json"
 # The registration's sha256 as reviewed: any change to the file must change this line too (a new registration).
-REGISTRATION_SHA256 = "32dd394bbf47cc666d95d17771a68f0469a35d921485d5845494eb4d24bc3e53"
+REGISTRATION_SHA256 = "03b964872500b26950a583a31751894512c9ad8e75733042ebc628e2ccb685a1"
 SPLIT_RAW = (REPO / "research" / "partitions-v1.json").read_bytes()
 BACK_RULE, LAY_RULE = "close-v1-back", "close-v1-lay"
 RULES_RAW = {f"{name}.json": (REPO / "research" / "rules" / f"{name}.json").read_bytes()
@@ -176,6 +188,10 @@ class Registration(unittest.TestCase):
         self.assertEqual((PLAN.label_note, PLAN.exposure_note), (
             "PRO 2015-16: a kill gate and a prior, never confirmation",
             "The level of g was known from the whole year. Only the gap is new."))
+        value = json.loads(raw)
+        self.assertEqual(tuple(value["measurement"]["bsp_ends"]["names"]), BSP_ENDS)
+        self.assertEqual(tuple(value["null"]["blocks"]), NULL_BLOCKS)
+        self.assertEqual((value["selection"]["bsp_end"], value["selection"]["measure"]), (CLAIM_END, NET_HELD))
 
     def test_the_codes_are_the_harness_and_the_rule_files_in_evaluation_order(self):
         self.assertEqual(PLAN.codes, population_codes(PLAN.rules))
@@ -348,6 +364,8 @@ class Registration(unittest.TestCase):
                 lambda value: value["measurement"]["classes"].remove("stream_malformed_after_placement"),
             "measurement.bsp_ends.step:not_supported":
                 lambda value: value["measurement"]["bsp_ends"].update(step="0.001"),
+            "measurement.bsp_ends.names:not_the_implemented_list":
+                lambda value: value["measurement"]["bsp_ends"]["names"].reverse(),
             "measurement.commission_rate:not_a_decimal_rate":
                 lambda value: value["measurement"].update(commission_rate=0.02),
             "family.m:not_one_primary_per_rule_file": lambda value: value["family"].update(m=6),
@@ -357,6 +375,7 @@ class Registration(unittest.TestCase):
             "selection.explore_model:not_a_fill_model": lambda value: value["selection"].update(explore_model="mid"),
             "selection.measure:not_supported": lambda value: value["selection"].update(measure="net_closed"),
             "null.label:not_supported": lambda value: value["null"].update(label="close-v1/null/{market_id}"),
+            "null.blocks:not_the_implemented_list": lambda value: value["null"]["blocks"].append("too_large"),
             "null.undefined_reasons:not_the_implemented_list":
                 lambda value: value["null"]["undefined_reasons"].reverse(),
             "verdicts.names:not_the_implemented_list": lambda value: value["verdicts"]["names"].insert(0, "kill"),
@@ -1230,6 +1249,699 @@ class CloseClasses(RestingCase):
         self.assertEqual({row.bsp for row in rows.values()}, {Fraction(257, 100)})
         rows = self.rows(lp_market(bsps={**BSPS, FAV: 2.5733}))
         self.assertEqual({row.bsp for row in rows.values()}, {Fraction(25733, 10000)})
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Order rows built by hand, for the metric, the statistics, the selection and the labels
+
+D, V = PLAN.labels
+D_DAYS = [(date(2015, 5, 2) + timedelta(days=index)).isoformat() for index in range(16)]
+V_DAYS = [(date(2015, 7, 1) + timedelta(days=index)).isoformat() for index in range(8)] + \
+         [(date(2016, 1, 5) + timedelta(days=index)).isoformat() for index in range(8)]     # H1 then H2
+NONE = ()
+
+
+def order(bsp, filled=MODELS, side=LAY, price=2.5, day=V_DAYS[0], label=V, half="H1", null=None, mid=None,
+          first_second=False):
+    """One scored OrderRow: filled names the models it filled under; null and mid are prices or None."""
+    found = {model: Fill(Fraction(0), VOLUME, 0.5 if first_second else 5.0, (first_second, True), False, False, None)
+             if model in filled else Fill(Fraction(0), None, None, (False, False), False, False, "pull")
+             for model in MODELS}
+    return OrderRow(side, P(price), label, half, day, SCORED, P(bsp), None if mid is None else P(mid), found,
+                    None if null is None else P(null), None if null is not None else "not_two_sided",
+                    dict.fromkeys(TRD_COUNTS, 0))
+
+
+def block(count, days, bsps, label=V, nulls=(None,), **kwargs):
+    """count rows over the days in turn. A day's rows share one BSP and one null mid (bsps and nulls in turn by
+    day), so the spread lies between race dates. The first half of V_DAYS is H1, the second H2."""
+    rows = []
+    for index in range(count):
+        place = index % len(days)
+        half = "H2" if label == V and days[place] in V_DAYS[8:] else "H1"
+        rows.append(order(bsps[place % len(bsps)], day=days[place], label=label, half=half,
+                          null=nulls[place % len(nulls)], **kwargs))
+    return rows
+
+
+def mean_of(values):
+    return math.fsum(x for _, x in values) / len(values)
+
+
+class CloseMetric(RestingCase):
+    def test_g_and_both_nets_are_exact_for_both_sides(self):
+        c = Fraction(2, 100)
+        # A BACK at 2.52 against BSP 2.4: g = 2.52 / 2.4 - 1 = 1/20; closed keeps 98% of a gain; held pays
+        # c x (P - 1) / BSP = 0.02 x 1.52 / 2.4.
+        back = {what: score(PLAN, BACK, P(2.52), P(2.4), what) for what in (G, NET_CLOSED, NET_HELD)}
+        self.assertEqual(back, {G: Fraction(1, 20), NET_CLOSED: Fraction(49, 1000), NET_HELD: Fraction(14, 375)})
+        self.assertEqual(back[NET_HELD], nclv(P(2.52), P(2.4), c))                     # contract p1's NCLV
+        # A LAY at 2.5 against BSP 2.6: g = 1 - 2.5 / 2.6 = 1/26; held pays c x (1 - 1 / BSP).
+        lay = {what: score(PLAN, LAY, P(2.5), P(2.6), what) for what in (G, NET_CLOSED, NET_HELD)}
+        self.assertEqual(lay, {G: Fraction(1, 26), NET_CLOSED: Fraction(49, 1300), NET_HELD: Fraction(17, 650)})
+        self.assertEqual(lay[NET_HELD], (1 - c) - (P(2.5) - c) / P(2.6))               # lp-study's form
+        # A loss pays no commission when closed, and still pays it when held.
+        self.assertEqual([score(PLAN, LAY, P(2.5), P(2.4), what) for what in (G, NET_CLOSED, NET_HELD)],
+                         [Fraction(-1, 24), Fraction(-1, 24), Fraction(-4, 75)])
+        self.assertEqual([score(PLAN, BACK, P(2.4), P(2.5), what) for what in (G, NET_CLOSED)],
+                         [Fraction(-1, 25), Fraction(-1, 25)])
+        # A maker LAY at a price is minus the taker BACK there, before commission.
+        self.assertEqual(score(PLAN, LAY, P(3.0), P(3.05)), -score(PLAN, BACK, P(3.0), P(3.05)))
+        self.assertEqual(score(PLAN, LAY, P(2.5), P(2.5)), 0)
+        self.assertIs(type(score(PLAN, LAY, P(2.5), P(2.5), NET_HELD)), Fraction)
+        with self.assertRaises(ValueError):
+            score(PLAN, LAY, P(2.5), P(2.6), "net")
+
+    def test_net_closed_is_the_kinder_net(self):
+        for side in (BACK, LAY):
+            for price in (1.5, 2.0, 2.52, 3.95, 4.0):
+                for bsp in (1.2, 1.5, 2.0, 2.57, 3.0, 4.0, 7.4):
+                    held, closed, g = (score(PLAN, side, P(price), P(bsp), what) for what in (NET_HELD, NET_CLOSED, G))
+                    self.assertLessEqual(held, closed, (side, price, bsp))
+                    self.assertLessEqual(closed, g)
+
+    def test_both_bsp_ends_and_which_one_decides(self):
+        lay, back = order(2.6), order(2.4, side=BACK, price=2.52)
+        for row, written, stepped in ((lay, 1 - P(2.5) / P(2.6), 1 - P(2.5) / P(2.61)),
+                                      (back, P(2.52) / P(2.4) - 1, P(2.52) / P(2.41) - 1)):
+            self.assertEqual(series(PLAN, [row], G, AS_WRITTEN), [(row.race_date, float(written))])
+            self.assertEqual(series(PLAN, [row], G, PLUS_STEP), [(row.race_date, float(stepped))])
+        self.assertEqual(series(PLAN, [lay], NET_HELD, PLUS_STEP)[0][1],
+                         float(score(PLAN, LAY, P(2.5), P(2.61), NET_HELD)))
+        with self.assertRaises(KeyError):
+            series(PLAN, [lay], G, "bsp_rounded")
+        # The kill end favours the order: a LAY gains from a higher BSP, a BACK from a lower one.
+        self.assertEqual([deciding_end(LAY, KILL_END, True), deciding_end(LAY, CLAIM_END, True)],
+                         [PLUS_STEP, AS_WRITTEN])
+        self.assertEqual([deciding_end(BACK, KILL_END, True), deciding_end(BACK, CLAIM_END, True)],
+                         [AS_WRITTEN, PLUS_STEP])
+        for row in (lay, back):
+            kill, claim = (series(PLAN, [row], G, deciding_end(row.side, purpose, True))[0][1]
+                           for purpose in (KILL_END, CLAIM_END))
+            self.assertGreater(kill, claim)
+        # Without the switch the as-written figure decides alone.
+        self.assertEqual({deciding_end(side, purpose, False) for side in (BACK, LAY)
+                          for purpose in (KILL_END, CLAIM_END)}, {AS_WRITTEN})
+        self.assertEqual(BSP_ENDS, (AS_WRITTEN, PLUS_STEP))
+
+    def test_the_99_percent_switch(self):
+        rows = [order(2.6)] * 99 + [order(2.5733)]
+        self.assertEqual(whole_hundredths(PLAN, rows), (99, 100))
+        self.assertTrue(ends_apart(PLAN, 99, 100))
+        self.assertFalse(ends_apart(PLAN, 98, 100))
+        self.assertTrue(ends_apart(PLAN, 990, 1000))
+        self.assertFalse(ends_apart(PLAN, 989, 1000))
+        self.assertFalse(ends_apart(PLAN, 0, 0))                                # no scored order: nothing to switch
+        # 2.57 is a whole hundredth though not a ladder price; only scored rows are counted.
+        unscored = order(2.6)._replace(klass="missing_bsp", bsp=None)
+        self.assertEqual(whole_hundredths(PLAN, [order(2.57), order(2.575), order(3), unscored]), (2, 3))
+        self.assertEqual(scored([order(2.6), unscored, order(2.6, label=D), order(2.6, half="H2")], V, "H1"),
+                         [order(2.6)])
+
+    def test_the_bsp_is_never_snapped_through_the_walk(self):
+        # 2.57 is not a CLASSIC price: g is taken against 2.57 and 2.58, not 2.56 or 2.58 and 2.6.
+        rows = self.rows(lp_market(bsps={**BSPS, FAV: 2.57}))
+        lay, back = rows[LAY_CELLS[0]], rows[BACK_CELLS[0]]
+        self.assertEqual((lay.price, back.price, lay.mid), (P(2.5), P(2.52), P(2.51)))
+        self.assertEqual(series(PLAN, [lay], G, AS_WRITTEN)[0][1], float(1 - Fraction(250, 257)))
+        self.assertEqual(series(PLAN, [lay], G, PLUS_STEP)[0][1], float(1 - Fraction(250, 258)))
+        self.assertEqual(series(PLAN, [back], NET_HELD, PLUS_STEP)[0][1],
+                         float(nclv(P(2.52), P(2.58), PLAN.commission)))
+        # The mid at t and the mid at u are valued as the order is; a row without one is left out.
+        self.assertEqual(series(PLAN, [lay, back], G, AS_WRITTEN, "mid"), [
+            (lay.race_date, float(1 - Fraction(251, 257))), (back.race_date, float(Fraction(251, 257) - 1))])
+        self.assertEqual(series(PLAN, [lay], G, AS_WRITTEN, "null_mid"), series(PLAN, [lay], G, AS_WRITTEN, "mid"))
+        self.assertEqual(series(PLAN, [order(2.6)], G, AS_WRITTEN, "mid"), [])
+
+
+class PartAndRest(unittest.TestCase):
+    def group(self, unfilled, filled=200):
+        """filled rows that filled under every model (BSP 2.7 or 2.8 by day) and unfilled rows (BSP 2.4)."""
+        return block(filled, V_DAYS, [2.7, 2.8]) + block(unfilled, V_DAYS, [2.4], filled=NONE)
+
+    def test_1_and_99_unfilled_orders_give_filled_is_all_placed_and_100_does_not(self):
+        for unfilled, flag in ((0, True), (1, True), (99, True), (100, False), (101, False)):
+            with self.subTest(unfilled=unfilled):
+                rows = self.group(unfilled)
+                part = filled_part(PLAN, rows, PESSIMISTIC)
+                self.assertEqual((part.all_placed, part.fills, part.fill_dates), (flag, 200, 16))
+                self.assertEqual(len(part.rows), 200 + unfilled if flag else 200)
+                found = figures(PLAN, rows, AS_WRITTEN)
+                model = found["models"][PESSIMISTIC]
+                self.assertEqual((model[FILLED_IS_ALL_PLACED], model["fills"], model["fill_race_dates"]),
+                                 (flag, 200, 16))
+                self.assertEqual(found["placed"]["bets"], 200 + unfilled)
+                same = model["filled"][G]["mean"] == found["placed"]["mean"]
+                self.assertEqual(same, flag or unfilled == 0)
+                blind = blind_outcome(PLAN, rows, PESSIMISTIC, AS_WRITTEN)
+                self.assertEqual((blind[FILLED_IS_ALL_PLACED], blind["values"]), (flag, len(part.rows)))
+                self.assertEqual(blind["sd"], sample_sd([x for _, x in series(PLAN, part.rows, G, AS_WRITTEN)]))
+                self.assertEqual(blind["detectable"][FILLED_IS_ALL_PLACED], flag)
+
+    def test_under_the_flag_every_filled_figure_is_the_all_placed_figure(self):
+        rows = self.group(99)
+        model = figures(PLAN, rows, AS_WRITTEN)["models"][PESSIMISTIC]
+        for what in (G, NET_CLOSED, NET_HELD):
+            self.assertEqual(model["filled"][what], described(PLAN, series(PLAN, rows, what, AS_WRITTEN)))
+        # Every order is then valued as filled, and no gap is given: with them, 99 orders' mean could be worked out.
+        self.assertEqual(model["value_per_placed"], model["filled"][NET_HELD])
+        self.assertEqual((model["gap"]["estimate"], model["gap"]["reason"], model["gap"]["bets"]),
+                         (None, FILLED_IS_ALL_PLACED, [200, 99]))
+        self.assertEqual(model["filled"][G]["bets"], 299)
+
+    def test_with_100_unfilled_the_four_figures_are_the_registered_ones(self):
+        rows = self.group(100)
+        filled, unfilled = rows[:200], rows[200:]
+        found = figures(PLAN, rows, AS_WRITTEN)
+        model = found["models"][CENTRAL]
+        g, held = series(PLAN, filled, G, AS_WRITTEN), series(PLAN, filled, NET_HELD, AS_WRITTEN)
+        self.assertEqual(model["filled"][G]["mean"], mean_of(g))                                     # (1)
+        self.assertEqual(model["filled"][NET_HELD]["mean"], mean_of(held))
+        self.assertEqual(model["filled"][NET_CLOSED]["mean"], mean_of(series(PLAN, filled, NET_CLOSED, AS_WRITTEN)))
+        self.assertEqual(found["placed"]["mean"], mean_of(series(PLAN, rows, G, AS_WRITTEN)))           # (2)
+        self.assertAlmostEqual(model["value_per_placed"]["mean"], mean_of(held) * 200 / 300, places=15)  # (3)
+        self.assertEqual(model["value_per_placed"]["bets"], 300)
+        gap_ = model["gap"]                                                                            # (4)
+        self.assertAlmostEqual(gap_["estimate"], mean_of(g) - mean_of(series(PLAN, unfilled, G, AS_WRITTEN)), places=15)
+        self.assertEqual((gap_["bets"], gap_["race_dates"], gap_["df"], gap_["reason"]),
+                         ([200, 100], [16, 16], 15, None))
+        self.assertLess(gap_["ci_low"], gap_["estimate"])
+        self.assertAlmostEqual(gap_["ci_high"] - gap_["estimate"], student_t_quantile(0.975, 15) * gap_["se"],
+                               places=15)
+        self.assertNotIn("p_two_sided", gap_)                                   # descriptive: it tests nothing
+        self.assertEqual(gap_, gap(PLAN, rows, CENTRAL, AS_WRITTEN))
+        self.assertEqual(found["mid"]["bets"], 0)
+        # An interval needs 15 race dates; the estimate does not.
+        few = gap(PLAN, block(200, V_DAYS[:14], [2.7, 2.8]) + block(100, V_DAYS[:14], [2.4], filled=NONE), CENTRAL,
+                  AS_WRITTEN)
+        self.assertEqual((few["reason"], few["se"], few["ci_low"]), ("too_few_clusters", None, None))
+        self.assertIsNotNone(few["estimate"])
+
+    def test_a_filled_part_under_100_gives_counts_only(self):
+        rows = self.group(200, filled=99)
+        model = figures(PLAN, rows, AS_WRITTEN)["models"][OPTIMISTIC]
+        self.assertFalse(model[FILLED_IS_ALL_PLACED])
+        for item in (*model["filled"].values(), model["value_per_placed"]):
+            self.assertEqual((item["mean"], item["sd"], item["ci_low"], item["reason"]),
+                             (None, None, None, COUNTS_ONLY))
+        self.assertEqual((model["filled"][G]["bets"], model["value_per_placed"]["bets"], model["fills"]), (99, 299, 99))
+        self.assertEqual((model["gap"]["estimate"], model["gap"]["reason"]), (None, COUNTS_ONLY))
+        blind = blind_outcome(PLAN, rows, OPTIMISTIC, AS_WRITTEN)
+        self.assertEqual((blind["values"], blind["sd"], blind["ranges"], blind["detectable"]["effect"]),
+                         (99, None, None, None))
+
+    def test_the_models_are_judged_apart(self):
+        rows = block(150, V_DAYS, [2.7]) + block(60, V_DAYS, [2.6], filled=(OPTIMISTIC, CENTRAL)) + \
+            block(60, V_DAYS, [2.5], filled=(OPTIMISTIC,)) + block(60, V_DAYS, [2.4], filled=NONE)
+        parts = {model: filled_part(PLAN, rows, model) for model in MODELS}
+        self.assertEqual({model: (part.fills, part.all_placed, len(part.rows)) for model, part in parts.items()},
+                         {OPTIMISTIC: (270, True, 330), CENTRAL: (210, False, 210), PESSIMISTIC: (150, False, 150)})
+
+    def test_the_fills_after_the_first_second(self):
+        def group(first, unfilled=100):
+            return block(first, V_DAYS, [2.7], first_second=True) + block(150, V_DAYS, [2.8]) + \
+                block(unfilled, V_DAYS, [2.4], filled=NONE)
+
+        rows, stands = without_first_fills(PLAN, group(100), CENTRAL)
+        self.assertEqual((len(rows), stands, {row.bsp for row in rows}), (150, False, {P(2.8)}))
+        # 99 first-second fills: the filled figure stands, or the two means would give those 99 orders' mean.
+        rows, stands = without_first_fills(PLAN, group(99), CENTRAL)
+        self.assertEqual((len(rows), stands), (249, True))
+        # Under filled_is_all_placed the group is every scored order: its rest is the unfilled and the first fills.
+        rows, stands = without_first_fills(PLAN, group(60, unfilled=40), CENTRAL)
+        self.assertEqual((len(rows), stands), (150, False))
+        rows, stands = without_first_fills(PLAN, group(60, unfilled=39), CENTRAL)
+        self.assertEqual((len(rows), stands), (249, True))
+
+
+class Statistics(unittest.TestCase):
+    def test_the_one_sided_p_against_hand_values(self):
+        # Student's t with 1 degree of freedom is the Cauchy law, cdf 1/2 + atan(t) / pi; with 2 degrees it is
+        # 1/2 + t / (2 sqrt(2 + t^2)).
+        self.assertAlmostEqual(one_sided_p(1.0, 1.0, 1), 0.25, places=12)
+        self.assertAlmostEqual(one_sided_p(-1.0, 1.0, 1), 0.75, places=12)
+        self.assertAlmostEqual(one_sided_p(0.3, 0.1, 1), 0.5 - math.atan(3.0) / math.pi, places=12)
+        self.assertAlmostEqual(one_sided_p(math.sqrt(2), 1.0, 2), 0.5 - math.sqrt(2) / 4, places=12)
+        self.assertAlmostEqual(one_sided_p(0.0, 1.0, 7), 0.5, places=12)
+        # t(0.975; 14) = 2.1448 and t(0.98; 14) = 2.2638 (tables): one_sided_p undoes them.
+        self.assertAlmostEqual(one_sided_p(2.1448, 1.0, 14), 0.025, places=5)
+        self.assertAlmostEqual(one_sided_p(2.2638, 1.0, 14), 0.02, places=5)
+
+    def test_the_test_is_cr1_by_race_date(self):
+        # 15 race dates of 20 values; a date's values are equal: 0.05 on 9 dates and -0.02 on 6.
+        values = [(day, 0.05 if index < 9 else -0.02) for index, day in enumerate(V_DAYS[:15]) for _ in range(20)]
+        mean = (9 * 0.05 - 6 * 0.02) / 15
+        # SE^2 = G / (G - 1) x sum over dates of (20 x (x - mean))^2 / N^2.
+        se = math.sqrt(15 / 14 * (9 * (20 * (0.05 - mean)) ** 2 + 6 * (20 * (-0.02 - mean)) ** 2)) / 300
+        found = cr1_test(PLAN, values)
+        self.assertEqual((found["bets"], found["race_dates"], found["df"], found["reason"]), (300, 15, 14, None))
+        self.assertAlmostEqual(found["mean"], mean, places=15)
+        self.assertAlmostEqual(found["se"], se, places=15)
+        self.assertAlmostEqual(found["t"], mean / se, places=12)
+        self.assertAlmostEqual(found["p_one_sided"], one_sided_p(mean, se, 14), places=12)
+        self.assertNotIn("p_two_sided", found)
+        self.assertLess(found["p_one_sided"], 0.05)
+        both = cr1_test(PLAN, values, two_sided=True)
+        self.assertAlmostEqual(both["p_two_sided"], 2 * found["p_one_sided"], places=12)
+        self.assertNotIn("p_one_sided", both)
+        # The clusters are the dates, not the orders: the same 300 values, one date each, give a far smaller SE.
+        alone = cr1_test(PLAN, [(str(index), x) for index, (_, x) in enumerate(values)])
+        self.assertEqual(alone["df"], 299)
+        self.assertLess(alone["se"], se / 4)
+        # A mean below 0 has a one-sided p above one half; it is not a test of "differs from 0".
+        self.assertGreater(cr1_test(PLAN, [(day, -x) for day, x in values])["p_one_sided"], 0.95)
+
+    def test_the_bounds(self):
+        values = [(day, 0.05 if index < 9 else -0.02) for index, day in enumerate(V_DAYS[:15]) for _ in range(20)]
+        found = gated(PLAN, values)
+        self.assertAlmostEqual(student_t_quantile(0.975, 14), 2.1448, places=4)
+        self.assertAlmostEqual(student_t_quantile(0.98, 14), 2.2638, places=4)
+        self.assertAlmostEqual(bound(found, PLAN.kill_level, 1), found["mean"] + 2.1448 * found["se"], places=6)
+        self.assertAlmostEqual(bound(found, PLAN.lower_bound_level, -1), found["mean"] - 2.2638 * found["se"], places=6)
+        self.assertEqual(bound(found, PLAN.kill_level, 1), found["ci_high"])     # the 95% interval's upper end
+        # No SE, no bound: equal values, or a failed gate.
+        flat = gated(PLAN, [(day, 0.01) for day in V_DAYS for _ in range(20)])
+        self.assertEqual((flat["reason"], bound(flat, PLAN.kill_level, 1)), ("se_undefined", None))
+        self.assertIsNone(bound(gated(PLAN, values, False), PLAN.kill_level, 1))
+
+    def test_holm_with_m_of_2(self):
+        def rejected(**pvalues):
+            return {name: answer[1] for name, answer in holm(pvalues, PLAN.alpha, PLAN.family_m).items()}
+
+        self.assertEqual((PLAN.alpha, PLAN.family_m), (Fraction(2, 100), 2))
+        # A rule file with no primary has no p and still counts in m: the other needs 0.02 / 2.
+        self.assertEqual(rejected(back=0.015, lay=None), {"back": False, "lay": False})
+        self.assertEqual(rejected(back=0.01, lay=None), {"back": True, "lay": False})
+        # The smaller p needs 0.01; once it is rejected the other needs 0.02.
+        self.assertEqual(rejected(back=0.015, lay=0.009), {"back": True, "lay": True})
+        self.assertEqual(rejected(back=0.021, lay=0.009), {"back": False, "lay": True})
+        self.assertEqual(rejected(back=0.015, lay=0.011), {"back": False, "lay": False})
+        self.assertEqual(holm({"back": 0.015, "lay": 0.009}, PLAN.alpha, 2),
+                         {"back": (0.018, True), "lay": (0.018, True)})
+
+    def test_the_size_gates(self):
+        self.assertEqual([gate(PLAN, 200, 15), gate(PLAN, 199, 15), gate(PLAN, 200, 14), gate(PLAN, 5000, 14)],
+                         [True, False, False, False])
+
+        def values(count, days):
+            return [(days[index % len(days)], 0.01 * (index % 7)) for index in range(count)]
+
+        # 100 values give a mean and an SD; 99 give counts only.
+        self.assertEqual(described(PLAN, values(99, V_DAYS)),
+                         dict(bets=99, race_dates=16, mean=None, se=None, df=None, t_critical=None, ci_low=None,
+                              ci_high=None, sd=None, reason=COUNTS_ONLY))
+        enough = described(PLAN, values(100, V_DAYS))
+        self.assertEqual(enough["sd"], sample_sd([x for _, x in values(100, V_DAYS)]))
+        self.assertEqual({key: value for key, value in enough.items() if key != "sd"},
+                         cr1_mean(values(100, V_DAYS), PLAN.confidence_level, PLAN.min_clusters))
+        self.assertEqual(described(PLAN, values(100, V_DAYS), False)["reason"], COUNTS_ONLY)
+        # An interval needs 15 race dates.
+        few = described(PLAN, values(100, V_DAYS[:14]))
+        self.assertEqual((few["reason"], few["ci_low"], few["mean"] is None), ("too_few_clusters", None, False))
+        # A test needs 200 values on 15 race dates, read on the model the rule reads (passes) or on the values.
+        for count, days, tested in ((199, V_DAYS, False), (200, V_DAYS[:14], False), (200, V_DAYS[:15], True)):
+            found = cr1_test(PLAN, values(count, days))
+            self.assertEqual((found["reason"] == UNDERPOWERED, found["p_one_sided"] is None, found["mean"] is None),
+                             (not tested,) * 3)
+        self.assertEqual(cr1_test(PLAN, values(300, V_DAYS), False)["reason"], UNDERPOWERED)
+        self.assertIsNotNone(cr1_test(PLAN, values(150, V_DAYS), True)["p_one_sided"])
+        self.assertEqual(cr1_test(PLAN, [])["reason"], UNDERPOWERED)
+
+    def test_quantiles_are_nearest_rank_and_the_blind_spread_has_no_location(self):
+        self.assertEqual(quantile_table(PLAN, range(1, 101)),
+                         {"0.05": 5.0, "0.1": 10.0, "0.25": 25.0, "0.5": 50.0, "0.75": 75.0, "0.9": 90.0, "0.95": 95.0})
+        self.assertEqual(quantile_table(PLAN, [Fraction(index, 3) for index in range(1, 201)])["0.5"], 33.3333)
+        self.assertIsNone(quantile_table(PLAN, range(99)))
+        values = [(V_DAYS[index % 16], index / 1000) for index in range(1, 101)]
+        found = spread(PLAN, values)
+        self.assertEqual(found, {"values": 100, "race_dates": 16, "sd": sample_sd([x for _, x in values]),
+                                 "ranges": {"0.95-0.05": 0.09, "0.9-0.1": 0.08, "0.75-0.25": 0.05}})
+        self.assertEqual(list(found), ["values", "race_dates", "sd", "ranges"])
+        # A shift or a change of sign leaves it as it is: it holds no location and no direction.
+        for change in (lambda x: x + 0.5, lambda x: -x):
+            moved = spread(PLAN, [(day, change(x)) for day, x in values])
+            self.assertEqual(moved["ranges"], found["ranges"])
+            self.assertAlmostEqual(moved["sd"], found["sd"], places=12)
+        self.assertEqual(spread(PLAN, values[:99]), {"values": 99, "race_dates": 16, "sd": None, "ranges": None})
+
+    def test_rounding(self):
+        value = {"mean": 0.123456789, "n": 3, "flag": True, "none": None, "cell": LAY_CELLS[0],
+                 "list": [0.00000049, (1.5, "x")], "exact": Fraction(1, 3)}
+        self.assertEqual(rounded(value), {"mean": 0.123457, "n": 3, "flag": True, "none": None, "cell": LAY_CELLS[0],
+                                          "list": [0.0, [1.5, "x"]], "exact": Fraction(1, 3)})
+        self.assertIs(rounded(value)["flag"], True)
+        self.assertEqual(rounded(0.123456789, 4), 0.1235)
+
+    def test_the_detectable_effect(self):
+        # (t(0.99; 14) + t(0.8; 14)) x SD / sqrt(N) = (2.6245 + 0.8681) x 0.1 / 20.
+        self.assertAlmostEqual(detectable(PLAN, 0.1, 400, 15), 3.4926 * 0.1 / 20, places=5)
+        self.assertEqual([detectable(PLAN, None, 400, 15), detectable(PLAN, 0.1, 0, 15), detectable(PLAN, 0.1, 400, 1)],
+                         [None, None, None])
+        # The pooled SD with the test label's own count and race dates.
+        rows = block(300, D_DAYS, [2.7, 2.8], label=D) + block(200, V_DAYS[:15], [2.6, 2.9]) + \
+            block(100, D_DAYS, [2.4], label=D, filled=NONE) + block(100, V_DAYS, [2.4], filled=NONE)
+        blind = blind_outcome(PLAN, rows, CENTRAL, AS_WRITTEN)
+        sd = sample_sd([x for _, x in series(PLAN, [row for row in rows if row.fills[CENTRAL].kind], G, AS_WRITTEN)])
+        self.assertEqual((blind["values"], blind["race_dates"], blind["sd"]), (500, 31, sd))
+        self.assertEqual(blind["detectable"], {"values": 200, "race_dates": 15, FILLED_IS_ALL_PLACED: False,
+                                               "effect": detectable(PLAN, sd, 200, 15)})
+        self.assertEqual(set(blind), {"values", "race_dates", "sd", "ranges", FILLED_IS_ALL_PLACED, "detectable"})
+
+
+class SelectionIsBlindToHoldout(unittest.TestCase):
+    COUNTS = {cell: (240, 16) for cell in PLAN.cells}
+
+    def explore(self, bsps, side=LAY, price=2.5, fills_=240, unfilled=100):
+        """One cell's PRO-D rows: fills under every model at the BSPs in turn by day, and unfilled orders."""
+        return block(fills_, D_DAYS, bsps, label=D, side=side, price=price) + \
+            block(unfilled, D_DAYS, [2.5], label=D, side=side, price=price, filled=NONE)
+
+    def standard(self):
+        """LAY at 2.5: the higher the BSP the better, so the middle time is best. BACK at 2.52: the lower the better,
+        so the first time is best."""
+        rows = {cell: self.explore(bsps) for cell, bsps in zip(LAY_CELLS, ([2.6, 2.7], [2.7, 2.8], [2.55, 2.6]))}
+        rows.update({cell: self.explore(bsps, BACK, 2.52)
+                     for cell, bsps in zip(BACK_CELLS, ([2.4, 2.45], [2.45, 2.5], [2.5, 2.55]))})
+        return rows
+
+    def test_the_highest_explore_mean_of_net_held_is_chosen(self):
+        found = select_primaries(PLAN, self.standard(), self.COUNTS, True)
+        self.assertEqual(found.eligible, PLAN.cells)
+        self.assertEqual(found.primaries, {BACK_RULE: BACK_CELLS[0], LAY_RULE: LAY_CELLS[1]})
+        self.assertEqual(list(inspect.signature(select_primaries).parameters),
+                         ["plan", "explore", "test_counts", "apart"])
+
+    def test_the_gates_read_the_explore_models_fills_and_the_test_labels_counts(self):
+        rows = self.standard()
+        cases = {
+            "199 central fills on the explore label": ({**rows, LAY_CELLS[1]: self.explore([2.7, 2.8], fills_=199)},
+                                                       self.COUNTS),
+            "the fills are the front model's only": (
+                {**rows, LAY_CELLS[1]: block(240, D_DAYS, [2.7, 2.8], label=D, filled=(OPTIMISTIC,))
+                 + block(100, D_DAYS, [2.5], label=D, filled=NONE)}, self.COUNTS),
+            "199 pessimistic fills on the test label": (rows, {**self.COUNTS, LAY_CELLS[1]: (199, 16)}),
+            "14 race dates on the test label": (rows, {**self.COUNTS, LAY_CELLS[1]: (240, 14)}),
+        }
+        for name, (explore, counts) in cases.items():
+            with self.subTest(case=name):
+                found = select_primaries(PLAN, explore, counts, True)
+                self.assertNotIn(LAY_CELLS[1], found.eligible)
+                self.assertEqual(found.primaries, {BACK_RULE: BACK_CELLS[0], LAY_RULE: LAY_CELLS[0]})
+        # No eligible cell: the rule file has no primary, and is still one of the family's m.
+        none = select_primaries(PLAN, rows, {**self.COUNTS, **dict.fromkeys(LAY_CELLS, (0, 0))}, True)
+        self.assertEqual((none.eligible, none.primaries), (BACK_CELLS, {BACK_RULE: BACK_CELLS[0], LAY_RULE: None}))
+        self.assertEqual(len(none.primaries), PLAN.family_m)
+        # Under filled_is_all_placed the gate still counts the fills, and the mean is over every placed order.
+        flagged = {**rows, LAY_CELLS[2]: self.explore([2.9], unfilled=99)}
+        self.assertEqual(select_primaries(PLAN, flagged, self.COUNTS, True).primaries[LAY_RULE], LAY_CELLS[2])
+        flagged[LAY_CELLS[2]] = self.explore([2.9], fills_=199, unfilled=99)
+        self.assertEqual(select_primaries(PLAN, flagged, self.COUNTS, True).primaries[LAY_RULE], LAY_CELLS[1])
+
+    def test_a_tie_goes_to_the_later_time(self):
+        rows = self.standard()
+        for first, second in ((0, 1), (1, 2), (0, 2)):
+            tied = {**rows, LAY_CELLS[first]: self.explore([2.9]), LAY_CELLS[second]: self.explore([2.9])}
+            self.assertEqual(select_primaries(PLAN, tied, self.COUNTS, True).primaries[LAY_RULE], LAY_CELLS[second])
+
+    def test_the_mean_is_read_at_the_claim_end(self):
+        # A BACK at 1.6 against BSP 1.5 beats one at 4.3 against 4.0 as written (0.0587 to 0.0585) and loses to it
+        # at BSP + 0.01 (0.0517 to 0.0559): a short price moves more for one hundredth.
+        rows = {**self.standard(), BACK_CELLS[0]: self.explore([1.5], BACK, 1.6),
+                BACK_CELLS[2]: self.explore([4], BACK, 4.3)}
+        self.assertEqual(select_primaries(PLAN, rows, self.COUNTS, True).primaries[BACK_RULE], BACK_CELLS[2])
+        self.assertEqual(select_primaries(PLAN, rows, self.COUNTS, False).primaries[BACK_RULE], BACK_CELLS[0])
+
+    def test_changing_every_test_label_value_leaves_the_chosen_cells_unchanged(self):
+        def inputs(rows):
+            """What the selection is given, from every row of a pass: the explore label's rows, two counts per cell
+            from the test label, and the switch (a count over both labels)."""
+            everything = [row for cell in PLAN.cells for row in rows[cell]]
+            explore = {cell: [row for row in rows[cell] if row.label == D] for cell in PLAN.cells}
+            counts = {}
+            for cell in PLAN.cells:
+                part = filled_part(PLAN, scored(rows[cell], V), PESSIMISTIC)
+                counts[cell] = (part.fills, part.fill_dates)
+            return explore, counts, ends_apart(PLAN, *whole_hundredths(PLAN, everything))
+
+        def passed(bsps):
+            """Every cell's rows of both labels; bsps: the test label's BSPs, in turn by day."""
+            return {cell: rows + block(240, V_DAYS, bsps, side=rows[0].side, price=float(rows[0].price), nulls=bsps)
+                    + block(200, V_DAYS, [2.5], side=rows[0].side, price=float(rows[0].price), filled=NONE)
+                    for cell, rows in self.standard().items()}
+
+        first, second = passed([2.8, 2.9]), passed([2.2, 2.3])                 # good for a LAY, then bad for it
+        given = [inputs(first), inputs(second)]
+        self.assertEqual(given[0], given[1])
+        self.assertEqual(given[0][1], self.COUNTS)
+        chosen = [select_primaries(PLAN, *item) for item in given]
+        self.assertEqual(chosen[0], chosen[1])
+        self.assertEqual(chosen[0].primaries, {BACK_RULE: BACK_CELLS[0], LAY_RULE: LAY_CELLS[1]})
+        # The values did change: the same primaries get other labels.
+        labels = [{rule: item["label"] for rule, item in verdicts(PLAN, chosen[0].primaries, rows, given[0][2]).items()}
+                  for rows in (first, second)]
+        self.assertEqual(labels[0][LAY_RULE], "edge_candidate")
+        self.assertNotEqual(labels[0], labels[1])
+        # A row of the test label is refused, whatever it holds.
+        with self.assertRaises(ValueError) as caught:
+            select_primaries(PLAN, first, self.COUNTS, True)
+        self.assertEqual(str(caught.exception), "select:not_the_explore_label")
+
+
+class Verdicts(unittest.TestCase):
+    CELL = LAY_CELLS[1]
+    KILL, UNDER, EDGE, PILOT, UNRESOLVED = VERDICTS
+
+    def verdict(self, rows, apart=True):
+        found = verdicts(PLAN, {BACK_RULE: None, LAY_RULE: self.CELL}, {self.CELL: rows}, apart)
+        self.assertEqual(list(found), [BACK_RULE, LAY_RULE])
+        self.assertIsNone(found[BACK_RULE])
+        return found[LAY_RULE]
+
+    def rows(self, bsps=(2.7, 2.8), fills_=240, days=V_DAYS, nulls="bsp", explore=(2.7, 2.8), **kwargs):
+        """A LAY primary at 2.5: on the test label, fills under every model at the BSPs in turn by day and 200
+        unfilled orders; on the explore label 240 fills and 100 unfilled. nulls "bsp": the mid at u is the BSP, a
+        null value of exactly 0."""
+        nulls = list(bsps) if nulls == "bsp" else nulls
+        return block(fills_, days, list(bsps), nulls=nulls, **kwargs) + block(200, V_DAYS, [2.5], filled=NONE) + \
+            block(240, D_DAYS, list(explore), label=D) + block(100, D_DAYS, [2.5], label=D, filled=NONE)
+
+    def test_edge_candidate_and_what_is_printed_with_every_label(self):
+        found = self.verdict(self.rows())
+        self.assertEqual((found["label"], found["blocked"], found["cell"]), (self.EDGE, None, self.CELL))
+        self.assertEqual(found["checks"], {"rejected_under_holm": True, "mean_above_0_under_every_model": True,
+                                           "mean_above_0_in_each_half_year": True})
+        self.assertEqual(found["printed_with"], ("PRO 2015-16: a kill gate and a prior, never confirmation",
+                                                 "The level of g was known from the whole year. Only the gap is new."))
+        self.assertEqual(found["pessimistic_fill_rate"], 240 / 440)
+        test, kill = found["test"], found["kill"]
+        self.assertEqual((test["bets"], test["race_dates"], test["bsp_end"], test["reason"]),
+                         (240, 16, AS_WRITTEN, None))
+        self.assertLessEqual(test["p_one_sided"], 0.01)                          # m = 2: one primary needs 0.02 / 2
+        self.assertEqual((test["holm_rejected"], test["holm_p_adjusted"]), (True, 2 * test["p_one_sided"]))
+        self.assertEqual(test["lower_bound"], bound(test, PLAN.lower_bound_level, -1))
+        self.assertGreater(test["lower_bound"], 0)
+        # The kill is read on both labels pooled, on net_closed at the kill end, under the front model.
+        self.assertEqual((kill["bets"], kill["fills"], kill["race_dates"], kill["bsp_end"]), (480, 480, 32, PLUS_STEP))
+        self.assertGreater(kill["bound"], 0)
+        self.assertNotIn("p_one_sided", kill)
+        # Both nets at both BSP ends, the flags and the fills stand beside the label.
+        for item in (test, kill):
+            self.assertEqual({end: set(nets) for end, nets in item["both"].items()},
+                             {AS_WRITTEN: {NET_CLOSED, NET_HELD}, PLUS_STEP: {NET_CLOSED, NET_HELD}})
+        self.assertEqual(test["both"][AS_WRITTEN][NET_HELD], test["mean"])
+        self.assertEqual(kill["both"][PLUS_STEP][NET_CLOSED], kill["mean"])
+        self.assertGreater(test["both"][PLUS_STEP][NET_HELD], test["mean"])      # a LAY gains from a higher BSP
+        self.assertEqual((kill[FILLED_IS_ALL_PLACED], test[FILLED_IS_ALL_PLACED], test["fills"]), (False, False, 240))
+        self.assertEqual(found["models"], {model: {"fills": 240, FILLED_IS_ALL_PLACED: False, "mean": test["mean"]}
+                                           for model in MODELS})
+        self.assertEqual({half: (item["fills"], item["mean"] > 0) for half, item in found["half_years"].items()},
+                         {"H1": (120, True), "H2": (120, True)})
+        self.assertEqual((found["null"]["blocks"], found["null"]["why"], found["null"]["undefined"]), (False, None, 0))
+        self.assertEqual(found["null"]["null"]["mean"], 0.0)
+
+    def test_kill_optimistic_is_pooled_and_reads_the_optimistic_gate(self):
+        # 120 front-model fills a label, clearly below BSP; 100 unfilled orders far above it.
+        def lost(label, days):
+            return block(120, days, [2.3, 2.4], label=label, filled=(OPTIMISTIC,))
+
+        unfilled = block(100, V_DAYS, [3.5], filled=NONE)
+        found = self.verdict(lost(D, D_DAYS[:8]) + lost(V, V_DAYS[:8]) + unfilled)
+        self.assertEqual((found["label"], found["null"], found["blocked"]), (self.KILL, None, None))
+        self.assertEqual((found["kill"]["fills"], found["kill"]["bets"], found["kill"]["race_dates"]), (240, 240, 16))
+        self.assertLess(found["kill"]["bound"], 0)
+        self.assertEqual(found["kill"]["bound"], bound(found["kill"], PLAN.kill_level, 1))
+        # It comes first: the pessimistic model has no fill on the test label, which alone is underpowered.
+        self.assertEqual((found["test"]["reason"], found["models"][PESSIMISTIC]["fills"]), (UNDERPOWERED, 0))
+        # Neither label passes the gate alone.
+        for rows in (lost(D, D_DAYS[:8]) + unfilled, lost(V, V_DAYS[:8]) + unfilled,
+                     lost(V, V_DAYS[:8]) * 2 + unfilled):                        # 240 fills on 8 race dates
+            alone = self.verdict(rows)
+            self.assertEqual((alone["label"], alone["kill"]["reason"], alone["kill"]["bound"], alone["kill"]["mean"]),
+                             (self.UNDER, UNDERPOWERED, None, None))
+        # The gate is the front model's: 190 of its fills do not kill, whatever 300 pessimistic fills say.
+        behind = block(300, V_DAYS, [2.2, 2.3], filled=(PESSIMISTIC,))
+        found = self.verdict(block(190, D_DAYS, [2.3, 2.4], label=D, filled=(OPTIMISTIC,)) + behind + unfilled)
+        self.assertEqual((found["label"], found["kill"]["fills"], found["kill"]["bound"]), (self.UNRESOLVED, 190, None))
+        self.assertLess(found["test"]["mean"], -0.05)
+
+    def test_the_kill_reads_net_closed_at_the_kill_end(self):
+        # A LAY at 2.5 against BSP 2.49 or 2.5 as written loses a little; against 2.5 or 2.51 it does not.
+        rows = self.rows(bsps=(2.49, 2.49, 2.49, 2.5), explore=(2.49, 2.49, 2.49, 2.5))
+        apart, alone = self.verdict(rows, True), self.verdict(rows, False)
+        self.assertEqual((alone["label"], alone["kill"]["bsp_end"]), (self.KILL, AS_WRITTEN))
+        self.assertLess(alone["kill"]["bound"], 0)
+        self.assertEqual((apart["label"], apart["kill"]["bsp_end"]), (self.UNRESOLVED, PLUS_STEP))
+        self.assertGreater(apart["kill"]["mean"], 0)
+        # Held, the same orders lose more than the commission-free closed net: the kill does not read that.
+        self.assertLess(alone["kill"]["both"][AS_WRITTEN][NET_HELD], alone["kill"]["both"][AS_WRITTEN][NET_CLOSED])
+
+    def test_a_low_mean_alone_never_prints_a_kill(self):
+        # Below 0 on average, on 9 race dates of 16 far below and on 7 far above: the bound is above 0.
+        swing = [2.0] * 9 + [3.5] * 7
+        found = self.verdict(self.rows(bsps=swing, explore=swing))
+        self.assertLess(found["kill"]["mean"], 0)
+        self.assertGreater(found["kill"]["bound"], 0)
+        self.assertEqual(found["label"], self.UNRESOLVED)
+        # Far below 0 with too few fills: no kill either.
+        few = self.verdict(block(199, V_DAYS, [2.0]) + block(100, V_DAYS, [2.5], filled=NONE))
+        self.assertEqual((few["label"], few["kill"]["bound"]), (self.UNDER, None))
+        # Equal values have no SE: no bound, no kill.
+        flat = self.verdict(self.rows(bsps=[2.3], explore=[2.3]))
+        self.assertEqual((flat["label"], flat["kill"]["reason"], flat["kill"]["bound"]),
+                         (self.UNRESOLVED, "se_undefined", None))
+
+    def test_underpowered_reads_the_pessimistic_gate_on_the_test_label(self):
+        for name, rows in (("199 fills", self.rows(fills_=199)), ("14 race dates", self.rows(days=V_DAYS[:14])),
+                           ("fills of the other models only", self.rows(filled=(OPTIMISTIC, CENTRAL)))):
+            with self.subTest(case=name):
+                found = self.verdict(rows)
+                self.assertEqual((found["label"], found["test"]["reason"], found["test"]["p_one_sided"],
+                                  found["test"]["lower_bound"], found["null"]), (self.UNDER, UNDERPOWERED, None, None,
+                                                                                None))
+                self.assertFalse(found["checks"]["rejected_under_holm"])
+        # The explore label's fills do not help: 240 there, 199 on the test label.
+        found = self.verdict(self.rows(fills_=199))
+        self.assertEqual((found["kill"]["fills"], found["test"]["fills"], found["test"]["bets"]), (439, 199, 199))
+        # Under filled_is_all_placed the gate still counts the fills: 199 of them among 298 placed orders.
+        found = self.verdict(block(199, V_DAYS, [2.7, 2.8]) + block(99, V_DAYS, [2.5], filled=NONE))
+        self.assertEqual((found["label"], found["test"]["fills"], found["test"]["bets"],
+                          found["test"][FILLED_IS_ALL_PLACED]), (self.UNDER, 199, 298, True))
+        found = self.verdict(block(200, V_DAYS, [2.7, 2.8]) + block(99, V_DAYS, [2.5], filled=NONE))
+        self.assertEqual((found["test"]["fills"], found["test"]["bets"], found["test"][FILLED_IS_ALL_PLACED],
+                          found["test"]["reason"]), (200, 299, True, None))
+        self.assertEqual(found["test"]["mean"], found["models"][OPTIMISTIC]["mean"])   # every placed order
+
+    def test_each_claim_condition_is_needed(self):
+        # One model's mean at or below 0: 300 more front-model fills, far below BSP, on two race dates.
+        worse = self.rows() + block(300, V_DAYS[:2], [2.0], filled=(OPTIMISTIC,))
+        found = self.verdict(worse)
+        self.assertEqual(found["checks"], {"rejected_under_holm": True, "mean_above_0_under_every_model": False,
+                                           "mean_above_0_in_each_half_year": True})
+        self.assertLess(found["models"][OPTIMISTIC]["mean"], 0)
+        self.assertGreater(found["kill"]["bound"], 0)
+        self.assertEqual((found["label"], found["null"], found["blocked"]), (self.PILOT, None, None))
+        # One half-year at or below 0: H2 a hair below BSP after commission, H1 far above.
+        found = self.verdict(self.rows(bsps=[2.8] * 8 + [2.53] * 8))
+        self.assertEqual(found["checks"], {"rejected_under_holm": True, "mean_above_0_under_every_model": True,
+                                           "mean_above_0_in_each_half_year": False})
+        self.assertLess(found["half_years"]["H2"]["mean"], 0)
+        self.assertEqual((found["label"], found["null"]), (self.PILOT, None))
+        # One half-year with 99 fills.
+        found = self.verdict(block(141, V_DAYS[:8], [2.7, 2.8], nulls=[2.7, 2.8])
+                             + self.rows(fills_=99, days=V_DAYS[8:]))
+        self.assertEqual({half: item["fills"] for half, item in found["half_years"].items()}, {"H1": 141, "H2": 99})
+        self.assertTrue(found["half_years"]["H2"]["mean"] > 0)
+        self.assertEqual((found["checks"]["mean_above_0_in_each_half_year"], found["label"]), (False, self.PILOT))
+        # Not rejected: above 0 on average, but not by enough for its spread between race dates.
+        found = self.verdict(self.rows(bsps=[2.4] * 4 + [2.9] * 4, explore=[2.8]))
+        self.assertGreater(found["test"]["mean"], 0)
+        self.assertGreater(found["test"]["p_one_sided"], 0.01)
+        self.assertEqual((found["checks"]["rejected_under_holm"], found["null"]), (False, None))
+        self.assertIn(found["label"], (self.PILOT, self.UNRESOLVED))
+
+    def test_a_blocked_or_uncomputable_null_blocks_the_claim_and_never_kills(self):
+        # The mid at u is the order's own price: the null is as large as the result, and clearly not 0.
+        found = self.verdict(self.rows(nulls=[2.5]))
+        self.assertEqual((found["label"], found["blocked"]), (self.PILOT, BLOCKED))
+        self.assertEqual((found["null"]["blocks"], found["null"]["why"]), (True, NULL_BLOCKS[1]))
+        self.assertEqual(found["null"]["null"]["mean"], found["null"]["main_same_orders"]["mean"])
+        self.assertLess(found["null"]["null"]["p_two_sided"], 0.05)
+        self.assertNotIn("p_two_sided", found["null"]["main_same_orders"])
+        self.assertTrue(all(found["checks"].values()))
+        # No null value at all, or too few of them: it cannot be computed, and that blocks.
+        for nulls, defined in (([None], 0), ([2.7, None, None, None], 60)):
+            found = self.verdict(self.rows(nulls=nulls))
+            self.assertEqual((found["label"], found["blocked"], found["null"]["why"], found["null"]["undefined"]),
+                             (self.PILOT, BLOCKED, NULL_BLOCKS[0], 240 - defined))
+            self.assertEqual(found["null"]["null"]["bets"], defined)
+        # Large but not clearly away from 0 (far above BSP on 10 race dates, far below on 6): it does not block.
+        found = self.verdict(self.rows(nulls=[2.0] * 5 + [3.4] * 3))
+        null = found["null"]
+        self.assertGreater(abs(null["null"]["mean"]), 0.5 * abs(null["main_same_orders"]["mean"]))
+        self.assertGreater(null["null"]["p_two_sided"], 0.05)
+        self.assertEqual((found["label"], null["blocks"]), (self.EDGE, False))
+        # null_gate alone: clearly away from 0 but under half the result does not block; over half of it does.
+        rows = block(240, V_DAYS, [2.7, 2.8], nulls=[2.6, 2.7])
+        small = null_gate(PLAN, rows, AS_WRITTEN)
+        self.assertLess(small["null"]["p_two_sided"], 0.05)
+        self.assertEqual((small["blocks"], small["null"]["mean"] < 0.5 * small["main_same_orders"]["mean"]),
+                         (False, True))
+        self.assertEqual(null_gate(PLAN, block(240, V_DAYS, [2.7, 2.8], nulls=[2.55, 2.65]), AS_WRITTEN)["why"],
+                         NULL_BLOCKS[1])
+        # A null that would block is not read for a result that is no claim, and changes nothing there.
+        for bsps in ((2.5, 2.52), (2.45, 2.46)):
+            with_null, without = (self.verdict(self.rows(bsps=bsps, nulls=nulls)) for nulls in ([2.5], [None]))
+            self.assertEqual((with_null["null"], with_null["blocked"]), (None, None))
+            self.assertEqual(with_null, without)
+
+    def test_measurement_pilot_candidate_and_unresolved(self):
+        # At BSP or a hair above it: a small loss after commission, with a lower bound above -1.5 points.
+        found = self.verdict(self.rows(bsps=(2.5, 2.52)))
+        self.assertLess(found["test"]["mean"], 0)
+        self.assertGreater(found["test"]["lower_bound"], -0.015)
+        self.assertEqual((found["label"], found["checks"]["rejected_under_holm"]), (self.PILOT, False))
+        self.assertGreater(found["kill"]["bound"], 0)
+        # Two points below BSP: the lower bound is below the floor.
+        found = self.verdict(self.rows(bsps=(2.45, 2.46)))
+        self.assertLess(found["test"]["lower_bound"], -0.015)
+        self.assertEqual(found["label"], self.UNRESOLVED)
+        self.assertGreater(found["kill"]["bound"], 0)                            # the explore label's fills are good
+        # The floor is the registered one.
+        self.assertEqual(PLAN.pilot_floor, Fraction(-15, 1000))
+
+    def test_the_first_label_that_applies_wins(self):
+        # Good on the test label, and killed: 2,400 front-model fills far below BSP on the explore label.
+        good = self.rows()[:440]
+        killed = good + block(2400, D_DAYS, [2.3, 2.4], label=D, filled=(OPTIMISTIC,))
+        self.assertEqual(self.verdict(good + block(240, D_DAYS, [2.7, 2.8], label=D))["label"], self.EDGE)
+        found = self.verdict(killed)
+        self.assertTrue(all(found["checks"].values()))
+        self.assertEqual((found["label"], found["null"]), (self.KILL, None))
+        # A result fit for a pilot label on 199 fills is underpowered.
+        self.assertEqual(self.verdict(self.rows(bsps=(2.5, 2.52), fills_=199))["label"], self.UNDER)
+        self.assertEqual(VERDICTS, ("kill_optimistic", "underpowered", "edge_candidate", "measurement_pilot_candidate",
+                                    "unresolved"))
+
+    def test_holm_counts_a_rule_file_with_no_primary(self):
+        # A BACK at 2.52 against BSP 2.37 or 2.52 by day: a one-sided p between 0.01 and 0.02.
+        back = block(240, V_DAYS, [2.37, 2.52], side=BACK, price=2.52, nulls=[2.37, 2.52]) + \
+            block(200, V_DAYS, [2.52], side=BACK, price=2.52, filled=NONE)
+        cells = {BACK_RULE: BACK_CELLS[0], LAY_RULE: self.CELL}
+        rows = {BACK_CELLS[0]: back, self.CELL: self.rows()}
+        alone = verdicts(PLAN, {**cells, LAY_RULE: None}, rows, False)[BACK_RULE]
+        self.assertTrue(0.01 < alone["test"]["p_one_sided"] < 0.02)
+        self.assertEqual((alone["test"]["holm_rejected"], alone["label"]), (False, self.PILOT))
+        self.assertEqual(alone["test"]["holm_p_adjusted"], 2 * alone["test"]["p_one_sided"])
+        # With the LAY primary rejected first at 0.01, the BACK is tested at 0.02.
+        both = verdicts(PLAN, cells, rows, False)
+        self.assertEqual(both[BACK_RULE]["test"]["p_one_sided"], alone["test"]["p_one_sided"])
+        self.assertEqual((both[BACK_RULE]["test"]["holm_rejected"], both[BACK_RULE]["label"]), (True, self.EDGE))
+        self.assertEqual(both[LAY_RULE]["label"], self.EDGE)
+        # A BACK's claim reads BSP + 0.01 when the ends decide apart, its kill the BSP as written.
+        apart = verdicts(PLAN, cells, rows, True)[BACK_RULE]
+        self.assertEqual((apart["test"]["bsp_end"], apart["kill"]["bsp_end"]), (PLUS_STEP, AS_WRITTEN))
+        self.assertLess(apart["test"]["mean"], alone["test"]["mean"])
+        self.assertEqual(verdicts(PLAN, dict.fromkeys(cells), rows, True), dict.fromkeys(cells))
 
 
 if __name__ == "__main__":

@@ -63,10 +63,29 @@ stream_malformed_after_placement when a ladder entry, a trd entry or an rc runne
 the pull time could not be read; else scored. A suspension, an early off or a revised schedule after t drops no
 order. A removal classes the order and never re-prices it.
 
+The metric (score, series): per GBP 1 of backer's stake, exact. g is a BACK's price / BSP - 1 and a LAY's
+1 - price / BSP; net_closed is g - c x max(g, 0); net_held is the order held to the result. The stream cuts BSP to
+two decimals, so every figure exists at two BSP ends (BSP_ENDS): as written and plus the step. The kill end is the
+one that favours the order, the claim end the other (deciding_end); they decide apart only when the registered
+share of scored BSPs are whole hundredths (ends_apart), else the as-written figure decides alone.
+
+Part and rest (filled_part): a model's "filled" figures are taken over its filled scored orders only when the
+unfilled ones number statistics.min_values; else over every scored order, flagged filled_is_all_placed. A size
+gate always counts the model's own fills. figures gives the four intent-to-treat figures of a group, gap the
+filled-minus-unfilled contrast, blind_outcome the spread and the detectable effect the blind pass may give.
+
+Statistics: CR1 by race date with t(G - 1) (movement.cr1_mean); the one-sided p for a mean above 0
+(one_sided_p, cr1_test); the kill bound and the lower bound (bound); Holm (movement.holm); 100 values to give a
+statistic and 200 on 15 race dates to test, bound or select (gate), read on the model each rule reads;
+nearest-rank quantiles. The functions return unrounded floats; rounded gives the registered 6 places.
+
+Selection (select_primaries) sees the explore label's rows and the test label's counts, nothing else. The null
+(null_gate) can block a claim and never kills. Labels (verdicts): the first of VERDICTS that applies, per primary.
+
 What this does not do: it reads nothing after the last pull time, models no latency, partial fill, re-pricing
-or closing order, and scores nothing: g, the nets, the statistics, the selection and the labels are computed from
-the rows elsewhere. Standard library only; it imports fills, rulefile, partition, lp, movement, market_index,
-replay and metrics and, through them, the modules they import. Nothing here is evidence of profitability.
+or closing order, builds no table and writes nothing. Standard library only; it imports fills, rulefile,
+partition, lp, movement, market_index, replay and metrics and, through them, the modules they import. Nothing
+here is evidence of profitability.
 """
 
 from collections import namedtuple
@@ -74,18 +93,20 @@ from dataclasses import dataclass
 from fractions import Fraction
 import heapq
 import itertools
+import math
 import re
 
 from . import fills, rulefile
-from .lp import (FILL_KINDS, LAY, TIERS, TRADED_BASIS, TRADED_DIVISOR, TRADED_KEY, TradedFold, _Batch, _rules,
+from .lp import (BACK, FILL_KINDS, LAY, TIERS, TRADED_BASIS, TRADED_DIVISOR, TRADED_KEY, TradedFold, _Batch, _rules,
                  _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top, wide)
 from .market_index import _as_of, _checked_changes, _last, _Market, _messages, _Unreadable, loads_strict
 from .metrics import HashStream
 from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LADDER_NAMES, LADDERS, MARKET_CODES,
                        MAX_REGISTRATION_BYTES, MONTH_RE, QUANTILE_METHOD, SCHEMA, UNCERTAINTY_METHOD, LadderFold,
-                       _codes, _fail, _int, _moment, _object, _rate, _text, _texts, active_ids, decision_time,
-                       market_code, measure, race_date, registration_sha256, tick_index)
-from .partition import EXPLORE, HOLDOUT, PartitionError, file_bytes, parse_split
+                       _codes, _fail, _int, _moment, _object, _rate, _text, _texts, active_ids, cr1_contrast,
+                       cr1_mean, decision_time, holm, market_code, measure, nclv, nearest_rank, race_date,
+                       registration_sha256, sample_sd, student_t_cdf, student_t_quantile, tick_index)
+from .partition import EXPLORE, HALVES, HOLDOUT, PartitionError, file_bytes, parse_split
 from .replay import PriceFold, ReplayProblem
 from .rulefile import FAVOURITE, LAPSE, RuleError, RuleView, RunnerView, parse_rule
 
@@ -119,6 +140,14 @@ BLOCKED, FILLED_IS_ALL_PLACED = "claim_blocked_by_placebo", "filled_is_all_place
 HOLM = "holm"
 SELECT_MEASURE, SELECT_END, SELECT_TIE = "net_held", "claim_end", "later_time"
 BSP_STEP = Fraction(1, 100)
+# The two BSP values every figure is computed against, and what reads which (deciding_end).
+AS_WRITTEN, PLUS_STEP = BSP_ENDS = ("bsp_as_written", "bsp_plus_step")
+KILL_END, CLAIM_END = "kill_end", SELECT_END
+G, NET_CLOSED, NET_HELD = MEASURES = ("g", "net_closed", SELECT_MEASURE)
+# Why the null blocks a claim: it or the main mean over the same orders has no test; or it is too large.
+NULL_BLOCKS = ("not_computed", "at_least_the_fraction_of_main")
+COUNTS_ONLY, UNDERPOWERED = "counts_only", "underpowered"
+FLOAT_PLACES, QUANTILE_PLACES = 6, 4
 MAX_SECONDS = 3600
 FILE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\.json")
 TOP_KEYS = ("blind_pass", "data", "decided_by", "diagnostics", "doc", "exposure", "family", "fill_models", "grid",
@@ -129,6 +158,10 @@ DATA_KEYS = ("duplicates", "end_month", "files", "ladders", "month", "partitions
 DECIDE, NULL = "decide", "null"
 
 Cell = namedtuple("Cell", ("rule_id", "at_s", "pull_s"))
+# The scored rows that stand for one model's filled orders, that model's own fills and their race dates (what a
+# size gate counts), and whether the rows are every scored order (filled_is_all_placed).
+Part = namedtuple("Part", ("rows", "fills", "fill_dates", "all_placed"))
+Selection = namedtuple("Selection", ("eligible", "primaries"))
 # One model's answer for one order (module docstring). within: one bool per Plan.within_s.
 Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "ended"))
 OrderRow = namedtuple("OrderRow", ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid", "fills",
@@ -411,7 +444,9 @@ def parse_registration(raw, split_raw, rules_raw):
     for key in ("classes_rule", "commission_source", "deciding_net", "g", "intent_to_treat", "mid", "net_closed",
                 "net_held", "part_and_rest", "removals", "unit"):
         _text(measurement[key], f"measurement.{key}")
-    ends = _object(measurement["bsp_ends"], "measurement.bsp_ends", ("rule", "step", "whole_hundredths_share"))
+    ends = _object(measurement["bsp_ends"], "measurement.bsp_ends", ("names", "rule", "step",
+                                                                     "whole_hundredths_share"))
+    _codes(ends["names"], "measurement.bsp_ends.names", BSP_ENDS)
     _text(ends["rule"], "measurement.bsp_ends.rule")
     if _rate(ends["step"], "measurement.bsp_ends.step") != BSP_STEP:
         _fail("measurement.bsp_ends.step", "not_supported")
@@ -441,10 +476,11 @@ def parse_registration(raw, split_raw, rules_raw):
         if selection[key] not in fills.MODELS:
             _fail(f"selection.{key}", "not_a_fill_model")
 
-    null = _object(top["null"], "null", ("alpha", "blocked", "fraction_of_main", "label", "max_spread_ticks", "rule",
-                                         "undefined_reasons"))
+    null = _object(top["null"], "null", ("alpha", "blocked", "blocks", "fraction_of_main", "label",
+                                         "max_spread_ticks", "rule", "undefined_reasons"))
     _text(null["label"], "null.label", NULL_LABEL)
     _text(null["blocked"], "null.blocked", BLOCKED)
+    _codes(null["blocks"], "null.blocks", NULL_BLOCKS)
     _text(null["rule"], "null.rule")
     _codes(null["undefined_reasons"], "null.undefined_reasons", NULL_UNDEFINED)
     seeds = _object(top["seeds"], "seeds", ("null",))
@@ -804,3 +840,371 @@ def walk(stream, record, plan, limits):
     for placed in orders:
         outcomes[placed.cell] = _row(plan, record, placed, dated, malformed, in_play)
     return Walked(outcomes=outcomes, flags_missing=missing, replayed=True)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The metric
+
+def score(plan, side, price, bsp, what=G):
+    """One exact figure of an order at price against one BSP value, per GBP 1 of backer's stake (registration
+    measurement): g, a BACK's price / BSP - 1 and a LAY's 1 - price / BSP; net_closed, g - c x max(g, 0);
+    net_held, a BACK's g - c x (price - 1) / BSP (movement.nclv) and a LAY's g - c x (1 - 1 / BSP). Every argument
+    is a Fraction and so is the answer. The price may be a mid: the mid is then valued as the order is."""
+    g = price / bsp - 1 if side == BACK else 1 - price / bsp
+    if what == G:
+        return g
+    if what == NET_CLOSED:
+        return g - plan.commission * max(g, 0)
+    if what != NET_HELD:
+        raise ValueError("score:figure_unknown")
+    return nclv(price, bsp, plan.commission) if side == BACK else g - plan.commission * (1 - 1 / bsp)
+
+
+def deciding_end(side, purpose, apart):
+    """The BSP end a kill (KILL_END) or a claim (CLAIM_END) reads for a side. The kill end is the one that favours
+    the order: a LAY gains from a higher BSP, a BACK from a lower one. The claim end is the other. apart is the
+    registered switch (ends_apart); when it is false the as-written figure decides alone."""
+    if not apart:
+        return AS_WRITTEN
+    return PLUS_STEP if (side == LAY) == (purpose == KILL_END) else AS_WRITTEN
+
+
+def whole_hundredths(plan, rows):
+    """(the scored rows whose BSP as written is a whole multiple of the step, the scored rows): two counts."""
+    bsps = [row.bsp for row in rows if row.klass == SCORED]
+    return sum(1 for bsp in bsps if (bsp / plan.bsp_step).denominator == 1), len(bsps)
+
+
+def ends_apart(plan, whole, of):
+    """The registered switch: whether at least bsp_whole_share of a pass's scored BSPs are whole hundredths."""
+    return of > 0 and whole >= plan.bsp_whole_share * of
+
+
+def scored(rows, label=None, half=None):
+    """The scored rows, of one partition label and one half-year when given."""
+    return [row for row in rows if row.klass == SCORED and label in (None, row.label) and half in (None, row.half)]
+
+
+def series(plan, rows, what, end, at="price"):
+    """[(race date, float)] of one figure of scored rows at one BSP end; the float is the exact figure, rounded
+    once. at names the row's price that is valued: its own, or "mid" or "null_mid" (rows with none are left out)."""
+    step = {AS_WRITTEN: 0, PLUS_STEP: plan.bsp_step}[end]
+    return [(row.race_date, float(score(plan, row.side, getattr(row, at), row.bsp + step, what)))
+            for row in rows if getattr(row, at) is not None]
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Part and rest, and the statistics. Unless it says otherwise, a function here takes scored rows only (scored()).
+
+def _dates(rows):
+    return len({row.race_date for row in rows})
+
+
+def part_and_rest(plan, group, part):
+    """(part, False) when the rows of group outside part number min_values; else (group, True): the group's figure
+    stands for the part's, so that two given means never leave a small rest's mean to be worked out."""
+    return (part, False) if len(group) - len(part) >= plan.min_values else (group, True)
+
+
+def filled_part(plan, rows, model):
+    """The Part of scored rows under one fill model (registration measurement.part_and_rest)."""
+    filled = [row for row in rows if row.fills[model].kind is not None]
+    chosen, flag = part_and_rest(plan, rows, filled)
+    return Part(chosen, len(filled), _dates(filled), flag)
+
+
+def gate(plan, values, race_dates):
+    """Whether a count of values on a count of race dates may be tested, bounded or selected on."""
+    return values >= plan.min_tested_values and race_dates >= plan.min_tested_race_dates
+
+
+def _counts_only(result, reason):
+    return dict(result, mean=None, se=None, df=None, t_critical=None, ci_low=None, ci_high=None, reason=reason)
+
+
+def described(plan, values, given=True):
+    """movement.cr1_mean of [(race date, float)] values, with the sample SD: n, race dates, mean, SD and the CR1
+    interval. Below min_values, or when not given, counts only (reason counts_only). It decides nothing."""
+    result = dict(cr1_mean(values, plan.confidence_level, plan.min_clusters), sd=None)
+    if not given or len(values) < plan.min_values:
+        return _counts_only(result, COUNTS_ONLY)
+    return dict(result, sd=sample_sd([x for _, x in values]))
+
+
+def one_sided_p(mean, se, df):
+    """The p-value of H1 "the mean is above 0": 1 - student_t_cdf(mean / se, df)."""
+    return 1.0 - student_t_cdf(mean / se, df)
+
+
+def gated(plan, values, passes=None):
+    """movement.cr1_mean of values when the size gate passes, else counts only (reason underpowered). passes is the
+    gate of the model the rule reads; None means the values' own count and race dates."""
+    if passes is None:
+        passes = gate(plan, len(values), len({day for day, _ in values}))
+    result = cr1_mean(values, plan.confidence_level, plan.min_clusters)
+    return result if passes else _counts_only(result, UNDERPOWERED)
+
+
+def cr1_test(plan, values, passes=None, two_sided=False):
+    """gated() with t and one p-value: p_one_sided for a mean above 0, or p_two_sided. Both stay None when the
+    gate fails or there is no SE (too_few_clusters, se_undefined): not tested."""
+    key = "p_two_sided" if two_sided else "p_one_sided"
+    result = dict(gated(plan, values, passes), t=None, **{key: None})
+    if result["df"] is None:
+        return result
+    t = result["mean"] / result["se"]
+    p = 2.0 * (1.0 - student_t_cdf(abs(t), result["df"])) if two_sided else one_sided_p(result["mean"], result["se"],
+                                                                                         result["df"])
+    return dict(result, t=t, **{key: p})
+
+
+def bound(result, level, sign):
+    """mean + sign x t(level; G - 1) x SE of a gated() result: the kill bound with sign 1, the lower bound with
+    sign -1. None when the result has no SE."""
+    if result["df"] is None:
+        return None
+    return result["mean"] + sign * student_t_quantile(float(level), result["df"]) * result["se"]
+
+
+def _q(value):
+    return format(float(value), "g")
+
+
+def quantile_table(plan, values):
+    """{q: the nearest-rank q quantile, to 4 places} of numbers for the registered quantiles; None below
+    min_values. For values that are not outcomes (a queue, seconds), and for outcomes in the registered pass."""
+    values = [float(value) for value in values]
+    if len(values) < plan.min_values:
+        return None
+    return {_q(q): round(value, QUANTILE_PLACES) for q, value in nearest_rank(values, plan.quantiles).items()}
+
+
+def spread(plan, values):
+    """{values, race_dates, sd, ranges} of [(race date, float)] values: all the blind pass may give of an outcome.
+    The sample SD and the symmetric ranges q(1 - a) - q(a), widest first, keep a group's spread but not where it
+    lies or which way. Below min_values, counts only."""
+    xs = [x for _, x in values]
+    result = {"values": len(xs), "race_dates": len({day for day, _ in values}), "sd": None, "ranges": None}
+    if len(xs) >= plan.min_values:
+        found = nearest_rank(xs, plan.quantiles)
+        result.update(sd=sample_sd(xs), ranges={f"{_q(1 - q)}-{_q(q)}": round(found[1 - q] - found[q],
+                                                                              QUANTILE_PLACES)
+                                                for q in plan.quantiles if q < Fraction(1, 2)})
+    return result
+
+
+def rounded(value, places=FLOAT_PLACES):
+    """value with every float in it rounded (dicts, lists and plain tuples walked; a Cell is kept)."""
+    if isinstance(value, float):
+        return round(value, places)
+    if isinstance(value, dict):
+        return {key: rounded(item, places) for key, item in value.items()}
+    return [rounded(item, places) for item in value] if type(value) in (list, tuple) else value
+
+
+def detectable(plan, sd, values, race_dates):
+    """The detectable effect of a mean of `values` values with SD sd on race_dates race dates:
+    (t(detectable_level; G - 1) + t(power; G - 1)) x SD / sqrt(N). Under independence; clustering makes it larger.
+    None without an SD, a value or two race dates."""
+    if sd is None or values < 1 or race_dates < 2:
+        return None
+    factor = student_t_quantile(float(plan.detectable_level), race_dates - 1) + \
+        student_t_quantile(float(plan.power), race_dates - 1)
+    return factor * sd / math.sqrt(values)
+
+
+def blind_outcome(plan, rows, model, end):
+    """What the blind pass gives of one cell's outcome under one model. rows: the cell's rows of both labels.
+    spread() of gross g over the pooled filled part, its flag, and the detectable effect on the test label from
+    that SD and the test label's own part (its rows and their race dates)."""
+    pooled, test = (filled_part(plan, scored(rows, label), model) for label in (None, plan.test_label))
+    result = spread(plan, series(plan, pooled.rows, G, end))
+    return dict(result, **{FILLED_IS_ALL_PLACED: pooled.all_placed}, detectable={
+        "values": len(test.rows), "race_dates": _dates(test.rows), FILLED_IS_ALL_PLACED: test.all_placed,
+        "effect": detectable(plan, result["sd"], len(test.rows), _dates(test.rows))})
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Intent-to-treat figures
+
+def gap(plan, rows, model, end):
+    """Mean g over a model's filled scored rows minus mean g over its unfilled ones (movement.cr1_contrast, by
+    race date): {estimate, se, df, ci_low, ci_high, bets, race_dates, reason}. Given when each part holds
+    min_values rows (else reason filled_is_all_placed or counts_only), with an interval from min_clusters race
+    dates. It is descriptive: no p-value."""
+    filled = [row for row in rows if row.fills[model].kind is not None]
+    unfilled = [row for row in rows if row.fills[model].kind is None]
+    found = cr1_contrast(series(plan, filled, G, end), series(plan, unfilled, G, end), plan.min_values, 1)
+    result = dict({key: found[key] for key in ("estimate", "se", "df", "bets", "race_dates", "reason")},
+                  ci_low=None, ci_high=None)
+    if found["reason"] == "underpowered":
+        return dict(result, reason=FILLED_IS_ALL_PLACED if len(unfilled) < plan.min_values else COUNTS_ONLY)
+    if found["df"] is None:
+        return result
+    if found["df"] + 1 < plan.min_clusters:
+        return dict(result, se=None, df=None, reason="too_few_clusters")
+    width = student_t_quantile(float((1 + plan.confidence_level) / 2), found["df"]) * found["se"]
+    return dict(result, ci_low=found["estimate"] - width, ci_high=found["estimate"] + width)
+
+
+def figures(plan, rows, end):
+    """The intent-to-treat figures of one group of scored rows (one cell; one label, or one half-year of it) at
+    one BSP end, each as described(): placed, mean g over every order at its own price, with no fill model; mid,
+    the mid at t valued the same way; and per model: fills and their race dates, the flag, filled {g, net_closed,
+    net_held} over the filled part, value_per_placed (net_held when filled, 0 when not; given only when the
+    filled figures are), and the gap."""
+    out = {"placed": described(plan, series(plan, rows, G, end)),
+           "mid": described(plan, series(plan, rows, G, end, "mid")), "models": {}}
+    held = series(plan, rows, NET_HELD, end)
+    for model in plan.models:
+        part = filled_part(plan, rows, model)
+        per_placed = [(day, value if part.all_placed or row.fills[model].kind is not None else 0.0)
+                      for row, (day, value) in zip(rows, held)]
+        out["models"][model] = {
+            "fills": part.fills, "fill_race_dates": part.fill_dates, FILLED_IS_ALL_PLACED: part.all_placed,
+            "filled": {what: described(plan, series(plan, part.rows, what, end)) for what in MEASURES},
+            "value_per_placed": described(plan, per_placed, len(part.rows) >= plan.min_values),
+            "gap": gap(plan, rows, model, end)}
+    return out
+
+
+def without_first_fills(plan, rows, model):
+    """(rows, stands) for the sensitivity line: the model's fills that did not come within the first registered
+    seconds of t (within_s[0]). Under part_and_rest against what stands for its filled orders: when fewer than
+    min_values of those fall outside, they all stand (stands is True)."""
+    later = [row for row in rows if row.fills[model].kind is not None and not row.fills[model].within[0]]
+    return part_and_rest(plan, filled_part(plan, rows, model).rows, later)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Selection, the null and the labels
+
+def _mean(values):
+    return math.fsum(x for _, x in values) / len(values)
+
+
+def select_primaries(plan, explore, test_counts, apart):
+    """The Selection (registration selection.rule). explore: {Cell: the explore label's rows}; test_counts: {Cell:
+    (the test model's fills on the test label, their race dates)}, two counts; apart: ends_apart, from counts.
+    Nothing else of the test label is taken, and a row of another label is refused (ValueError). eligible: the
+    cells that pass both gates, in the plan's order. primaries: {rule id: the eligible cell with the highest mean
+    net_held over the explore model's filled part at the claim end, a tie to the later time; None with no
+    eligible cell}."""
+    eligible, primaries = [], {}
+    for rule in plan.rules:
+        best = None
+        for cell in (cell for cell in plan.cells if cell.rule_id == rule.id):
+            if any(row.label != plan.explore_label for row in explore[cell]):
+                raise ValueError("select:not_the_explore_label")
+            part = filled_part(plan, scored(explore[cell]), plan.select_explore_model)
+            if not (gate(plan, part.fills, part.fill_dates) and gate(plan, *test_counts[cell])):
+                continue
+            eligible.append(cell)
+            end = deciding_end(rule.intents[0].side, CLAIM_END, apart)
+            key = (_mean(series(plan, part.rows, SELECT_MEASURE, end)), cell.at_s)
+            if best is None or key > best[0]:
+                best = (key, cell)
+        primaries[rule.id] = None if best is None else best[1]
+    return Selection(tuple(eligible), primaries)
+
+
+def null_gate(plan, rows, end):
+    """The random-time null over the rows a claim reads (registration null.rule): {null, main_same_orders,
+    undefined, blocks, why}. null is the two-sided test of the mean null value (the mid at u valued as g) and
+    main_same_orders the mean g, both over the rows with a null value. It blocks (why, one of NULL_BLOCKS) when
+    those rows fail the size gate, or when |mean null| >= null_fraction x |mean g| and the null's p is below
+    null_alpha or undefined. It can only block a claim."""
+    same = [row for row in rows if row.null_mid is not None]
+    null = cr1_test(plan, series(plan, same, G, end, "null_mid"), two_sided=True)
+    main = gated(plan, series(plan, same, G, end))
+    why = None
+    if null["mean"] is None or main["mean"] is None:
+        why = NULL_BLOCKS[0]
+    elif abs(null["mean"]) >= plan.null_fraction * abs(main["mean"]) and (
+            null["p_two_sided"] is None or null["p_two_sided"] < plan.null_alpha):
+        why = NULL_BLOCKS[1]
+    return {"null": null, "main_same_orders": main, "undefined": len(rows) - len(same), "blocks": why is not None,
+            "why": why}
+
+
+def _held_mean(plan, part, end):
+    return described(plan, series(plan, part.rows, NET_HELD, end))["mean"]
+
+
+def _both(plan, rows):
+    """{BSP end: {net: mean or None}}: both nets at both BSP ends, as every label is printed with."""
+    return {end: {net: described(plan, series(plan, rows, net, end))["mean"] for net in (NET_CLOSED, NET_HELD)}
+            for end in BSP_ENDS}
+
+
+def verdicts(plan, primaries, rows, apart):
+    """{rule id: None for a rule file with no primary, else its label and what is printed with it} (registration
+    verdicts.rule). primaries: Selection.primaries; rows: {Cell: its rows of both labels}; apart: ends_apart.
+    Per primary, the first that applies:
+    kill_optimistic: over both labels, the optimistic model passes the size gate and the kill bound of mean
+    net_closed at the kill end is below 0. A low mean alone is not enough, and nothing else kills.
+    underpowered: the pessimistic model fails the size gate on the test label.
+    edge_candidate: on the test label, on net_held at the claim end: the one-sided test of the pessimistic mean is
+    rejected under Holm (over family_m, a rule file with no primary included); the mean is above 0 under every
+    model; the pessimistic mean is above 0 in each half-year, each with half_year_min_fills fills; and the null,
+    read only now, does not block. If it blocks, blocked is claim_blocked_by_placebo and the label falls through.
+    measurement_pilot_candidate: the pessimistic lower bound is above pilot_floor. Else unresolved.
+    Each answer holds: cell, label, blocked, kill and test (the gated figures, bound, BSP end, fills, flag, and
+    both nets at both BSP ends), models, half_years, checks, null, pessimistic_fill_rate and printed_with."""
+    front, back = fills.OPTIMISTIC, fills.PESSIMISTIC
+    work = {}
+    for rule in plan.rules:
+        cell = primaries[rule.id]
+        if cell is None:
+            continue
+        side = rule.intents[0].side
+        ends = [deciding_end(side, purpose, apart) for purpose in (KILL_END, CLAIM_END)]
+        test_rows = scored(rows[cell], plan.test_label)
+        pooled = filled_part(plan, scored(rows[cell]), front)
+        parts = {model: filled_part(plan, test_rows, model) for model in plan.models}
+        kill = gated(plan, series(plan, pooled.rows, NET_CLOSED, ends[0]), gate(plan, pooled.fills, pooled.fill_dates))
+        test = cr1_test(plan, series(plan, parts[back].rows, NET_HELD, ends[1]),
+                        gate(plan, parts[back].fills, parts[back].fill_dates))
+        work[rule.id] = (cell, ends, test_rows, pooled, parts, kill, test)
+    adjusted = holm({rule.id: work[rule.id][-1]["p_one_sided"] if rule.id in work else None for rule in plan.rules},
+                    plan.alpha, plan.family_m)
+    found = {}
+    for rule in plan.rules:
+        if rule.id not in work:
+            found[rule.id] = None
+            continue
+        cell, ends, test_rows, pooled, parts, kill, test = work[rule.id]
+        upper, lower = bound(kill, plan.kill_level, 1), bound(test, plan.lower_bound_level, -1)
+        halves = {half: filled_part(plan, [row for row in test_rows if row.half == half], back) for half in HALVES}
+        models, halves = ({name: {"fills": part.fills, FILLED_IS_ALL_PLACED: part.all_placed,
+                                  "mean": _held_mean(plan, part, ends[1])} for name, part in group.items()}
+                          for group in (parts, halves))
+        checks = {"rejected_under_holm": adjusted[rule.id][1],
+                  "mean_above_0_under_every_model": all(item["mean"] is not None and item["mean"] > 0
+                                                        for item in models.values()),
+                  "mean_above_0_in_each_half_year": all(
+                      item["fills"] >= plan.half_year_min_fills and item["mean"] is not None and item["mean"] > 0
+                      for item in halves.values())}
+        null = None
+        if upper is not None and upper < 0:
+            label = VERDICTS[0]
+        elif test["reason"] == UNDERPOWERED:
+            label = VERDICTS[1]
+        else:
+            if all(checks.values()):
+                null = null_gate(plan, parts[back].rows, ends[1])
+            if null is not None and not null["blocks"]:
+                label = VERDICTS[2]
+            else:
+                label = VERDICTS[3] if lower is not None and lower > plan.pilot_floor else VERDICTS[4]
+        found[rule.id] = {
+            "cell": cell, "label": label, "blocked": BLOCKED if null is not None and null["blocks"] else None,
+            "kill": dict(kill, bound=upper, bsp_end=ends[0], fills=pooled.fills, both=_both(plan, pooled.rows),
+                         **{FILLED_IS_ALL_PLACED: pooled.all_placed}),
+            "test": dict(test, holm_p_adjusted=adjusted[rule.id][0], holm_rejected=adjusted[rule.id][1],
+                         lower_bound=lower, bsp_end=ends[1], fills=parts[back].fills,
+                         both=_both(plan, parts[back].rows), **{FILLED_IS_ALL_PLACED: parts[back].all_placed}),
+            "models": models, "half_years": halves, "checks": checks, "null": null,
+            "pessimistic_fill_rate": parts[back].fills / len(test_rows) if test_rows else None,
+            "printed_with": (plan.label_note, plan.exposure_note)}
+    return found

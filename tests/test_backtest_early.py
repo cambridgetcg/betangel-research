@@ -9,23 +9,36 @@ second split file gives every date the label and half the first gives, that it d
 two BASIC budgets and one exposure sentence, how one ledger keeps the budgets of studies that name different split
 files, the registration's checks, the codes, prices, cells and classes early.assess gives on these synthetic
 shapes, and what the scores, the blind figures, the selection, the labels and part and rest do with hand-built value
-rows. They say nothing about real Betfair files or results.
+rows. The pass runner (early_study) is run through main() on a synthetic archive, with a copy of the registration
+whose gates are lowered, and with a study ledger in a temporary folder. They say nothing about real Betfair files or
+results.
 """
 
+import ast
 import bz2
+from contextlib import redirect_stdout
 import copy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
 import hashlib
 import inspect
+import io
 import json
+import math
 from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
-from betangel_research.betfair.backtest import early, movement, resting
-from betangel_research.betfair.backtest.archive import DEFAULT_LIMITS, safe_target
+from betangel_research.betfair.backtest import early, early_study, movement, resting
+from betangel_research.betfair.backtest.archive import DEFAULT_LIMITS, ingest_archive, safe_target
+from betangel_research.betfair.backtest.contract import canonical_json
+from betangel_research.betfair.backtest.market_index import index_archives
 from betangel_research.betfair.backtest.early import (CLASSES, CODES, DRIFT, FLAT, NO_LTP_KINDS, PRICED, RUNNER_CODES,
                                                       STEAM, UNDEFINED, VIEWED, Value, assess, changes,
                                                       changes_between, fold, move_cell, move_of, parse_registration,
@@ -34,12 +47,14 @@ from betangel_research.betfair.backtest.lp import BACK, LAY
 from betangel_research.betfair.backtest.movement import RegistrationError, exact, replay_market
 from betangel_research.betfair.backtest.partition import file_bytes, parse_split
 from betangel_research.betfair.backtest.replay import ReplayProblem, _member
-from betangel_research.betfair.backtest.study_ledger import StudyLedger, head_text, verify
+from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, StudyLedger, head_text, verify
 
 import test_betfair_backtest_replay as fx
 from test_backtest_lane import SPLIT_SHA256 as V1_SHA256
 from test_backtest_lane import LedgerCase, days, sha
-from test_betfair_backtest_replay import definition, md, mcm, ms, prices, runner, settle
+from test_backtest_lp import markdown_columns, walk_items
+from test_backtest_movement import walk_keys
+from test_betfair_backtest_replay import definition, iso, md, mcm, ms, prices, runner, settle
 
 REPO = Path(__file__).resolve().parent.parent
 V1_RAW = (REPO / "research" / "partitions-v1.json").read_bytes()
@@ -1437,6 +1452,688 @@ class GivenCells(unittest.TestCase):
         self.assertEqual((shown["kill"]["mean"], shown["kill"]["bound"], shown["kill"]["values"],
                           shown["kill"]["bsp_end"]), (None, None, 800, resting.AS_WRITTEN))
         self.assertEqual(shown["test"], found["test"])
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The pass runner: one synthetic archive, a registration with lowered gates, and a ledger in a temporary folder
+
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+OUTPUTS = ("summary.json", "summary.md", "receipt.json")
+STUDY = "early-price-v1"
+D, V = "BASIC-D", "BASIC-V"
+# Four race dates on each label, the test label's two in each half-year; each dated market's BSPs are the standard
+# ones plus a shift by date, so x varies.
+STUDY_OFFS = (*(datetime(2023, 6, day, 14, 0, tzinfo=timezone.utc) for day in (1, 2, 5, 6)),
+              *(datetime(2024, month, day, 14, 0, tzinfo=timezone.utc) for month, day in ((3, 1), (3, 4), (9, 2),
+                                                                                          (9, 3))))
+SHIFTS = (0, 0.04, 0.02, 0.06)
+SINGLES = {"malformed": ("1.229000001", datetime(2023, 6, 7, 14, 0, tzinfo=timezone.utc), "BASIC"),
+           "2025": ("1.229100001", datetime(2025, 3, 3, 14, 0, tzinfo=timezone.utc), "BASIC"),
+           "2015": ("1.229200001", datetime(2015, 6, 2, 14, 0, tzinfo=timezone.utc), "BASIC"),
+           "pro": ("1.229300001", datetime(2023, 6, 8, 14, 0, tzinfo=timezone.utc), "PRO")}
+NEVER_OPENED = ("2025", "2015", "pro")
+
+
+def clock():
+    return "2026-11-12T00:00:00.000000Z"
+
+
+def shifted(index):
+    return {sid: round(BSPS[sid] + SHIFTS[index % 4], 2) for sid in SIDS}
+
+
+def study_members():
+    """([(member path, messages)], {name: market id}). Eight standard markets, one per race date (dated0 to dated7:
+    four in 2023, then two in each half of 2024); then one with a malformed runner id at off - 5000 s, one of 2025,
+    one of 2015 on the BASIC path, and one on the PRO path."""
+    members, ids = [], {}
+    for index, off in enumerate(STUDY_OFFS):
+        market_id = f"1.22{index:02d}00001"
+        members.append((fx.path(market_id, off), basic_market(market_id, off, bsps=shifted(index))))
+        ids[f"dated{index}"] = market_id
+    for name, (market_id, off, plan) in SINGLES.items():
+        extra = [mcm(ms(off) - 5000_000, [{"id": market_id, "rc": [{"id": "x", "ltp": 2.0}]}])] \
+            if name == "malformed" else []
+        members.append((fx.path(market_id, off, plan=plan), basic_market(market_id, off, extra=extra)))
+        ids[name] = market_id
+    return members, ids
+
+
+def build_root(folder, members, name="data"):
+    """A data root under folder holding one ingested and indexed archive of members."""
+    root = folder / name
+    root.mkdir()
+    tar = fx.make_tar(folder / f"{name}.tar", [(member, bz2.compress(fx.lines(messages)))
+                                               for member, messages in members])
+    if ingest_archive(tar, root)["status"] != "ingested" or index_archives(root)["status"] != "indexed":
+        raise AssertionError("the synthetic archive was not ingested and indexed")
+    return root
+
+
+def lowered(value):
+    """Gates low enough for the synthetic archive: 2 values on 2 race dates, and a ceiling of 50 points."""
+    value["statistics"].update(min_values=2, min_tested_values=2, min_tested_race_dates=2)
+    value["uncertainty"]["min_clusters"] = 2
+    value["verdicts"].update(half_year_min_values=2, underpowered_above="0.5")
+    value["selection"]["max_detectable"] = "0.5"
+
+
+def write_registration(folder, change=lowered):
+    """(path, sha256) of a registration written with its split file into folder, in the shape the runner reads:
+    studies/early-price-v1.json, the split file beside studies/."""
+    raw, split_raw = reg_files(change)
+    (folder / "studies").mkdir(parents=True, exist_ok=True)
+    (folder / "studies" / "early-price-v1.json").write_bytes(raw)
+    (folder / "partitions-v2.json").write_bytes(split_raw)
+    return folder / "studies" / "early-price-v1.json", hashlib.sha256(raw).hexdigest()
+
+
+def cli(*arguments):
+    """(exit code, stdout) of the runner's main()."""
+    out = io.StringIO()
+    with redirect_stdout(out):
+        code = early_study.main(list(arguments))
+    return code, out.getvalue()
+
+
+def outputs_of(out):
+    return {name: (out / name).read_bytes() for name in OUTPUTS}
+
+
+def raw_members(root):
+    return sorted((root / "raw").rglob("*.bz2"))
+
+
+_SHARED = {}
+
+
+def shared():
+    """One blind and one registered pass through main() over the study archive, run once for this module: a
+    namespace of the folder, the data root, the registration and its sha256, the ledger directory, each pass's
+    (exit code, stdout) and the market ids."""
+    if not _SHARED:
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        members, ids = study_members()
+        root = build_root(base, members)
+        registration, digest = write_registration(base / "research")
+        ledger = base / "ledger"
+        ledger.mkdir(mode=0o700)
+        common = ["--study", STUDY, "--registration-sha256", digest, "--registration", str(registration),
+                  "--archive-root", str(root), "--code-commit", COMMIT, "--ledger", str(ledger)]
+        blind = cli(*common, "--pass", "blind", "--out", str(base / "blind"), "--ledger-head", "none")
+        head = json.loads(blind[1]).get("ledger_head", "none")
+        registered = cli(*common, "--pass", "registered", "--out", str(base / "registered"), "--ledger-head", head,
+                         "--blind-receipt", str(base / "blind" / "receipt.json"))
+        _SHARED["value"] = SimpleNamespace(base=base, root=root, registration=registration, sha=digest, ledger=ledger,
+                                           ids=ids, blind=blind, registered=registered)
+    return _SHARED["value"]
+
+
+def walk_floats(value, trail=()):
+    """(the keys leading to it, the float) of every float in a JSON value."""
+    if isinstance(value, float):
+        yield trail, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from walk_floats(item, trail + (key,))
+    elif isinstance(value, list):
+        for item in value:
+            yield from walk_floats(item, trail)
+
+
+def mean_of(values):
+    return math.fsum(values) / len(values)
+
+
+def tally_of(rows):
+    """An early_study.Tally holding hand-built priced rows."""
+    tally = early_study.Tally(PLAN)
+    tally.rows.extend(rows)
+    return tally
+
+
+# Keys that hold a statistic of x, a test, a label or the selection: the registered pass's tables only.
+REGISTERED_ONLY = {"mean", "median", "estimate", "se", "df", "t", "t_critical", "ci_low", "ci_high", "p_one_sided",
+                   "p_two_sided", "holm_p_adjusted", "holm_rejected", "bound", "label", "test", "kill", "net_lower",
+                   "checks", "half_years", "mean_above_0", "selection", "primaries", "eligible", "mean_over_se",
+                   "level_figures", "move_figures", "bsp_book", "quantiles", "x", "both"}
+
+
+class Run(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.tmp = Path(folder.name).resolve()
+        self.ledger = self.tmp / "ledger"
+        self.ledger.mkdir(mode=0o700)
+        self.given = shared()
+
+    def run_pass(self, name, out, head="none", **kwargs):
+        arguments = dict(registration_path=self.given.registration, clock=clock)
+        arguments.update(kwargs)
+        return early_study.run_study(arguments.pop("study", STUDY), name, arguments.pop("sha", self.given.sha),
+                                     arguments.pop("root", self.given.root), out, arguments.pop("commit", COMMIT),
+                                     arguments.pop("ledger", self.ledger), head, **arguments)
+
+    def assertRefused(self, result, problem, out=None):
+        self.assertEqual(result, {"status": "refused", "problems": [problem]})
+        self.assertFalse((self.ledger / LEDGER_FILE).exists())
+        if out is not None:
+            self.assertFalse(out.exists())
+
+    def test_blind_then_registered(self):
+        given = self.given
+        self.assertEqual((given.blind[0], given.registered[0]), (0, 0), (given.blind[1], given.registered[1]))
+        blind, registered = json.loads(given.blind[1]), json.loads(given.registered[1])
+        files = {name: outputs_of(given.base / name) for name in ("blind", "registered")}
+        self.assertEqual((blind["status"], blind["study"], blind["pass"], blind["records"], blind["replayed_markets"]),
+                         ("completed", STUDY, "blind", 12, 9))
+        self.assertEqual((blind["viewed"], blind["priced"], blind["scored"]),
+                         ({"-14400": 9, "-7200": 9, "-3600": 8, "-1800": 8, "-600": 8},
+                          {"-14400": 36, "-7200": 36, "-3600": 32, "-1800": 32, "-600": 32},
+                          {"-14400": 36, "-7200": 36, "-3600": 32, "-1800": 32, "-600": 32}))
+
+        # The ledger: one look, then the one registered entry, each written with its pass's tables hash.
+        look, test = verify(given.ledger / LEDGER_FILE)
+        for entry, result, name in ((look, blind, "blind"), (test, registered, "registered")):
+            self.assertEqual(result["ledger_head"], f"{entry['seq']}:{entry['entry_sha256']}")
+            self.assertEqual(result["summary_sha256"], hashlib.sha256(files[name]["summary.json"]).hexdigest())
+            self.assertEqual((entry["study"], entry["lineage"], entry["partitions"], entry["partitions_sha256"],
+                              entry["registration_sha256"], entry["input_sha256"], entry["code_commit"],
+                              entry["tables_sha256"], entry["result"]),
+                             (STUDY, "early-price", [D, V], V2_SHA256, given.sha, result["input_sha256"], COMMIT,
+                              result["summary_sha256"], "completed"))
+            self.assertFalse(result["ledger_repeat"])
+        self.assertEqual([(entry["seq"], entry["kind"], entry["m"], entry["alpha"]) for entry in (look, test)],
+                         [(0, "look", 0, "0"), (1, "registered", 2, "0.02")])
+        self.assertEqual((blind["ledger_counts"], registered["ledger_counts"]),
+                         ({"looks": 1, "registered": 0}, {"looks": 1, "registered": 1}))
+
+        # The receipts: close-v1's keys, this study's kind.
+        receipts = {name: json.loads(files[name]["receipt.json"]) for name in files}
+        for name, receipt in receipts.items():
+            result = blind if name == "blind" else registered
+            self.assertEqual(set(receipt), {
+                "kind", "schema_version", "study", "pass", "status", "registration_sha256", "partitions_sha256",
+                "input_sha256", "input", "code_commit", "source_descriptor_sha256", "interpreter",
+                "blind_receipt_sha256", "ledger_head", "ledger_entry", "ledger_repeat", "ledger_counts",
+                "bytes_walked", "bytes_drained", "counts", "outputs", "started_at", "recorded_at"})
+            self.assertEqual((receipt["kind"], receipt["study"], receipt["pass"], receipt["status"],
+                              receipt["registration_sha256"], receipt["partitions_sha256"], receipt["ledger_head"],
+                              receipt["ledger_entry"]),
+                             ("betangel_early_receipt", STUDY, name, "completed", given.sha, V2_SHA256,
+                              result["ledger_head"], result["ledger_head"]))
+            self.assertEqual(json.loads(files[name]["summary.json"])["kind"], "betangel_early_summary")
+            self.assertEqual(result["receipt_sha256"], hashlib.sha256(files[name]["receipt.json"]).hexdigest())
+        self.assertIsNone(receipts["blind"]["blind_receipt_sha256"])
+        self.assertEqual(receipts["registered"]["blind_receipt_sha256"],
+                         hashlib.sha256(files["blind"]["receipt.json"]).hexdigest())
+        # Every member that reached the view was read or drained whole; the 2025, 2015 and PRO-path files were
+        # never opened.
+        never = {given.ids[name] for name in NEVER_OPENED}
+        opened = sum(member.stat().st_size for member in raw_members(given.root) if member.name[:-4] not in never)
+        self.assertEqual(len(raw_members(given.root)), 12)
+        for receipt in receipts.values():
+            self.assertGreater(receipt["bytes_walked"], 0)
+            self.assertEqual(receipt["bytes_walked"] + receipt["bytes_drained"], opened)
+        for name in files:
+            out = given.base / name
+            self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o700)
+            self.assertEqual({stat.S_IMODE((out / item).stat().st_mode) for item in OUTPUTS}, {0o600})
+
+        # The blind tables.
+        value = json.loads(files["blind"]["summary.json"])
+        coverage = value["coverage"]
+        self.assertEqual((coverage["records_without_an_anchor"], coverage["records_without_a_registered_label"]),
+                         (0, 2))
+        self.assertEqual({month: row for month, row in coverage["by_month"].items() if any(row.values())}, {
+            "2023-06": {D: 5, V: 0, "no_registered_label": 0}, "2024-03": {D: 0, V: 2, "no_registered_label": 0},
+            "2024-09": {D: 0, V: 2, "no_registered_label": 0},
+            "outside_registered_months": {D: 0, V: 0, "no_registered_label": 2}})
+        for at_s, codes in value["codes"].items():
+            self.assertEqual(sum(codes.values()), 12, at_s)
+            late = int(at_s) > -5000
+            self.assertEqual({code: count for code, count in codes.items() if count},
+                             {"viewed": 8 if late else 9, "plan_not_registered": 1, "month_not_registered": 2,
+                              **({"price_change_malformed": 1} if late else {})})
+        self.assertEqual(value["runners"]["-600"][D], {
+            "markets_viewed": 4, "markets_with_a_priced_runner": 4, "no_ltp": dict.fromkeys(NO_LTP_KINDS, 0),
+            "ltp_out_of_bands": 8, "ltp_never_changed": 0, "ltp_before_last_removal": 0, "ltp_stale": 0,
+            "priced": 16, "priced_by_band": {"A": 8, "B": 8}})
+        self.assertEqual(value["runners"]["-14400"][D]["markets_viewed"], 5)
+        self.assertEqual(value["classes"]["-600"]["B"][V], {**dict.fromkeys(CLASSES, 0), "scored": 8})
+        self.assertEqual(value["ages"]["-600"]["A"], {"runners": 16, "seconds_quantiles": {
+            q: 60.0 for q in ("0.05", "0.1", "0.25", "0.5", "0.75", "0.9", "0.95")}})
+        # B6: every move is defined; the tied moved cells take the registered order (DRIFT is moved_larger).
+        group = value["move_groups"]["A from -14400"][D]
+        counted = {"members": 4, "scored": 4, "race_dates": 4, "k": {"1": 4, "2": 0, "3_or_more": 0}}
+        self.assertEqual(group, {"members": 8, "undefined": dict.fromkeys(UNDEFINED, 0), "flagged": 0, "cells": {
+            "FLAT": {"members": 0, "scored": 0, "race_dates": 0, "k": {"1": 0, "2": 0, "3_or_more": 0}},
+            "moved_larger": counted, "moved_smaller": counted}})
+        # B7 and B8: the two starts hold the same values, so the earlier start's spreads are withheld.
+        spreads = value["spreads"]["by_cell"]
+        self.assertEqual({cell for cell, item in spreads.items() if item["reason"] == resting.REST_NOT_GIVEN},
+                         {cell for cell in spreads if " from -14400: " in cell})
+        steam = spreads["A from -3600: moved_larger"]                           # A2, the STEAM cell from -3600
+        xs = [2.9 / (3.1 + shift) - 1 for shift in SHIFTS * 2]
+        self.assertEqual((steam["values"], steam["race_dates"], steam["reason"]), (8, 8, None))
+        self.assertAlmostEqual(steam["sd"], movement.sample_sd(xs), places=6)
+        self.assertEqual((steam["detectable"]["test_values"], steam["detectable"]["test_race_dates"]), (4, 4))
+        self.assertGreater(steam["detectable"]["effect"], 0)
+        self.assertEqual(value["bsp_precision"], {
+            "scored_bsps_whole_hundredths": 32, "scored_bsps_not_whole_hundredths": 0, "bsp_ends_decide_apart": True,
+            "bsp_market_with_no_value": dict.fromkeys(value["codes"], 0), "bytes_walked": receipts["blind"]["bytes_walked"],
+            "bytes_drained": receipts["blind"]["bytes_drained"]})
+
+        # The registered tables: the same counts, the cells named.
+        named = json.loads(files["registered"]["summary.json"])
+        for key in ("coverage", "codes", "runners", "classes", "ages", "bsp_precision", "records", "replayed_markets"):
+            self.assertEqual(named[key], value[key], key)
+        self.assertEqual(set(named["move_groups"]["A from -14400"][D]["cells"]), {"DRIFT", "FLAT", "STEAM"})
+        self.assertEqual(named["spreads"]["by_cell"]["A from -3600: STEAM"], steam)
+        # R1, checked by hand: A1 at 2.5 and A2 at 2.9 against their shifted BSPs.
+        level = named["level_figures"]["by_cell"]["A@-600"][D]
+        written = [2.5 / (2.52 + shift) - 1 for shift in SHIFTS] + [2.9 / (3.1 + shift) - 1 for shift in SHIFTS]
+        self.assertEqual((level["members"], level["classes"]["scored"], level["x"][resting.AS_WRITTEN]["values"],
+                          level["x"][resting.AS_WRITTEN]["race_dates"]), (8, 8, 8, 4))
+        self.assertAlmostEqual(level["x"][resting.AS_WRITTEN]["mean"], mean_of(written), places=6)
+        self.assertLess(level["x"][resting.PLUS_STEP]["mean"], level["x"][resting.AS_WRITTEN]["mean"])
+        self.assertEqual((named["level_figures"]["cells"], named["level_figures"]["headings"]),
+                         (10, {D: "exploratory", V: "not tested, unadjusted"}))
+        self.assertIsNotNone(named["level_figures"]["by_cell"]["A@-600"][V]["x"][resting.AS_WRITTEN]["mean"])
+        # R2: the explore label's figures; the test label's counts only.
+        moves = named["move_figures"]
+        self.assertEqual(moves["cells"], 12)
+        self.assertEqual(moves["by_cell"]["B from -14400: STEAM"][V], {"members": 4, "scored": 4, "race_dates": 4})
+        self.assertIsNotNone(moves["by_cell"]["B from -14400: STEAM"][D]["x"][resting.AS_WRITTEN]["mean"])
+        # R3: the eight cells with members are eligible; B2's x alone is above 0, so its first cell is the BACK
+        # primary, and the LAY primary is the eligible cell with the highest mean / SE of -x.
+        selection = named["selection"]
+        filled = [early.MoveCell(-14400, DRIFT, "A"), early.MoveCell(-14400, DRIFT, "B"),
+                  early.MoveCell(-14400, STEAM, "A"), early.MoveCell(-14400, STEAM, "B"),
+                  early.MoveCell(-3600, DRIFT, "B"), early.MoveCell(-3600, FLAT, "A"),
+                  early.MoveCell(-3600, FLAT, "B"), early.MoveCell(-3600, STEAM, "A")]
+        keys = [f"{cell.band} from {cell.start_s}: {cell.move}" for cell in PLAN.move_cells if cell in filled]
+        self.assertEqual(selection["eligible"], keys)
+        ranks = {cell: selection["cells"][cell]["mean_over_se"] for cell in keys}
+        lay = max(keys, key=lambda cell: (ranks[cell][LAY], -keys.index(cell)))
+        self.assertEqual(selection["primaries"], {BACK: "B from -14400: STEAM", LAY: lay})
+        self.assertEqual({cell for cell in keys if ranks[cell][BACK] > 0}, {"B from -14400: STEAM",
+                                                                             "B from -3600: FLAT"})
+        # R4: the BACK primary's test over B2's four values on the test label, at its claim end, BSP + 0.01.
+        back = named["primaries"][BACK]
+        claim = [8.2 / (8.0 + shift + 0.01) - 1 for shift in SHIFTS]
+        self.assertEqual((back["cell"], back["band"], back["test"]["values"], back["test"]["race_dates"],
+                          back["test"]["bsp_end"], back["figures_given"], back["kill_figures_given"]),
+                         ("B from -14400: STEAM", "B", 4, 4, resting.PLUS_STEP, True, True))
+        self.assertAlmostEqual(back["test"]["mean"], mean_of(claim), places=6)
+        self.assertEqual((back["kill"]["values"], back["kill"]["bsp_end"]), (8, resting.AS_WRITTEN))
+        self.assertEqual(back["half_years"], {"H1": {"values": 2, "race_dates": 2, "mean_above_0": True},
+                                              "H2": {"values": 2, "race_dates": 2, "mean_above_0": True}})
+        for item in named["primaries"].values():
+            self.assertIn(item["label"], early.VERDICTS)
+            self.assertEqual(item["text"], PLAN.label_texts[item["label"]])
+            self.assertEqual(item["printed_with"], [PLAN.label_note, PLAN.exposure_note, PLAN.bsp_limit,
+                                                    PLAN.removal_note])
+            self.assertEqual(set(item["checks"]), set(early.CHECKS))
+        adjusted = sorted(item["test"]["holm_p_adjusted"] for item in named["primaries"].values())
+        smaller = min(item["test"]["p_one_sided"] for item in named["primaries"].values())
+        self.assertAlmostEqual(adjusted[0], min(1.0, 2 * smaller), places=6)
+        # R6: the dated markets and the malformed one have scored values.
+        self.assertEqual({label: item["markets"] for label, item in named["bsp_book"].items()}, {D: 5, V: 4})
+        text = files["registered"]["summary.md"].decode()
+        for phrase in (PLAN.label_note, PLAN.exposure_note, PLAN.bsp_limit, PLAN.removal_note, "## R1", "## R6",
+                       "c = 10; sqrt(2 ln c) = 2.145966", "c = 12; sqrt(2 ln c) =", "not comparable across times",
+                       "### BACK: primary cell B from -14400: STEAM (band B)", "| p one-sided |", "points of stake"):
+            self.assertIn(phrase, text)
+        self.assertEqual(text.count("| p one-sided |"), 2)
+
+    def test_a_repeat_appends_nothing_and_gives_the_same_bytes(self):
+        given = self.given
+        head = json.loads(given.registered[1])["ledger_head"]
+        ledger_bytes = (given.ledger / LEDGER_FILE).read_bytes()
+        again = {"blind": self.run_pass("blind", self.tmp / "blind", head, ledger=given.ledger),
+                 "registered": self.run_pass("registered", self.tmp / "registered", head, ledger=given.ledger,
+                                             blind_receipt=given.base / "blind" / "receipt.json")}
+        for name, result in again.items():
+            first = json.loads(getattr(given, name)[1])
+            self.assertEqual((result["status"], result["ledger_repeat"], result["ledger_head"],
+                              result["ledger_counts"]), ("completed", True, head, {"looks": 1, "registered": 1}))
+            self.assertEqual(result["summary_sha256"], first["summary_sha256"])
+            for item in ("summary.json", "summary.md"):
+                self.assertEqual(outputs_of(self.tmp / name)[item], outputs_of(given.base / name)[item])
+        self.assertEqual((given.ledger / LEDGER_FILE).read_bytes(), ledger_bytes)
+        # A repeat whose tables differ from the stored hash fails after the read and writes nothing.
+        real = early_study.summary
+        with mock.patch.object(early_study, "summary", lambda *given_: dict(real(*given_), records=0)):
+            result = self.run_pass("blind", self.tmp / "differs", head, ledger=given.ledger)
+        self.assertEqual(result, {"status": "failed", "failure": "ledger:repeat_differs"})
+        self.assertFalse((self.tmp / "differs").exists())
+        self.assertEqual((given.ledger / LEDGER_FILE).read_bytes(), ledger_bytes)
+
+    def test_one_refusal_for_each_copied_function(self):
+        given, out = self.given, self.tmp / "out"
+        # run_study: another study is refused before anything is read: none of these paths exists.
+        nowhere = dict(registration_path=self.tmp / "none.json", root=self.tmp / "none", ledger=self.tmp / "none")
+        for study in ("close-v1", "", None):
+            self.assertRefused(self.run_pass("blind", out, study=study, **nowhere), "study:not_supported", out)
+        self.assertRefused(self.run_pass("explore", out), "pass:not_supported", out)
+        self.assertRefused(self.run_pass("blind", out, commit="abc"), "code_commit:malformed", out)
+        # _plan: the hash, the studies folder and the split file beside it.
+        for digest, problem in (("0" * 64, "registration:sha256_mismatch"), ("abc", "registration_sha256:malformed")):
+            self.assertRefused(self.run_pass("blind", out, sha=digest), problem, out)
+        loose = self.tmp / "early-price-v1.json"
+        loose.write_bytes(given.registration.read_bytes())
+        self.assertRefused(self.run_pass("blind", out, registration_path=loose),
+                           "registration:not_in_a_studies_folder", out)
+        for index, (problem, change) in enumerate((
+                ("registration:data.split:sha256_mismatch",
+                 lambda folder: (folder / "partitions-v2.json").write_bytes(V2_RAW + b"\n")),
+                ("split:missing_path", lambda folder: (folder / "partitions-v2.json").unlink()))):
+            with self.subTest(problem=problem):
+                registration, digest = write_registration(self.tmp / f"research{index}")
+                change(self.tmp / f"research{index}")
+                self.assertRefused(self.run_pass("blind", out, registration_path=registration, sha=digest), problem,
+                                   out)
+        other = REPO / "research" / "studies" / "close-v1.json"
+        result = self.run_pass("blind", out, registration_path=other,
+                               sha=hashlib.sha256(other.read_bytes()).hexdigest())
+        self.assertEqual((result["status"], result["problems"][0].split(":")[0]), ("refused", "registration"))
+        # _blind_receipt: a close-v1 receipt, and one of another split, registration, code or input.
+        receipt = json.loads((given.base / "blind" / "receipt.json").read_bytes())
+        forged = self.tmp / "forged.json"
+        self.assertRefused(self.run_pass("blind", out, blind_receipt=forged), "blind_receipt:not_for_the_blind_pass")
+        self.assertRefused(self.run_pass("registered", out), "blind_receipt:missing")
+        for change, problem in (({"kind": "betangel_resting_receipt"}, "blind_receipt:not_a_completed_blind_receipt"),
+                                ({"study": "close-v1"}, "blind_receipt:not_a_completed_blind_receipt"),
+                                ({"partitions_sha256": V1_SHA256}, "blind_receipt:another_split"),
+                                ({"registration_sha256": "1" * 64}, "blind_receipt:another_registration"),
+                                ({"code_commit": "f" * 40}, "blind_receipt:another_code"),
+                                ({"input_sha256": "2" * 64}, "blind_receipt:another_input"),
+                                ({"ledger_entry": "none"}, "blind_receipt:ledger_entry_malformed")):
+            with self.subTest(change=change):
+                forged.write_bytes(canonical_json({**receipt, **change}) + b"\n")
+                self.assertRefused(self.run_pass("registered", out, blind_receipt=forged), problem, out)
+        # The ledger (resting_study._ledger): the head typed, and --out apart from it.
+        self.assertRefused(self.run_pass("blind", out, "0:" + "0" * 64), "ledger:head_not_expected", out)
+        self.assertRefused(self.run_pass("blind", self.ledger / "out"), "out:not_apart_from_the_ledger")
+        # _tally: the month gate runs on every record before anything of it is used; a market twice refuses.
+        with mock.patch.object(early_study, "month_gate", return_value="month_sealed_holdout"), \
+                mock.patch.object(early_study, "_walk", side_effect=AssertionError("a member was opened")), \
+                mock.patch.object(early_study, "record_facts", side_effect=AssertionError("a record was used")):
+            result = self.run_pass("blind", out)
+        self.assertEqual(set(result), {"status", "failure"})
+        self.assertRegex(result["failure"], r"^input:[0-9a-f]{64}:stale_gate$")
+        twice = self.tmp / "twice"
+        twice.mkdir()
+        for index, event in enumerate((fx.EVENT, "27000002")):
+            member = fx.path(M, when=OFF_D, event=event)
+            tar = fx.make_tar(self.tmp / f"twice{index}.tar", [(member, bz2.compress(fx.lines(basic_market())))])
+            self.assertEqual(ingest_archive(tar, twice)["status"], "ingested")
+        self.assertEqual(index_archives(twice)["status"], "indexed")
+        result = self.run_pass("blind", out, root=twice)
+        self.assertRegex(result["failure"], r"^input:[0-9a-f]{64}:duplicate_market$")
+        # _walk: a member whose bytes are not the manifest's fails the run with no market id.
+        root = build_root(self.tmp, [(fx.path(M, OFF_D), basic_market())], name="torn")
+        raw_members(root)[0].chmod(0o644)
+        raw_members(root)[0].write_bytes(raw_members(root)[0].read_bytes() + b"\0")
+        self.assertEqual(self.run_pass("blind", out, root=root),
+                         {"status": "failed", "failure": "replay:member_hash_mismatch"})
+        self.assertEqual((list(self.ledger.iterdir()), out.exists()), ([], False))
+
+    def test_the_2025_2015_and_pro_files_are_never_opened(self):
+        with mock.patch.object(early_study, "_walk", wraps=early_study._walk) as walked:
+            result = self.run_pass("blind", self.tmp / "blind")
+        self.assertEqual((result["status"], result["replayed_markets"]), ("completed", 9))
+        opened = sorted(call.args[2]["market_id"] for call in walked.call_args_list)
+        self.assertEqual(opened, sorted(market_id for name, market_id in self.given.ids.items()
+                                        if name not in NEVER_OPENED))
+
+    def test_the_real_gates_give_counts_only(self):
+        """The registration as it is, read from the repository: 8 or 10 values a cell and label, far below 100.
+        Neither pass gives a statistic of x, no cell is eligible, and nothing is tested."""
+        blind = self.run_pass("blind", self.tmp / "blind", registration_path=None, sha=REGISTRATION_SHA256)
+        self.assertEqual(blind["status"], "completed", blind)
+        registered = self.run_pass("registered", self.tmp / "registered", blind["ledger_head"], registration_path=None,
+                                   sha=REGISTRATION_SHA256, blind_receipt=self.tmp / "blind" / "receipt.json")
+        self.assertEqual(registered["status"], "completed", registered)
+        statistics = {"mean", "median", "estimate", "se", "t", "t_critical", "ci_low", "ci_high", "p_one_sided",
+                      "holm_p_adjusted", "bound", "sd", "ranges", "effect", "seconds_quantiles", "quantiles",
+                      "allowance", "detectable", "not_scored_share", "k_1_share", "BACK", "LAY"}
+        columns = {"SD", "mean", "CI low", "CI high", "bound", "p one-sided", "Holm p", "detectable effect",
+                   "SE of x", "0.5"}
+        for name in ("blind", "registered"):
+            files = outputs_of(self.tmp / name)
+            value = json.loads(files["summary.json"])
+            found = [(key, item) for key, item in walk_items(value) if key in statistics and item is not None
+                     and not isinstance(item, (dict, list))]
+            with self.subTest(out=name):
+                self.assertEqual(found, [])
+                self.assertEqual({trail[-1] for trail, _ in walk_floats(value)},
+                                 {"sqrt_2_ln_c"} if name == "registered" else set())
+                shown = {column.split(" (")[0]: cells for column, cells in
+                         markdown_columns(files["summary.md"].decode()).items()}
+                self.assertEqual({column: cells for column, cells in shown.items()
+                                  if column in columns and set(cells) - {"-"}}, {})
+        value = json.loads(outputs_of(self.tmp / "registered")["summary.json"])
+        self.assertEqual((value["selection"]["eligible"], value["selection"]["primaries"]),
+                         ([], {BACK: None, LAY: None}))
+        self.assertEqual({side: item["label"] for side, item in value["primaries"].items()},
+                         {BACK: "underpowered", LAY: "underpowered"})
+        self.assertIn("### LAY: no primary cell, label underpowered", outputs_of(self.tmp / "registered")[
+            "summary.md"].decode())
+        entry = verify(self.ledger / LEDGER_FILE)[1]                     # the family still counts both sides
+        self.assertEqual((entry["kind"], entry["m"], entry["alpha"]), ("registered", 2, "0.02"))
+
+    def test_only_the_record_reads_report_a_malformed_record_and_a_fault_prints_a_class_name(self):
+        given, out = self.given, self.tmp / "out"
+        arguments = ["--study", STUDY, "--pass", "blind", "--registration-sha256", given.sha, "--registration",
+                     str(given.registration), "--archive-root", str(given.root), "--out", str(out), "--code-commit",
+                     COMMIT, "--ledger", str(self.ledger), "--ledger-head", "none"]
+        with mock.patch.object(early_study, "record_facts", side_effect=KeyError(M)):
+            code, printed = cli(*arguments)
+        self.assertEqual(code, 2)
+        self.assertRegex(json.loads(printed)["failure"], r"^input:[0-9a-f]{64}:malformed_record$")
+        for name in ("decide_record", "summary", "markdown"):
+            with self.subTest(patched=name):
+                with mock.patch.object(early_study, name, side_effect=KeyError(M)):
+                    code, printed = cli(*arguments)
+                self.assertEqual((code, printed), (2, '{"failure": "internal:KeyError", "status": "failed"}\n'))
+                self.assertFalse(out.exists())
+                self.assertEqual(list(self.ledger.iterdir()), [])
+        # The parser: every argument the ledger needs is required.
+        with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()), \
+                self.assertRaises(SystemExit) as caught:
+            early_study.main(arguments[:-2])
+        self.assertEqual(caught.exception.code, 2)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# What the blind pass gives, over real summaries, and the selection at the tables level
+
+def mirrored(row):
+    """The row with x turned into -x: the LTP moved to the other side of the BSP."""
+    return row._replace(ltp=2 * row.bsp - row.ltp)
+
+
+def blind_rows():
+    """Hand-built entry members, both labels, three cells from -3600 and one from -14400, all of 100 values or
+    more."""
+    return (rows_of("0.01", "0.03", 150) + rows_of("0.01", "0.03", 150, label=V)
+            + rows_of("-0.02", "0.02", 120, moves={-3600: FLAT, -14400: STEAM})
+            + rows_of("-0.02", "0.02", 110, label=V, moves={-3600: FLAT, -14400: STEAM})
+            + rows_of("0.03", "0.05", 105, band="B", moves={-3600: STEAM})
+            + rows_of("0.03", "0.05", 101, band="B", label=V, moves={-3600: STEAM}))
+
+
+class BlindReleases(unittest.TestCase):
+    def test_the_blind_pass_gives_no_location_of_x(self):
+        given = shared()
+        files = outputs_of(given.base / "blind")
+        value = json.loads(files["summary.json"])
+        keys = set(walk_keys(value))
+        self.assertEqual(set(value), {"kind", "schema_version", "study", "pass", "registration_sha256",
+                                      "partitions_sha256", "input_sha256", "partitions", "records",
+                                      "replayed_markets", "coverage", "codes", "runners", "classes", "ages",
+                                      "move_groups", "spreads", "bsp_precision", "withheld"})
+        self.assertEqual(value["withheld"], early_study.WITHHELD)
+        self.assertEqual(keys & REGISTERED_ONLY, set())
+        self.assertEqual([key for key in keys if "mean" in key.lower() or "median" in key.lower()], [])
+        self.assertEqual({key for key in keys if "quantile" in key}, {"seconds_quantiles"})
+        self.assertEqual({key for key in keys if "net" in key}, set())
+        # No name DRIFT or STEAM anywhere: the two moved cells are unnamed.
+        for text in (files["summary.json"].decode().upper(), files["summary.md"].decode().upper()):
+            self.assertNotIn("DRIFT", text)
+            self.assertNotIn("STEAM", text)
+        self.assertEqual({name for group in value["move_groups"].values() for item in group.values()
+                          for name in item["cells"]}, {"FLAT", "moved_larger", "moved_smaller"})
+        # Every float is an SD, a range or a detectable effect of a move cell over both labels pooled, or a quantile
+        # of the age of a price: no spread by label or of a level cell, and no location of x.
+        names = set(value["spreads"]["by_cell"]) | set(value["ages"]) | {"A", "B"}
+        places = {tuple(key for key in trail if key not in names and not key[0].isdigit())
+                  for trail, _ in walk_floats(value)}
+        self.assertEqual(places, {("spreads", "by_cell", "sd"), ("spreads", "by_cell", "ranges"),
+                                  ("spreads", "by_cell", "detectable", "effect"), ("ages", "seconds_quantiles")})
+        for item in value["spreads"]["by_cell"].values():
+            self.assertEqual(set(item), {"values", "race_dates", "sd", "ranges", "reason", "detectable"})
+            if item["sd"] is None:                                              # B8 is empty whenever B7's SD is
+                self.assertEqual((item["ranges"], item["detectable"]["effect"]), (None, None))
+        self.assertFalse(set(PLAN.labels) & set(walk_keys(value["spreads"])))
+        text = files["summary.md"].decode().lower()
+        for word in ("mean", "median", "p one-sided", "holm", "ci low", "net_held", "## r", "primar", "exploratory",
+                     "not tested", "sqrt", PLAN.label_note.lower(), PLAN.exposure_note.lower(), *early.VERDICTS):
+            self.assertNotIn(word, text)
+        self.assertIn("withheld in this pass", text)
+        self.assertIn(early_study.CLUSTERED.lower(), text)
+
+    def test_a_change_of_sign_of_every_x_moves_nothing_the_blind_pass_gives(self):
+        rows = blind_rows()
+        first = early_study.summary(PLAN, tally_of(rows), "blind", "0" * 64)
+        second = early_study.summary(PLAN, tally_of([mirrored(row) for row in rows]), "blind", "0" * 64)
+        self.assertEqual([early.score_of(PLAN, mirrored(row), BACK, resting.AS_WRITTEN) for row in rows[:3]],
+                         [-early.score_of(PLAN, row, BACK, resting.AS_WRITTEN) for row in rows[:3]])
+        spreads = first["spreads"]["by_cell"]
+        self.assertEqual({cell for cell, item in spreads.items() if item["sd"] is not None},
+                         {"A from -3600: moved_larger", "A from -3600: FLAT", "A from -14400: moved_larger",
+                          "B from -3600: moved_larger"})
+
+        def without_ranges(found):
+            return {**found, "spreads": {**found["spreads"], "by_cell": {
+                cell: dict(item, ranges=item["ranges"] and sorted(item["ranges"]))
+                for cell, item in found["spreads"]["by_cell"].items()}}}
+
+        self.assertEqual(without_ranges(first), without_ranges(second))
+        self.assertEqual(early_study.markdown(PLAN, first).count("\n"), early_study.markdown(PLAN, second).count("\n"))
+
+
+class SelectionIsBlindToHoldoutInTheTables(unittest.TestCase):
+    def test_changing_every_test_value_with_the_counts_and_switch_fixed_leaves_the_explore_tables(self):
+        explore = rows_of("0.002", "0.004", 1000, moves={-3600: FLAT}) + rows_of("0.006", "0.03", 200, band="B",
+                                                                                  moves={-14400: DRIFT})
+        tests = [rows_of("0.002", "0.004", 400, label=V, moves={-3600: FLAT})
+                 + rows_of("0.006", "0.03", 400, band="B", label=V, moves={-14400: DRIFT}),
+                 rows_of("-0.09", "0.3", 400, label=V, moves={-3600: FLAT})
+                 + rows_of("0.2", "0.001", 400, band="B", label=V, moves={-14400: DRIFT})]
+        found = []
+        for test in tests:
+            value = early_study.summary(PLAN, tally_of(explore + test), "registered", "0" * 64)
+            explored = {table: {cell: by_label[D] for cell, by_label in value[table]["by_cell"].items()}
+                        for table in ("level_figures", "move_figures")}
+            found.append((explored, value["selection"], {side: item["cell"] for side, item in
+                                                         value["primaries"].items()},
+                          canonical_json(value["move_groups"]), value["bsp_precision"],
+                          {side: item["test"] for side, item in value["primaries"].items()}))
+        self.assertEqual(found[0][:5], found[1][:5])
+        self.assertNotEqual(found[0][5], found[1][5])                        # the test label's values did change
+        self.assertLessEqual(set(found[0][2].values()), {"A from -3600: FLAT", "B from -14400: DRIFT"})
+        self.assertNotIn(None, found[0][2].values())
+        self.assertIsNotNone(found[0][0]["move_figures"]["A from -3600: FLAT"]["x"][resting.AS_WRITTEN]["mean"])
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# No id reaches an output, and the two modules stay inside the backtest closure
+
+class NoIds(unittest.TestCase):
+    def test_no_output_holds_a_market_or_selection_id_or_a_market_date(self):
+        given = shared()
+        ids = list(given.ids.values())
+        offs = list(STUDY_OFFS) + [off for _, off, _ in SINGLES.values()]
+        tokens = ids + [market_id.split(".")[1] for market_id in ids] + [str(sid) for sid in SIDS] + [
+            fx.EVENT, "Horse", "Synthetic", "Hcap"]
+        tokens += sorted({off.date().isoformat() for off in offs}) + [str(ms(off))[:-3] for off in offs] + [
+            iso(off)[:16] for off in offs]
+        self.assertLessEqual({"2023-06-01", "2024-09-03", "2023-06-01T14:00", "1685628000"}, set(tokens))
+        self.assertEqual((given.blind[0], given.registered[0]), (0, 0))
+        for name in ("blind", "registered"):
+            for item, data in outputs_of(given.base / name).items():
+                with self.subTest(out=name, file=item):
+                    self.assertEqual([token for token in tokens if token in data.decode()], [])
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        tmp = Path(folder.name).resolve()
+        root, ledger = build_root(tmp, [(fx.path(M, OFF_D), basic_market())]), tmp / "ledger"
+        ledger.mkdir(mode=0o700)
+        raw_members(root)[0].chmod(0o644)
+        raw_members(root)[0].write_bytes(raw_members(root)[0].read_bytes() + b"\0")
+        failed = cli("--study", STUDY, "--pass", "blind", "--registration-sha256", given.sha, "--registration",
+                     str(given.registration), "--archive-root", str(root), "--out", str(tmp / "failed"),
+                     "--code-commit", COMMIT, "--ledger", str(ledger), "--ledger-head", "none")
+        self.assertEqual((failed[0], json.loads(failed[1])),
+                         (2, {"status": "failed", "failure": "replay:member_hash_mismatch"}))
+        printed = {"blind": given.blind[1], "registered": given.registered[1], "failed replay": failed[1],
+                   "ledger": (given.ledger / LEDGER_FILE).read_text()}
+        for name, text in printed.items():
+            with self.subTest(printed=name):
+                self.assertEqual([token for token in tokens + [M, M.split(".")[1]] if token in text], [])
+
+
+class EarlyBoundaries(unittest.TestCase):
+    MODULES = ("early", "early_study")
+
+    def test_the_study_stays_inside_the_backtest_closure(self):
+        from test_betfair_backtest_boundaries import (BACKTEST, BETFAIR, FORBIDDEN_BETFAIR, REAL, TOP,
+                                                      backtest_violations)
+        closure = REAL.closure([f"{BACKTEST}.{name}" for name in self.MODULES])
+        self.assertEqual({module for module in closure if not module.startswith(BACKTEST)},
+                         {TOP, BETFAIR, f"{TOP}.temporal"})
+        self.assertEqual(backtest_violations(REAL, betfair=BETFAIR, forbidden=FORBIDDEN_BETFAIR), [])
+        self.assertNotIn(f"{BACKTEST}.early_study", REAL.closure([f"{BACKTEST}.__main__"]))
+        self.assertNotIn(f"{BACKTEST}.early_study", REAL.closure([f"{BACKTEST}.early"]))
+
+    def test_importing_the_study_loads_no_other_betfair_module(self):
+        probe = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                 + "".join(f"import betangel_research.betfair.backtest.{name}; " for name in self.MODULES)
+                 + "print('\\n'.join(sorted(m for m in sys.modules if m.startswith('betangel_research'))))")
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(REPO)], capture_output=True, text=True,
+                                check=True)
+        loaded = set(result.stdout.split())
+        self.assertEqual({m for m in loaded if not m.startswith("betangel_research.betfair.backtest")},
+                         {"betangel_research", "betangel_research.betfair", "betangel_research.temporal"})
+        self.assertLessEqual({f"betangel_research.betfair.backtest.{name}" for name in self.MODULES}, loaded)
+
+    def test_early_opens_no_file(self):
+        tree = ast.parse((REPO / "betangel_research" / "betfair" / "backtest" / "early.py").read_text("utf-8"))
+        imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
+                    for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.level == 0}
+        self.assertEqual(imported, {"collections", "dataclasses", "datetime", "fractions", "itertools", "math"})
+        called = {node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+                  for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        self.assertFalse(called & {"open", "read_bytes", "read_text", "write_bytes", "write_text", "mkdir", "unlink",
+                                   "iterdir", "glob", "rglob", "stat", "exists"})
+
+    def test_the_runner_takes_one_study_and_every_argument_the_ledger_needs(self):
+        self.assertEqual((early_study.STUDIES, early_study.RECEIPT_KIND, early_study.SUMMARY_KIND),
+                         ((STUDY,), "betangel_early_receipt", "betangel_early_summary"))
+        parser = early_study.build_parser()
+        required = {action.dest for action in parser._actions if action.required}
+        self.assertEqual(required, {"study", "pass_name", "registration_sha256", "archive_root", "out",
+                                    "code_commit", "ledger", "ledger_head"})
+        self.assertEqual({action.dest for action in parser._actions if not action.required} - {"help"},
+                         {"blind_receipt", "registration"})
 
 
 if __name__ == "__main__":

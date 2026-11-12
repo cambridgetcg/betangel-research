@@ -63,7 +63,7 @@ from .paths import StatePaths, network_forbidden, overrides_allowed
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPS_KEYS = frozenset({"home", "keychain_runner", "http_transport", "stream_socket_factory", "clock", "confirmer",
-                       "env", "pilot_context", "processes"})
+                       "env", "pilot_context", "processes", "git_runner", "popen"})
 READ_STATUS = "betfair_read_response_personal_use_not_for_redistribution"
 GITIGNORE_PATTERNS = ("*.crt", "*.key", "*.p12", "*.pfx", "*.pem")
 LOGIN_RESET_PHRASE = "RESET LOGIN FAILURES"
@@ -99,7 +99,8 @@ SETTLE_ADVICE = {
 PAPER_LIVE_HELP = ("Paper by default; live needs --mode live, every arming condition in docs/betfair-order-path.md, "
                    "and typing the order at a terminal")
 HELP = {
-    "init-config": "Copy the example config to the profile path if absent; offline, writes nothing else",
+    "init-config": "Copy the example config to the profile path if absent (--p2: Pilot 2's example to config-p2.json); "
+                   "offline, writes nothing else",
     "doctor": "Offline checks of config, paths, cert files and Keychain item presence (never values); --network "
               "adds login, keepAlive and logout statuses only",
     "keychain-setup": "Print the Keychain commands to run by hand; runs nothing and reads no secret",
@@ -160,6 +161,11 @@ HELP = {
                           "GAP RESOLVED; never acknowledges; sends no order",
     "pilot-capture": "Live only: Yu's read-only pilot capture (C, the CLOSED book, L) after a session; needs a "
                      "terminal, never scheduled; --continue-admission N continues a retained admission",
+    # Pilot 2's plain capped bot (docs/betfair-pilot-2-engineering.md §3): Yu's commands, at the lab Mac.
+    "p2-run": "Live only: one attended Pilot 2 session after Yu types P2 ARM; --until HHMM and --races N are required; "
+              "its orders go through the gateway only, on config-p2.json; never unattended",
+    "p2-summary": "Live state only: Pilot 2's counts from a read-only journal read; --cleared adds Betfair's cleared "
+                  "profit and commission on the delayed key; sends no order",
     "recording-release": "Live state only: Yu's typed recording-release (design v9 §3.5). Shows the ADMISSION or a "
                          "stray INHIBIT as codes, then after RELEASE RECORDING GENERATION <N> (or RELEASE RECORDING "
                          "INHIBIT) releases it only when the live journal and login ledger are clean and no pilot "
@@ -353,7 +359,9 @@ def build_parser():
     def add(name):
         return commands.add_parser(name, help=HELP[name], description=HELP[name])
 
-    add("init-config")
+    init = add("init-config")
+    init.add_argument("--p2", action="store_true", help="Pilot 2: research/betfair-config-p2.example.json to "
+                                                         "config-p2.json")
     doctor = add("doctor")
     doctor.add_argument("--network", action="store_true")
     doctor.add_argument("--bet-angel-paused", action="store_true", dest="bet_angel_paused")
@@ -487,6 +495,17 @@ def build_parser():
             sub.add_argument("--cause-file", dest="cause_file", required=name == "pilot-gap-resolved")
         if name == "pilot-capture":
             sub.add_argument("--continue-admission", dest="continue_admission", type=int)
+    # Pilot 2 (live only, as the pilot commands: --mode keeps the paper default, and _p2_command refuses it).
+    for name in ("p2-run", "p2-summary"):
+        sub = add(name)
+        sub.add_argument("--mode", choices=["paper", "live"], default="paper")
+        sub.add_argument("--bet-angel-paused", action="store_true", dest="bet_angel_paused")
+        if name == "p2-run":
+            sub.add_argument("--confirm-live", dest="confirm_live")
+            sub.add_argument("--until", required=True, help="UTC HHMM: the session's end, typed in the ARM line too")
+            sub.add_argument("--races", required=True, type=int, help="races this session, typed in the ARM line too")
+        else:
+            sub.add_argument("--cleared", action="store_true", help="add Betfair's cleared figures (delayed key)")
     return parser
 
 
@@ -551,7 +570,7 @@ def _anchor_warning(code):
 
 @contextlib.contextmanager
 def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=None, pilot=None,
-             in_session_settle=False, stop_requested=None, read_guard=None):
+             in_session_settle=False, stop_requested=None, read_guard=None, config=None, lp=None):
     """An opened OrderGateway for one command; closes it (anchor, lock), logs out and closes the journal.
 
     confirm(gateway), live only, runs after static arming and before open(): the operator types the
@@ -567,12 +586,15 @@ def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=
     checked first inside the try, so a stop that landed during setup raises SignalStop before any credential use,
     login or lock, and the finally still restores the outer handler. read_guard (pilot-run's settle opens, P108-C3)
     is asked at every login and every JSON-RPC attempt of this gateway's session.
+
+    Pilot 2 (its engineering note §3), off by default: config replaces the profile's config.json (p2-run's config-p2,
+    from load_config_p2) and lp is the live gateway's Pilot 2 context.
     """
     from .gateway import OrderGateway
     from .journal import OrderJournal
     from .risk import RiskGuard
     paths = _paths(args, ctx)
-    config = _config(args, paths)
+    config = _config(args, paths) if config is None else config
     ctx.paused_flag = _paused_flag(config)
     paths.ensure()
     held = {"gateway": None, "session": None, "journal": None}
@@ -594,7 +616,7 @@ def _gateway(args, ctx, *, command, mode, confirm=None, clock=None, credentials=
         else:
             _live_gateway(args, ctx, paths, config, guard, command=command, confirm=confirm, held=held,
                           on_send=signals.order_sent, clock=clock, credentials=credentials, pilot=pilot,
-                          in_session_settle=in_session_settle, read_guard=read_guard)
+                          in_session_settle=in_session_settle, read_guard=read_guard, lp=lp)
         yield held["gateway"], config, paths
     finally:
         signals.deferring = True
@@ -634,11 +656,12 @@ def _journal_view(journal, now_ns):
 
 
 def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on_send=None, clock=None,
-                  credentials=None, pilot=None, in_session_settle=False, read_guard=None):
+                  credentials=None, pilot=None, in_session_settle=False, read_guard=None, lp=None):
     """Static arming first (no secret is read, and no live journal created, before it passes), then
     credentials, the operator's typed lines (no lock held), login and open. Fills held as it goes.
     on_send goes to the gateway, except for the kill (it never defers a signal, amendment A3 A16).
-    clock, credentials, pilot and in_session_settle: _gateway's P1-08 options (None and False keep today's)."""
+    clock, credentials, pilot and in_session_settle: _gateway's P1-08 options (None and False keep today's); lp:
+    its Pilot 2 context."""
     from .api import JsonRpcClient, ReadClient
     from .arming import static_arming
     from .auth import SessionManager
@@ -693,7 +716,7 @@ def _live_gateway(args, ctx, paths, config, guard, *, command, confirm, held, on
     gateway = OrderGateway(config, paths=paths, mode="live", journal=held["journal"], guard=guard, rpc=rpc, read=read,
                            confirmer=confirmer, clock=clock, env=dict(ctx.env), keychain_runner=ctx.keychain_runner,
                            on_send=None if kill else on_send, pilot=pilot, in_session_settle=in_session_settle,
-                           contract_reader=injected.read_contract if injected is not None else None)
+                           contract_reader=injected.read_contract if injected is not None else None, lp=lp)
     if confirm is not None:
         confirm(gateway)
     if kill:
@@ -887,10 +910,15 @@ def _order_result(ctx, result, *, action):
 
 
 def cmd_init_config(args, ctx):
-    from .config import config_sha256, load_config
+    """--p2 writes Pilot 2's example to config-p2.json the same way and loads it with load_config_p2 (its
+    engineering note §3); config.json is not touched."""
+    from .config import config_sha256, load_config, load_config_p2
     paths = _paths(args, ctx)
     target = Path(args.config) if args.config else paths.config_path
-    example = json.loads((REPO_ROOT / "research" / "betfair-config.example.json").read_text(encoding="utf-8"))
+    name = "betfair-config.example.json"
+    if args.p2:
+        target, name = paths.config_p2_path, "betfair-config-p2.example.json"
+    example = json.loads((REPO_ROOT / "research" / name).read_text(encoding="utf-8"))
     example["profile"] = paths.profile
     status = "config_exists"
     if not target.exists():
@@ -900,7 +928,7 @@ def cmd_init_config(args, ctx):
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(example, indent=2, sort_keys=False) + "\n")
         status = "config_created"
-    config = load_config(target, paths=paths)
+    config = load_config_p2(paths=paths) if args.p2 else load_config(target, paths=paths)
     ctx.print_json({"status": status, "path": str(target), "config_sha256": config_sha256(config)})
     return 0
 
@@ -2036,7 +2064,7 @@ def cmd_kill(args, ctx):
     reports kill_incomplete. Anything but kill_complete with the KILL file engaged is exit 3 with the website
     / Bet Angel advice and a HALT kill_incomplete in the journal when it can be written, and so is SIGINT,
     SIGTERM or KeyboardInterrupt anywhere after the engage (kill_incomplete_interrupted). Progress lines go
-    to stderr.
+    to stderr. When the profile has config-p2.json the sweep adds Pilot 2's p2-lp, whatever the journal says.
     """
     from .arming import static_arming
     from .config import load_config
@@ -2152,13 +2180,17 @@ def cmd_kill(args, ctx):
             return incomplete("kill_incomplete_not_armed")
         opened = False
         try:
+            # Inside the try, as the gateway's own import of p2_lp is: a module that cannot be imported ends the kill
+            # exit 3 with the advice, never exit 4. _p2_configured itself fails only towards sweeping p2-lp.
+            from .p2_lp import STRATEGY_REF as P2_STRATEGY_REF
+            extra = (P2_STRATEGY_REF,) if _p2_configured(paths) else ()
             with _gateway(args, ctx, command=command, mode="live") as (gateway, _, _):
                 opened = True
                 out["session"].update(logged_in=True, login=gateway.login_kind)
                 result = gateway.kill(scope=args.scope, reason=args.reason,
                                       confirm_account_wide=args.confirm_account_wide and command == "kill-account",
                                       engaged_monotonic_ns=engaged_monotonic_ns,
-                                      progress=lambda text: _kill_line(ctx, text))
+                                      progress=lambda text: _kill_line(ctx, text), extra_strategy_refs=extra)
         except _Done:
             raise
         except Exception as exc:          # any failure (OSError included) is an incomplete kill: exit 3, JSON, advice
@@ -2328,6 +2360,86 @@ def cmd_pilot_capture(args, ctx):
     return _pilot_command(args, ctx, "capture_command", logs_in=True)
 
 
+# --- Pilot 2's plain capped bot (docs/betfair-pilot-2-engineering.md §3) ----------------------------------------
+
+
+def _p2_configured(paths):
+    """Whether this profile has config-p2.json, so the kill sweeps p2-lp too. Only a missing entry is absent: lstat, as
+    kill_engaged, so a dangling symlink counts, and any other OSError counts as present, since the kill must neither
+    miss Pilot 2's legs nor fail before its sweep."""
+    try:
+        os.lstat(paths.config_p2_path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _p2_factory(args, ctx, config):
+    """p2_run's gateway factory, as _pilot_factory: each race's one "place" open on config-p2, with the session's
+    preloaded live_orders credentials, lp (the Pilot 2 context, {arm_seq, session_id, races}) and stop_requested."""
+
+    @contextlib.contextmanager
+    def factory(lp, *, credentials, stop):
+        with _gateway(args, ctx, command="place", mode="live", config=config, credentials=credentials["live_orders"],
+                      lp=lp, stop_requested=lambda: stop.requested) as (gateway, _, _):
+            yield gateway
+
+    return factory
+
+
+def _p2_env(args, ctx, *, best_effort=False):
+    """What p2_run needs, built here so p2_run never imports the gateway (as _pilot_env): config-p2 from
+    load_config_p2, the gateway factory, read sessions on preloaded credentials (_pilot_read_session), and the runners
+    for git (the commit and a clean tree) and caffeinate (deps git_runner and popen stand in for them in tests)."""
+    from types import SimpleNamespace
+    from . import admission, pilot_run
+    from .config import load_config_p2
+    paths = _paths(args, ctx)
+    if args.command == "p2-run" and paths.profile != pilot_run.RECORDER_PROFILE:
+        raise _Done(2, "Betfair order refused: p2_profile_not_recorder_profile")
+    if args.command == "p2-run":
+        from . import gateway  # noqa: F401  the order path loads before the banner's git read, so the commit holds
+    config = load_config_p2(paths=paths)
+    ctx.paused_flag = _paused_flag(config)
+    terminal = pilot_run.Terminal(ctx.out, ctx.err)
+    if best_effort:
+        ctx.out, ctx.err = terminal.stream("out"), terminal.stream("err")
+    env = SimpleNamespace(args=args, ctx=ctx, paths=paths, config=config, clock=ctx.clock, terminal=terminal,
+                          confirmer=ctx.live_confirmer(), keychain_runner=ctx.keychain_runner, environ=dict(ctx.env),
+                          paused_flag=ctx.paused_flag, signal_stop=SignalStop,
+                          processes=ctx.deps.get("processes") or admission.SYSTEM_PROCESSES,
+                          git_runner=ctx.deps.get("git_runner") or subprocess.run,
+                          popen=ctx.deps.get("popen") or subprocess.Popen)
+    env.gateway_factory = _p2_factory(args, ctx, config)
+    env.read_session_factory = lambda credentials: _pilot_read_session(args, ctx, paths, config, credentials)
+    return env
+
+
+def _p2_command(args, ctx, name, *, best_effort=False, logs_in=False):
+    from . import p2_run, pilot_run
+    if args.mode != "live":                     # before any path, config, journal, Keychain or terminal use
+        raise _Done(2, "Betfair order refused: p2_live_only (the Pilot 2 commands run with --mode live only)")
+    env = _p2_env(args, ctx, best_effort=best_effort)
+    if logs_in:
+        _coexistence(env.config, args)
+    try:
+        return getattr(p2_run, name)(env)
+    except pilot_run.Refused as exc:
+        env.terminal.lines(exc.lines)
+        raise _Done(2, f"Betfair order refused: {exc.code}") from None
+
+
+def cmd_p2_run(args, ctx):
+    """p2-run: p2_run.run's exit code; 2 for a refusal before the ARM record (nothing was sent)."""
+    return _p2_command(args, ctx, "run", best_effort=True, logs_in=True)
+
+
+def cmd_p2_summary(args, ctx):
+    return _p2_command(args, ctx, "summary", logs_in=args.cleared)
+
+
 COMMANDS = {
     "pilot-register": cmd_pilot_register, "pilot-run": cmd_pilot_run, "pilot-end-session": cmd_pilot_end_session,
     "pilot-ack": cmd_pilot_ack, "pilot-gap-resolved": cmd_pilot_gap_resolved, "pilot-capture": cmd_pilot_capture,
@@ -2339,7 +2451,7 @@ COMMANDS = {
     "cancel": cmd_cancel, "replace": cmd_replace, "live-probe": cmd_live_probe, "paper-step": cmd_paper_step,
     "paper-replay": cmd_paper_replay, "reconcile": cmd_reconcile, "settle-market": cmd_settle_market,
     "journal": cmd_journal, "status": cmd_status, "kill": cmd_kill, "resume": cmd_resume,
-    "recording-release": cmd_recording_release,
+    "recording-release": cmd_recording_release, "p2-run": cmd_p2_run, "p2-summary": cmd_p2_summary,
 }
 
 

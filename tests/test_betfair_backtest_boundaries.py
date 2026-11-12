@@ -126,6 +126,8 @@ FORBIDDEN_BETFAIR = {
     "gateway": "the order gateway: the single choke point between an order decision and Betfair",
     "journal": "order journal writer the gateway folds at open; mode='live' appends live order state",
     "killswitch": "engages STATE_ROOT/KILL and cancels our unmatched bets through the exchange",
+    "p2_run": ("the Pilot 2 executor: the P2 ARM line, the live journal, the recording admission, Keychain reads, git, "
+               "caffeinate and Betfair through the read session and gateways the CLI hands it"),
     "paths": "resolves the per-Mac state root (profiles, live journal, KILL) from the password database; runs git",
     "pilot_gate": ("the RS-19 pilot gateway adapter: runs git, reads the contract, receipt and state root, writes raw "
                    "evidence; the gateway's first-byte predicate and latch table"),

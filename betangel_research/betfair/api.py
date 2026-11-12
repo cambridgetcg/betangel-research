@@ -645,9 +645,10 @@ class ReadClient:
         return [market_id for market_id, _ in self.precount_markets(rest_filter)]
 
     def list_market_book(self, market_ids, price_data=("EX_BEST_OFFERS",), depth=None, order_projection=None,
-                         match_projection=None, customer_strategy_refs=None):
+                         match_projection=None, customer_strategy_refs=None, virtualise=False):
         """MarketBook rows in request order. Chunked by request weight; ids missing from a multi-id response
-        (CLOSED markets are left out of mixed requests) are re-requested one per call."""
+        (CLOSED markets are left out of mixed requests) are re-requested one per call. virtualise True (Pilot 2's send
+        books) adds "virtualise": true to the price projection; False leaves the request body as it always was."""
         ids = _id_list(market_ids, "market_ids", _MARKET_ID, limit=10_000, optional=False)
         selected = set(price_data)
         if not selected <= set(PRICE_DATA):
@@ -656,11 +657,19 @@ class ReadClient:
             selected.discard("EX_BEST_OFFERS")
         if depth is not None and "EX_BEST_OFFERS" not in selected:
             raise ValueError("depth applies only to EX_BEST_OFFERS")
+        if type(virtualise) is not bool:
+            raise ValueError("virtualise must be a boolean")
         base = {}
         if selected:
             projection = {"priceData": sorted(selected)}
             if depth is not None:
                 projection["exBestOffersOverrides"] = {"bestPricesDepth": depth}
+            if virtualise:
+                # PriceProjection's virtualise flag (virtual, cross-matched prices). Documented in Betfair's Betting
+                # Type Definitions (DD/2687465, PriceProjection): boolean, default false, "Indicates if the returned
+                # prices should include virtual prices". Sent as JSON true (Betfair's examples send the string). Not
+                # yet sent to Betfair by this suite, and docs/betfair-facts.md has no row for it yet.
+                projection["virtualise"] = True
             base["priceProjection"] = projection
         if order_projection is not None:
             base["orderProjection"] = _choice(order_projection, ORDER_PROJECTIONS, "order_projection")
@@ -786,18 +795,18 @@ class ReadClient:
                                                         "cached_at": utc_from_ns(self.clock.time_ns()),
                                                         "row": scrub(row)})
 
-    def market_snapshot(self, market_id, *, price_data=("EX_BEST_OFFERS", "EX_TRADED"), fetched_by):
+    def market_snapshot(self, market_id, *, price_data=("EX_BEST_OFFERS", "EX_TRADED"), fetched_by, virtualise=False):
         """Catalogue row joined with a fresh listMarketBook, as a validated book snapshot (spec section 3).
 
         observed_at and monotonic_ns are taken before the book request, so the snapshot's age is
-        never understated.
+        never understated. virtualise goes to list_market_book (True only for Pilot 2's send books).
         """
         if fetched_by not in SNAPSHOT_FETCHERS:
             raise ValueError("fetched_by must be gateway_self_fetch or read_command")
         row = self.catalogue_row(market_id)
         observed_at = self.clock.utc_now()
         monotonic_ns = self.clock.monotonic_ns()
-        books = self.list_market_book([market_id], price_data=price_data)
+        books = self.list_market_book([market_id], price_data=price_data, virtualise=virtualise)
         if len(books) != 1:
             raise ApiError("market_book_missing", surface="local")
         return normalise_market_book(books[0], catalogue_item=row, key_type=self.key_type,

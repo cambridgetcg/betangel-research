@@ -63,30 +63,60 @@ void_own_runner_removed, post_decision_removal, result_revised_after_close, miss
 enters a cell's membership; codes, cells, flags and k read only what was published at or before their time.
 
 assess gives, per record, each time's code and one id-free Value row per runner ACTIVE and listed at a viewed
-time: no market id, selection id, name or time of day. A later step scores the rows (x through resting.score) and
-builds the tables.
+time: no market id, selection id, name or time of day.
+
+Scores (score_of, series). Over the value rows, as pure functions. x = LTP / BSP - 1 is resting.score with the
+LTP in place of an order's price: BACK reads x and LAY reads -x, and net_held takes off the commission of a bet
+held to the result. Every figure is worked out at the BSP as written and at BSP + step; the switch (bsp_switch)
+counts the scored values of the level cells at entry_s, both labels together, and when under bsp_whole_share of
+their BSPs are whole hundredths the written value decides alone (resting.deciding_end). The cluster is the race
+date; a mean has a CR1 SE with t(G - 1) (movement.cr1_mean), and its count is named values: nothing is a bet.
+
+Blind figures (blind_names, blind_spreads). Per move cell, over its scored values of both labels: the SD and
+symmetric ranges of x (resting.spread), and the detectable effect on the test label from the CR1 SE of those
+values (detectable), empty whenever the SD is. The two moved cells of a start and band are named moved_larger and
+moved_smaller, so the blind pass gives no sign. When the two starts' scored members in a band differ by fewer than
+min_values values, the earlier start's SDs, ranges and effects are withheld.
+
+Selection (select), on the explore label only, from its rows, two counts per move cell from the test label and the
+switch, nothing else. A cell is eligible when both labels pass the size gate, it has a CR1 SE of x on the explore
+label at the BSP as written, and its predicted detectable effect is at most max_detectable. Each side's primary is
+the eligible cell with the highest mean / CR1 SE of its gross x at its claim end; a tie goes to the cell listed
+first. The test (verdicts) is one-sided CR1 that the side's mean is above 0 on the test label, Holm over m = the
+number of sides. Labels, per side, the first that applies: kill_free_fill, underpowered, cost_clearing_candidate,
+signal_candidate, unresolved (the registration's verdicts.rule), each printed with its fixed texts.
+
+Part and rest (given_cells, given_move_cells, kill_given, shown). Inside the level cell at entry_s, per band and
+label, the move cells form partitions: on the explore label one per start, on the test label one per primary.
+resting.given_together decides inside a partition; across two, a nested pair of unions that differs by 1 to
+min_values - 1 rows withholds the later partition, and a crossing does not. A primary that is not given keeps its
+label, p and Holm result and loses its mean, SE, interval, bounds, detectable effect and the line at both BSP ends.
 
 What this does not do: it reads nothing after the latest time that reached the view, never re-prices a removal,
-scores nothing, selects nothing and builds no table. Standard library only; it imports movement, replay,
-market_index, partition, resting and lp and, through them, the modules they import. Nothing here is evidence of
-profitability.
+and builds no table, Markdown or file. Standard library only; it imports movement, replay, market_index, partition,
+resting and lp and, through them, the modules they import. Nothing here is evidence of profitability.
 """
 
 from collections import namedtuple
 from dataclasses import dataclass
 from datetime import date, timedelta
 from fractions import Fraction
+import itertools
+import math
 
 from .lp import BACK, LAY, _rules
 from .market_index import _as_of, _checked_changes, _Market, _messages, _Unreadable, loads_strict
 from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, MARKET_CODES, MAX_REGISTRATION_BYTES, MONTH_RE,
                        QUANTILE_METHOD, REMOVED_STATUSES, SCHEMA, UNCERTAINTY_METHOD, MarketReplay, Moment, _codes,
-                       _fail, _int, _object, _offset, _rate, _text, _texts, active_ids, decision_time, exact, log_move,
-                       market_code, measure, race_date, registration_sha256, view_problem, window_problem)
+                       _fail, _int, _object, _offset, _rate, _text, _texts, active_ids, cr1_mean, decision_time, exact,
+                       holm, log_move, market_code, measure, race_date, registration_sha256, student_t_quantile,
+                       view_problem, window_problem)
 from .movement import CLASSES as MEASURE_CLASSES
 from .partition import file_bytes
 from .replay import PriceFold, ReplayProblem, usable_ltp, view_from_fold
-from .resting import BSP_ENDS, BSP_STEP, CLAIM_END, SCORED, _Gate, _level, _named, _split
+from .resting import (AS_WRITTEN, BSP_ENDS, BSP_STEP, CLAIM_END, COUNTS_ONLY, G, KILL_END, NET_HELD, PLUS_STEP,
+                      REST_NOT_GIVEN, SCORED, _Gate, _level, _named, _split, bound, cr1_test, deciding_end, described,
+                      ends_apart, gate, gated, given_together, score, scored, spread, whole_hundredths, withheld)
 
 STUDY_ID, LINEAGE = "early-price-v1", "early-price"
 TIERS = ("BASIC",)
@@ -112,7 +142,13 @@ UNDEFINED = (WINDOW_UNKNOWN, REMOVAL_IN_WINDOW, "no_view_at_start", "no_start_pr
              "no_view_at_end", "no_end_price", "end_price_stale")
 FLAGS = (SUSPENSION,)
 CHANGES_BETWEEN = ("1", "2", "3_or_more")
-VERDICTS = ("kill_free_fill", "underpowered", "cost_clearing_candidate", "signal_candidate", "unresolved")
+# The names the blind pass shows for a start's two moved cells in a band: by scored values, larger first.
+MOVED_LARGER, MOVED_SMALLER = "moved_larger", "moved_smaller"
+KILL, UNDERPOWERED_LABEL, COST_CLEARING, SIGNAL, UNRESOLVED = VERDICTS = (
+    "kill_free_fill", "underpowered", "cost_clearing_candidate", "signal_candidate", "unresolved")
+# The checks every label is printed with, yes or no (verdicts).
+CHECKS = ("kill_bound_below_0", "se_on_test", "detectable_within_ceiling", "rejected_under_holm",
+          "mean_above_0_in_each_half_year", "net_lower_bound_above_allowance")
 HOLM = "holm"
 SELECT_MEASURE, SELECT_RANK, SELECT_TIE = "x", "mean_over_cr1_se", "first_registered_cell"
 SELECT_INPUTS = ("explore_rows", "test_counts", "bsp_switch")
@@ -138,6 +174,11 @@ Move = namedtuple("Move", ("start_s", "cell", "reason", "flagged", "k"))
 # a member at the entry time, else ().
 Value = namedtuple("Value", ("at_s", "code", "no_ltp", "band", "age_ms", "ltp", "label", "half", "race_date",
                              "klass", "bsp", "moves"))
+# The BSP switch (bsp_switch): whole hundredths among how many scored BSPs, and whether the two ends are apart.
+Switch = namedtuple("Switch", ("whole", "of", "apart"))
+# The selection (select): the eligible cells in the registered order, {side: primary or None}, and {MoveCell: what
+# R3 prints of it}.
+Selection = namedtuple("Selection", ("eligible", "primaries", "cells"))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -148,7 +189,8 @@ class Plan:
     """What one registration and its split file say (parse_registration). sha256 is the registration's; split the
     partition.Split; halves ((name, first, last), ...) of the test label; times_s and fresh_s one entry per time;
     bands ((name, low, high), ...) as exact prices, low included and high not. Levels, rates and thresholds are
-    exact Fractions. label_note and exposure_note are printed with every label, label_texts with each one."""
+    exact Fractions. label_note, exposure_note, bsp_limit and removal_note are printed with every label,
+    label_texts with each one."""
 
     sha256: str
     study: str
@@ -199,6 +241,8 @@ class Plan:
     label_note: str
     label_texts: dict
     exposure_note: str
+    bsp_limit: str
+    removal_note: str
     test_label_move_means: str
 
     @property
@@ -513,7 +557,8 @@ def parse_registration(raw, split_raw):
         underpowered_above=underpowered,
         half_year_min_values=_int(verdicts["half_year_min_values"], "verdicts.half_year_min_values", 2, 10 ** 6),
         half_gap_allowance=allowance, label_note=verdicts["printed_with"], label_texts=label_texts,
-        exposure_note=exposure["printed_with_every_label"], test_label_move_means=PRIMARIES_ONLY)
+        exposure_note=exposure["printed_with_every_label"], bsp_limit=ends["limit"],
+        removal_note=measurement["removals"], test_label_move_means=PRIMARIES_ONLY)
     if file_bytes(top) != raw:                  # last: every value is now known to be small (as partition.py)
         _fail("file", "not_canonical")
     return plan
@@ -758,3 +803,346 @@ def assess(stream, record, plan, limits):
                                 age_ms=price.age_ms, ltp=price.ltp, label=label, half=half, race_date=day,
                                 klass=klass, bsp=bsp, moves=moves))
     return Assessed(codes=codes, bsp_unknown=unknown, values=tuple(values), replayed=True)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Cells and scores. Every function from here on is pure and takes id-free Value rows.
+
+def by_cell(plan, values):
+    """{cell: its member rows}, every LevelCell and then every MoveCell in the plan's order. A level cell's members
+    are the rows priced at its time in its band; a move cell's are the members of the level cell at entry_s in its
+    band whose move from its start is that cell's. Rows of every class and label are kept: scored() picks values."""
+    cells = {cell: [] for cell in plan.level_cells + plan.move_cells}
+    for row in values:
+        if row.code != PRICED:
+            continue
+        cells[LevelCell(row.at_s, row.band)].append(row)
+        for move in row.moves:
+            if move.cell is not None:
+                cells[MoveCell(move.start_s, move.cell, row.band)].append(row)
+    return cells
+
+
+def _move(row, start_s):
+    """The Move of an entry member from one start."""
+    return next(move for move in row.moves if move.start_s == start_s)
+
+
+def _dates(rows):
+    return len({row.race_date for row in rows})
+
+
+def score_of(plan, row, side, end, what=G):
+    """One exact figure of a scored row for a side at one BSP end: gross (BACK x = LTP / BSP - 1, LAY -x) or
+    net_held, by resting.score with the LTP in place of an order's price."""
+    return score(plan, side, row.ltp, row.bsp + {AS_WRITTEN: 0, PLUS_STEP: plan.bsp_step}[end], what)
+
+
+def series(plan, rows, side, end, what=G):
+    """[(race date, float)] of one figure over the scored rows among rows; each exact figure is rounded once."""
+    return [(row.race_date, float(score_of(plan, row, side, end, what))) for row in rows if row.klass == SCORED]
+
+
+def bsp_switch(plan, cells):
+    """The Switch over the scored values of the level cells at entry_s, both labels together (registration
+    measurement.bsp_ends). cells: by_cell of both labels' rows."""
+    whole, of = whole_hundredths(plan, [row for name, _, _ in plan.bands
+                                        for row in cells[LevelCell(plan.entry_s, name)]])
+    return Switch(whole, of, ends_apart(plan, whole, of))
+
+
+def _counted(result):
+    """A movement.cr1_mean result with its count named values."""
+    return {"values" if key == "bets" else key: item for key, item in result.items()}
+
+
+def figures(plan, rows, given=True):
+    """R1 and R2 for one cell's rows on one label: members, each class's size, and x at both BSP ends
+    (resting.described: under min_values values, counts only). given False keeps the counts and withholds every
+    statistic (rest_not_given)."""
+    found = {end: _counted(described(plan, series(plan, rows, BACK, end))) for end in BSP_ENDS}
+    return {"members": len(rows), "classes": {klass: sum(1 for row in rows if row.klass == klass)
+                                              for klass in plan.classes},
+            "x": found if given else {end: withheld(item) for end, item in found.items()}}
+
+
+def detectable(plan, se, values, test_values, test_race_dates):
+    """The smallest true effect the test on the test label would catch with the registered power:
+    (t(detectable_level; G_V - 1) + t(power; G_V - 1)) x se x sqrt(values / test_values), where se is a CR1 SE over
+    values values and G_V is test_race_dates. None without an SE above 0, a value, a test value or two test race
+    dates."""
+    if not se or values < 1 or test_values < 1 or test_race_dates < 2:
+        return None
+    df = test_race_dates - 1
+    factor = student_t_quantile(float(plan.detectable_level), df) + student_t_quantile(float(plan.power), df)
+    return factor * se * math.sqrt(values / test_values)
+
+
+def _se(plan, values):
+    """The CR1 SE of [(race date, float)] values, or None (too few race dates, or no spread between them)."""
+    return cr1_mean(values, plan.confidence_level, plan.min_clusters)["se"] or None
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The blind pass
+
+def blind_names(plan, cells):
+    """{MoveCell: the name the blind pass shows it by}. FLAT keeps its name. Per start and band the other two are
+    moved_larger and moved_smaller, by scored values of both labels together, a tie to the registered order: named
+    counts would give the rough sign of the early level cells. cells: by_cell of both labels' rows."""
+    names = {}
+    for start in plan.starts_s:
+        for band, _, _ in plan.bands:
+            moved = sorted((MoveCell(start, move, band) for move in (DRIFT, STEAM)),
+                           key=lambda cell: -len(scored(cells[cell])))       # sorted is stable
+            names.update({moved[0]: MOVED_LARGER, moved[1]: MOVED_SMALLER, MoveCell(start, FLAT, band): FLAT})
+    return {cell: names[cell] for cell in plan.move_cells}
+
+
+def blind_spreads(plan, cells):
+    """B7 and B8: {MoveCell: resting.spread of x at the BSP as written over the cell's scored values of both labels,
+    its reason (None, counts_only or rest_not_given) and detectable {test_values, test_race_dates, effect}}. The
+    effect uses the CR1 SE of those pooled values and is None whenever the SD is. Per band, when the two starts'
+    scored members (both labels) differ by fewer than min_values values, 0 included, the first start's SD, ranges
+    and effect are withheld: two partitions of nearly one group would give the gap between their spreads."""
+    close = {}
+    for band, _, _ in plan.bands:
+        rows = scored(cells[LevelCell(plan.entry_s, band)])
+        sets = [{place for place, row in enumerate(rows) if _move(row, start).cell is not None}
+                for start in plan.starts_s]
+        close[band] = any(len(sets[0] ^ other) < plan.min_values for other in sets[1:])
+    out = {}
+    for cell in plan.move_cells:
+        pooled, test = series(plan, cells[cell], BACK, AS_WRITTEN), scored(cells[cell], plan.test_label)
+        found = spread(plan, pooled)
+        effect, reason = None, COUNTS_ONLY
+        if found["sd"] is not None:
+            effect, reason = detectable(plan, _se(plan, pooled), len(pooled), len(test), _dates(test)), None
+        if close[cell.band] and cell.start_s == plan.starts_s[0]:
+            found, effect, reason = dict(found, sd=None, ranges=None), None, REST_NOT_GIVEN
+        out[cell] = dict(found, reason=reason, detectable={"test_values": len(test), "test_race_dates": _dates(test),
+                                                           "effect": effect})
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Selection, the test and the labels
+
+def test_counts(plan, cells):
+    """{MoveCell: (scored values on the test label, their race dates)}: all that the selection takes of it."""
+    found = {cell: scored(cells[cell], plan.test_label) for cell in plan.move_cells}
+    return {cell: (len(rows), _dates(rows)) for cell, rows in found.items()}
+
+
+def select(plan, explore, counts, apart):
+    """The Selection (registration selection.rule). explore: {MoveCell: its rows on the explore label}; counts:
+    test_counts; apart: the switch. Nothing else of the test label is taken, and a row of another label is refused
+    (ValueError). Per cell, cells holds both labels' counts, the three checks (sizes; an SE of x on the explore
+    label at the BSP as written; the predicted detectable effect at most max_detectable; the last two None when
+    the explore label fails the size gate, as is every figure), that SE, the effect, mean / SE for each side at
+    its claim end, and eligible. primaries: {side: the eligible cell with the highest mean / SE, a tie to the cell
+    listed first; None with no eligible cell}. Level cells are never candidates."""
+    cells, eligible, best = {}, [], dict.fromkeys(plan.sides)
+    for cell in plan.move_cells:
+        if any(row.label != plan.explore_label for row in explore[cell]):
+            raise ValueError("select:not_the_explore_label")
+        rows = scored(explore[cell])
+        values, days = len(rows), _dates(rows)
+        test_values, test_days = counts[cell]
+        se = effect = None
+        ranks, checks = dict.fromkeys(plan.sides), {"sizes": gate(plan, values, days) and gate(plan, *counts[cell]),
+                                                    "se": None, "detectable_within_ceiling": None}
+        if gate(plan, values, days):
+            se = _se(plan, series(plan, rows, BACK, AS_WRITTEN))
+            effect = detectable(plan, se, values, test_values, test_days)
+            checks.update(se=se is not None,
+                          detectable_within_ceiling=effect is not None and effect <= plan.max_detectable)
+            for side in plan.sides:
+                found = cr1_mean(series(plan, rows, side, deciding_end(side, CLAIM_END, apart)),
+                                 plan.confidence_level, plan.min_clusters)
+                ranks[side] = found["mean"] / found["se"] if found["se"] else None
+        cells[cell] = {"explore": {"values": values, "race_dates": days},
+                       "test": {"values": test_values, "race_dates": test_days}, "checks": checks, "se": se,
+                       "detectable": effect, "mean_over_se": ranks, "eligible": all(checks.values())}
+        if not all(checks.values()):
+            continue
+        eligible.append(cell)
+        for side in plan.sides:
+            if ranks[side] is not None and (best[side] is None or ranks[side] > best[side][0]):
+                best[side] = (ranks[side], cell)
+    return Selection(tuple(eligible), {side: None if item is None else item[1] for side, item in best.items()},
+                     cells)
+
+
+def _half_years(plan, rows, side, end):
+    """{half: {values, race_dates, mean_above_0}} of the test label's rows: the mean is read, never given."""
+    out = {}
+    for name, _, _ in plan.halves:
+        part = series(plan, [row for row in rows if row.half == name], side, end)
+        out[name] = {"values": len(part), "race_dates": len({day for day, _ in part}),
+                     "mean_above_0": len(part) >= plan.half_year_min_values
+                     and math.fsum(x for _, x in part) / len(part) > 0}
+    return out
+
+
+def verdicts(plan, primaries, cells, apart):
+    """{side: its label and what is printed with it} (registration verdicts.rule), decided on the full values.
+    primaries: Selection.primaries; cells: {MoveCell: its rows of both labels}; apart: the switch.
+    The test is the one-sided CR1 test that the side's mean gross x on the test label at the claim end is above 0,
+    with Holm over family_m (a side with no primary counts and is never rejected). Per side, the first that applies:
+    kill_free_fill: over both labels pooled the size gate passes and the upper bound of mean net_held at the kill
+    end, mean + t(kill_level; G - 1) x SE, is below 0. underpowered: no primary; or no SE on the test label; or
+    the detectable effect from that SE is above underpowered_above. cost_clearing_candidate: the conditions of
+    signal_candidate, and the lower bound of mean net_held on the test label at the claim end,
+    mean - t(lower_bound_level; G - 1) x SE, above the band's half_gap_allowance. signal_candidate: rejected under
+    Holm, and the mean above 0 in each half-year with half_year_min_values values. unresolved.
+    Each answer: side, cell, band, label, text, printed_with, allowance, members and two shares on the test label
+    (not scored; at k = 1 among the scored), test (with Holm), detectable, kill and net_lower (each bound keyed
+    bound, so resting.withheld empties it), both (gross and net_held at both BSP ends), half_years and checks."""
+    work = {}
+    for side in plan.sides:
+        cell = primaries[side]
+        if cell is not None:
+            rows = [row for row in cells[cell] if row.label == plan.test_label]
+            claim = deciding_end(side, CLAIM_END, apart)
+            work[side] = (cell, rows, claim, cr1_test(plan, series(plan, rows, side, claim)))
+    adjusted = holm({side: work[side][3]["p_one_sided"] if side in work else None for side in plan.sides},
+                    plan.alpha, plan.family_m)
+    found = {}
+    for side in plan.sides:
+        answer = {"side": side, "cell": None, "band": None, "label": UNDERPOWERED_LABEL,
+                  "text": plan.label_texts[UNDERPOWERED_LABEL],
+                  "printed_with": (plan.label_note, plan.exposure_note, plan.bsp_limit, plan.removal_note),
+                  "allowance": None, "members": None, "not_scored_share": None, "k_1_share": None, "test": None,
+                  "detectable": None, "kill": None, "net_lower": None, "both": None, "half_years": None,
+                  "checks": dict.fromkeys(CHECKS, False)}
+        if side not in work:
+            found[side] = answer
+            continue
+        cell, rows, claim, test = work[side]
+        held, kill_end = scored(rows), deciding_end(side, KILL_END, apart)
+        kill = gated(plan, series(plan, cells[cell], side, kill_end, NET_HELD))
+        net = gated(plan, series(plan, rows, side, claim, NET_HELD))
+        upper, lower = bound(kill, plan.kill_level, 1), bound(net, plan.lower_bound_level, -1)
+        effect = detectable(plan, test["se"] if test["df"] is not None else None, len(held), len(held),
+                            _dates(held))
+        halves = _half_years(plan, rows, side, claim)
+        allowance = plan.half_gap_allowance[cell.band]
+        checks = {"kill_bound_below_0": upper is not None and upper < 0, "se_on_test": test["df"] is not None,
+                  "detectable_within_ceiling": effect is not None and effect <= plan.underpowered_above,
+                  "rejected_under_holm": adjusted[side][1],
+                  "mean_above_0_in_each_half_year": all(item["mean_above_0"] for item in halves.values()),
+                  "net_lower_bound_above_allowance": lower is not None and lower > allowance}
+        if checks["kill_bound_below_0"]:
+            label = KILL
+        elif not (checks["se_on_test"] and checks["detectable_within_ceiling"]):
+            label = UNDERPOWERED_LABEL
+        elif checks["rejected_under_holm"] and checks["mean_above_0_in_each_half_year"]:
+            label = COST_CLEARING if checks["net_lower_bound_above_allowance"] else SIGNAL
+        else:
+            label = UNRESOLVED
+        found[side] = dict(
+            answer, cell=cell, band=cell.band, label=label, text=plan.label_texts[label], allowance=float(allowance),
+            members=len(rows), not_scored_share=(len(rows) - len(held)) / len(rows) if rows else None,
+            k_1_share=sum(1 for row in held if _move(row, cell.start_s).k == 1) / len(held) if held else None,
+            test=dict(_counted({key: item for key, item in test.items() if key != "t"}),
+                      holm_p_adjusted=adjusted[side][0], holm_rejected=adjusted[side][1], bsp_end=claim),
+            detectable=effect, kill=dict(_counted(kill), bound=upper, bsp_end=kill_end),
+            net_lower=dict(_counted(net), bound=lower, bsp_end=claim),
+            both={end: {what: _counted(described(plan, series(plan, rows, side, end, what))) for what in (G, NET_HELD)}
+                  for end in BSP_ENDS},
+            half_years=halves, checks=checks)
+    return found
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Part and rest in the registered pass, applied after the selection and the labels
+
+def _unions(classes):
+    """Every union of some of the classes, the empty one and all of them included."""
+    return [frozenset().union(*chosen) for size in range(len(classes) + 1)
+            for chosen in itertools.combinations(classes, size)]
+
+
+def _nested(plan, first, second):
+    """Whether a union of first lies inside a union of second, or the other way, with 1 to min_values - 1 rows
+    between them: the only sums the given figures can work out besides the classes themselves."""
+    return any((one <= two or two <= one) and 0 < abs(len(one) - len(two)) < plan.min_values
+               for one in first for two in second)
+
+
+def given_cells(plan, count, partitions):
+    """Part and rest across partitions of one universe of count rows (registration measurement.part_and_rest (2)).
+    partitions: [[(name, the positions of its rows), ...], ...], the first given first; the groups of a partition
+    share no row (ValueError otherwise). Inside a partition resting.given_together decides, and it is exact there.
+    A partition's classes are then its given groups and the rest of the universe. When some union of a partition's
+    classes lies inside a union of an earlier given partition's classes and the two differ by 1 to min_values - 1
+    rows, nothing of the later partition is given. A crossing of two partitions, however small, is safe. The
+    names given, in order."""
+    universe, kept, given = frozenset(range(count)), [], []
+    for groups in partitions:
+        sets = [frozenset(members) for _, members in groups]
+        if sum(map(len, sets)) != len(frozenset().union(*sets)):
+            raise ValueError("given:groups_share_a_row")
+        names = given_together(plan, count, [(name, set(members)) for name, members in groups])
+        held = [members for (name, _), members in zip(groups, sets) if name in names]
+        classes = [part for part in held + [universe.difference(*held)] if part]
+        if any(_nested(plan, earlier, _unions(classes)) for earlier in kept):
+            continue
+        kept.append(_unions(classes))
+        given += [name for name in names if name not in given]
+    return given
+
+
+def given_move_cells(plan, cells, label, primaries):
+    """The set of move cells whose figures one label gives. cells: by_cell of rows of that label (or both);
+    primaries: Selection.primaries. Per band, the universe is the scored rows of the level cell at entry_s on the
+    label. On the explore label the partitions are the two starts, three cells each: the start with the BACK primary
+    of this band first, else the one with the LAY primary, else the first start; inside a start the primaries
+    first. On the test label each primary of this band is a partition of one group, BACK first; no other move cell
+    gives a figure there (registered_pass.test_label_move_means)."""
+    if label not in plan.labels:
+        raise ValueError("given:label_not_registered")
+    out = set()
+    for band, _, _ in plan.bands:
+        rows = scored(cells[LevelCell(plan.entry_s, band)], label)
+        chosen = []
+        for side in plan.sides:
+            if primaries[side] is not None and primaries[side].band == band and primaries[side] not in chosen:
+                chosen.append(primaries[side])
+        if label == plan.explore_label:
+            first = next((cell.start_s for cell in chosen), plan.starts_s[0])
+            starts = [first] + [start for start in plan.starts_s if start != first]
+            partitions = [[cell for cell in chosen if cell.start_s == start]
+                          + [cell for cell in plan.move_cells if (cell.start_s, cell.band) == (start, band)
+                             and cell not in chosen] for start in starts]
+        else:
+            partitions = [[cell] for cell in chosen]
+        out.update(given_cells(plan, len(rows), [
+            [(cell, {place for place, row in enumerate(rows) if _move(row, cell.start_s).cell == cell.move})
+             for cell in partition] for partition in partitions]))
+    return out
+
+
+def kill_given(plan, rows, given):
+    """Whether a primary's pooled kill gives its figures (measurement.part_and_rest (3)): each label holds
+    min_values of the cell's scored values and gives that cell's own figures. rows: the cell's rows of both labels;
+    given: {label: whether that label gives the cell}. The label is printed either way."""
+    return all(len(scored(rows, label)) >= plan.min_values and given[label] for label in plan.labels)
+
+
+def shown(verdict, given, kill_figures):
+    """A verdict as R4 prints it. given False (its cell is not given on the test label): the label, text, p, Holm
+    result, counts, shares and checks stay; the mean, SE, interval, both bounds, the detectable effect and the line
+    at both BSP ends are withheld. kill_figures False withholds the kill's figures. A side with no primary is
+    unchanged."""
+    if verdict["cell"] is None:
+        return dict(verdict, figures_given=None, kill_figures_given=None)
+    out = dict(verdict, figures_given=given, kill_figures_given=kill_figures)
+    if not given:
+        out.update(test=withheld(verdict["test"]), net_lower=withheld(verdict["net_lower"]), detectable=None,
+                   both={end: {what: withheld(item) for what, item in found.items()}
+                         for end, found in verdict["both"].items()})
+    if not kill_figures:
+        out["kill"] = withheld(verdict["kill"])
+    return out

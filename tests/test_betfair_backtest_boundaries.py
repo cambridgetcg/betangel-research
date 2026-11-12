@@ -151,6 +151,8 @@ ALLOWED_BETFAIR = {
     "paper": "paper fill model and offline replay over paths its caller names; holds no transport",
     "pilot": ("pure P1 predicates, decision record, measurement classes, NCLV, ledger fold with the pause, CR1 "
               "analysis; no clock, file or network; its closure obeys the offline rule"),
+    "pilot_tables": ("pure Pilot 1 end tables T1-T3 over a folded state (note §12); imports pilot only; no clock, "
+                     "file or network; its closure obeys the offline rule"),
     "pnl": "own P&L and commission arithmetic in pence",
     "readiness": "read-only draft and index inventory over explicit paths; its closure obeys the offline rule",
     "receipts": "clocks, timestamp parsing, canonical hashing, durable local writes; git_state runs git",

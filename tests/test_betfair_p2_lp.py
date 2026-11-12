@@ -820,7 +820,7 @@ class GateA(unittest.TestCase):
         return []
 
     def test_the_counter_counts_the_rule_and_times_the_bot_runs(self):
-        """The counter and the bot must hold one rule, so that the count measures what the bot would trade; since
+        """The counter and the bot must hold one rule, so that the count keeps describing the rule the bot runs; since
         2026-11-12 the count decides no merge (plan, Decided and Stages).
         scripts/lp_rate_count.py is read as text with ast and never imported. The time of its decision snapshot, the
         time of its earlier (persistence) snapshot, its primary price band and spread, its runner minimum and its

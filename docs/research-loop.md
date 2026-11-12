@@ -1,6 +1,6 @@
 # Research lane: the data split, the study ledger, rule files and close-v1
 
-Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). early-price-v1, a study on the BASIC files, with the split file version 2, is proposed in a pull request of its own and is not merged. When that pull request was written (2026-11-12), no pass had run: nothing here had read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The middle, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. [The split, version 2](#the-split-version-2) and [early-price-v1](#early-price-v1-early-prices-against-bsp) cover the proposed PR. inplay-v1 is planned for PR C and is not built.
+Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). early-price-v1, a study on the BASIC files, with the split file version 2, came in a pull request of its own (#67), which lab-Claude merged on 2026-11-12 under Yu's word of that day ([who merges and who starts a pass](#who-merges-and-who-starts-a-pass)). When that pull request was written (2026-11-12), no pass had run: nothing here had read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The middle, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. [The split, version 2](#the-split-version-2) and [early-price-v1](#early-price-v1-early-prices-against-bsp) cover the proposed PR. inplay-v1 is planned for PR C and is not built.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, against betangel-research main b9099ff.
 
@@ -13,6 +13,18 @@ For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, agai
 - "Alpha" is the chance a test is allowed to take of calling noise a result. 0.02 a test is planned.
 - "Family size" (`m`) is how many claims one test covers.
 - A "salt" is a fixed text mixed into a hash. Another salt would give another split, so the salt is written in the split file.
+
+## Who merges and who starts a pass
+
+Until 2026-11-12 every merge in this lane waited for Yu's "merge", and every pass over real data for Yu's OK for that pass. On 2026-11-12 that changed, for this lane only.
+
+- **What lab-Claude put to Yu** (lab session, 2026-11-12): "If you'd like me to merge my own offline research PRs after an independent review, and run the night data passes without asking each time, say "research is yours". That covers no live code and no money."
+- **Yu's answer, exact:** "ho lah follow what you recc and suggest :)"
+- **lab-Claude's reading** (lab-Claude's, not Yu's words): yes to that offer as worded. Yu did not use the phrase that was offered, so this is a reading, and Yu can correct it at any time.
+- **What it covers.** lab-Claude may merge its own pull requests in this lane (offline research code, registrations, split files, this page) once a reviewer other than the builder has read them and the whole suite passes. lab-Claude may start a pass at night under the operator steps below without asking first. It tells Yu what ran and what came out.
+- **What it does not cover.** Any live code, the order path, a money number, a policy page, the lab's own rule file, or another author's pull request. Those wait for Yu as before.
+- **The registrations.** close-v1's and early-price-v1's registrations say each pass needs Yu's OK for that pass. lab-Claude reads Yu's answer above as that OK for night passes of these studies. The registered pass of a study still follows its blind pass on a later night, after lab-Claude has read the blind tables.
+- **Unchanged.** Passes run at night only, one at a time per ledger, never while a live command is running on the Mac, and never by a subagent. Outputs stay on the lab.
 
 ## What the lane is
 
@@ -294,9 +306,9 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 
 ### Operator steps for a pass (on the lab, after the PR merges)
 
-1. **Who starts it.** lab-Claude itself or Yu, after Yu's OK for that pass. Never a subagent or another agent. The lab's rule 1 says no agent runs Python that imports the Betfair package outside the test suite. A pass is such Python, though it is offline and reads only the historical files. So it runs only on Yu's word, pass by pass.
+1. **Who starts it.** lab-Claude itself or Yu, after Yu's OK for that pass. Never a subagent or another agent. The lab's rule 1 says no agent runs Python that imports the Betfair package outside the test suite. A pass is such Python, though it is offline and reads only the historical files. So it runs only on Yu's word. Since 2026-11-12 lab-Claude reads Yu's word as standing for night passes ([who merges and who starts a pass](#who-merges-and-who-starts-a-pass)).
 2. **When.** Between 23:00 and 06:45 London. The recorder runs 07:00 to 23:00 and must not be slowed. Start the pass at low priority under a plain shell guard that ends it at 06:45. A pass ended during the read has written nothing. lab-Claude checks the result in the morning and tells Yu.
-3. **Ask first.** Before starting, ask Yu whether a session will be armed or an order will rest before the pass ends. If yes, do not start.
+3. **Ask first.** Before starting, ask Yu whether a session will be armed or an order will rest before the pass ends. If yes, do not start. Under the standing word of 2026-11-12, lab-Claude tells Yu which night it plans where it can, and checks at the start that no live command is running on the Mac; if one is, it does not start.
 4. **A clean clone.** Check out the merged commit in a new directory of its own. Never the live clone, and never at the top of the home folder, of `~/Library` or of `~/.config` (the lab's rule 2a). Note the commit (`git rev-parse HEAD`) and pin the registration (`shasum -a 256 research/studies/close-v1.json`).
 5. **The data root.** The PRO root, already ingested and indexed, in a root of its own ([lp study](lp-study.md), operator step 2).
 6. **The ledger.** Make its directory once: `mkdir -m 700 -p ~/.local/state/lab-runs/ledger`. Run one pass at a time per ledger. Before each pass check that the directory is mode 700 and can be written, and that the ledger file, once it exists, can be written: the runner finds out only at the end of the read. Pass `--ledger` and the last head (`none` for the very first pass). Copy the new head from the printed line into the results note after every pass.
@@ -420,7 +432,7 @@ Every figure here is a guess that the blind pass replaces.
   | B3 | per time and label: markets viewed, markets with a priced runner, runner codes (`no_ltp` split three ways), priced runners per band |
   | B4 | classes of priced runners per time, band and label |
   | B5 | the age of the price in seconds, as quantiles, per time and band (an age is not an outcome) |
-  | B6 | per band, start and label: undefined moves by reason, flagged members, and per move cell its members, scored values, race dates and members by k |
+  | B6 | per band, start and label: undefined moves by reason, flagged members (only members that keep a cell are flagged), and per move cell its members, scored values, race dates and members by k |
   | B7 | the SD and three ranges of x for each move cell, both labels together; only for a cell with 100 scored values on each label |
   | B8 | each move cell's detectable effect on 2024, from a clustered SE over both years; empty when B7's SD is |
   | B9 | whole-hundredth BSPs and the switch; times with no `bspMarket` value; the compressed bytes of the files opened |
@@ -438,7 +450,7 @@ Every figure here is a guess that the blind pass replaces.
   | R5 | the primaries on 2024 by half-year: n, race dates and "mean above 0", yes or no; no mean |
   | R6 | per label, quantiles of the sum of 1 / BSP per market |
 
-- **Only the two primaries print a 2024 move-cell mean**, in R4. This is the default of a choice that is Yu's: printing all twelve cannot be undone, and opening the other ten later would cost a new test. The level cells' 2024 means are printed.
+- **Only the two primaries print a 2024 move-cell mean**, in R4. This was lab-Claude's recommendation, which Yu left standing on 2026-11-12: printing all twelve cannot be undone, and opening the other ten later would cost a new test. The level cells' 2024 means are printed.
 - **Part and rest.** The selection and the labels are decided first, on the full values. Then a group's mean is held back when it, with the means given beside it, would give away the mean of fewer than 100 values. Inside each band's level cell at T-10 the move cells of one start share no runner, so they are checked together. Across the two starts on 2023, if some cells of one start and some cells of the other cover the same runners but for 1 to 99 (in one and not the other), the start checked second is held back: the two sums would give the sum of those few runners. The start checked first is the one that holds the BACK primary, else the one with the LAY primary, else the 4-hour start. On 2024 only the primaries print a mean, so the same check runs between the two primaries when they share a band: BACK is checked first, and LAY is held back. A held-back cell shows its counts and `rest_not_given`, and its SE and mean / SE are held back in R3 too. A primary can print with no mean. Then its label, counts, checks and Holm result (rejected or not) still print, but not its p-value: with the number of race dates the p-value gives mean / SE, and the SE could be worked out from figures that do print. And then neither side prints a Holm-adjusted p-value, which can carry the other side's p-value.
 
 ### Limits, stated plainly
@@ -477,10 +489,10 @@ Every figure here is a guess that the blind pass replaces.
 
 `<LAB RUNS>` below stands for the full path of `~/.local/state/lab-runs`.
 
-1. **Who starts it.** lab-Claude or Yu, after Yu's OK for that pass. Never a subagent or another agent. A pass is Python that imports the Betfair package, so it runs on Yu's word, pass by pass.
+1. **Who starts it.** lab-Claude or Yu, after Yu's OK for that pass. Never a subagent or another agent. A pass is Python that imports the Betfair package, so it runs on Yu's word. Since 2026-11-12 lab-Claude reads that word as standing for night passes ([who merges and who starts a pass](#who-merges-and-who-starts-a-pass)).
 2. **One pass at a time per ledger, across studies.** Never start it while any pass of any study is running on the same ledger.
-3. **When.** This is Yu's choice and is still open: night only, or in the day with the recorder off, and whether both passes may run on one day. Until Yu decides, close-v1's step 2 applies: between 23:00 and 06:45 London, at low priority, under the same guard, because the recorder runs 07:00 to 23:00 and must not be slowed. The recommendation is to run the blind and registered passes on different days, so people read the blind tables first.
-4. **Ask first.** Ask Yu whether a session will be armed or an order will rest in the next 15 minutes. If yes, do not start.
+3. **When.** Between 23:00 and 06:45 London, at low priority, under close-v1's guard (its step 2), because the recorder runs 07:00 to 23:00 and must not be slowed. The blind and registered passes run on different nights, so the blind tables are read first. Yu left this to lab-Claude's recommendation on 2026-11-12; a daytime pass with the recorder off would be a new choice for Yu.
+4. **Ask first.** Ask Yu whether a session will be armed or an order will rest in the next 15 minutes. If yes, do not start. Under the standing word of 2026-11-12, lab-Claude checks at the start that no live command is running on the Mac; if one is, it does not start.
 5. **A clean checkout** at the merged commit, in a new directory of its own, as close-v1's step 4. Note the commit and pin the registration: `shasum -a 256 research/studies/early-price-v1.json`.
 6. **The data root.** The BASIC root, already ingested and indexed, in a root of its own. A root in which no record reaches the view (for example the PRO root, typed by mistake) fails with `input:no_registered_market` and spends no look. Any other mistake that lets the pass complete does spend one, and this study has two looks in all.
 7. **The ledger and its head.** Use the same ledger directory as close-v1 (`<LAB RUNS>/ledger`). After any pass of any study, the next pass of any study is typed with the ledger's newest head: `none` if the ledger has no line yet, else the `ledger_head` the last pass printed (`SEQ:SHA256`). Keep that head in one shared note for both studies.

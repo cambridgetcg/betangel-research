@@ -29,7 +29,9 @@ bytes hashed against the manifest. What the index record alone says is read firs
 and half-year, and each time's code: early.record_code); only those calls report malformed_record. A record with a
 code at every time is never opened: so no file of 2025, of 2015-16 or of another plan is opened. Any other record
 is opened once and folded to the latest time that reached the view, at most 10 minutes before the off
-(early.assess); the rest of the file is hashed, not parsed. The tally keeps counts, the ages of prices, the sum of
+(early.assess); the rest of the file is hashed, not parsed. When no record reaches the view at any time (for
+example a PRO data root given by mistake), the pass fails with input:no_registered_market before the ledger gets
+an entry, so a wrong root spends no look. The tally keeps counts, the ages of prices, the sum of
 1 / BSP per market with a scored value, and the priced value rows. A row holds no market or selection id, name or
 time of a market, stays in memory and never reaches disk.
 
@@ -40,7 +42,10 @@ pass that fails or is stopped during the read has appended and written nothing. 
 after the append, or the code faults there, the entry stands, the result names the new head (ledger_head) beside
 the failure, and the re-run is a repeat. If only the ledger's lock file could not be removed, the outputs are still
 written and the result says ledger_lock_left. The summary has no clock, so the same registration, input and code
-give the same bytes. The receipt has resting_study's keys.
+give the same bytes. Of the bytes read it gives one total, the compressed bytes of the files opened: how that total
+splits into bytes read and bytes drained depends on the bz2 reader's read-ahead, which differs between Python
+versions (8 KiB on 3.13, 128 KiB on 3.15), so the split is in the receipt only. The receipt has resting_study's
+keys.
 
 Tables (the registration's blind_pass.releases and registered_pass.releases). Both passes: B1 records by registered
 month and label, records with no off time and with no registered label, files opened; B2 the market codes per time
@@ -50,19 +55,21 @@ and label; B5 the age of the price in seconds, as quantiles, per time and band, 
 ltp_before_last_removal, ltp_stale or priced; B6 per band, start and label the undefined moves by reason, the
 members flagged suspension_in_window and per move cell its members, scored values, race dates and members by k;
 B7 the SD and symmetric ranges of x at the BSP as written over each move cell's scored values, both labels pooled;
-B8 the detectable effect on the test label from a clustered SE over both years (early.blind_spreads); B9 the
-counts of whole-hundredth BSPs and the switch, the times with no bspMarket value, and the bytes the replay read and
-drained. In the blind pass the two moved cells of a start and band are named moved_larger and moved_smaller
-(early.blind_names), and the blind summary holds no location of x: no average, middle value, raw quantile, sign,
-interval, test, label, selection or half-year figure, no spread by label or of a level cell
-(tests/test_backtest_early.py walks every key and the Markdown). The registered pass names the cells and adds: R1
+B8 the detectable effect on the test label from a clustered SE over both years (early.blind_spreads; a cell with
+fewer than min_values scored values on either label gives no SD, range or effect); B9 the counts of whole-hundredth
+BSPs and the switch, the times with no bspMarket value, and the compressed bytes of the files opened. In the blind
+pass the two moved cells of a start and band are named moved_larger and moved_smaller (early.blind_names), and
+the blind summary holds no location of x: no average, middle value, raw quantile, sign, interval, test, label,
+selection or half-year figure, no spread by label or of a level cell (tests/test_backtest_early.py walks every key
+and the Markdown). The registered pass names the cells and adds: R1
 the level cells per label at both BSP ends (early.figures); R2 the move cells on the explore label, and on the test
 label counts only; R3 the selection (early.select); R4 per side the label and everything printed with it
 (early.verdicts, early.shown); R5 the primaries on the test label by half-year, mean above 0 yes or no; R6 the
 quantiles of the sum of 1 / BSP per market with a scored value, per label. The selection is decided first, then the
 labels on the full values, then part and rest (early.given_move_cells, early.kill_given): a move cell's explore
 figures, and its standing in R3 (its SE, mean / SE and detectable effect), are given only when given_move_cells
-gives it; a primary that the test label does not give keeps its label, p and Holm result and loses its mean.
+gives it; a primary that the test label does not give keeps its label, counts, checks and Holm result (rejected or
+not) and loses its mean, SE and p, and then neither side prints a Holm-adjusted p (early.shown).
 Markdown tables print 100 x x as points of stake; summary.json keeps fractions of stake, floats rounded to 6 places.
 
 Standard library only; it imports the backtest modules named above and nothing outside the package but what they
@@ -107,11 +114,12 @@ STUDIES = (STUDY_ID,)                               # the studies this module ru
 REGISTRATIONS = REPOSITORY_ROOT / "research" / "studies"
 WITHHELD = ("every location statistic of x (an average, a middle value, a raw quantile or a sign), every interval, "
             "test, label and selection, any figure by half-year, any SD of a net, the names of the two moved cells, "
-            "any SD, range or SE by label, every spread of a level cell, and any spread over a union of move cells "
-            "or over the values with an undefined move: the registration's blind_pass.withholds")
+            "any SD, range or SE by label, any spread of a move cell with fewer than min_values values on one "
+            "label, every spread of a level cell, and any spread over a union of move cells or over the values with "
+            "an undefined move: the registration's blind_pass.withholds")
 CLUSTERED = "from a clustered SE over both years"
 NOT_COMPARABLE = "not comparable across times: each time needs its own fresh price, so the cells hold other runners"
-COUNTS_ONLY_TEST = "counts only: of 2024's move cells only the primaries print a mean, in R4"
+COUNTS_ONLY_TEST = "counts only: of {}'s move cells only the primaries print a mean, in R4"   # the test label
 # The runner's own tallies of runner codes: no_ltp by kind, then the other runner codes, then priced.
 RUNNER_TALLY = NO_LTP_KINDS + RUNNER_CODES[1:] + (PRICED,)
 AGED = (BEFORE_REMOVAL, STALE, PRICED)              # the runner codes whose price has a band and a change (B5)
@@ -389,18 +397,19 @@ def _registered(plan, cells, switch, books):
             item = dict(item, se=None, detectable=None, mean_over_se=dict.fromkeys(item["mean_over_se"]))
         standing[named[cell]] = dict(item, figures_given=cell in given[explore])
     primaries = {}
+    holm_given = all(verdict["cell"] is None or verdict["cell"] in given[test] for verdict in found.values())
     for side, verdict in found.items():
         cell = verdict["cell"]
         kill = cell is not None and kill_given(plan, cells[cell], {label: cell in given[label]
                                                                     for label in plan.labels})
-        primaries[side] = _verdict_json(shown(verdict, cell is not None and cell in given[test], kill))
+        primaries[side] = _verdict_json(shown(verdict, cell is not None and cell in given[test], kill, holm_given))
     return {
         "level_figures": dict(_exploratory(len(plan.level_cells)), headings={explore: EXPLORATORY, test: NOT_TESTED},
                               not_comparable=NOT_COMPARABLE, removals=plan.removal_note, by_cell={
                                   _level_key(cell): {label: figures(plan, _of(cells[cell], label))
                                                      for label in plan.labels} for cell in plan.level_cells}),
-        "move_figures": dict(_exploratory(len(plan.move_cells)), headings={explore: EXPLORATORY,
-                                                                           test: COUNTS_ONLY_TEST}, by_cell={
+        "move_figures": dict(_exploratory(len(plan.move_cells)), headings={
+            explore: EXPLORATORY, test: COUNTS_ONLY_TEST.format(test)}, by_cell={
             named[cell]: {explore: figures(plan, _of(cells[cell], explore), given=cell in given[explore]),
                           test: _counts_only(_of(cells[cell], test))} for cell in plan.move_cells}),
         "selection": {"eligible": [named[cell] for cell in selection.eligible],
@@ -433,7 +442,9 @@ def summary(plan, tally, pass_name, input_sha256):
                                "bsp_ends_decide_apart": switch.apart,
                                "bsp_market_with_no_value": {str(at_s): tally.bsp_unknown[at_s]
                                                             for at_s in plan.times_s},
-                               "bytes_walked": tally.bytes_walked, "bytes_drained": tally.bytes_drained}}
+                               # One total: how a file splits into read and drained bytes depends on the
+                               # Python version's bz2 read-ahead, so that split is in the receipt only.
+                               "bytes_of_files_opened": tally.bytes_walked + tally.bytes_drained}}
     if pass_name == REGISTERED:
         value.update(_registered(plan, cells, switch, tally.books))
     else:
@@ -620,14 +631,16 @@ def markdown(plan, value):
     ranges = next((list(item["ranges"]) for item in spreads.values() if item["ranges"]), [])
     lines += ["## B7 Spread of x at the BSP as written, both labels pooled (points of stake)", "",
               "SD and nearest-rank ranges q(1 - a) - q(a) over each move cell's scored values. A cell that shows "
-              "rest_not_given is the earlier start of a band whose two starts hold nearly the same values.", ""]
+              f"rest_not_given has fewer than {plan.min_values} of its values on one label, or is the earlier start "
+              "of a band whose two starts hold nearly the same values.", ""]
     lines += _table(["cell", "values", "race dates", "SD", *ranges, "note"],
                     [[cell, item["values"], item["race_dates"], _points(item["sd"]),
                       *(_points((item["ranges"] or {}).get(name)) for name in ranges), item["reason"]]
                      for cell, item in spreads.items()])
     lines += [f"## B8 Detectable effect on {labels[1]} (points of stake; {CLUSTERED})", "",
-              "(t(0.99; G - 1) + t(0.8; G - 1)) x SE x the square root of n / n_V, with G and n_V the race dates and "
-              f"values on {labels[1]} and n the values of B7; empty whenever B7's SD is.", ""]
+              f"(t({float(plan.detectable_level)}; G - 1) + t({float(plan.power)}; G - 1)) x SE x the square root of "
+              f"n / n_V, with G and n_V the race dates and values on {labels[1]} and n the values of B7; empty "
+              "whenever B7's SD is.", ""]
     lines += _table(["cell", f"values {labels[1]}", f"race dates {labels[1]}", "detectable effect"],
                     [[cell, item["detectable"]["test_values"], item["detectable"]["test_race_dates"],
                       _points(item["detectable"]["effect"])] for cell, item in spreads.items()])
@@ -639,8 +652,8 @@ def markdown(plan, value):
               f"{'yes' if precision['bsp_ends_decide_apart'] else 'no'}",
               "- times that reached the view with no bspMarket value: "
               + ", ".join(f"{at_s} {count}" for at_s, count in precision["bsp_market_with_no_value"].items()),
-              f"- compressed bytes the replay read: {precision['bytes_walked']}; drained, hashed and not parsed: "
-              f"{precision['bytes_drained']}", ""]
+              f"- compressed bytes of the files opened (each read in part and hashed whole): "
+              f"{precision['bytes_of_files_opened']}", ""]
     if registered:
         lines += _registered_lines(plan, value)
     return "\n".join(lines).rstrip("\n") + "\n"
@@ -680,6 +693,8 @@ def _tally(plan, root, archives, limits):
             except RECORD_ERRORS:
                 raise RunRefused(f"input:{sha}:malformed_record") from None
             decide_record(plan, record, facts, root, archive["manifest"], tally, limits)
+    if not tally.replayed:          # another data root, or the wrong plan: fail before the ledger spends a look
+        raise RunRefused("input:no_registered_market")
     return tally
 
 

@@ -1,6 +1,6 @@
 # Research lane: the data split, the study ledger, rule files and close-v1
 
-Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). A third study, early-price-v1, with the split file version 2, is proposed in a pull request of its own and is not merged. No pass has run: nothing here has read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The middle, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. [The split, version 2](#the-split-version-2) and [early-price-v1](#early-price-v1-early-prices-against-bsp) cover the proposed PR. inplay-v1 is planned for PR C and is not built.
+Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). early-price-v1, a study on the BASIC files, with the split file version 2, is proposed in a pull request of its own and is not merged. When that pull request was written (2026-11-12), no pass had run: nothing here had read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The middle, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. [The split, version 2](#the-split-version-2) and [early-price-v1](#early-price-v1-early-prices-against-bsp) cover the proposed PR. inplay-v1 is planned for PR C and is not built.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, against betangel-research main b9099ff.
 
@@ -348,14 +348,14 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 ## early-price-v1: early prices against BSP
 
 - **The question.** On GB and IE horse-racing WIN markets, is the last traded price some time before a race a fair guide to the Betfair Starting Price? And do earlier price moves keep going, or come back, by 10 minutes before the off?
-- **Words.** LTP = last traded price: the price of the latest trade the file shows. BSP = Betfair Starting Price, the price SP bets settle at. "The off" = the first-published scheduled start. T-10 = 10 minutes before it. "Drift" = a price gets longer; "steam" = it gets shorter. "Gap" = the distance between the best price to back and the best price to lay. A "value" = one runner at one time with a score.
+- **Words.** LTP = last traded price: the price of the latest trade the file shows. BSP = Betfair Starting Price, the price SP bets settle at. "The off" = the first-published scheduled start. T-10 = 10 minutes before it. "Drift" = a price gets longer; "steam" = it gets shorter. "Gap" = the distance between the best price to back and the best price to lay. A "value" = one runner at one time with a score. SD = standard deviation: how far single values spread. SE = standard error: how far a mean moves by luck. CR1 = the way this page works out an SE when the values of one race date move together: each race date counts as one group.
 - **What it cannot show.** A last traded price is not a price anyone could have taken: the files have no quotes and no sizes. So this study can close an idea or flag one. It can never show an edge. Every label is printed with: "A last traded price is not a price anyone could have taken. This can flag or kill; it cannot show an edge."
 - **Where the rules are.** [research/studies/early-price-v1.json](../research/studies/early-price-v1.json) is the registration. It names [research/partitions-v2.json](../research/partitions-v2.json) by hash. Both hashes are pinned in `tests/test_backtest_early.py`. The code is two new modules, `early.py` (the rules, pure) and `early_study.py` (the pass runner), tested on synthetic markets only. Race results are never used. Nothing is ordered, so there is no rule file.
 
 ### The files and the years
 
 - **BASIC files.** They hold each runner's LTP, sent only when it changes (about once a minute), the market's definitions, removals and the final BSP. No quotes, no sizes, no volume.
-- **2023 (`BASIC-D`)** is for looking around. **2024 (`BASIC-V`)** is locked and tested once. 2025 and 2026 are never opened, nor is the 2015-16 BASIC year, nor any PRO file: their records get a code from the index alone (`month_not_registered`, `plan_not_registered`).
+- **2023 (`BASIC-D`)** is for looking around. **2024 (`BASIC-V`)** is locked and tested once. 2025 is never opened, nor is the 2015-16 BASIC year, nor any PRO file: their records get a code from the index alone (`month_not_registered`, `plan_not_registered`). A record with a 2026 month stops the whole pass before anything of it is used (`input:<archive sha256>:stale_gate`), as in every study.
 - **Half-years of 2024.** The split file's half-years are the PRO year's, so this registration holds its own: H1 is 2024-01-01 to 2024-06-30, H2 2024-07-01 to 2024-12-31.
 - **What a pass reads.** Every index record. A record that reaches the view at some time is opened once and read up to the latest such time, at most T-10. The rest of the file is hashed against its manifest, not parsed. About 27,000 files; a pass should take 6 to 12 minutes. That is a guess from P0's 12-minute run, not a measurement.
 
@@ -373,7 +373,7 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 - **A price counts only if its value changed recently.** The file adds an entry when a value differs in type or form, and a snapshot that leaves a price out adds an empty one. So an entry is not always a new price. A *change* is an entry whose value differs from the last usable one. A first sight, a reset followed by the same price, or `5` then `5.0` is not a change.
 - **The age of a price** is the time since its last change. A later trade at the same price sends nothing, so the age is an upper limit on the time since the last trade.
 - **Fresh.** The age must be at most `min(3,600 s, half the time left to the off)`: 60, 60, 30, 15 and 5 minutes at the five times. So the price last changed between 5 and 4 hours before the off, 3 and 2 hours, 90 and 60 minutes, 45 and 30 minutes, or 15 and 10 minutes. The windows do not overlap, so no two times read the same change.
-- **After the last removal.** If a runner was withdrawn before the time, the price must have changed after that. A withdrawal re-bases every price, so an older price is a price for another field.
+- **After the last removal.** If a runner was withdrawn before the time, the price must have changed after that. A withdrawal shifts every price, because the withdrawn horse's chance is shared out among the rest. So an older price is a price for another field.
 - **The T-10 price must have changed after the prices the move was measured from.** It last changed between T-15 and T-10, and the T-30 price at or before T-30, so the T-10 price is a later change. The registration is refused unless that holds. Why: otherwise the price we score could be the very price the move ended on, and the move would be scored against itself.
 - **That does not make the two prices independent.** In a still market trades jump between the two sides of the gap, and the file shows changes only, so published prices take turns: high, low, high. So for each member the pass counts k, the changes after the T-30 price up to the T-10 price: 1, 2, or 3 and more. The blind pass prints the counts. A `signal_candidate` is printed with the share at k = 1.
 
@@ -384,7 +384,7 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 - **Net, held to the result**, for the labels only: commission of 2% on a bet held to the result, with a free fill at the LTP, which nobody gets. In band A that is about 0.7 to 1.5 points for a BACK.
 - **Classes.** Every priced runner ends in one class from facts after the time: `outcome_unknown`, `void_own_runner_removed`, `post_decision_removal`, `result_revised_after_close`, `missing_bsp`, else `scored`. Only scored values enter a statistic. The class never decides membership.
 - **Two BSP ends and the 99% switch**, as close-v1. The switch counts the scored values of the two level cells at T-10, both labels together.
-- **Statistics.** Clustered by race date (CR1). Under 100 values a group gives counts only. A test, a bound or a selection needs 200 values on 15 race dates.
+- **Statistics.** SEs are clustered by race date (CR1). Under 100 values a group gives counts only. A test, a bound or a selection needs 200 values on 15 race dates.
 
 ### Selection, the test and the labels
 
@@ -393,11 +393,11 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 - **The test, on `BASIC-V`, once.** Per side, one-sided: is the side's mean above 0? Holm over two tests at alpha 0.02. A side with no primary still counts in the two.
 - **The labels**, per side, the first that applies. No label says "edge".
   1. `kill_free_fill`: over both years pooled, the upper bound of mean net (held) is below 0. "This one cell, on this side, for a bet held to the result: even a free fill at the last traded price would not pay the commission. It says nothing about the other cells, about closing before the off, or about an order that waits on one side of the gap."
-  2. `underpowered`: no primary; or no SE on 2024; or the 2024 test could not see 2.5 points. "This says nothing either way."
+  2. `underpowered`: no primary; or no SE on 2024; or the 2024 test could not see 2.5 points. "This says nothing either way." This comes before labels 3 and 4: a primary whose 2024 test could not see 2.5 points is `underpowered` even when its test rejects under Holm, and R4 prints the rejection beside the label.
   3. `cost_clearing_candidate`: label 4 holds, and the lower bound of mean net on 2024 is above half the gap, guessed as 1.0 point in band A and 2.0 in band B. Its text is label 4's plus "The allowance is a guess at half the gap. The gap was not measured."
   4. `signal_candidate`: the test rejects under Holm, and the mean is above 0 in each half of 2024, each with 100 values. "The pattern showed in 2023 and again in 2024. A steady habit in which side trades last would show the same. It is not a price to bet at. The next step is a check against quotes."
   5. `unresolved`. "This says nothing either way."
-- **Printed with every label:** the sentence above on what it cannot show; "Before this study, nothing of 2024 had been evaluated. Its blind pass showed counts and spreads."; the BSP limit ("If BSP in these files is rounded and not cut, the true BSP can lie up to 0.005 below the written value, outside both ends (0.3 points at 1.50)."); the removal sentence ("Values in markets with a later removal are not scored. Any lean from that is unmeasured; the size of the class is printed."); the side, cell and band; n, race dates and the detectable effect on 2024; the share of members not scored; the share at k = 1; gross x and net at both BSP ends; the band's allowance; the checks, yes or no.
+- **Printed with every label:** the sentence above on what it cannot show; "Before this study, nothing of 2024 had been evaluated. Its blind pass showed counts and spreads."; the BSP limit ("If BSP in these files is rounded and not cut, the true BSP can lie up to 0.005 below the written value, outside both ends (0.3 points at 1.50)."); the removal sentences ("Values in markets with a later removal are not scored. Any lean from that is unmeasured; the size of the class is printed. Removals are classed, never re-priced by a reduction factor."); the side, cell and band; n, race dates and the detectable effect on 2024; the share of members not scored; the share at k = 1; gross x and net at both BSP ends; the band's allowance; the checks, yes or no.
 - **The prediction, written before any pass** (in the registration, word for word): "Signed by lab-Claude on 2026-11-12, before any pass: the band-A level cells at T-30 and T-10 lie within 0.5 points of 0 on BASIC-V; each primary's gross mean for its side on BASIC-V is between -0.5 and +1.5 points; the labels are kill_free_fill or unresolved, about even; about one chance in five of a signal_candidate and under one in twenty of a cost_clearing_candidate."
 
 ### Honest power
@@ -405,7 +405,7 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 Every figure here is a guess that the blind pass replaces.
 
 - In band A the moved cells can likely see an effect of 1.4 to 1.9 points; in band B 2.4 to 3.4. An effect that would matter is 2.5 points (1.5 of commission plus 1.0 for half the gap). So band A can likely see one, by a small margin, but not one that only just clears the commission. Most of band B's moved cells cannot pass the 2.5 ceiling.
-- The blind pass measures this (B8) before any alpha is spent, and operator step 10 below stops the registered pass if no cell can see 2.5 points.
+- The blind pass measures this (B8) before any alpha is spent, and operator step 11 below stops the registered pass if no cell can see 2.5 points.
 - The likely result is `kill_free_fill` or `unresolved`, about even. About one chance in five of a `signal_candidate`.
 - With no true effect, the kill comes 99% of the time at a yearly SE of 0.30 points, 89% at 0.38, 50% at 0.50 and 18% at 0.66.
 
@@ -421,11 +421,11 @@ Every figure here is a guess that the blind pass replaces.
   | B4 | classes of priced runners per time, band and label |
   | B5 | the age of the price in seconds, as quantiles, per time and band (an age is not an outcome) |
   | B6 | per band, start and label: undefined moves by reason, flagged members, and per move cell its members, scored values, race dates and members by k |
-  | B7 | the SD and three ranges of x for each move cell, both labels together |
+  | B7 | the SD and three ranges of x for each move cell, both labels together; only for a cell with 100 scored values on each label |
   | B8 | each move cell's detectable effect on 2024, from a clustered SE over both years; empty when B7's SD is |
-  | B9 | whole-hundredth BSPs and the switch; times with no `bspMarket` value; bytes read |
+  | B9 | whole-hundredth BSPs and the switch; times with no `bspMarket` value; the compressed bytes of the files opened |
 
-- **What the blind pass withholds.** Every mean, median, sign, interval, test, label and selection of x. Any figure by half-year. The names DRIFT and STEAM: the two moved cells of a start are shown as `moved_larger` and `moved_smaller`, by size, because more drift than steam would give the rough sign of the early level cells. Any spread by label: a pooled SD beside each year's own would give the gap between the two years' means. Every spread of a level cell. The earlier start's spreads in a band when the two starts hold nearly the same values (fewer than 100 apart). A test checks every key and the text.
+- **What the blind pass withholds.** Every mean, median, sign, interval, test, label and selection of x. Any figure by half-year. The names DRIFT and STEAM: the two moved cells of a start are shown as `moved_larger` and `moved_smaller`, by size, because more drift than steam would give the rough sign of the early level cells. Any spread by label: a pooled SD beside each year's own would give the gap between the two years' means. Any spread of a move cell with fewer than 100 scored values on either label, in both passes: beside 2023's own mean and SD (R2), the pooled SD would give the figures of the few 2024 values, down to a single one. Every spread of a level cell. The earlier start's spreads in a band when the two starts hold nearly the same values (fewer than 100 apart). A test checks every key and the text.
 - **Known residual release.** The 12 SDs show which move cells are noisier. B6 shows how often prices move and how much the two moved cells differ in size, not which is which.
 - **Registered second, once.** Everything above with the cells named, plus:
 
@@ -439,13 +439,14 @@ Every figure here is a guess that the blind pass replaces.
   | R6 | per label, quantiles of the sum of 1 / BSP per market |
 
 - **Only the two primaries print a 2024 move-cell mean**, in R4. This is the default of a choice that is Yu's: printing all twelve cannot be undone, and opening the other ten later would cost a new test. The level cells' 2024 means are printed.
-- **Part and rest.** The selection and the labels are decided first, on the full values. Then a group's mean is held back when it, with the means given beside it, would give away the mean of fewer than 100 values. Inside each band's level cell at T-10 the move cells of one start share no runner, so they are checked together; across the two starts a nested pair 1 to 99 values apart holds back the later start. A held-back cell shows its counts and `rest_not_given`, and its SE and mean / SE are held back in R3 too. A primary can print with no mean: its label, p-value and Holm result still print.
+- **Part and rest.** The selection and the labels are decided first, on the full values. Then a group's mean is held back when it, with the means given beside it, would give away the mean of fewer than 100 values. Inside each band's level cell at T-10 the move cells of one start share no runner, so they are checked together. Across the two starts, if some cells of one start and some cells of the other cover the same runners but for 1 to 99 (in one and not the other), the later start is held back: the two sums would give the sum of those few runners. A held-back cell shows its counts and `rest_not_given`, and its SE and mean / SE are held back in R3 too. A primary can print with no mean. Then its label, counts, checks and Holm result (rejected or not) still print, but not its p-value: with the number of race dates the p-value gives mean / SE, and the SE could be worked out from figures that do print. And then neither side prints a Holm-adjusted p-value, which can carry the other side's p-value.
 
 ### Limits, stated plainly
 
 - A kill covers one cell, on one side, for bets held to the result. It does not close "drift and steam" as a family. It says nothing about an order that waits on one side of the gap.
 - A signal may be only the side the last trade printed on. The file does not say which side of the gap a trade was on.
 - Removals are classed, never re-priced by the reduction factor.
+- The freshness rule has a cost. A runner that trades for five minutes at one unchanged price sends no new value, so it looks stale at T-10. Coarser price steps make this more likely in band B. The blind pass counts it (B3) and shows the ages (B5).
 - BSP precision: the files seem to cut BSP to two decimals. That was seen on 2017 PRO, not checked on BASIC 2023-24.
 - Not measured: the gap; the size and side of any trade; whether any order would have filled; the number of trades behind a price; race results.
 
@@ -464,25 +465,29 @@ Every figure here is a guess that the blind pass replaces.
 
 - **Before it reads a record** it refuses, in close-v1's order: another study or pass name; a wrong hash; a registration not in a `studies` folder; a split file that is not the bytes named; a bad commit, data root or `--out`; a blind receipt of another kind, study, registration, split, commit, set of sources or input; then the ledger: `--out` inside it, a head other than the newest, a blind receipt whose look it does not hold, a spent budget.
 - **The ledger.** The blind pass is a `look` of lineage `early-price` on `BASIC-D` and `BASIC-V`. The registered pass is the lineage's one test on `BASIC-V`, with family size 2, and spends 0.02 of 2024's 0.10. It also counts once against `BASIC-D`'s explore budget of 10.
-- **Then, as close-v1:** the tables are built in memory; the ledger gets its one line; the files are written. A repeat writes no line and must give the same summary bytes.
+- **Then, as close-v1:** the tables are built in memory; the ledger gets its one line; the files are written. A repeat writes no line and must give the same summary bytes. Of the bytes read, the summary gives one total: the compressed bytes of the files opened. How that total splits into bytes read and bytes drained depends on how far the Python version's bz2 reader reads ahead (8 KiB on 3.13, 128 KiB on 3.15), so that split is in the receipt only and cannot make a repeat under another Python differ.
+- **A wrong data root spends no look.** If no record of the root reaches the view at any time (for example a PRO root given by mistake), the pass fails with `input:no_registered_market` before the ledger gets a line.
 - **Outputs.** `summary.json`, `summary.md` (totals only) and `receipt.json` (kind `betangel_early_receipt`, close-v1's keys), in a new mode-700 directory. No market id, selection id, name, venue, date or time of a market, and no per-market row reaches them or the printed line; a test searches every output for the synthetic ids.
 - **What it prints.** One JSON line of counts, codes and hashes. Exit 0 when the pass completed, 2 when it was refused or failed. A fault in the code prints `internal:` and the error's class name only.
 
 ### Operator steps for an early-price-v1 pass (after the PR merges)
 
+`<LAB RUNS>` below stands for the full path of `~/.local/state/lab-runs`.
+
 1. **Who starts it.** lab-Claude or Yu, after Yu's OK for that pass. Never a subagent or another agent. A pass is Python that imports the Betfair package, so it runs on Yu's word, pass by pass.
 2. **One pass at a time per ledger, across studies.** Never start it while any pass of any study is running on the same ledger.
-3. **Ask first.** Ask Yu whether a session will be armed or an order will rest in the next 15 minutes. If yes, do not start.
-4. **A clean checkout** at the merged commit, in a new directory of its own, as close-v1's step 4. Note the commit and pin the registration: `shasum -a 256 research/studies/early-price-v1.json`.
-5. **The data root.** The BASIC root, already ingested and indexed, in a root of its own.
-6. **The ledger and its head.** Use the same ledger directory as close-v1 (`<LAB RUNS>/ledger`). After any pass of any study, the next pass of any study is typed with the ledger's newest head. Keep that head in one shared note for both studies.
-7. **Where outputs go.** Make the parent once: `mkdir -m 700 -p ~/.local/state/lab-runs/early-price-v1`. The runner makes `blind` and then `registered` inside it. Write and remove the run marker as close-v1's step 7 says.
-8. **The commands**, from the clean checkout (`<BASIC ROOT>` is the data root of step 5):
+3. **When.** This is Yu's choice and is still open: night only, or in the day with the recorder off, and whether both passes may run on one day. Until Yu decides, close-v1's step 2 applies: between 23:00 and 06:45 London, at low priority, under the same guard, because the recorder runs 07:00 to 23:00 and must not be slowed. The recommendation is to run the blind and registered passes on different days, so people read the blind tables first.
+4. **Ask first.** Ask Yu whether a session will be armed or an order will rest in the next 15 minutes. If yes, do not start.
+5. **A clean checkout** at the merged commit, in a new directory of its own, as close-v1's step 4. Note the commit and pin the registration: `shasum -a 256 research/studies/early-price-v1.json`.
+6. **The data root.** The BASIC root, already ingested and indexed, in a root of its own. A root in which no record reaches the view (for example the PRO root, typed by mistake) fails with `input:no_registered_market` and spends no look. Any other mistake that lets the pass complete does spend one, and this study has two looks in all.
+7. **The ledger and its head.** Use the same ledger directory as close-v1 (`<LAB RUNS>/ledger`). After any pass of any study, the next pass of any study is typed with the ledger's newest head: `none` if the ledger has no line yet, else the `ledger_head` the last pass printed (`SEQ:SHA256`). Keep that head in one shared note for both studies.
+8. **Where outputs go.** Make the parent once: `mkdir -m 700 -p ~/.local/state/lab-runs/early-price-v1`. The runner makes `blind` and then `registered` inside it. Write and remove the run marker as close-v1's step 7 says.
+9. **The commands**, from the clean checkout (`<BASIC ROOT>` is the data root of step 6):
 
    ```sh
    PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 \
      python3.13 -B -m betangel_research.betfair.backtest.early_study --study early-price-v1 --pass blind \
-     --registration-sha256 <sha256 from step 4> --archive-root <BASIC ROOT> --code-commit <commit from step 4> \
+     --registration-sha256 <sha256 from step 5> --archive-root <BASIC ROOT> --code-commit <commit from step 5> \
      --ledger <LAB RUNS>/ledger --ledger-head <the newest head> \
      --out <LAB RUNS>/early-price-v1/blind
 
@@ -494,9 +499,10 @@ Every figure here is a guess that the blind pass replaces.
      --out <LAB RUNS>/early-price-v1/registered
    ```
 
-9. **The input check.** After the blind pass, compare the receipt's `input_sha256` with P0's recorded value (`6e5a8275…27c2`, [backtest plan](backtest-plan.md) §10.1). If it differs, an archive was added or the index was rebuilt, and the exposure sentence `p0-basic-2023-25` may not describe this input: tell Yu before the registered pass.
-10. **Read before the registered pass.** Read B3, B5, B6 and B8. Stop and tell Yu if fewer than half the markets viewed at 4 hours have a priced runner (B3), or if no move cell shows a B8 of at most 2.5 points. The registered pass spends the test even if no cell is eligible. A changed registration is a new hash and costs the second look. Blind and registered on different days, so people read the blind tables.
-11. **Afterwards.** The outputs stay on the lab. Nothing enters Git or `reports/` without Yu's OK on the exact fields.
+10. **The input check.** After the blind pass, compare the receipt's `input_sha256` with P0's recorded value (`6e5a8275…27c2`, [backtest plan](backtest-plan.md) §10.1). If it differs, an archive was added or the index was rebuilt, and the exposure sentence `p0-basic-2023-25` may not describe this input: tell Yu before the registered pass.
+11. **Read before the registered pass.** Read B3, B5, B6 and B8. Stop and tell Yu if, on either label, fewer than half the markets viewed at 4 hours have a priced runner (B3 gives both counts per label), or if no move cell shows a B8 of at most 2.5 points. The registered pass spends the test even if no cell is eligible. A changed registration is a new hash and costs the second look.
+12. **If a pass stops at the very end**, or prints `failed` with a `ledger_head` beside the failure, its ledger line stands. Do as close-v1's step 9 says under "If a pass stops at the very end": the head is the last line of `study-ledger-v1.jsonl` (its `seq`, a colon, its `entry_sha256`); a person checks that no pass is running and removes a leftover lock file or `.partial` folder; then the same pass is run again with that head. It is a repeat: it adds no ledger line and writes the files.
+13. **Afterwards.** The outputs stay on the lab. Nothing enters Git or `reports/` without Yu's OK on the exact fields.
 
 ## What it changes elsewhere
 

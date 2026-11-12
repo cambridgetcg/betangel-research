@@ -75,8 +75,10 @@ date; a mean has a CR1 SE with t(G - 1) (movement.cr1_mean), and its count is na
 Blind figures (blind_names, blind_spreads). Per move cell, over its scored values of both labels: the SD and
 symmetric ranges of x (resting.spread), and the detectable effect on the test label from the CR1 SE of those
 values (detectable), empty whenever the SD is. The two moved cells of a start and band are named moved_larger and
-moved_smaller, so the blind pass gives no sign. When the two starts' scored members in a band differ by fewer than
-min_values values, the earlier start's SDs, ranges and effects are withheld.
+moved_smaller, so the blind pass gives no sign. A cell's SD, ranges and effect are withheld unless each label
+holds min_values of its scored values: beside one label's own mean and SD, the pooled SD would give the other
+label's small part. When the two starts' scored members in a band differ by fewer than min_values values, the
+earlier start's SDs, ranges and effects are withheld too.
 
 Selection (select), on the explore label only, from its rows, two counts per move cell from the test label and the
 switch, nothing else. A cell is eligible when both labels pass the size gate, it has a CR1 SE of x on the explore
@@ -88,9 +90,11 @@ signal_candidate, unresolved (the registration's verdicts.rule), each printed wi
 
 Part and rest (given_cells, given_move_cells, kill_given, shown). Inside the level cell at entry_s, per band and
 label, the move cells form partitions: on the explore label one per start, on the test label one per primary.
-resting.given_together decides inside a partition; across two, a nested pair of unions that differs by 1 to
-min_values - 1 rows withholds the later partition, and a crossing does not. A primary that is not given keeps its
-label, p and Holm result and loses its mean, SE, interval, bounds, detectable effect and the line at both BSP ends.
+resting.given_together decides inside a partition; across two, a union of one partition's classes and a union of
+the other's that differ by 1 to min_values - 1 rows (in one and not the other) withhold the later partition. A
+primary that is not given keeps its label, counts, checks and Holm result (rejected or not) and loses its mean, SE,
+interval, p, bounds, detectable effect and the line at both BSP ends; then no side prints a Holm-adjusted p, which
+could carry the withheld p.
 
 What this does not do: it reads nothing after the latest time that reached the view, never re-prices a removal,
 and builds no table, Markdown or file. Standard library only; it imports movement, replay, market_index, partition,
@@ -902,9 +906,11 @@ def blind_names(plan, cells):
 def blind_spreads(plan, cells):
     """B7 and B8: {MoveCell: resting.spread of x at the BSP as written over the cell's scored values of both labels,
     its reason (None, counts_only or rest_not_given) and detectable {test_values, test_race_dates, effect}}. The
-    effect uses the CR1 SE of those pooled values and is None whenever the SD is. Per band, when the two starts'
-    scored members (both labels) differ by fewer than min_values values, 0 included, the first start's SD, ranges
-    and effect are withheld: two partitions of nearly one group would give the gap between their spreads."""
+    effect uses the CR1 SE of those pooled values and is None whenever the SD is. A cell's SD, ranges and effect
+    are withheld (rest_not_given) unless each label holds min_values of its scored values: the pooled SD beside one
+    label's own mean and SD (R2) would give the other label's small part, down to one value. Per band, when the two
+    starts' scored members (both labels) differ by fewer than min_values values, 0 included, the first start's SD,
+    ranges and effect are withheld: two partitions of nearly one group would give the gap between their spreads."""
     close = {}
     for band, _, _ in plan.bands:
         rows = scored(cells[LevelCell(plan.entry_s, band)])
@@ -918,7 +924,8 @@ def blind_spreads(plan, cells):
         effect, reason = None, COUNTS_ONLY
         if found["sd"] is not None:
             effect, reason = detectable(plan, _se(plan, pooled), len(pooled), len(test), _dates(test)), None
-        if close[cell.band] and cell.start_s == plan.starts_s[0]:
+        small = any(len(scored(cells[cell], label)) < plan.min_values for label in plan.labels)
+        if (found["sd"] is not None and small) or (close[cell.band] and cell.start_s == plan.starts_s[0]):
             found, effect, reason = dict(found, sd=None, ranges=None), None, REST_NOT_GIVEN
         out[cell] = dict(found, reason=reason, detectable={"test_values": len(test), "test_race_dates": _dates(test),
                                                            "effect": effect})
@@ -1064,11 +1071,14 @@ def _unions(classes):
             for chosen in itertools.combinations(classes, size)]
 
 
-def _nested(plan, first, second):
-    """Whether a union of first lies inside a union of second, or the other way, with 1 to min_values - 1 rows
-    between them: the only sums the given figures can work out besides the classes themselves."""
-    return any((one <= two or two <= one) and 0 < abs(len(one) - len(two)) < plan.min_values
-               for one in first for two in second)
+def _close(plan, first, second):
+    """Whether a union of first and a union of second differ by 1 to min_values - 1 rows (in one and not the
+    other). Any combination of the two partitions' given sums that is not zero falls on rows that hold at least one
+    such difference, so when none is that small, no combination falls on fewer than min_values rows. A nested pair
+    is one case; two
+    groups that cross with a few rows on each side are another (their two sums give the difference of those few
+    rows)."""
+    return any(0 < len(one ^ two) < plan.min_values for one in first for two in second)
 
 
 def given_cells(plan, count, partitions):
@@ -1076,9 +1086,8 @@ def given_cells(plan, count, partitions):
     partitions: [[(name, the positions of its rows), ...], ...], the first given first; the groups of a partition
     share no row (ValueError otherwise). Inside a partition resting.given_together decides, and it is exact there.
     A partition's classes are then its given groups and the rest of the universe. When some union of a partition's
-    classes lies inside a union of an earlier given partition's classes and the two differ by 1 to min_values - 1
-    rows, nothing of the later partition is given. A crossing of two partitions, however small, is safe. The
-    names given, in order."""
+    classes and some union of an earlier given partition's classes differ by 1 to min_values - 1 rows (in one and
+    not the other), nothing of the later partition is given (_close). The names given, in order."""
     universe, kept, given = frozenset(range(count)), [], []
     for groups in partitions:
         sets = [frozenset(members) for _, members in groups]
@@ -1087,7 +1096,7 @@ def given_cells(plan, count, partitions):
         names = given_together(plan, count, [(name, set(members)) for name, members in groups])
         held = [members for (name, _), members in zip(groups, sets) if name in names]
         classes = [part for part in held + [universe.difference(*held)] if part]
-        if any(_nested(plan, earlier, _unions(classes)) for earlier in kept):
+        if any(_close(plan, earlier, _unions(classes)) for earlier in kept):
             continue
         kept.append(_unions(classes))
         given += [name for name in names if name not in given]
@@ -1131,18 +1140,22 @@ def kill_given(plan, rows, given):
     return all(len(scored(rows, label)) >= plan.min_values and given[label] for label in plan.labels)
 
 
-def shown(verdict, given, kill_figures):
-    """A verdict as R4 prints it. given False (its cell is not given on the test label): the label, text, p, Holm
-    result, counts, shares and checks stay; the mean, SE, interval, both bounds, the detectable effect and the line
-    at both BSP ends are withheld. kill_figures False withholds the kill's figures. A side with no primary is
-    unchanged."""
+def shown(verdict, given, kill_figures, holm_given=True):
+    """A verdict as R4 prints it. given False (its cell is not given on the test label): the label, text, Holm
+    result (rejected or not), counts, shares and checks stay; the mean, SE, interval, the one-sided p, both bounds,
+    the detectable effect and the line at both BSP ends are withheld. The p goes too: with the race dates it gives
+    mean / SE, and the SE could be worked out from the pooled SE (B8) and the explore label's (R2). kill_figures
+    False withholds the kill's figures. holm_given False (some primary is not given) withholds the Holm-adjusted p,
+    which for m = 2 can be twice the other side's p. A side with no primary is unchanged."""
     if verdict["cell"] is None:
         return dict(verdict, figures_given=None, kill_figures_given=None)
     out = dict(verdict, figures_given=given, kill_figures_given=kill_figures)
     if not given:
-        out.update(test=withheld(verdict["test"]), net_lower=withheld(verdict["net_lower"]), detectable=None,
-                   both={end: {what: withheld(item) for what, item in found.items()}
-                         for end, found in verdict["both"].items()})
+        out.update(test=dict(withheld(verdict["test"]), p_one_sided=None), net_lower=withheld(verdict["net_lower"]),
+                   detectable=None, both={end: {what: withheld(item) for what, item in found.items()}
+                                          for end, found in verdict["both"].items()})
+    if not holm_given:
+        out["test"] = dict(out["test"], holm_p_adjusted=None)
     if not kill_figures:
         out["kill"] = withheld(verdict["kill"])
     return out

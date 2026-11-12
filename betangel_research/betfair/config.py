@@ -138,6 +138,18 @@ def load_config(path, *, paths):
     path = Path(path)
     if (os.path.realpath(path) != os.path.realpath(paths.config_path)) and not overrides_allowed(paths.env):
         raise ConfigError("config_override_not_allowed")
+    return _load(path, paths=paths)
+
+
+def load_config_p2(*, paths):
+    """Pilot 2's config-p2.json (docs/betfair-pilot-2-engineering.md §2, §9): only paths.config_p2_path, read,
+    merged and validated as load_config does. load_config refuses that path outside the test harness, so config-p2
+    never loads into a manual command; p2_lp.config_problems then pins its caps."""
+    return _load(paths.config_p2_path, paths=paths)
+
+
+def _load(path, *, paths):
+    """Read one config file, merge it over DEFAULTS and validate it; returns a validated deep copy."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:

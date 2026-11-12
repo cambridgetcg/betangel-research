@@ -1,9 +1,12 @@
 """Pilot 2 (P2-LP) docs stage: the plain capped bot's page (docs/betfair-pilot-2-policy.md). Its Values and Money
 tables are the only copy of the rule's numbers besides the p2_lp constants, which the code's own test pins to the same
-rows. Docs only: no network, no gateway; Pilot 1 is untouched.
+rows. config-p2's caps as the documents state them (the page's £ caps row, the note's §9 table) are tied to the
+committed example config, which tests/test_betfair_p2_lp.py pins to p2_lp.CONFIG_PINS and to literals. Docs only: no
+network, no gateway; Pilot 1 is untouched.
 """
 
 import hashlib
+import json
 from pathlib import Path
 import re
 import unittest
@@ -12,6 +15,8 @@ from betangel_research.betfair import ticks
 
 REPO = Path(__file__).resolve().parent.parent
 PAGE_PATH = REPO / "docs" / "betfair-pilot-2-policy.md"
+NOTE_PATH = REPO / "docs" / "betfair-pilot-2-engineering.md"
+P2_EXAMPLE = REPO / "research" / "betfair-config-p2.example.json"
 P1_PATH = REPO / "research" / "pilots" / "p1-fav-t5.json"
 P1_SHA256 = "4dbccb5a45f7a4779e0263d4df5048f582f10b8dc3bd22c5f2e93e791155de92"
 # A Values or Money row that names a p2_lp constant: | Value | `NAME` or `NAME[i]` | integer | unit | ...
@@ -86,6 +91,68 @@ class PageTableTests(unittest.TestCase):
                      "Each cut protection needs Yu's yes in plain words at the build consent."):
             with self.subTest(text=text):
                 self.assertIn(text, self.text)
+
+
+def pounds(value):
+    """A config's pound figure as the documents write it: 2.0 -> '£2', 0.0 -> '£0'."""
+    return f"£{value:g}"
+
+
+def note_section(text, number):
+    """The body of the note's '## <number>. ...' section, up to the next '## ' heading."""
+    head = re.search(rf"^## {number}\. .*$", text, re.M)
+    assert head is not None, number
+    rest = text[head.end():]
+    following = re.search(r"^## ", rest, re.M)
+    return rest[:following.start()] if following else rest
+
+
+class ConfigCapsInTheDocumentsTests(unittest.TestCase):
+    """The page's £ caps row and the note's §9 table say what the committed example config-p2 holds. The code's test
+    pins that example to CONFIG_PINS and states every pin as a literal, so a pin, the example and these two documents
+    cannot move apart unnoticed."""
+
+    def setUp(self):
+        self.config = json.loads(P2_EXAMPLE.read_text(encoding="utf-8"))
+        self.caps = self.config["orders"]["caps"]
+
+    def test_page_pound_caps_row(self):
+        caps, rules = self.caps, self.config["orders"]["rules"]
+        stated = (f"Stake {pounds(caps['max_stake_per_order'])}, liability {pounds(caps['max_liability_per_order'])}, "
+                  f"market {pounds(caps['max_market_exposure'])}, total {pounds(caps['max_total_exposure'])}, daily "
+                  f"loss {pounds(caps['max_daily_loss'])}, outside exposure "
+                  f"{pounds(rules['external_exposure_tolerance'])}: ")
+        self.assertTrue(row(page(), "£ caps in config-p2.json")[5].startswith(stated))
+
+    def test_note_section_9_table(self):
+        caps, rules = self.caps, self.config["orders"]["rules"]
+        reconcile, http = self.config["orders"]["reconcile"], self.config["http"]
+        expected = {
+            "max_stake_per_order": pounds(caps["max_stake_per_order"]),
+            "max_liability_per_order": pounds(caps["max_liability_per_order"]),
+            "max_market_exposure": pounds(caps["max_market_exposure"]),
+            "max_total_exposure": pounds(caps["max_total_exposure"]),
+            "max_daily_loss": pounds(caps["max_daily_loss"]),
+            "external_exposure_tolerance": pounds(rules["external_exposure_tolerance"]),
+            "Orders a minute, an hour, a day": (f"{caps['max_orders_per_minute']}, {caps['max_orders_per_hour']}, "
+                                                f"{caps['max_orders_per_day']}"),
+            "max_transactions_per_hour": str(caps["max_transactions_per_hour"]),
+            "Instructions per request": str(caps["max_instructions_per_request"]),
+            "max_price_deviation_ticks (V13)": str(caps["max_price_deviation_ticks"]),
+            "max_book_age_s": f"{caps['max_book_age_s']} s",
+            "max_minutes_before_off": str(caps["max_minutes_before_off"]),
+            "orders.reconcile poll_interval_s, window_s, grace_s, min_successful_polls": (
+                f"{reconcile['poll_interval_s']} s, {reconcile['window_s']} s, {reconcile['grace_s']} s, "
+                f"{reconcile['min_successful_polls']}"),
+            "http timeout_s, order_deadline_s": f"{http['timeout_s']} s, {http['order_deadline_s']} s",
+            "read retry_backoff_s": ", ".join(str(s) for s in self.config["read"]["retry_backoff_s"]) + " s",
+        }
+        section = note_section(NOTE_PATH.read_text(encoding="utf-8"), 9)
+        cells = [[cell.strip() for cell in line.strip("|").split(" | ")] for line in section.splitlines()
+                 if line.startswith("| ") and not line.startswith("| Cap | ")]
+        self.assertTrue(all(len(found) == 3 for found in cells), cells)
+        self.assertEqual({found[0]: found[1] for found in cells}, expected)
+        self.assertEqual(len(cells), len(expected))                       # each cap once
 
 
 class PilotOneIsUntouchedTests(unittest.TestCase):

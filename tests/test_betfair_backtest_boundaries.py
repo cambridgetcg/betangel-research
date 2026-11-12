@@ -148,6 +148,7 @@ ALLOWED_BETFAIR = {
     "errors": "exception taxonomy; imports secret inside safe_code",
     "filters": "market filter validation and REST/stream mapping",
     "lifecycle": "order state machine and report classification",
+    "p2_lp": "pure Pilot 2 rule, counts, ARM record, config-p2 pins and summary; imports only pilot and ticks",
     "paper": "paper fill model and offline replay over paths its caller names; holds no transport",
     "pilot": ("pure P1 predicates, decision record, measurement classes, NCLV, ledger fold with the pause, CR1 "
               "analysis; no clock, file or network; its closure obeys the offline rule"),

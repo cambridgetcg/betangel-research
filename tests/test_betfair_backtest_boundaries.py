@@ -1182,8 +1182,9 @@ class BacktestBoundaryTests(unittest.TestCase):
         # lp_study.py (registered measurement lp-v1), plus partition.py and study_ledger.py (the research lane's data
         # split and study ledger), plus rulefile.py (the lane's rule-file parser and evaluator), plus fills.py,
         # resting.py and resting_study.py (registered measurement close-v1: the fill models, the registration and
-        # the walk, and the pass runner).
-        self.assertEqual(len(descriptor["files"]), 31)
+        # the walk, and the pass runner), plus early.py (registered measurement early-price-v1: the registration,
+        # the price rules and the cells).
+        self.assertEqual(len(descriptor["files"]), 32)
 
     def test_offline_syntax_floor_is_python_3_10(self):
         for module in sorted([m for m in REAL.files if under(m, BACKTEST)] + [READINESS]):

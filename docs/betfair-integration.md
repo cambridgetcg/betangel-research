@@ -322,7 +322,7 @@ python3 -m betangel_research.betfair verify-day --day 2026-10-21         # 離�
 >
 > On each Mac the seal is a workflow control, not access control: any process running as that Mac's user can read the clear recordings and the archive.
 
-**Backup 嘅次序（2026-11-10 改咗）。** 上面引文話 lab 機嘅加密本地 backup 喺第一張單之前設好，係跟 Yu 2026-11-05 嘅決定。2026-11-10 Yu 將一磅嘅 T9 probe 擺咗喺 backup 前面（Yu 2026-11-10：「Oh, lets go for the probe without backup. I still havent made the order, am shopping for it now.」），所以 lab 機第一張單（T9 嘅 LAY £1.00 @ 1.01）喺 backup 之前落咗。Backup 仍然喺人手 £1 drill 之前：呢個係 lab 嘅建議，Yu 冇改。到 2026-11-10 backup 仲未做。引文照原文留低，等 Yu 同 Astra 確認嗰陣一齊睇（[Pilot 1 plan](betfair-pilot-1-plan.md) Architecture 第 6 步）。
+**Backup 嘅次序（2026-11-10 改咗）。** 上面引文話 lab 機嘅加密本地 backup 喺第一張單之前設好，係跟 Yu 2026-11-05 嘅決定。2026-11-10 Yu 將一磅嘅 T9 probe 擺咗喺 backup 前面（Yu 2026-11-10：「Oh, lets go for the probe without backup. I still havent made the order, am shopping for it now.」），所以 lab 機第一張單（T9 嘅 LAY £1.00 @ 1.01）喺 backup 之前落咗。Backup 仍然喺人手 £1 drill 之前：呢個係 lab 嘅建議，Yu 冇改。到 2026-11-10 backup 仲未做。2026-11-12 Yu 再改：人手 £1 drill 可以喺 backup 之前做（Yu 2026-11-12：「go ahead for the £1 hand drills.」；[Pilot 1 plan](betfair-pilot-1-plan.md) Decided）；backup 仍然由 Yu 設。引文照原文留低，等 Yu 同 Astra 確認嗰陣一齊睇（[Pilot 1 plan](betfair-pilot-1-plan.md) Architecture 第 6 步）。
 
 lab 機上每個 agent（包括經 SSH 嘅 Air Claude）都以同一個 macOS user `user` 運行。所以喺 lab 機，呢個 seal 同 Yu 嘅私人 risk view（[engineering note](betfair-pilot-engineering.md) §12）都靠 Yu 2026-11-05 嘅 lab 規則：冇 agent 讀、列或者抄 state root、recordings、收據或者 certificate 目錄，只可以轉述 CLI 印出嚟嘅數目同 code。呢條規則寫喺 lab 機自己嘅指示，唔喺 repo；代碼擋唔到（§2）。
 

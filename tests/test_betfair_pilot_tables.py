@@ -39,8 +39,10 @@ NOTE = tp.REPO / "docs" / "betfair-pilot-engineering.md"
 MOVEMENT = tp.REPO / "research" / "studies" / "movement-v1.json"
 MOVEMENT_SHA256 = "08cf0c755599862f26cc396ae8f15c990221e97fc2b324b6e2446c40cd852cf9"
 MODULE = f"{bb.BETFAIR}.pilot_tables"
-# The modules that import pilot_tables. The analysis command's PR adds itself here (spec A3; Yu's OK).
+# The modules that import pilot_tables, and the files outside the module that name it in their text. The analysis
+# command's PR adds itself to both (spec A3; Yu's OK).
 IMPORTERS = ()
+TEXT_MENTIONS = ()
 # A K that is not part of a word and not contract p1's "K:<line>" citation (note line 197).
 BARE_K = re.compile(r"(?<![A-Za-z0-9_])K(?![A-Za-z0-9_]|:[0-9])")
 SEL = 900000001                          # a selection id that cannot occur in honest output
@@ -563,8 +565,44 @@ def contrast_lines(lines, label):
     return {line[len(label):].split()[0]: line for line in lines if line.startswith(label)}
 
 
+def cells(line):
+    """The cells of one aligned line: columns stand two or more spaces apart, and a cell holds single spaces only."""
+    return re.split(r" {2,}", line.strip())
+
+
+def block(lines, head, count):
+    """The cell lists of the count lines under the one header line whose cells are head."""
+    at = [i for i, line in enumerate(lines) if cells(line) == list(head)]
+    if len(at) != 1:
+        raise AssertionError(f"header {head!r} found {len(at)} times")
+    return [cells(line) for line in lines[at[0] + 1:at[0] + 1 + count]]
+
+
+def interval_text(interval):
+    """A shown interval's cell by the spec's display rule (4.5)."""
+    return signed(interval["low"]) + " to " + signed(interval["high"])
+
+
+# The rendered column headings (spec 4.5), so each figure can be read under its own heading.
+T1_HEAD = ("band", "limit price", "n", "G (UTC days)", "mean NCLV", "mean k_outcome", "mean r", "adds up (exact)",
+           "SD k_outcome", "95% interval, mean k_outcome")
+LEDGER_HEAD = ("band", "checked", "mean residual", "outside range (should be 0)", "still in W",
+               "S WINNER at Betfair's figure")
+T3_HEAD = ("row", "n", "G (UTC days)", "mean NCLV", "95% interval", "mean k_outcome", "95% interval", "mean r",
+           "adds up (exact)")
+CONTRAST_HEAD = ("contrast", "measure", "estimate", "95% interval", "n (each side)", "G (each side; either)",
+                 "placebo at least half")
+FEW = "too few days"
+
+
 class TablesCase(unittest.TestCase):
     """Shared checks; no tests of its own."""
+
+    def assert_computed(self, tables):
+        """T1 and T3 were computed, so a test about what they hold or show is not empty (spec section 6)."""
+        self.assertIs(tables["T1"]["computed"], True)
+        self.assertIs(tables["T3"]["computed"], True)
+        return tables
 
     def assert_tables(self, state, t2=T2):
         """k_outcome_bets and report_tables equal the oracles, whole."""
@@ -656,7 +694,11 @@ class Boundaries(unittest.TestCase):
         missing = state_of([dataclasses.replace(k_record(0, day=0), utc_day=None)])
         for state in (mixed_state(), state_of(spread(37, 16)), missing):
             for t2 in NOTE_T2_STATES:
-                for line in lines_of(state, t2):
+                tables = tables_of(state, t2)
+                if state is not missing:                    # the complete states show both tables' lines
+                    self.assertIs(tables["T1"]["computed"], True)
+                    self.assertIs(tables["T3"]["computed"], True)
+                for line in pilot_tables.render_tables(tables):
                     self.assertIsNone(BARE_K.search(line), line)
 
     def test_pilot_attributes_used(self):
@@ -689,6 +731,31 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(found, IMPORTERS)
         scripts = sorted((tp.REPO / "scripts").glob("*.py"))
         self.assertEqual([p.name for p in scripts if boundaries.imports_betfair_module(p, "pilot_tables")], [])
+        # The import graph cannot see a name built from a string (importlib, __import__, python -m) or a shell
+        # script, so the module's name is also looked for as text in every file that could run code.
+        folders = ("betangel_research", "scripts", "ops", "deploy", "archive")
+        walked = [path for folder in folders for path in sorted((tp.REPO / folder).rglob("*"))
+                  if path.is_file() and "__pycache__" not in path.parts]
+        self.assertIn(TABLES, walked)                               # the walk reaches the package itself
+        hits = tuple(str(path.relative_to(tp.REPO)) for path in walked
+                     if path != TABLES and b"pilot_tables" in path.read_bytes())
+        self.assertEqual(hits, TEXT_MENTIONS)
+
+    def test_no_float_and_no_name_lookup(self):
+        """Spec section 2: «floats appear only inside the Student t routine ... The new module does the same and
+        adds no float.» N3 (line 195): «They never decide.» A float used inside the module and gone from its result,
+        or a function reached by a name built from a string, is not seen by walking the result or the attribute
+        pins, so the source is read: no float or complex literal, no float, format or name-lookup builtin, no math
+        function but isqrt, no f-string."""
+        tree = boundaries.tree(TABLES)
+        self.assertEqual([n.lineno for n in ast.walk(tree)
+                          if isinstance(n, ast.Constant) and isinstance(n.value, (float, complex))], [])
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        self.assertEqual(names & {"float", "complex", "format", "getattr", "setattr", "delattr", "vars", "globals",
+                                  "locals", "__import__", "importlib"}, set())
+        self.assertEqual({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+                          and isinstance(n.value, ast.Name) and n.value.id == "math"}, {"isqrt"})
+        self.assertEqual([n.lineno for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)], [])
 
     def test_registered_numbers_are_contract_p1s(self):
         """N17 (line 200): «c = 0.02 (p1-fav-t5.json:29)»; N27 (line 207): «a two-sided 95% interval ... shown only
@@ -737,6 +804,30 @@ class Selection(TablesCase):
         lines = lines_of(state)
         self.assertEqual(lines[0], TITLE)
         self.assertEqual(lines[1], N_NOT_REACHED.format(37))
+
+    def test_header_counts(self):
+        """N12, N13, N14 (line 198): which bets the tables use, «The rest are counted by reason: two or more WINNERs
+        (a dead heat ...); no WINNER.», and «Surplus bets, PT4 records (:246-249) and the decision-price series are
+        never in them.» Every count stands under its own words, and no two counts are equal, so a swap shows."""
+        records = [k_record(0, day=0), k_record(1, day=1, ours="WINNER"),
+                   k_record(2, day=2, ours="WINNER", other_winners=1), k_record(3, day=3, other_winners=2),
+                   k_record(4, day=4, ours="WINNER", other_winners=2), k_record(5, day=5, other_winners=0)]
+        self.assertEqual(lines_of(state_of(records))[:4], (
+            TITLE, N_NOT_REACHED.format(6),
+            "k_outcome bets: 2 of 6. Not in them: dead heat (two or more WINNERs) 3; no WINNER 1.",
+            "Never in them: PT4 records 0; surplus records 0; the decision-price series."))
+        sample = spread(400, 20, first=100)
+        sample[7] = k_record(107, day=7, other_winners=2)                       # a dead heat
+        sample[8] = k_record(108, day=8, ours="WINNER", other_winners=1)        # a dead heat
+        sample[9] = k_record(109, day=9, other_winners=0)                       # no WINNER
+        state = state_of([k_record(i, day=0, pt4=True) for i in range(5)] + sample
+                         + [k_record(600 + i, day=19) for i in range(30)])
+        tables = self.assert_tables(state)
+        self.assertEqual(pilot_tables.render_tables(tables)[:4], (
+            TITLE, "Bets: primary sample, the first 400 eligible bets.",
+            "k_outcome bets: 397 of 400. Not in them: dead heat (two or more WINNERs) 2; no WINNER 1.",
+            "Never in them: PT4 records 5; surplus records 30; the decision-price series."))
+        self.assertEqual(pilot_tables.header_lines(selection_of(state)), pilot_tables.render_tables(tables)[:4])
 
     def test_pt4_and_surplus_never_in(self):
         """N14 (line 198): «Surplus bets, PT4 records (:246-249) and the decision-price series are never in them.»"""
@@ -829,6 +920,26 @@ class Selection(TablesCase):
                     for line in (NOT_FORMED.format(name), T1_NOT.format(name), T3_NOT.format(name),
                                  T2_LINES[t2][0]):
                         self.assertIn(line, lines)
+        # More forms of each, and spec 5.2's order on one bet («in this order»): our runner REMOVED or with no
+        # status is no result (a non-runner is not a loss); a BSP of 0 or none; P and the UTC date both missing
+        # give the earlier name, as do the CLOSED read and the UTC date.
+        runners = rec.bsp["closed_read"]["runners"]
+
+        def ours_as(entry):
+            return with_closed_runners(rec, {**runners, str(SEL): entry})
+
+        more = {"our_result": [ours_as({"status": "REMOVED", "actual_sp": None}),
+                               ours_as({"status": None, "actual_sp": None}), ours_as("WINNER")],
+                "final_price_or_bsp": [dataclasses.replace(rec, bsp=dict(rec.bsp, bsp=Decimal("0"))),
+                                       dataclasses.replace(rec, bsp=dict(rec.bsp, bsp=None)),
+                                       dataclasses.replace(rec, execution=dict(rec.execution, P=None), utc_day=None)],
+                "closed_read": [dataclasses.replace(rec, bsp=dict(rec.bsp, closed_read=None), utc_day=None),
+                                with_closed_runners(rec, None)]}
+        for name, bads in more.items():
+            for number, bad in enumerate(bads):
+                with self.subTest(input=name, form=number):
+                    self.assertEqual(selection_of(state_of(records[:2] + [bad] + records[3:]))["missing"]["bets"],
+                                     name)
 
     def test_missing_table_input_stops_only_that_table(self):
         """N7 (line 196): «Each table is computed and shown whatever it shows; one whose input is missing is shown
@@ -852,6 +963,19 @@ class Selection(TablesCase):
                 self.assertEqual((found["missing"]["bets"], found["missing"]["T1"], found["missing"]["T3"]),
                                  (None, name, None))
                 self.assertEqual([found["bets"][2][field] for field in t1_fields], [None] * len(t1_fields))
+        # More forms of T1's own inputs: a limit price that is a bool or text, a final size of 0 or a bool, a ledger
+        # value that is None or a bool.
+        more = {"limit_price": [dict(record=dict(rec.record, limit_price_h=True)),
+                                dict(record=dict(rec.record, limit_price_h="300"))],
+                "final_size": [dict(execution=dict(rec.execution, size=Decimal("0"))),
+                               dict(execution=dict(rec.execution, size=True))],
+                "ledger": [dict(ledger=dict(rec.ledger, value_p=None)), dict(ledger=dict(rec.ledger, value_p=True))]}
+        for name, changes in more.items():
+            for number, change in enumerate(changes):
+                with self.subTest(input=name, form=number):
+                    tables = tables_of(state_of(records[:2] + [dataclasses.replace(rec, **change)] + records[3:]))
+                    self.assertEqual(tables["T1"], {"computed": False, "reason": "input missing: " + name})
+                    self.assertEqual(tables["T3"], whole["T3"])
         bad = dataclasses.replace(rec, off_ns=None)
         state = state_of(records[:2] + [bad] + records[3:])
         tables = tables_of(state)
@@ -962,6 +1086,46 @@ class Split(TablesCase):
             self.assertTrue(any(all(text in line for text in texts) for line in lines
                                 if line.startswith(NOTE_T3_ROW_LABELS[name])), (name, texts))
 
+    def test_add_up_can_say_no(self):
+        """N25 (line 205): «with mean NCLV + mean K = mean r shown»: a check that can fail, not a constant, and its
+        cell shows what the check found. Spec 5.1: none of the three means is formed from the other two."""
+        bets = [dict(bet) for bet in selection_of(mixed_state())["bets"]]
+        self.assertIs(pilot_tables.group_figures(bets, contract=C)["means_add_up"], True)
+        bets[0]["r"] += 1
+        found = pilot_tables.group_figures(bets, contract=C)
+        self.assertEqual((found["mean_nclv"], found["mean_k_outcome"], found["mean_r"]),
+                         tuple(mean(bet[key] for bet in bets) for key in ("nclv", "k_outcome", "r")))
+        self.assertNotEqual(found["mean_nclv"] + found["mean_k_outcome"], found["mean_r"])
+        self.assertIs(found["means_add_up"], False)
+        tables = self.assert_computed(tables_of(mixed_state()))
+        lines = pilot_tables.render_tables(tables)
+        self.assertEqual(block(lines, T1_HEAD, 5)[4][7], "yes")
+        self.assertEqual(block(lines, T3_HEAD, 1)[0][8], "yes")
+        tables["T1"]["rows"]["pooled"]["means_add_up"] = False
+        tables["T3"]["rows"]["H_SATURDAY"]["means_add_up"] = False
+        lines = pilot_tables.render_tables(tables)
+        self.assertEqual(block(lines, T1_HEAD, 5)[4][7], "no")
+        self.assertEqual(block(lines, T3_HEAD, 1)[0][8], "no")
+
+    def test_each_term_has_its_own_formula(self):
+        """Spec 5.1: «Compute the three from their own formulas ...; do not define one as the sum or difference of
+        the other two, or the identity would be true by construction and prove nothing.» No value can show this, so
+        the source is read: each of nclv, k_outcome and r is assigned once, from a formula that names neither of
+        the other two."""
+        terms = {"nclv", "k_outcome", "r"}
+        seen = []
+        for node in ast.walk(boundaries.tree(TABLES)):
+            targets = node.targets if isinstance(node, ast.Assign) else []
+            for target in targets:
+                for name in (n.id for n in ast.walk(target) if isinstance(n, ast.Name) and n.id in terms):
+                    seen.append(name)
+                    used = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+                    self.assertEqual(used & (terms - {name}), set(), name)
+        self.assertEqual(sorted(seen), sorted(terms))
+        self.assertEqual([n.lineno for n in ast.walk(boundaries.tree(TABLES))
+                          if isinstance(n, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr))
+                          and isinstance(getattr(n, "target", None), ast.Name) and n.target.id in terms], [])
+
     def test_long_decimals_stay_exact(self):
         """Section 2 of the spec: «No arithmetic on a Decimal» (journaled numbers may hold 40 + 40 digits). A size
         and a price with 35 significant digits give the exact residual and split."""
@@ -1044,6 +1208,57 @@ class T1(TablesCase):
             row = tables["T1"]["rows"][name]
             self.assertEqual((row["n"], row["G"], row["var_k_outcome"], row["sd_k_outcome"]), (0, 0, None, None))
 
+    def test_rendered_t1_cells(self):
+        """N23 to N27 (lines 203-207): «Per band and pooled: n, and G ...; mean NCLV, mean K and mean r ...; the
+        sample SD of K; a two-sided 95% interval ...». Each figure under its own heading, on the state of
+        test_n_G_means_sd; the cells were worked by hand."""
+        two, three_halves = 1 + Fraction(50, 49), 1 + Fraction(25, 49)
+        state = state_of([k_record(0, day=0, limit_h=150, P=two, bsp=Fraction(2), ours="WINNER"),
+                          k_record(1, day=0, limit_h=150, P=two, bsp=Fraction(2), ours="LOSER"),
+                          k_record(2, day=1, limit_h=150, P=three_halves, bsp=Fraction(3, 2), ours="WINNER"),
+                          k_record(3, day=2, limit_h=150, P=three_halves, bsp=Fraction(3), ours="LOSER"),
+                          k_record(4, day=3, limit_h=300)])
+        lines = pilot_tables.render_tables(self.assert_computed(tables_of(state)))
+        none = ["0", "0", "-", "-", "-", "-", "-", FEW]
+        self.assertEqual(block(lines, T1_HEAD, 5), [
+            ["B1", "1.50-1.99", "4", "3", "-0.1250", "+0.0000", "-0.1250", "yes", "0.9129", FEW],
+            ["B2", "2.00-2.48"] + none,
+            ["B3", "2.50-2.98"] + none,
+            ["B4", "3.00-4.00", "1", "1", "-0.0452", "-0.9548", "-1.0000", "yes", "-", FEW],
+            ["pooled", "1.50-4.00", "5", "4", "-0.1090", "-0.1910", "-0.3000", "yes", "0.8985", FEW]])
+        for text in ("T1. k_outcome by price band (decision limit price)",
+                     "Intervals are descriptive (CR1 with t(G - 1), two-sided 95%); they test nothing.",
+                     "Ledger check: part S, valued at our own net. Residual = S value / final matched size - r; "
+                     "range: above -2/s, at or below 0.",
+                     "T3. Day types with a Wednesday placebo (Europe/London date of the off)"):
+            self.assertIn(text, lines)
+        self.assertEqual([line[:3] for line in lines if line[:3] in ("T1.", "T2.", "T3.")], ["T1.", "T2.", "T3."])
+
+    def test_rendered_ledger_cells(self):
+        """N31, N32 (line 208): «The table shows the count, the mean residual and the count outside that range,
+        which should be 0» and «The other K bets are counted apart: those still in W ... and S WINNERs valued at
+        Betfair's figure». Each count under its own heading, and no two of them equal."""
+        records = ([k_record(i, day=i, ours="LOSER", ledger=s_ledger(-200)) for i in range(2)]
+                   + [k_record(2, day=2, ours="LOSER", ledger=s_ledger(-150))]                  # residual +1/4: outside
+                   + [k_record(3 + i, day=3 + i, ours="WINNER") for i in range(4)]              # still in W
+                   + [k_record(7 + i, day=7 + i, ours="WINNER", ledger=s_ledger(391)) for i in range(2)])  # net 392p
+        state = state_of(records)
+        none = ["0", "-", "0", "0", "0"]
+        self.assertEqual(block(pilot_tables.render_tables(self.assert_tables(state)), LEDGER_HEAD, 5), [
+            ["B1"] + none, ["B2"] + none, ["B3"] + none,
+            ["B4", "3", "+0.083333", "1", "4", "2"], ["pooled", "3", "+0.083333", "1", "4", "2"]])
+
+    def test_range_ends(self):
+        """N30 (line 208): «the residual lies above −2 / s and at or below 0, s the final matched size in pence».
+        A 2.00 S LOSER (s = 200p, r = -1) at each end: -2/s itself is outside, 0 is inside, just above 0 is
+        outside."""
+        for value_p, outside in ((-203, 1), (-202, 1), (-201, 0), (-200, 0), (-199, 1)):
+            with self.subTest(value_p=value_p):
+                state = state_of([k_record(0, day=0, ours="LOSER", ledger=s_ledger(value_p))])
+                ledger = self.assert_tables(state)["T1"]["rows"]["pooled"]["ledger"]
+                self.assertEqual((ledger["checked"], ledger["outside_range"], ledger["mean_residual"]),
+                                 (1, outside, Fraction(value_p, 200) + 1))
+
     def test_pooled_is_every_bet(self):
         """N23 (line 203): «Per band and pooled»; N25 (line 205): «the pooled mean NCLV is over the K bets, so it
         can differ from contract p1's primary mean»."""
@@ -1086,9 +1301,14 @@ class T1(TablesCase):
                          (found["m"] - shown["half_width"], found["m"] + shown["half_width"]))
         self.assertLessEqual(shown["half_width"] ** 2, found["bound"])
         self.assertLess(found["bound"], (shown["half_width"] + Fraction(1, 10 ** 9)) ** 2)
+        self.assertLess(shown["low"], shown["high"])
         lines = lines_of(state)
         self.assertTrue(any("too few days" in line for line in lines if line.startswith("B1")))
         self.assertTrue(any("too few days" in line for line in lines if line.startswith("B3")))
+        figures = block(lines, T1_HEAD, 5)
+        self.assertEqual([row[9] for row in figures[:4]], [FEW, interval_text(shown), FEW, FEW])
+        # Worked by hand with t(14) = 2.1447866879 and CR1 over the 15 dates (ends -0.85110 and +0.21787).
+        self.assertEqual(figures[1][9], "-0.8511 to +0.2179")
 
     def test_interval_is_not_a_test(self):
         """N27 (line 207): «it is descriptive and tests nothing»; N20 (line 201): «K is part of profit, which is
@@ -1099,7 +1319,7 @@ class T1(TablesCase):
                 found = pilot.verdict(state, contract=C, now_ns=state.now_ns)
                 self.assertEqual((found["result"], found["reason"]), expected)
                 for t2 in NOTE_T2_STATES:
-                    tables = tables_of(state, t2)
+                    tables = self.assert_computed(tables_of(state, t2))
                     keys = set(dict_keys(tables)) | set(dict_keys(selection_of(state)))
                     self.assertEqual(keys & {"result", "near_tie", "t_p", "p_two_sided"}, set())
                     for line in pilot_tables.render_tables(tables):
@@ -1218,7 +1438,7 @@ class T1(TablesCase):
         no bands; this block does not set theirs.»; N4 (line 195): «its own list of end-only reports
         (p1-fav-t5.json:180-187) still applies as written»."""
         for state in (mixed_state(), state_of(spread(37, 16))):
-            tables = tables_of(state)
+            tables = self.assert_computed(tables_of(state))
             for key in dict_keys(tables):
                 self.assertNotIn("raw clv", str(key).lower())
                 self.assertNotIn("calibration", str(key).lower())
@@ -1258,7 +1478,8 @@ class T2(TablesCase):
         with self.assertRaises(TypeError):
             pilot_tables.report_tables(state, contract=C, now_ns=state.now_ns)
         self.assertIs(inspect.signature(pilot_tables.report_tables).parameters["t2"].default, inspect.Parameter.empty)
-        for bad in (None, "", "no file", "NO_DECISION_TO_BUY", "files not bought", 1, True, ("awaiting_files",)):
+        for bad in (None, "", "no file", "NO_DECISION_TO_BUY", "files not bought", 1, True, ("awaiting_files",),
+                    ["awaiting_files"], {"awaiting_files": 1}):           # the last two cannot be hashed
             with self.subTest(t2=bad):
                 self.assert_refused("tables_input_invalid", tables_of, state, bad)
 
@@ -1266,7 +1487,7 @@ class T2(TablesCase):
         """N7 (line 196): «Each table is computed and shown whatever it shows»; N35b (line 212): «It runs whatever
         the verdict and the other tables show.»"""
         state = mixed_state()
-        found = [tables_of(state, key) for key in NOTE_T2_STATES]
+        found = [self.assert_computed(tables_of(state, key)) for key in NOTE_T2_STATES]
         for tables in found[1:]:
             self.assertEqual((tables["bets"], tables["T1"], tables["T3"]),
                              (found[0]["bets"], found[0]["T1"], found[0]["T3"]))
@@ -1283,7 +1504,7 @@ class T2(TablesCase):
             self.assertEqual((bet["market_id"], bet["selection_id"], bet["off_ns"], bet["utc_day"]),
                              (rec.market_id, rec.selection_id, rec.off_ns, rec.utc_day))
         for t2 in NOTE_T2_STATES:
-            tables = tables_of(state, t2)
+            tables = self.assert_computed(tables_of(state, t2))
             lines = pilot_tables.render_tables(tables)
             for source in (found, tables["bets"]):
                 header = tuple(pilot_tables.header_lines(source))
@@ -1479,6 +1700,7 @@ class T3(TablesCase):
         bets = selection_of(state)["bets"]
         self.assertEqual((bets[-2]["day_row"], bets[-2]["utc_day"], bets[-1]["day_row"], bets[-1]["utc_day"]),
                          ("H_SATURDAY", "2027-05-14", "OTHER_WEEKDAYS_NOT_H", "2027-05-14"))
+        lines = pilot_tables.render_tables(tables)
         for measure in ("nclv", "k_outcome"):
             with self.subTest(measure=measure):
                 found = tables["T3"]["contrasts"]["main"][measure]
@@ -1499,11 +1721,16 @@ class T3(TablesCase):
                                  (found["estimate"] - interval["half_width"], found["estimate"] + interval["half_width"]))
                 floats = movement.cr1_contrast([(d, float(x)) for d, x in a], [(d, float(x)) for d, x in b], 1, 1)
                 self.assertLessEqual(abs(math.sqrt(var) - floats["se"]), 1e-12 * floats["se"])
+                # The rendered row: G of each side apart from G of either side, which here is not their sum.
+                row = cells(contrast_lines(lines, MAIN_LABEL)["NCLV" if measure == "nclv" else "k_outcome"])
+                self.assertEqual(row[2:6], [signed(found["estimate"]), interval_text(interval),
+                                            "%d, %d" % found["n"], "%d, %d; %d" % (found["G"] + (g,))])
 
     def test_contrast_needs_15_dates_on_each_side(self):
         """N48 (line 217): «only where G is at least 15: for a row, in that row; for a contrast, on each side.»"""
-        saturdays, others = offsets_in("H_SATURDAY", 20), offsets_in("OTHER_WEEKDAYS_NOT_H", 15)
-        cases = {"20 and 14": (saturdays, others[:14], False), "15 and 15": (saturdays[:15], others, True)}
+        saturdays, others = offsets_in("H_SATURDAY", 20), offsets_in("OTHER_WEEKDAYS_NOT_H", 20)
+        cases = {"20 and 14": (saturdays, others[:14], False), "14 and 20": (saturdays[:14], others, False),
+                 "15 and 15": (saturdays[:15], others[:15], True)}
         for label, (h_days, other_days, shown) in cases.items():
             with self.subTest(case=label):
                 state = state_of(on_days(h_days) + on_days(other_days, first=200), now=NOW_LATE)
@@ -1544,6 +1771,89 @@ class T3(TablesCase):
                     self.assertEqual(interval["low"] + interval["high"], 2 * found["m"])
                 else:
                     self.assertEqual(interval, {"shown": False, "reason": "too few days"})
+        row = tables["T3"]["rows"]["OTHER_WEEKDAYS_NOT_H"]
+        texts = [interval_text(row["interval_" + measure]) for measure in ("nclv", "k_outcome")]
+        self.assertNotEqual(texts[0], texts[1])
+        rendered = block(pilot_tables.render_tables(tables), T3_HEAD, 5)
+        self.assertEqual([rendered[4][4], rendered[4][6]], texts)                 # each under its own mean
+        self.assertEqual([rendered[2][4], rendered[2][6]], [FEW, FEW])            # Sunday, 14 dates
+
+    def test_rendered_t3_cells(self):
+        """N44, N45 (line 217): «Per row: n, G, mean NCLV, mean K and mean r.» «Contrasts, each of mean NCLV and of
+        mean K: the main one ...; the placebo ...». Each figure under its own heading; the cells were worked by
+        hand (P 3.00, net payout 74/25)."""
+        state = state_of([
+            k_record(0, day=day_of("2027-01-05"), bsp=Fraction(2), ours="LOSER"),        # other weekday
+            k_record(1, day=day_of("2027-01-09"), bsp=Fraction(4), ours="WINNER"),       # H Saturday
+            k_record(2, day=day_of("2027-01-09"), bsp=Fraction(4), ours="LOSER"),        # the same Saturday
+            k_record(3, day=day_of("2027-01-06"), bsp=Fraction(8, 3), ours="LOSER")])    # non-H Wednesday
+        lines = pilot_tables.render_tables(self.assert_tables(state))
+        none = ["0", "0", "-", FEW, "-", FEW, "-", "-"]
+        self.assertEqual(block(lines, T3_HEAD, 5), [
+            ["H Saturday", "2", "1", "-0.2600", FEW, "+0.7400", FEW, "+0.4800", "yes"],
+            ["H other"] + none, ["Sunday, not H"] + none,
+            ["Wednesday, not H", "1", "1", "+0.1100", FEW, "-1.1100", FEW, "-1.0000", "yes"],
+            ["other weekdays, not H", "1", "1", "+0.4800", FEW, "-1.4800", FEW, "-1.0000", "yes"]])
+        self.assertEqual(block(lines, CONTRAST_HEAD, 4), [
+            [MAIN_LABEL, "NCLV", "-0.7400", FEW, "2, 1", "1, 1; 2", "yes"],
+            [MAIN_LABEL, "k_outcome", "+2.2200", FEW, "2, 1", "1, 1; 2", "no"],
+            [PLACEBO_LABEL, "NCLV", "-0.3700", FEW, "1, 1", "1, 1; 2"],
+            [PLACEBO_LABEL, "k_outcome", "+0.3700", FEW, "1, 1", "1, 1; 2"]])
+
+    def test_contrast_sides_cluster_by_utc_decision_date(self):
+        """N39 (line 213): «clustered by UTC decision date», and N48 (line 217) «for a contrast, on each side»: on
+        each side a bet whose London date differs from its UTC decision date counts by its UTC decision date."""
+        late_b = varied(900, day_of("2027-05-10"), off_ns=T("2027-05-10T23:30:00Z"))    # London Tue 05-11, UTC Mon
+        same_b = varied(901, day_of("2027-05-11"))                                       # London and UTC Tue 05-11
+        late_a = varied(902, day_of("2027-05-14"), off_ns=T("2027-05-14T23:30:00Z"))    # London Sat 05-15, UTC Fri
+        same_a = varied(903, day_of("2027-05-15"))                                       # London and UTC Sat 05-15
+        state = state_of(on_days(offsets_in("H_SATURDAY", 15)) + on_days(offsets_in("OTHER_WEEKDAYS_NOT_H", 15),
+                                                                          first=200)
+                         + [late_b, same_b, late_a, same_a], now=NOW_LATE)
+        bets = selection_of(state)["bets"]
+        self.assertEqual([(bet["day_row"], bet["london_day"], bet["utc_day"]) for bet in bets[-4:]],
+                         [("OTHER_WEEKDAYS_NOT_H", "2027-05-11", "2027-05-10"),
+                          ("OTHER_WEEKDAYS_NOT_H", "2027-05-11", "2027-05-11"),
+                          ("H_SATURDAY", "2027-05-15", "2027-05-14"), ("H_SATURDAY", "2027-05-15", "2027-05-15")])
+        main = self.assert_tables(state)["T3"]["contrasts"]["main"]
+        for measure in ("nclv", "k_outcome"):
+            with self.subTest(measure=measure):
+                self.assertEqual((main[measure]["G"], main[measure]["G_either"]), ((17, 17), 34))  # by London: 16
+                self.assertIs(main[measure]["interval"]["shown"], True)
+                self.assertEqual(main[measure]["interval"]["t_df"], 33)
+
+    def test_day_is_the_offs_and_cluster_is_the_decisions(self):
+        """N41 (line 216): «A bet's day is the Europe/London calendar date of the decision record's off»; N24 (line
+        204): G is «the number of UTC decision dates». Bets decided late in the evening, whose off falls after
+        midnight, tell the off from the decision."""
+        early = k_record(0, day=day_of("2027-01-12"), off_ns=T("2027-01-12T00:02:00Z"))    # decided 01-11 23:57:05Z
+        noon = k_record(1, day=day_of("2027-01-12"))
+        night = k_record(2, day=day_of("2027-06-05"), off_ns=T("2027-06-05T23:02:00Z"))    # decided 22:57:05Z
+        self.assertEqual((pilot_tables.london_day(night.decision_wall_ns), pilot_tables.london_day(night.off_ns)),
+                         ("2027-06-05", "2027-06-06"))                     # London 23:57:05 Saturday, 00:02 Sunday
+        state = state_of([early, noon, night], now=NOW_LATE)
+        bets = selection_of(state)["bets"]
+        self.assertEqual([(bet["london_day"], bet["day_row"], bet["utc_day"]) for bet in bets],
+                         [("2027-01-12", "OTHER_WEEKDAYS_NOT_H", "2027-01-11"),
+                          ("2027-01-12", "OTHER_WEEKDAYS_NOT_H", "2027-01-12"),
+                          ("2027-06-06", "SUNDAY_NOT_H", "2027-06-05")])
+        tables = self.assert_tables(state)
+        self.assertEqual((tables["T3"]["rows"]["OTHER_WEEKDAYS_NOT_H"]["G"], tables["T3"]["rows"]["H_SATURDAY"]["n"],
+                          tables["T1"]["rows"]["pooled"]["G"]), (2, 0, 3))
+
+    def test_outside_days_ends(self):
+        """(inference, spec 5.6) T3 counts the bets whose London date is before T3_FIRST_DAY or after T3_LAST_DAY
+        (note line 219: «Dates, 2026-12-01 to 2027-06-30»): both ends are inside, and the date is the off's in
+        London, not the UTC decision date."""
+        state = state_of([k_record(0, day=day_of("2026-11-30")), k_record(1, day=day_of("2026-12-01")),
+                          k_record(2, day=day_of("2027-06-30")),
+                          k_record(3, day=day_of("2027-06-30"), off_ns=T("2027-06-30T23:30:00Z")),  # London 07-01
+                          k_record(4, day=day_of("2027-07-01"))], now=NOW_LATE)
+        self.assertEqual([(bet["london_day"], bet["utc_day"]) for bet in selection_of(state)["bets"]],
+                         [("2026-11-30", "2026-11-30"), ("2026-12-01", "2026-12-01"), ("2027-06-30", "2027-06-30"),
+                          ("2027-07-01", "2027-06-30"), ("2027-07-01", "2027-07-01")])
+        self.assertEqual(self.assert_tables(state)["T3"]["bets_outside_registered_days"], 3)
+        self.assertIn(OUTSIDE_DAYS.format(3), lines_of(state))
 
     def placebo_state(self, w_bsp, *, wednesday=True):
         """One bet each at P 3.00 (net payout 74/25): other weekdays BSP 2, lost; H BSP 4, won; non-H Wednesday
@@ -1620,9 +1930,10 @@ class OutputOnly(TablesCase):
                 state = build()
                 before = pilot.verdict(state, contract=C, now_ns=state.now_ns)
                 self.assertEqual((before["result"], before["reason"]), expected)
-                kept = copy.deepcopy(state)
+                kept, shown = copy.deepcopy(state), repr(state)
                 for t2 in NOTE_T2_STATES:
-                    pilot_tables.render_tables(tables_of(state, t2))
+                    tables = self.assert_computed(tables_of(state, t2))      # the pin is not empty
+                    pilot_tables.render_tables(tables)
                 selection_of(state)
                 after = pilot.verdict(state, contract=C, now_ns=state.now_ns)
                 fresh = build()
@@ -1630,6 +1941,37 @@ class OutputOnly(TablesCase):
                 self.assertEqual(before, after)
                 self.assertEqual(before, unseen)
                 self.assertEqual(state, kept)
+                self.assertEqual(repr(state), shown)          # a changed type or key order, which == cannot see
+
+    def test_state_unchanged_on_every_path(self):
+        """N10 (line 197) and spec section 2: «Never change the fold's dicts ... never assign into, pop from or sort
+        these.» Also on the paths the verdict pin's states do not take: a dead heat, no WINNER, a bet in no band,
+        an S WINNER at Betfair's figure, a bet in W, and a missing input of each kind."""
+        base = [k_record(0, day=0), k_record(1, day=1, ours="WINNER", other_winners=1),          # a dead heat
+                k_record(2, day=2, other_winners=0), k_record(3, day=3, limit_h=249),            # no WINNER; no band
+                k_record(4, day=4, ours="WINNER", ledger=s_ledger(391)), k_record(5, day=5, ours="WINNER")]
+        no_day = dataclasses.replace(k_record(6, day=6), utc_day=None)
+        no_size = k_record(7, day=7)
+        no_size = dataclasses.replace(no_size, execution=dict(no_size.execution, size=None))
+        no_off = dataclasses.replace(k_record(8, day=8), off_ns=None)
+        cases = {"exclusions": (base, True), "shared input": (base + [no_day], False),
+                 "T1 input": (base + [no_size], False), "T3 input": (base + [no_off], False)}
+        for label, (records, complete) in cases.items():
+            with self.subTest(case=label):
+                state = state_of(records)
+                kept, shown = copy.deepcopy(state), repr(state)
+                before = pilot.verdict(state, contract=C, now_ns=state.now_ns)
+                for t2 in NOTE_T2_STATES:
+                    tables = tables_of(state, t2)
+                    if complete:
+                        self.assert_computed(tables)
+                    pilot_tables.render_tables(tables)
+                bets = selection_of(state)["bets"]
+                pilot_tables.group_figures(bets, contract=C, intervals=("nclv", "k_outcome"))
+                pilot_tables.contrast(bets[:2], bets[2:], "k_outcome", contract=C)
+                self.assertEqual(state, kept)
+                self.assertEqual(repr(state), shown)
+                self.assertEqual(pilot.verdict(state, contract=C, now_ns=state.now_ns), before)
 
     def test_no_class_sample_or_ledger_change(self):
         """N10 (line 197): «no class, sample, ledger value or verdict changes»; N3 (line 195): «they never set or
@@ -1649,7 +1991,7 @@ class OutputOnly(TablesCase):
 
         before = snapshot()
         for t2 in NOTE_T2_STATES:
-            pilot_tables.render_tables(tables_of(state, t2))
+            pilot_tables.render_tables(self.assert_computed(tables_of(state, t2)))
         bets = selection_of(state)["bets"]
         pilot_tables.group_figures(bets, contract=C, intervals=("nclv", "k_outcome"))
         pilot_tables.contrast(bets[:2], bets[2:], "nclv", contract=C)
@@ -1678,7 +2020,7 @@ class OutputOnly(TablesCase):
         journal, now = ledger_journal()
         for build in (mixed_state, lambda: journal.fold(now=now)):
             first, second = build(), build()
-            a, b, c = tables_of(first), tables_of(first), tables_of(second)
+            a, b, c = self.assert_computed(tables_of(first)), tables_of(first), tables_of(second)
             self.assertEqual(a, b)
             self.assertEqual(a, c)
             self.assertEqual(pilot_tables.render_tables(a), pilot_tables.render_tables(c))
@@ -1713,7 +2055,7 @@ class OutputOnly(TablesCase):
             markets = {rec.market_id for rec in state.place_records}
             selections = {rec.selection_id for rec in state.place_records}
             for t2 in NOTE_T2_STATES:
-                tables = tables_of(state, t2)
+                tables = self.assert_computed(tables_of(state, t2))
                 for line in pilot_tables.render_tables(tables):
                     for text in ("p1tab-", "1.98765", "90000000", "exposure"):
                         self.assertNotIn(text, line)
@@ -1732,7 +2074,10 @@ class OutputOnly(TablesCase):
         missing = state_of([dataclasses.replace(k_record(0, day=0), utc_day=None)])
         for state in (mixed_state(), state_of(spread(37, 16)), missing):
             for t2 in NOTE_T2_STATES:
-                lines = lines_of(state, t2)
+                tables = tables_of(state, t2)
+                if state is not missing:                    # the complete states show both tables' lines
+                    self.assert_computed(tables)
+                lines = pilot_tables.render_tables(tables)
                 self.assertIs(type(lines), tuple)
                 self.assertTrue(lines)
                 self.assertEqual(lines[0], TITLE)
@@ -1740,6 +2085,83 @@ class OutputOnly(TablesCase):
                     self.assertIs(type(line), str)
                     self.assertNotIn("\n", line)
                     self.assertNotIn("\r", line)
+
+    def test_display_rounding_is_exact(self):
+        """Spec 4.5: «Round with round(value * 10 ** places) on the Fraction (an int, ties to even) and build the
+        text from the int. No float.» (inference, spec S8: the display is not registered; the data stay exact.) A
+        tie rounds to even, and a value that rounds to 0 shows as +0.0000 whatever its sign."""
+        tables = self.assert_computed(tables_of(mixed_state()))
+        for value, text in ((Fraction(1, 20000), "+0.0000"), (Fraction(3, 20000), "+0.0002"),
+                            (Fraction(5, 20000), "+0.0002"), (Fraction(-1, 20000), "+0.0000"),
+                            (Fraction(-1, 30000), "+0.0000"), (Fraction(-3, 20000), "-0.0002"),
+                            (Fraction(1, 3), "+0.3333"), (Fraction(-2, 3), "-0.6667"),
+                            (Fraction(12345, 1), "+12345.0000")):
+            with self.subTest(value=value):
+                tables["T1"]["rows"]["pooled"]["mean_nclv"] = value
+                self.assertEqual(block(pilot_tables.render_tables(tables), T1_HEAD, 5)[4][4], text)
+                self.assertEqual(signed(value), text)
+
+    def test_rendered_lines_of_a_fold(self):
+        """N5 (line 196): «in the terminal». The whole rendering of one fold, line by line, as people read it: the
+        fold of ledger_journal(), five bets on 2027-01-04 (a Monday, other weekdays). B4 holds four at P 3.00 and
+        BSP 3.10 (an S LOSER at -200p, an S WINNER at our own net 392p, one at Betfair's figure 391p, one still in
+        W); B3 holds 1.37 matched at 2.52, BSP 3.10, WINNER, S at 203p. Every figure was worked by hand from those
+        inputs; the column widths are the module's own choice (spec 4.5) and are pinned here as they are."""
+        journal, now = ledger_journal()
+        tables = self.assert_computed(tables_of(journal.fold(now=now)))
+        dash6 = "-               -        -  -                           -  too few days"
+        none3 = "0             0          -  too few days               -  too few days        -  -"
+        self.maxDiff = None
+        self.assertEqual(pilot_tables.render_tables(tables), (
+            TITLE,
+            "Bets: N not reached; every eligible bet of the analysis population (5).",
+            "k_outcome bets: 5 of 5. Not in them: dead heat (two or more WINNERs) 0; no WINNER 0.",
+            "Never in them: PT4 records 0; surplus records 0; the decision-price series.",
+            "",
+            "T1. k_outcome by price band (decision limit price)",
+            "band    limit price  n  G (UTC days)  mean NCLV  mean k_outcome   mean r  adds up (exact)  SD k_outcome  "
+            "95% interval, mean k_outcome",
+            "B1      1.50-1.99    0             0          " + dash6,
+            "B2      2.00-2.48    0             0          " + dash6,
+            "B3      2.50-2.98    1             1    -0.1969         +1.6865  +1.4896  yes                         -  "
+            "too few days",
+            "B4      3.00-4.00    4             1    -0.0452         +1.2652  +1.2200  yes                    1.4800  "
+            "too few days",
+            "pooled  1.50-4.00    5             1    -0.0755         +1.3494  +1.2739  yes                    1.2955  "
+            "too few days",
+            POOLED_SENTENCE,
+            "Intervals are descriptive (CR1 with t(G - 1), two-sided 95%); they test nothing.",
+            "Ledger check: part S, valued at our own net. Residual = S value / final matched size - r; range: above "
+            "-2/s, at or below 0.",
+            "band    checked  mean residual  outside range (should be 0)  still in W  S WINNER at Betfair's figure",
+            "B1            0              -                            0           0                             0",
+            "B2            0              -                            0           0                             0",
+            "B3            1      -0.007848                            0           0                             0",
+            "B4            2      +0.000000                            0           1                             1",
+            "pooled        3      -0.002616                            0           1                             1",
+            "",
+            "T2. Late-move cells: not computed: no file",
+            "",
+            "T3. Day types with a Wednesday placebo (Europe/London date of the off)",
+            "row                    n  G (UTC days)  mean NCLV  95% interval  mean k_outcome  95% interval   mean r  "
+            "adds up (exact)",
+            "H Saturday             " + none3,
+            "H other                " + none3,
+            "Sunday, not H          " + none3,
+            "Wednesday, not H       " + none3,
+            "other weekdays, not H  5             1    -0.0755  too few days         +1.3494  too few days  +1.2739  "
+            "yes",
+            "contrast                                       measure    estimate  95% interval  n (each side)  "
+            "G (each side; either)  placebo at least half",
+            "main: H minus other weekdays                   NCLV              -  too few days  0, 5           "
+            "0, 1; 1                -",
+            "main: H minus other weekdays                   k_outcome         -  too few days  0, 5           "
+            "0, 1; 1                -",
+            "placebo: non-H Wednesday minus other weekdays  NCLV              -  too few days  0, 5           0, 1; 1",
+            "placebo: non-H Wednesday minus other weekdays  k_outcome         -  too few days  0, 5           0, 1; 1",
+            "Festival rows still unconfirmed, registered dates kept: Christmas Festival, Leopardstown (IE); Dublin "
+            "Racing Festival, Leopardstown (IE); Punchestown Festival, Punchestown (IE).",
+            OUTSIDE_DAYS.format(0)))
 
 
 def note_block():

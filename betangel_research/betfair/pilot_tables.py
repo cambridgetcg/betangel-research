@@ -71,10 +71,11 @@ T3_ROW_LABELS = {"H_SATURDAY": "H Saturday", "H_OTHER": "H other", "SUNDAY_NOT_H
                  "WEDNESDAY_NOT_H": "Wednesday, not H", "OTHER_WEEKDAYS_NOT_H": "other weekdays, not H"}
 
 # T2's state at the analysis run, a required argument with no default (note line 212). The first two reasons are
-# the note's own texts; the third has no text in the note and its wording is for Yu and Astra to confirm.
+# the note's own texts. (inference, spec YA1) The third has no text in the note: its wording, and whether it should
+# also cover files already held at the analysis run (T2 has its own run either way), are for Yu and Astra.
 T2_STATES = {"no_decision_to_buy": "no file",            # note line 212: never computed later
              "decided_not_bought": "files not bought",   # note line 212: reported as a departure
-             "awaiting_files": "files not yet held"}     # provisional wording, not in the note
+             "awaiting_files": "files not yet held"}     # (inference, spec YA1) provisional wording, not in the note
 
 _MEASURES = ("nclv", "k_outcome")                       # the measures with intervals and contrasts (lines 207, 217)
 _H_ROWS = ("H_SATURDAY", "H_OTHER")
@@ -277,6 +278,9 @@ def _selection(state, *, contract, now_ns):
     head = {"source": "primary_sample" if n_reached else "analysis_population", "n_reached": n_reached,
             "eligible": len(base_bets)}
     not_in = {"pt4_records": len(split["apart"]), "surplus_records": len(split["surplus"])}
+    # (inference, spec S6) The fold cannot produce an eligible bet with a missing input. On a hand-built state a
+    # shared input missing on any bet stops T1 and T3 both, and an input one table reads stops that table only; no
+    # bet is dropped silently, which would change "the same bets" (note line 198).
     missing = {"bets": None, "T1": None, "T3": None}
     for rec in base_bets:
         name = _shared_missing(rec, rate)
@@ -320,7 +324,8 @@ def k_outcome_bets(state, *, contract, now_ns):
 
 def _root(value, places=_ROOT_PLACES):
     """floor(sqrt(value) * 10**places) / 10**places for a Fraction value >= 0: less than 10**-places below the
-    exact root, with no float. The exact square is returned beside every root."""
+    exact root, with no float. The exact square is returned beside every root. (inference, spec S8: the cut at 9
+    places is not registered, so a shown interval's ends lie up to 10**-9 inside the exact ones.)"""
     return Fraction(math.isqrt(value.numerator * 10 ** (2 * places) // value.denominator), 10 ** places)
 
 
@@ -330,6 +335,8 @@ def _interval(found, centre):
     if found["reason"] == "too_few_clusters":
         return {"shown": False, "reason": "too few days"}
     if found["reason"] == "se_undefined":
+        # (inference, spec S3) Enough dates and a CR1 variance of exactly 0: no interval of zero width, but
+        # pilot.cr1's own second reason. The note names only "too few days" (line 207).
         return {"shown": False, "reason": "se undefined"}
     half = _root(found["bound"])
     return {"shown": True, "low": centre - half, "high": centre + half, "half_width": half,
@@ -338,6 +345,8 @@ def _interval(found, centre):
 
 def _cr1(rows, contract):
     # alpha_one_sided 1/40 gives t at the 97.5% point: the two-sided 95% interval (K:85-100); min_clusters 15 (K:94).
+    # (inference, spec S7) The level and the 15 are read from the contract object, not held as constants here; a
+    # test pins that contract p1 gives 95%, 15 and c = 0.02.
     return pilot.cr1(rows, min_clusters=contract.min_clusters, alpha=contract.alpha_one_sided)
 
 
@@ -380,7 +389,11 @@ def contrast(first, second, measure, *, contract):
     g of (x - m_B) / n_B)^2, G the dates holding a bet of either side, t on G - 1 degrees of freedom. pilot.cr1 on
     the rows total * (x - m_A) / n_A and -total * (x - m_B) / n_B (total = n_A + n_B) gives exactly that: the rows
     sum to 0, so its mean is 0 and its SE^2 is the rule's Var. The interval is shown only when each side has at
-    least min_clusters dates (note line 217: "on each side"); a side with no bet has G 0 and no estimate."""
+    least min_clusters dates (note line 217: "on each side"); a side with no bet has G 0 and no estimate.
+
+    (inference, spec S4) That pilot.cr1 on these rows is movement-v1's "CR1 variance of a difference", with t on
+    G_either - 1 degrees of freedom as the rule's text says, is for Astra to confirm. (inference, spec S5) A side
+    with no bet gives no estimate and "too few days"."""
     measure = _measure(measure)
     a = [(bet["utc_day"], _exact(bet[measure])) for bet in first]
     b = [(bet["utc_day"], _exact(bet[measure])) for bet in second]
@@ -407,7 +420,10 @@ def _ledger_check(bets, *, contract):
     and every WINNER valued at our net (the S value is the lower of our net and Betfair's figure, pilot.s_winner_value,
     so a lower value means Betfair's figure was used). Residual = S value / final matched size - r, in pence over
     pence, with range above -2 / s and at or below 0. Bets still in W and S WINNERs valued at Betfair's figure are
-    counted apart. An out-of-range residual changes only this check."""
+    counted apart. An out-of-range residual changes only this check.
+
+    (inference) The mean residual is unweighted, as the note's other means are (line 205); the note says only "the
+    mean residual", and a size-weighted mean would differ whenever a partial fill is checked."""
     rate = contract.commission_rate
     checked = outside = in_w = at_betfair = 0
     residuals = []
@@ -445,6 +461,9 @@ def _t1_row(bets, *, contract):
 
 
 def _t1(bets, *, contract):
+    # (inference, spec S2) Each band's row and the pooled row carry the ledger check, because the check's bullet
+    # stands under "Per band and pooled" (note line 203). (inference, spec S6) A hand-built bet in no band is
+    # counted in no_band and stays in the pooled row; the fold cannot produce one.
     rows = {name: _t1_row([bet for bet in bets if bet["band"] == name], contract=contract)
             for name, _, _ in PRICE_BANDS_H}
     rows["pooled"] = _t1_row(list(bets), contract=contract)     # every k_outcome bet, a bet in no band included
@@ -456,6 +475,8 @@ def _t1(bets, *, contract):
 
 def _t3(bets, *, contract):
     groups = {name: [bet for bet in bets if bet["day_row"] == name] for name in T3_ROWS}
+    # (inference, spec S1) Each row carries an interval for mean NCLV and for mean k_outcome, the two measures the
+    # contrasts are of, and none for mean r: the note says "for a row, in that row" (line 217), not for which means.
     rows = {name: group_figures(groups[name], contract=contract, intervals=_MEASURES) for name in T3_ROWS}
     attention = [bet for bet in bets if bet["day_row"] in _H_ROWS]
     weekdays = groups["OTHER_WEEKDAYS_NOT_H"]
@@ -467,9 +488,12 @@ def _t3(bets, *, contract):
     for m in _MEASURES:
         main, placebo = contrasts["main"][m]["estimate"], contrasts["placebo"][m]["estimate"]
         # A placebo at least half the main one, in absolute value and for the same measure, is marked beside the
-        # main one, for people to read (note line 217).
+        # main one, for people to read (note line 217). (inference, spec S5) Read literally, a main estimate of
+        # exactly 0 is always marked, 0 against 0 included; with no estimate on a side there is no mark.
         marked[m] = None if main is None or placebo is None else 2 * abs(placebo) >= abs(main)
     unconfirmed = tuple(name + ", " + course for name, course, _, _, confirmed in FESTIVALS if not confirmed)
+    # (inference, spec 5.6 and S10) The bets whose London date lies outside the registered days (note line 219),
+    # counted so that a reader sees how many fall under the rule for days before 2026-12-01.
     outside = sum(1 for bet in bets if bet["london_day"] < T3_FIRST_DAY or bet["london_day"] > T3_LAST_DAY)
     return {"computed": True, "rows": rows, "contrasts": contrasts, "placebo_marked": marked,
             "unconfirmed_festivals": unconfirmed, "bets_outside_registered_days": outside}
@@ -510,6 +534,9 @@ def report_tables(state, *, contract, now_ns, t2):
 
 # ---------------------------------------------------------------------------------------------------------------
 # The terminal lines. Display rounding only: round(value * 10**places) on the Fraction, ties to even, no float.
+# (inference, spec S8) The display is not registered: means, estimates and interval ends signed at 4 places, the SD
+# unsigned at 4, residuals signed at 6, None as "-". The text is built from the rounded int, so its sign is the
+# int's: a negative value that rounds to 0, and 0 itself, show as +0.0000.
 
 def _fixed(value, places, *, signed):
     if value is None:
@@ -605,8 +632,10 @@ def _t2_lines(table):
         raise pilot.PilotError("tables_input_invalid")      # T2's cells are rendered by T2's own run, not here
     lines = ["T2. Late-move cells: not computed: " + table["reason"]]
     if table.get("state") == "decided_not_bought":
+        # (inference, spec S10) A line the note does not ask for; it names the departure of note line 212.
         lines.append("Departure to report: a decision to buy T2's files was not carried out (note §12).")
     elif table.get("state") == "awaiting_files":
+        # (inference, spec YA1) The provisional third state's line.
         lines.append("T2 runs once, in its own terminal run, when the files are held (note §12).")
     return lines
 
@@ -630,6 +659,8 @@ def _t3_lines(table):
     for key, label in _CONTRAST_LABELS:
         for measure, measure_label in _MEASURE_LABELS:
             found = table["contrasts"][key][measure]
+            # (inference, spec S9) "marked beside the main one" (note line 217): a column of the main contrast's
+            # own row, per measure, with the placebo rows directly below.
             mark = _yes_no(table["placebo_marked"][measure]) if key == "main" else ""
             contrasts.append((label, measure_label, _signed(found["estimate"]), _interval_text(found["interval"]),
                               str(found["n"][0]) + ", " + str(found["n"][1]),
@@ -642,6 +673,7 @@ def _t3_lines(table):
     if table["unconfirmed_festivals"]:
         lines.append("Festival rows still unconfirmed, registered dates kept: "
                      + "; ".join(table["unconfirmed_festivals"]) + ".")
+    # (inference, spec S10) A line the note does not ask for; it states the count of spec 5.6.
     lines.append("Bets on days before " + T3_FIRST_DAY + " or after " + T3_LAST_DAY + ": "
                  + str(table["bets_outside_registered_days"]) + ".")
     return lines

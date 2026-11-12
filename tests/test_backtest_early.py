@@ -7,8 +7,9 @@ synthetic file (last traded prices only) built here with the fixture helpers of
 tests/test_betfair_backtest_replay.py, and goes through the real ingest, index and replay. These tests show that the
 second split file gives every date the label and half the first gives, that it differs from the first only by the
 two BASIC budgets and one exposure sentence, how one ledger keeps the budgets of studies that name different split
-files, the registration's checks, and the codes, prices, cells and classes early.assess gives on these synthetic
-shapes. They say nothing about real Betfair files or results.
+files, the registration's checks, the codes, prices, cells and classes early.assess gives on these synthetic
+shapes, and what the scores, the blind figures, the selection, the labels and part and rest do with hand-built value
+rows. They say nothing about real Betfair files or results.
 """
 
 import bz2
@@ -17,6 +18,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
 import hashlib
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -316,6 +318,8 @@ class Registration(unittest.TestCase):
                          ("This says nothing either way.",) * 2)
         self.assertIn("0.3 points at 1.50", value["measurement"]["bsp_ends"]["limit"])
         self.assertIn("Values in markets with a later removal are not scored.", value["measurement"]["removals"])
+        self.assertEqual((PLAN.bsp_limit, PLAN.removal_note), (value["measurement"]["bsp_ends"]["limit"],
+                                                               value["measurement"]["removals"]))
         self.assertEqual(value["measurement"]["bsp_ends"]["switch_rows"], "level_cells_at_entry_both_labels")
         self.assertEqual(value["registered_pass"]["test_label_move_means"], "primaries_only")
 
@@ -466,6 +470,35 @@ class PlanFitsTheSharedHelpers(unittest.TestCase):
         self.assertEqual(sorted(resting.spread(PLAN, values)["ranges"]), ["0.75-0.25", "0.9-0.1", "0.95-0.05"])
         self.assertIsNone(resting.spread(PLAN, small)["sd"])
         self.assertEqual(resting.rounded({"x": 1 / 3}), {"x": 0.333333})
+
+    def test_the_rest_of_the_shared_helpers(self):
+        data = json.loads(REGISTRATION_RAW)["data"]
+        self.assertEqual(resting._named(data["split"], "data.split"), ("partitions-v2.json", V2_SHA256))
+        split, explore, test = resting._split(data, ("partitions-v2.json", V2_SHA256), V2_RAW)
+        self.assertEqual((split.sha256, explore, test), (V2_SHA256, "BASIC-D", "BASIC-V"))
+        self.assertEqual(resting._level("0.975", "x"), PLAN.kill_level)
+        self.assertEqual([resting.deciding_end(side, resting.CLAIM_END, True) for side in (BACK, LAY)],
+                         [resting.PLUS_STEP, resting.AS_WRITTEN])
+        self.assertEqual({resting.deciding_end(side, purpose, False) for side in (BACK, LAY)
+                          for purpose in (resting.KILL_END, resting.CLAIM_END)}, {resting.AS_WRITTEN})
+        values = [(day, x + index / 1000) for index, (day, x) in enumerate(self.series(self.rows(200)))]
+        found = movement.cr1_mean(values, PLAN.confidence_level, PLAN.min_clusters)
+        tested = resting.cr1_test(PLAN, values)
+        self.assertEqual((found["bets"], found["race_dates"], found["df"]), (200, 20, 19))
+        self.assertAlmostEqual(resting.one_sided_p(found["mean"], found["se"], found["df"]), tested["p_one_sided"])
+        self.assertAlmostEqual(movement.student_t_quantile(float(PLAN.detectable_level), 19), 2.539, places=3)
+        self.assertAlmostEqual(movement.sample_sd([1.0, 2.0, 3.0]), 1.0)
+        self.assertEqual(movement.nearest_rank(list(range(1, 21)), PLAN.quantiles)[Fraction(1, 2)], 10)
+        adjusted = movement.holm({BACK: 0.004, LAY: 0.03}, PLAN.alpha, PLAN.family_m)
+        self.assertAlmostEqual(adjusted[BACK][0], 0.008)
+        self.assertEqual((adjusted[BACK][1], adjusted[LAY]), (True, (0.03, False)))
+        self.assertEqual(movement.holm({BACK: 0.004, LAY: None}, PLAN.alpha, PLAN.family_m)[LAY], (None, False))
+        self.assertIn("bound", resting.STATISTICS)                         # every bound here is keyed bound
+        self.assertNotIn("t", resting.STATISTICS)                          # so the test block carries no t
+        self.assertEqual(resting.withheld({"mean": 1.0, "bound": 2.0, "p_one_sided": 0.1, "reason": None}),
+                         {"mean": None, "bound": None, "p_one_sided": 0.1, "reason": resting.REST_NOT_GIVEN})
+        self.assertEqual((resting.G, resting.NET_HELD, resting.BSP_STEP, resting.COUNTS_ONLY, resting.UNDERPOWERED),
+                         ("g", "net_held", PLAN.bsp_step, "counts_only", "underpowered"))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -960,6 +993,450 @@ class Classes(EarlyCase):
                 for sid, klass in expected.items():
                     self.assertEqual(found[sid].bsp, P(BSPS[sid]) if klass == "scored" else None)
         self.assertEqual(sorted(list(cases) + ["post_decision_removal"]), sorted(CLASSES))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Scores, the selection, the labels and part and rest, over hand-built value rows
+
+F = Fraction
+TWO = F(2)
+PATTERN = (-3, 1, 2, -1, 0, 3, -2, 1, -1, 0)                              # sums to 0: a mean is set exactly
+CELL = early.MoveCell(-3600, DRIFT, "A")
+
+
+def member(x, day, label="BASIC-D", half=None, band="A", moves=None, klass=resting.SCORED, bsp=TWO, k=1,
+           at_s=-600):
+    """A hand-built priced row with gross x exactly (LTP = BSP x (1 + x)). At the entry time it is a member of the
+    move cells moves {start: DRIFT, FLAT or STEAM} (default: DRIFT from -3600) and undefined from the other start."""
+    moves = {-3600: DRIFT} if moves is None else moves
+    made = tuple(early.Move(start, moves[start], None, False, k) if start in moves
+                 else early.Move(start, None, "no_start_price", False, None) for start in PLAN.starts_s)
+    return Value(at_s=at_s, code=PRICED, no_ltp=None, band=band, age_ms=60_000, ltp=bsp * (1 + x), label=label,
+                 half=half, race_date=day, klass=klass, bsp=bsp if klass == resting.SCORED else None,
+                 moves=made if at_s == PLAN.entry_s else ())
+
+
+def day_of(label, index, halves=("H1", "H2")):
+    """(race date, half) of the index-th race date of a label: 2023 for BASIC-D; for BASIC-V alternately in the
+    named halves of 2024."""
+    if label == "BASIC-D":
+        return (date(2023, 1, 1) + timedelta(days=index)).isoformat(), None
+    half = halves[index % len(halves)]
+    return date(2024, 3 if half == "H1" else 9, 1 + index // len(halves)).isoformat(), half
+
+
+def rows_of(mean, noise, count, dates=20, label="BASIC-D", halves=("H1", "H2"), **kwargs):
+    """count member rows on `dates` race dates with gross x = mean + noise x a fixed pattern of mean 0."""
+    found = []
+    for index in range(count):
+        day, half = day_of(label, index % dates, halves)
+        found.append(member(F(mean) + F(noise) * PATTERN[index % len(PATTERN)] / 3, day, label, half, **kwargs))
+    return found
+
+
+def cells_with(**rows):
+    """{MoveCell: rows} for every move cell: the named ones (by PLAN.move_cells index, as m0 to m11) get rows."""
+    return {cell: list(rows.get(f"m{index}", ())) for index, cell in enumerate(PLAN.move_cells)}
+
+
+def cell_index(cell):
+    return f"m{PLAN.move_cells.index(cell)}"
+
+
+class Metric(EarlyCase):
+    def test_x_lay_and_both_nets_are_exact_at_both_ends(self):
+        row = member(F(1, 4), "2023-01-01")
+        self.assertEqual(row.ltp, F(5, 2))
+        self.assertEqual(early.score_of(PLAN, row, BACK, resting.AS_WRITTEN), F(1, 4))
+        self.assertEqual(early.score_of(PLAN, row, LAY, resting.AS_WRITTEN), F(-1, 4))
+        self.assertEqual(early.score_of(PLAN, row, BACK, resting.AS_WRITTEN, resting.NET_HELD), F(1, 4) - F(3, 200))
+        self.assertEqual(early.score_of(PLAN, row, LAY, resting.AS_WRITTEN, resting.NET_HELD), F(-1, 4) - F(1, 100))
+        self.assertEqual(early.score_of(PLAN, row, BACK, resting.PLUS_STEP), F(5, 2) / F(201, 100) - 1)
+        self.assertEqual(early.score_of(PLAN, row, LAY, resting.PLUS_STEP, resting.NET_HELD),
+                         1 - F(5, 2) / F(201, 100) - F(2, 100) * (1 - 1 / F(201, 100)))
+        with self.assertRaises(KeyError):
+            early.score_of(PLAN, row, BACK, "bsp_rounded")
+        missing = member(F(1, 4), "2023-01-02", klass="missing_bsp")
+        self.assertEqual(early.series(PLAN, [row, missing], LAY, resting.AS_WRITTEN), [("2023-01-01", -0.25)])
+
+    def test_x_of_a_synthetic_market_and_its_cells(self):
+        cells = early.by_cell(PLAN, self.assessed(basic_market()).values)
+        self.assertEqual(list(cells), list(PLAN.level_cells + PLAN.move_cells))
+        entry_a = cells[early.LevelCell(-600, "A")]
+        self.assertEqual([early.score_of(PLAN, row, BACK, resting.AS_WRITTEN) for row in entry_a],
+                         [P(2.5) / P(2.52) - 1, P(2.9) / P(3.1) - 1])        # A1 and A2
+        self.assertEqual(early.score_of(PLAN, entry_a[0], BACK, resting.AS_WRITTEN), F(-1, 126))
+        self.assertEqual([len(cells[cell]) for cell in PLAN.move_cells],
+                         [1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0])               # section MoveCells' standard market
+        self.assertEqual({len(cells[cell]) for cell in PLAN.level_cells}, {2})
+
+    def test_the_switch_reads_the_level_cells_at_entry_both_labels(self):
+        whole = [member(F(0), f"2023-02-{index % 20 + 1:02d}", band=band, moves={})
+                 for index in range(50) for band in ("A", "B")]
+        later = [member(F(0), "2023-02-01", at_s=-1800, bsp=F(2005, 1000))] * 30     # never read by the switch
+        unscored = [member(F(0), "2023-02-01", klass="missing_bsp")]
+        cut = member(F(0), "2024-03-01", "BASIC-V", "H1", bsp=F(2005, 1000), moves={})
+        switch = early.bsp_switch(PLAN, early.by_cell(PLAN, whole + later + unscored))
+        self.assertEqual(switch, early.Switch(100, 100, True))
+        switch = early.bsp_switch(PLAN, early.by_cell(PLAN, whole + later + [cut]))
+        self.assertEqual(switch, early.Switch(100, 101, True))                       # 100 >= 0.99 x 101
+        self.assertEqual(early.bsp_switch(PLAN, early.by_cell(PLAN, whole + [cut, cut])), early.Switch(100, 102,
+                                                                                                     False))
+
+    def test_figures_count_and_describe(self):
+        small = early.figures(PLAN, rows_of("0.01", "0.03", 99))
+        self.assertEqual((small["members"], small["x"][resting.AS_WRITTEN]["values"],
+                          small["x"][resting.AS_WRITTEN]["mean"], small["x"][resting.AS_WRITTEN]["reason"]),
+                         (99, 99, None, resting.COUNTS_ONLY))
+        rows = rows_of("0.01", "0.03", 100) + [member(F(0), "2023-01-01", klass="missing_bsp")]
+        found = early.figures(PLAN, rows)
+        self.assertEqual((found["members"], found["classes"]["scored"], found["classes"]["missing_bsp"]), (101, 100, 1))
+        self.assertAlmostEqual(found["x"][resting.AS_WRITTEN]["mean"], 0.01)
+        self.assertNotIn("bets", found["x"][resting.AS_WRITTEN])
+        self.assertLess(found["x"][resting.PLUS_STEP]["mean"], found["x"][resting.AS_WRITTEN]["mean"])
+        held = early.figures(PLAN, rows, given=False)["x"][resting.AS_WRITTEN]
+        self.assertEqual((held["values"], held["mean"], held["sd"], held["ci_low"], held["reason"]),
+                         (100, None, None, None, resting.REST_NOT_GIVEN))
+
+    def test_the_detectable_effect(self):
+        factor = movement.student_t_quantile(0.99, 19) + movement.student_t_quantile(0.8, 19)
+        self.assertAlmostEqual(early.detectable(PLAN, 0.004, 800, 200, 20), factor * 0.004 * 2)
+        for args in ((None, 800, 200, 20), (0.0, 800, 200, 20), (0.004, 800, 0, 20), (0.004, 800, 200, 1),
+                     (0.004, 0, 200, 20)):
+            self.assertIsNone(early.detectable(PLAN, *args))
+
+
+class BlindFigures(unittest.TestCase):
+    def test_the_two_moved_cells_are_named_by_size_only(self):
+        drift, steam = early.MoveCell(-3600, DRIFT, "A"), early.MoveCell(-3600, STEAM, "A")
+        cells = early.by_cell(PLAN, rows_of("0", "0.01", 3) + rows_of("0", "0.01", 5, moves={-3600: STEAM}))
+        names = early.blind_names(PLAN, cells)
+        self.assertEqual((names[drift], names[steam]), (early.MOVED_SMALLER, early.MOVED_LARGER))
+        self.assertEqual(names[early.MoveCell(-3600, FLAT, "A")], FLAT)
+        tied = early.blind_names(PLAN, early.by_cell(PLAN, []))
+        self.assertEqual((tied[drift], tied[steam]), (early.MOVED_LARGER, early.MOVED_SMALLER))   # registered order
+        self.assertEqual(list(tied), list(PLAN.move_cells))
+        self.assertFalse({DRIFT, STEAM} & set(tied.values()))
+
+    def test_spreads_and_the_effect_from_a_clustered_se(self):
+        rows = rows_of("0.01", "0.03", 300) + rows_of("0.01", "0.03", 200, label="BASIC-V")
+        rows += rows_of("0", "0.01", 99, moves={-3600: FLAT})
+        rows += rows_of("0", "0.01", 400, moves={-14400: STEAM})                   # the starts differ by 1,000
+        found = early.blind_spreads(PLAN, early.by_cell(PLAN, rows))
+        drift = found[CELL]
+        self.assertEqual((drift["values"], drift["race_dates"], drift["reason"]), (500, 40, None))
+        self.assertEqual(sorted(drift["ranges"]), ["0.75-0.25", "0.9-0.1", "0.95-0.05"])
+        pooled = early.series(PLAN, rows[:500], BACK, resting.AS_WRITTEN)
+        se = movement.cr1_mean(pooled, PLAN.confidence_level, PLAN.min_clusters)["se"]
+        self.assertEqual(drift["detectable"], {"test_values": 200, "test_race_dates": 20,
+                                               "effect": early.detectable(PLAN, se, 500, 200, 20)})
+        flat = found[early.MoveCell(-3600, FLAT, "A")]
+        self.assertEqual((flat["sd"], flat["ranges"], flat["detectable"]["effect"], flat["reason"]),
+                         (None, None, None, resting.COUNTS_ONLY))
+        self.assertIsNotNone(found[early.MoveCell(-14400, STEAM, "A")]["sd"])
+        self.assertFalse({"mean", "median", "ci_low", "p_one_sided"} & set(drift))
+
+    def test_the_two_starts_rule_at_0_99_and_100(self):
+        both = rows_of("0", "0.02", 300, moves={-14400: DRIFT, -3600: DRIFT})
+        for apart, withheld in ((0, True), (99, True), (100, False)):
+            with self.subTest(apart=apart):
+                rows = both + rows_of("0", "0.02", apart, moves={-3600: FLAT})
+                found = early.blind_spreads(PLAN, early.by_cell(PLAN, rows))
+                first, second = found[early.MoveCell(-14400, DRIFT, "A")], found[CELL]
+                self.assertEqual(first["sd"] is None, withheld)
+                self.assertEqual(first["reason"], resting.REST_NOT_GIVEN if withheld else None)
+                self.assertEqual(first["values"], 300)                               # counts stay
+                self.assertIsNotNone(second["sd"])                                   # the later start keeps its own
+
+
+class SelectionIsBlindToHoldout(unittest.TestCase):
+    big, noisy = early.MoveCell(-3600, FLAT, "A"), early.MoveCell(-14400, DRIFT, "B")
+
+    def counts(self, changes=None):
+        """Two counts per move cell from the test label: (400, 20) unless changes {cell: counts} says otherwise."""
+        return {**dict.fromkeys(PLAN.move_cells, (400, 20)), **(changes or {})}
+
+    def test_the_noisy_cell_with_the_highest_raw_mean_is_not_chosen(self):
+        explore = cells_with(**{cell_index(self.big): rows_of("0.002", "0.004", 1000, moves={-3600: FLAT}),
+                                cell_index(self.noisy): rows_of("0.006", "0.03", 200, band="B",
+                                                                moves={-14400: DRIFT})})
+        found = early.select(PLAN, explore, self.counts(), False)
+        self.assertEqual(found.eligible, (self.noisy, self.big))
+        means = {cell: movement.cr1_mean(early.series(PLAN, explore[cell], BACK, resting.AS_WRITTEN),
+                                         PLAN.confidence_level, PLAN.min_clusters)["mean"]
+                 for cell in (self.big, self.noisy)}
+        self.assertGreater(means[self.noisy], means[self.big])
+        ranks = {cell: found.cells[cell]["mean_over_se"] for cell in (self.big, self.noisy)}
+        self.assertGreater(ranks[self.big][BACK], ranks[self.noisy][BACK])
+        self.assertEqual(found.primaries, {BACK: self.big, LAY: self.noisy})   # LAY ranks -x
+        self.assertAlmostEqual(ranks[self.big][LAY], -ranks[self.big][BACK])
+
+    def test_the_ceiling(self):
+        wide = rows_of("0.05", "0.2", 400, moves={-3600: FLAT})
+        found = early.select(PLAN, cells_with(**{cell_index(self.big): wide}), self.counts(), False)
+        cell = found.cells[self.big]
+        self.assertEqual(cell["checks"], {"sizes": True, "se": True, "detectable_within_ceiling": False})
+        self.assertGreater(cell["detectable"], 0.025)
+        se = movement.cr1_mean(early.series(PLAN, wide, BACK, resting.AS_WRITTEN), PLAN.confidence_level,
+                               PLAN.min_clusters)["se"]
+        self.assertAlmostEqual(cell["detectable"], early.detectable(PLAN, se, 400, 400, 20))
+        self.assertEqual((found.eligible, found.primaries), ((), {BACK: None, LAY: None}))
+
+    def test_the_gates_on_both_labels(self):
+        ok = rows_of("0.002", "0.004", 200, dates=15, moves={-3600: FLAT})
+        cases = ((ok, (200, 15), True), (ok[:199], (200, 15), False),
+                 (rows_of("0.002", "0.004", 200, dates=14, moves={-3600: FLAT}), (200, 15), False),
+                 (ok, (199, 15), False), (ok, (200, 14), False))
+        for rows, counted, eligible in cases:
+            with self.subTest(values=len(rows), counted=counted):
+                found = early.select(PLAN, cells_with(**{cell_index(self.big): rows}),
+                                     self.counts({self.big: counted}), False)
+                self.assertEqual(found.cells[self.big]["checks"]["sizes"], eligible)
+                self.assertEqual(found.primaries[BACK], self.big if eligible else None)
+        small = early.select(PLAN, cells_with(**{cell_index(self.big): ok[:199]}), self.counts(), False)
+        self.assertEqual((small.cells[self.big]["se"], small.cells[self.big]["mean_over_se"],
+                          small.cells[self.big]["checks"]["se"]), (None, {BACK: None, LAY: None}, None))
+
+    def test_a_tie_goes_to_the_cell_listed_first(self):
+        same = rows_of("0.002", "0.004", 400, moves={-14400: DRIFT, -3600: DRIFT})
+        first, second = early.MoveCell(-14400, DRIFT, "A"), CELL
+        found = early.select(PLAN, cells_with(**{cell_index(first): same, cell_index(second): same}),
+                             self.counts(), False)
+        self.assertEqual(found.eligible, (first, second))
+        self.assertEqual(found.primaries, {BACK: first, LAY: first})              # one cell may be both
+        self.assertEqual(early.select(PLAN, cells_with(), self.counts(), False).primaries, {BACK: None, LAY: None})
+
+    def test_a_row_of_the_test_label_is_refused(self):
+        explore = cells_with(**{cell_index(CELL): rows_of("0", "0.01", 10, label="BASIC-V")})
+        with self.assertRaises(ValueError) as caught:
+            early.select(PLAN, explore, self.counts(), False)
+        self.assertEqual(str(caught.exception), "select:not_the_explore_label")
+
+    def test_changing_every_test_value_with_the_counts_and_switch_fixed_changes_nothing(self):
+        self.assertEqual(list(inspect.signature(early.select).parameters), ["plan", "explore", "counts", "apart"])
+        explore = rows_of("0.002", "0.004", 1000, moves={-3600: FLAT}) + rows_of("0.006", "0.03", 200, band="B",
+                                                                                  moves={-14400: DRIFT})
+        tests = [rows_of("0.002", "0.004", 400, label="BASIC-V", moves={-3600: FLAT})
+                 + rows_of("0.006", "0.03", 400, band="B", label="BASIC-V", moves={-14400: DRIFT}),
+                 rows_of("-0.09", "0.3", 400, label="BASIC-V", moves={-3600: FLAT})
+                 + rows_of("0.2", "0.001", 400, band="B", label="BASIC-V", moves={-14400: DRIFT})]
+        found = []
+        for test in tests:
+            cells = early.by_cell(PLAN, explore + test)
+            explore_rows = {cell: [row for row in cells[cell] if row.label == "BASIC-D"] for cell in PLAN.move_cells}
+            counts = early.test_counts(PLAN, cells)
+            figures = {cell: early.figures(PLAN, explore_rows[cell]) for cell in PLAN.move_cells}
+            found.append((counts, repr(early.select(PLAN, explore_rows, counts, True)), repr(figures)))
+        self.assertEqual(found[0], found[1])
+        self.assertEqual(found[0][0][self.big], (400, 20))
+
+
+def verdict_of(explore, test, primaries=None, apart=False, cell=CELL):
+    """early.verdicts over the rows of both labels; both primaries are cell unless primaries says otherwise."""
+    cells = early.by_cell(PLAN, explore + test)
+    primaries = {BACK: cell, LAY: cell} if primaries is None else primaries
+    return early.verdicts(PLAN, primaries, {item: cells[item] for item in PLAN.move_cells}, apart)
+
+
+class Verdicts(unittest.TestCase):
+    verdict = staticmethod(verdict_of)
+
+    def test_each_label_in_order(self):
+        kill_and_cost = self.verdict(rows_of("-0.05", "0.01", 400), rows_of("-0.05", "0.01", 400, label="BASIC-V"))
+        self.assertEqual((kill_and_cost[BACK]["label"], kill_and_cost[LAY]["label"]),
+                         ("kill_free_fill", "cost_clearing_candidate"))
+        signal = self.verdict(rows_of("0.02", "0.002", 400), rows_of("0.02", "0.002", 400, label="BASIC-V"))
+        self.assertEqual((signal[BACK]["label"], signal[LAY]["label"]), ("signal_candidate", "kill_free_fill"))
+        self.assertTrue(signal[BACK]["checks"]["rejected_under_holm"])
+        self.assertFalse(signal[BACK]["checks"]["net_lower_bound_above_allowance"])     # net 0.96 points < 1.0
+        unresolved = self.verdict(rows_of("0.008", "0.03", 400), rows_of("0.008", "0.03", 400, label="BASIC-V"))
+        self.assertEqual(unresolved[BACK]["label"], "unresolved")
+        self.assertEqual({key: unresolved[BACK]["checks"][key] for key in ("kill_bound_below_0", "se_on_test",
+                                                                           "detectable_within_ceiling",
+                                                                           "rejected_under_holm")},
+                         {"kill_bound_below_0": False, "se_on_test": True, "detectable_within_ceiling": True,
+                          "rejected_under_holm": False})
+        self.assertEqual(list(signal[BACK]["checks"]), list(early.CHECKS))
+
+    def test_the_allowance_is_the_bands(self):
+        for band, label in (("A", "cost_clearing_candidate"), ("B", "signal_candidate")):
+            cell = early.MoveCell(-3600, DRIFT, band)
+            found = self.verdict(rows_of("0.03", "0.002", 400, band=band),
+                                 rows_of("0.03", "0.002", 400, label="BASIC-V", band=band), cell=cell)
+            with self.subTest(band=band):
+                self.assertEqual((found[BACK]["label"], found[BACK]["band"], found[BACK]["allowance"]),
+                                 (label, band, float(PLAN.half_gap_allowance[band])))
+
+    def test_signal_needs_a_mean_above_0_in_each_half_year(self):
+        found = self.verdict(rows_of("0.02", "0.002", 400), rows_of("0.02", "0.002", 400, label="BASIC-V",
+                                                                     halves=("H1",)))
+        self.assertEqual(found[BACK]["half_years"], {"H1": {"values": 400, "race_dates": 20, "mean_above_0": True},
+                                                     "H2": {"values": 0, "race_dates": 0, "mean_above_0": False}})
+        self.assertEqual(found[BACK]["label"], "unresolved")
+        few = rows_of("0.02", "0.002", 300, label="BASIC-V", halves=("H1",)) + rows_of(
+            "0.02", "0.002", 99, label="BASIC-V", halves=("H2",))
+        self.assertEqual(self.verdict(rows_of("0.02", "0.002", 400), few)[BACK]["label"], "unresolved")
+
+    def test_underpowered_without_a_primary_and_for_a_wide_se(self):
+        none = self.verdict([], [], primaries={BACK: None, LAY: None})
+        for side in (BACK, LAY):
+            self.assertEqual((none[side]["label"], none[side]["cell"], none[side]["test"]), ("underpowered", None,
+                                                                                          None))
+            self.assertEqual(none[side]["text"], "This says nothing either way.")
+            self.assertEqual(set(none[side]["checks"].values()), {False})
+        wide = self.verdict(rows_of("0", "0.3", 400), rows_of("0", "0.3", 400, label="BASIC-V"))
+        self.assertEqual(wide[BACK]["label"], "underpowered")
+        self.assertTrue(wide[BACK]["checks"]["se_on_test"])
+        self.assertGreater(wide[BACK]["detectable"], 0.025)
+        se = wide[BACK]["test"]["se"]
+        self.assertAlmostEqual(wide[BACK]["detectable"], early.detectable(PLAN, se, 400, 400, 20))
+        self.assertEqual(self.verdict([], [], primaries={BACK: CELL, LAY: None})[LAY]["label"], "underpowered")
+
+    def test_the_kill_is_pooled_reads_the_net_and_a_low_mean_alone_never_kills(self):
+        # Gross x is +0.4 points; net of the commission it is about -0.6. The test label alone is below the gate.
+        found = self.verdict(rows_of("0.004", "0.001", 400), rows_of("0.004", "0.001", 100, label="BASIC-V"))
+        self.assertEqual(found[BACK]["label"], "kill_free_fill")
+        self.assertGreater(found[BACK]["both"][resting.AS_WRITTEN][resting.G]["mean"], 0)
+        self.assertLess(found[BACK]["kill"]["mean"], 0)
+        self.assertLess(found[BACK]["kill"]["bound"], 0)
+        self.assertEqual((found[BACK]["kill"]["values"], found[BACK]["test"]["values"]), (500, 100))
+        self.assertIsNone(found[BACK]["test"]["p_one_sided"])                          # not tested: below the gate
+        low = self.verdict(rows_of("-0.2", "0.01", 100), rows_of("-0.2", "0.01", 99, label="BASIC-V"))
+        self.assertEqual(low[BACK]["label"], "underpowered")
+        self.assertIsNone(low[BACK]["kill"]["bound"])
+
+    def test_the_ends_holm_and_what_is_printed(self):
+        rows = rows_of("-0.05", "0.01", 400) + rows_of("-0.05", "0.01", 400, label="BASIC-V", k=2)
+        rows.append(member(F(0), "2024-03-01", "BASIC-V", "H1", klass="missing_bsp"))
+        found = self.verdict(rows, [], apart=True)
+        self.assertEqual((found[BACK]["kill"]["bsp_end"], found[BACK]["test"]["bsp_end"]),
+                         (resting.AS_WRITTEN, resting.PLUS_STEP))
+        self.assertEqual((found[LAY]["kill"]["bsp_end"], found[LAY]["test"]["bsp_end"]),
+                         (resting.PLUS_STEP, resting.AS_WRITTEN))
+        lay = found[LAY]["test"]
+        self.assertAlmostEqual(lay["holm_p_adjusted"], min(1.0, 2 * lay["p_one_sided"]))
+        self.assertTrue(lay["holm_rejected"])
+        self.assertNotIn("t", lay)
+        self.assertNotIn("bets", lay)
+        self.assertEqual((found[LAY]["members"], found[LAY]["not_scored_share"], found[LAY]["k_1_share"]),
+                         (401, 1 / 401, 0.0))
+        self.assertEqual(set(found[LAY]["both"]), set(resting.BSP_ENDS))
+        self.assertEqual(set(found[LAY]["both"][resting.AS_WRITTEN]), {resting.G, resting.NET_HELD})
+        registration = json.loads(REGISTRATION_RAW)
+        texts = registration["verdicts"]["printed_with_label"]
+        for side in (BACK, LAY):
+            self.assertEqual(found[side]["text"], texts[found[side]["label"]])
+            self.assertEqual(found[side]["printed_with"], (
+                registration["verdicts"]["printed_with"], registration["exposure"]["printed_with_every_label"],
+                registration["measurement"]["bsp_ends"]["limit"], registration["measurement"]["removals"]))
+        self.assertEqual(texts["kill_free_fill"], "This one cell, on this side, for a bet held to the result: even a "
+                         "free fill at the last traded price would not pay the commission. It says nothing about the "
+                         "other cells, about closing before the off, or about an order that waits on one side of the "
+                         "gap.")
+        self.assertEqual(texts["signal_candidate"], "The pattern showed in 2023 and again in 2024. A steady habit in "
+                         "which side trades last would show the same. It is not a price to bet at. The next step is a "
+                         "check against quotes.")
+        self.assertEqual(texts["cost_clearing_candidate"], texts["signal_candidate"] + " The allowance is a guess at "
+                         "half the gap. The gap was not measured.")
+        self.assertFalse(any("edge" in name for name in early.VERDICTS))
+
+
+def universe(*groups):
+    """[(name, positions)] of named ranges (start, stop)."""
+    return [(name, set(range(*span))) for name, span in groups]
+
+
+class GivenCells(unittest.TestCase):
+    def test_under_100_values_counts_only(self):
+        self.assertEqual(early.given_cells(PLAN, 1000, [universe(("a", (0, 99)))]), [])
+        self.assertEqual(early.figures(PLAN, rows_of("0.01", "0.01", 99))["x"][resting.AS_WRITTEN]["reason"],
+                         resting.COUNTS_ONLY)
+
+    def test_inside_a_partition_the_group_and_the_rest_hold_100_or_none(self):
+        for count, given in ((300, ["a"]), (299, []), (200, ["a"])):
+            with self.subTest(count=count):
+                self.assertEqual(early.given_cells(PLAN, count, [universe(("a", (0, 200)))]), given)
+        self.assertEqual(early.given_cells(PLAN, 600, [universe(("a", (0, 200)), ("b", (200, 350)),
+                                                                ("c", (350, 600)))]), ["a", "b", "c"])
+        self.assertEqual(early.given_cells(PLAN, 600, [universe(("a", (0, 200)), ("b", (200, 550)),
+                                                                ("c", (550, 600)))]), ["a"])
+
+    def test_a_crossing_class_of_one_row_leaves_both_given(self):
+        first = universe(("d1", (0, 300)), ("f1", (300, 600)))
+        second = [("d2", set(range(299)) | {300}), ("f2", {299} | set(range(301, 600)))]
+        self.assertEqual(early.given_cells(PLAN, 1000, [first, second]), ["d1", "f1", "d2", "f2"])
+
+    def test_a_nested_pair_50_rows_apart_withholds_the_second_partition(self):
+        first, second = universe(("d1", (0, 200))), universe(("d2", (0, 250)))
+        self.assertEqual(early.given_cells(PLAN, 1000, [first, second]), ["d1"])
+        self.assertEqual(early.given_cells(PLAN, 1000, [second, first]), ["d2"])
+        union = universe(("a", (0, 200)), ("b", (200, 400)))                # a union inside a group, 50 apart
+        self.assertEqual(early.given_cells(PLAN, 1000, [union, universe(("c", (0, 450)))]), ["a", "b"])
+        rest = universe(("c", (100, 950)))                                   # a group inside a rest, 50 apart
+        self.assertEqual(early.given_cells(PLAN, 1000, [universe(("a", (0, 100))), rest]), ["a"])
+        self.assertEqual(early.given_cells(PLAN, 1000, [first, universe(("d2", (0, 300)))]), ["d1", "d2"])
+        with self.assertRaises(ValueError):
+            early.given_cells(PLAN, 1000, [universe(("a", (0, 200)), ("b", (150, 400)))])
+
+    def entry_rows(self, label="BASIC-D"):
+        """600 scored entry members in band A: from -14400, 200 DRIFT and 350 FLAT; from -3600, 250 DRIFT (holding
+        the 200) and 350 FLAT. The two DRIFT cells nest 50 rows apart."""
+        return (rows_of("0", "0.01", 200, label=label, moves={-14400: DRIFT, -3600: DRIFT})
+                + rows_of("0", "0.01", 50, label=label, moves={-3600: DRIFT})
+                + rows_of("0", "0.01", 350, label=label, moves={-14400: FLAT, -3600: FLAT}))
+
+    def test_the_start_with_the_back_primary_goes_first(self):
+        cells = early.by_cell(PLAN, self.entry_rows())
+        none = {BACK: None, LAY: None}
+        early_drift = early.MoveCell(-14400, DRIFT, "A")
+        self.assertEqual(early.given_move_cells(PLAN, cells, "BASIC-D", none),
+                         {early_drift, early.MoveCell(-14400, STEAM, "A")})     # an empty group says nothing
+        for primaries in ({BACK: CELL, LAY: early_drift}, {BACK: early.MoveCell(-14400, DRIFT, "B"), LAY: CELL}):
+            with self.subTest(primaries=primaries):
+                given = early.given_move_cells(PLAN, cells, "BASIC-D", primaries)
+                self.assertTrue({CELL, early.MoveCell(-3600, FLAT, "A")} <= given)
+                self.assertNotIn(early_drift, given)
+        cells = early.by_cell(PLAN, self.entry_rows("BASIC-V"))
+        self.assertEqual(early.given_move_cells(PLAN, cells, "BASIC-V", {BACK: CELL, LAY: early_drift}), {CELL})
+        self.assertEqual(early.given_move_cells(PLAN, cells, "BASIC-V", {BACK: early_drift, LAY: CELL}),
+                         {early_drift})
+        self.assertEqual(early.given_move_cells(PLAN, cells, "BASIC-V", none), set())
+        self.assertEqual(early.given_move_cells(PLAN, cells, "BASIC-D", none) & {CELL}, set())   # no D rows: empty
+        with self.assertRaises(ValueError):
+            early.given_move_cells(PLAN, cells, "BASIC-T", none)
+
+    def test_a_withheld_primary_prints_its_label_and_p_and_no_mean(self):
+        found = verdict_of(rows_of("0.02", "0.002", 400), rows_of("0.02", "0.002", 400,
+                                                                                 label="BASIC-V"))[BACK]
+        self.assertEqual(found["label"], "signal_candidate")
+        shown = early.shown(found, False, True)
+        for key in ("label", "text", "printed_with", "checks", "members", "half_years", "kill"):
+            self.assertEqual(shown[key], found[key])
+        self.assertEqual((shown["test"]["p_one_sided"], shown["test"]["holm_p_adjusted"],
+                          shown["test"]["holm_rejected"], shown["test"]["values"]),
+                         (found["test"]["p_one_sided"], found["test"]["holm_p_adjusted"], True, 400))
+        self.assertEqual({shown["test"][key] for key in ("mean", "se", "df", "ci_low", "ci_high")}, {None})
+        self.assertEqual((shown["test"]["reason"], shown["net_lower"]["bound"], shown["net_lower"]["mean"],
+                          shown["detectable"]), (resting.REST_NOT_GIVEN, None, None, None))
+        self.assertEqual({item["mean"] for end in shown["both"].values() for item in end.values()}, {None})
+        self.assertEqual((shown["figures_given"], shown["kill_figures_given"]), (False, True))
+        self.assertEqual(early.shown(found, True, True)["test"], found["test"])
+        none = verdict_of([], [], primaries={BACK: None, LAY: None})[LAY]
+        self.assertEqual(early.shown(none, False, False), dict(none, figures_given=None, kill_figures_given=None))
+
+    def test_the_pooled_kill(self):
+        rows = rows_of("-0.05", "0.01", 100) + rows_of("-0.05", "0.01", 100, label="BASIC-V")
+        both = {"BASIC-D": True, "BASIC-V": True}
+        self.assertTrue(early.kill_given(PLAN, rows, both))
+        self.assertFalse(early.kill_given(PLAN, rows[:-1], both))
+        self.assertFalse(early.kill_given(PLAN, rows, {"BASIC-D": False, "BASIC-V": True}))
+        found = verdict_of(rows_of("-0.05", "0.01", 400), rows_of("-0.05", "0.01", 400,
+                                                                                  label="BASIC-V"))[BACK]
+        shown = early.shown(found, True, False)
+        self.assertEqual(shown["label"], "kill_free_fill")
+        self.assertEqual((shown["kill"]["mean"], shown["kill"]["bound"], shown["kill"]["values"],
+                          shown["kill"]["bsp_end"]), (None, None, 800, resting.AS_WRITTEN))
+        self.assertEqual(shown["test"], found["test"])
 
 
 if __name__ == "__main__":

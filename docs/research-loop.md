@@ -325,6 +325,26 @@ The numbers are placeholders from the lab's design notes. They involve no money.
 11. **After PR C merges** (planned), the package sources differ from PR B's. A close-v1 registered pass must then run from a clean clone at PR B's commit if its blind pass ran there. From a later commit it refuses (`blind_receipt:another_code`).
 - **Planned, not built:** the blind receipt's two byte totals are meant to size inplay-v1, which must read past the off. If the estimate is over 7 hours it will not run at night, and the choice is Yu's.
 
+## The split, version 2
+
+- **What it is.** [research/partitions-v2.json](../research/partitions-v2.json) is the later split file that [the split](#the-split) says the BASIC rows wait for. It gives the 2023 and 2024 labels a budget, so a pass may name them. Nothing is run or registered by the file alone.
+- **What changed from version 1.** Three edits and nothing else:
+  - `BASIC-D` (2023, explore) gets `explore_budget` 10: at most 10 explore or registered passes per lineage.
+  - `BASIC-V` (2024, holdout) gets `alpha_lifetime` "0.10". At 0.02 a test, that allows five tests on 2024 in total, all lineages together.
+  - A fifth `prior_exposure` sentence, `p0-basic-2023-25`: P0's run of 2026-10-17 and the index build read every 2023-25 BASIC file mechanically, results included, and released only counts and digests.
+- **What did not change.** Every date row, the salt, the half-years, `max_looks` 2, the PRO budgets, `BASIC-T` (sealed), `SEALED` (never) and the four old sentences. So every date gets the same label and the same half under both files. A test checks every date from 2015 to 2027. The `schema` text inside the file is still `betangel.partitions/v1`: "v2" is the file's name, not a new format, and `partition.py` is unchanged.
+- **Version 1 stays.** Its bytes and its pinned hash do not move. close-v1 keeps naming version 1. A study names one split file by its hash, and the ledger checks the bytes it is given against that hash.
+- **Half-years.** The file holds one pair of halves, and they are the PRO year. A 2024 date has no half in either file. A BASIC study that needs halves of 2024 writes them in its own registration.
+- **Two split files, one ledger.** Each ledger entry stores the hash of the split its pass named, so one ledger file can hold entries that name version 1 and entries that name version 2. What is spent is counted over every entry, whatever file it named: looks by study id, explore passes by lineage and label, tests and alpha by label. Labels and lineages decide, not files.
+  - close-v1 (lineage `close`, labels `PRO-D` and `PRO-V`) and early-price-v1 (lineage `early-price`, labels `BASIC-D` and `BASIC-V`) share no label and no lineage. Neither spends anything of the other's.
+  - A later `PRO-V` test that names version 2 adds its alpha to the `PRO-V` tests that named version 1. Both files say 0.10, so it is one sum against one limit.
+  - A pass that names version 1 cannot use a BASIC label: `ledger:entry:partition_no_budget`.
+  - Limit, stated plainly: the ledger reads the size of a budget from the file the pass names. A later file with a larger budget would raise it. The controls are the merged file and its pinned hash.
+- **One head for both studies.** Both studies use the same ledger directory. After a pass of either study appends its line, the next pass of either study must be typed with that new head, or it refuses before its read (`ledger:head_not_expected`). So after every pass the new head goes into one shared note, and the next pass, of whichever study, takes it from there. A registered pass still anchors on its own blind pass's entry.
+- **One pass at a time, across studies.** A pass that appends while another pass is reading makes the other fail at its end (`ledger:head_moved`), after its whole read. A BASIC pass started during a close-v1 pass would cost close-v1 its night.
+- **Later BASIC studies.** The ledger blocks a second test only within the lineage `early-price`. A new BASIC idea under another lineage would get a fresh test on 2024. So, as a rule of this page: no other BASIC study registers until a split file carries an `early-price-v1` exposure sentence, saying what that study released of 2023 and 2024.
+- **What merging it fixes.** As for version 1: the two BASIC budgets and the new sentence cannot change later without a third split file. The numbers are placeholders from the lab's design notes and involve no money.
+
 ## What it changes elsewhere
 
 - PR A adds three modules to `betangel_research/betfair/backtest/` and PR B three more. No existing source file changes. The engine certificate covers every module in that directory, so its key moves again with each PR. Any later `run-backtest` needs `certify-engine` at the new sources. The boundary test's count of certified files goes from 25 to 28 (PR A) and to 31 (PR B).

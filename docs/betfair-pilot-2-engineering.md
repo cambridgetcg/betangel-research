@@ -2,7 +2,7 @@
 
 Status: proposed, for Astra's review. None of the Pilot 2 code it describes is merged. It describes the code that PR-1 and PR-2 of the [plan](betfair-pilot-2-plan.md) would add; its file:line citations are to main c86764a, and each PR is rebased onto main before it merges (plan, Stages). The [Pilot 2 page](betfair-pilot-2-policy.md) wins on any difference, and RS-19 and its [engineering note](betfair-pilot-engineering.md) ("eng") stay as they are.
 
-For Astra, Yu and the Air's Claude. Author: lab-Claude, 2026-11-05; rewritten on 2026-11-09 for the plain capped bot Yu chose that day, from the lab's build spec of the same day; revised on 2026-11-10 after lab-Claude's review round of the drafted code and its fixes; rebased onto main b9099ff later that day, after #59, #63 and #60 merged, and brought into line with those merges; rebased onto main d0ca5e8 on 2026-11-12, and revised that day for Yu's dropping of Gate A (plan, Decided).
+For Astra, Yu and the Air's Claude. Author: lab-Claude, 2026-11-05; rewritten on 2026-11-09 for the plain capped bot Yu chose that day, from the lab's build spec of the same day; revised on 2026-11-10 after lab-Claude's review round of the drafted code and its fixes; rebased onto main b9099ff later that day, after #59, #63 and #60 merged, and brought into line with those merges; rebased onto main d0ca5e8 on 2026-11-12, and revised that day for Yu's dropping of Gate A (plan, Decided); rebased onto main 5ce1d1e later on 2026-11-12, after #66 (amendment 5) and #67 merged, and revised for Yu's answers of that afternoon to the lab's six questions (plan, Decided).
 
 - The sections follow eng's numbering. A section says only what differs. Where it is silent, eng applies to Pilot 2 as written, with "pilot" read as "pilot_lp".
 - File:line citations are to main c86764a.
@@ -242,7 +242,7 @@ GONE     SIGKILL, SIGSTOP, power loss, a sleep through the off: nothing runs; bo
 | read retry_backoff_s | 1, 4, 16 s | each read's retries within the same budget |
 
 - It also pins: `orders.customer_strategy_ref` `p2-lp` with no `orders.pilot` (so the order ref is `p2-lp`, config.py:436-441); rules WIN and event type "7"; `heartbeat_api_enabled` false; `read.app_key_slot` "delayed".
-- **Yu's hand edits,** all made before Astra's acceptance (page, Three consents): `credentials.key_path` and `credentials.key_passphrase_in_keychain` as in config.json; `coexistence.bet_angel` as in config.json; the eight acknowledgements; `operator_attests_uk_egress`; and `orders.live.armed`, last. Whether armed goes back to false until the consent is open (plan, Open for Yu).
+- **Yu's hand edits,** all made before Astra's acceptance (page, Three consents): `credentials.key_path` and `credentials.key_passphrase_in_keychain` as in config.json; `coexistence.bet_angel` as in config.json; the eight acknowledgements; `operator_attests_uk_egress`; and `orders.live.armed`, last. Whether armed goes back to false until the consent is open (plan, Open for Yu). Changed on 2026-11-12 (plan, Decided): Astra's acceptance covers the merged commit and no longer config-p2's hash, so the edits are made before the go-live consent, which names the hash. Yu still compares cfg12 on the banner, and the code's 26 pins (`p2_lp.CONFIG_PINS`) are unchanged.
 - **The hash.** The token, the banner, the ARM record and the go-live consent use `config_sha256` of the validated config merged over the checkout's DEFAULTS (config.py:132-151, :452-454; on this branch `load_config_p2` uses the same merge). `init-config --p2` prints it, also for a file that exists (status `config_exists`). It covers every hand-set field, armed included, and it moves with a default the file leaves out, so it is read from a checkout at the commit the consent names. It is not `shasum` of the file.
 - Pilot 1's config.json is unchanged.
 
@@ -296,7 +296,7 @@ eng §13's bans stay, except that this bot may send lays. Still: more than one i
 As on the page. `p2-summary --mode live` prints the counts, each matched leg's size and average price, and Betfair's figures; there is no data lock and no recomputation.
 
 ## 16. Left out
-Not needed for real-money safety, Yu's limits, Pilot 1's isolation or the lab rules. Each cut protection needs Yu's yes in plain words at the build consent.
+Not needed for real-money safety, Yu's limits, Pilot 1's isolation or the lab rules. Each cut protection needs Yu's yes in plain words at the build consent. Changed on 2026-11-12 (plan, Decided): the cuts are asked as the page says (Three consents, Build), in groups, one plain-words yes per group, and one block.
 - **Registration and identity:** the frozen contract, registration, PA1–PA4, the code-hash digest and the process pin. The commit is shown and a clean tree required instead.
 - **Journal records and stops:** a Pilot 2 fold and notes, a fault acknowledgement line, Pilot 2 stops, a session-end record, and journaled SKIPs and screens.
 - **Results machinery:** the ledger, classes, value at BSP, the verdict, the tables, capture and attestations, and own P&L arithmetic. Betfair's cleared figures and Yu's website check replace them.

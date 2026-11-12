@@ -1,0 +1,82 @@
+{
+  "halves": {
+    "H1": {
+      "first": "2015-05-01",
+      "last": "2015-10-31"
+    },
+    "H2": {
+      "first": "2015-11-01",
+      "last": "2016-04-30"
+    }
+  },
+  "labels": {
+    "BASIC-D": {
+      "explore_budget": 10,
+      "role": "explore"
+    },
+    "BASIC-T": {
+      "role": "sealed"
+    },
+    "BASIC-V": {
+      "alpha_lifetime": "0.10",
+      "role": "holdout"
+    },
+    "PRO-D": {
+      "explore_budget": 20,
+      "role": "explore"
+    },
+    "PRO-V": {
+      "alpha_lifetime": "0.10",
+      "role": "holdout"
+    },
+    "SEALED": {
+      "role": "never"
+    }
+  },
+  "max_looks": 2,
+  "prior_exposure": {
+    "lp-v1": "lp-v1 read the whole year and released join-leg mark-outs at 10 minutes before the off and fill counts.",
+    "movement-v1": "movement-v1 read the whole year and released taker NCLV by decision time with intervals and SDs; on the lab it also gave means by price band, field size and late-move cell, and raw tick quantiles.",
+    "p0": "The whole 2015-16 PRO year counts as inspected from P0's first run, which started two variants; their outcome metrics stay on the lab.",
+    "p0-basic-2023-25": "P0's run of 2026-10-17 and the index build read every 2023-25 BASIC file mechanically, results included; no strategy, settlement or price figure of those years was evaluated or released, only counts and digests.",
+    "suite-counts": "Whole-year counts of in-play markets and of markets with a removed runner are known; they are counts, not locations."
+  },
+  "ranges": [
+    {
+      "first": "2015-05-01",
+      "label_at_residue": "PRO-V",
+      "label_otherwise": "PRO-D",
+      "last": "2016-04-30",
+      "modulus": 3,
+      "residue": 0,
+      "rule": "salted_hash",
+      "salt": "betangel-research/partitions-v1/PRO-2015-05..2016-04"
+    },
+    {
+      "first": "2023-01-01",
+      "label": "BASIC-D",
+      "last": "2023-12-31",
+      "rule": "fixed"
+    },
+    {
+      "first": "2024-01-01",
+      "label": "BASIC-V",
+      "last": "2024-12-31",
+      "rule": "fixed"
+    },
+    {
+      "first": "2025-01-01",
+      "label": "BASIC-T",
+      "last": "2025-12-31",
+      "rule": "fixed"
+    },
+    {
+      "first": "2026-01-01",
+      "label": "SEALED",
+      "last": "2026-12-31",
+      "rule": "fixed"
+    }
+  ],
+  "schema": "betangel.partitions/v1",
+  "split_by": "race_date_europe_london"
+}

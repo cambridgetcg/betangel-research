@@ -128,13 +128,14 @@ def renumbered(state, new):
     no looks. These are all the places a PilotState holds an event's seq, so they are the only fields besides looks in
     which a journal's fold may differ from its look-free twin's: each reservation's seq and decision_seq; each PLACE
     record's reservation_seq, decision_seq, its decision's reservation_seq, submit_seq, place report, C and L reads,
-    execution (final_seq, c_seq, l_seq), BSP read, ledger basis source and contradicted_seq; each SKIP's seq and
-    reservation_seq; each session's seq and ended_seq; the PT4 and L-verifying receipts; where each pause level fired
-    and was acknowledged; each stop's seq, source_seq, acked_seq and the seqs in its id (a pause's id holds its level,
-    not a seq); violations, invalid notes, resolved gaps (by stop id), ending notes and the ending's seq. The due stops,
-    and the due tail of the active ones, are sorted again as the fold sorts them, since a renumbered id can sort
-    elsewhere as a string (-99 after -100). ids() takes every all-digit part of an id for a seq: true of the ids these
-    journals raise, not of a gateway session stop anchored on an open id's hex."""
+    execution (final_seq, c_seq, l_seq), BSP read, ledger basis source, contradicted_seq, and each frontier entry's
+    seq and the read_seq in a bsp_decided entry's claim (S2b); each SKIP's seq and reservation_seq; each session's seq
+    and ended_seq; the PT4 and L-verifying receipts; where each pause level fired and was acknowledged; each stop's
+    seq, source_seq, acked_seq and the seqs in its id (a pause's id holds its level, not a seq); violations, invalid
+    notes, resolved gaps (by stop id), ending notes and the ending's seq. The due stops, and the due tail of the active
+    ones, are sorted again as the fold sorts them, since a renumbered id can sort elsewhere as a string (-99 after
+    -100). ids() takes every all-digit part of an id for a seq: true of the ids these journals raise, not of a gateway
+    session stop anchored on an open id's hex."""
     def at(seq):
         return None if seq is None else new[seq]
 
@@ -156,8 +157,16 @@ def renumbered(state, new):
     def source(seq):
         return seq if seq in (None, 0) else new[seq]          # 0: an unsent record's basis names no observation
 
+    def entry(item):
+        claim = item["claim"]
+        if "read_seq" in claim:
+            claim = dict(claim, read_seq=at(claim["read_seq"]))
+        return dict(item, seq=new[item["seq"]], claim=claim)
+
     def record(rec):
         basis, execution = rec.ledger["basis"], rec.execution
+        # A tree before S2b has no frontier, and S8a's pins still run there.
+        frontier = {"frontier": tuple(map(entry, rec.frontier))} if hasattr(rec, "frontier") else {}
         return dataclasses.replace(
             rec, reservation_seq=new[rec.reservation_seq], decision_seq=new[rec.decision_seq],
             record=dict(rec.record, reservation_seq=new[rec.record["reservation_seq"]]), submit_seq=at(rec.submit_seq),
@@ -167,7 +176,7 @@ def renumbered(state, new):
                                          if key in execution}),
             bsp=dict(rec.bsp, read_seq=at(rec.bsp["read_seq"]), closed_read=read(rec.bsp["closed_read"])),
             ledger=dict(rec.ledger, basis=None if basis is None else dict(basis, source=source(basis["source"]))),
-            contradicted_seq=at(rec.contradicted_seq))
+            contradicted_seq=at(rec.contradicted_seq), **frontier)
 
     return dataclasses.replace(
         state,

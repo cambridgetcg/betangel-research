@@ -1,6 +1,6 @@
 # Research lane: the data split, the study ledger, rule files and close-v1
 
-Status: proposed (PR A and PR B of three stacked PRs), not merged. No pass has run: nothing here has read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The second half, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. A second study, inplay-v1, is planned for PR C and is not built.
+Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). No pass has run: nothing here has read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The second half, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. A second study, inplay-v1, is planned for PR C and is not built.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, against betangel-research main b9099ff.
 

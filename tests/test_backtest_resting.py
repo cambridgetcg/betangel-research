@@ -20,6 +20,7 @@ import io
 import json
 import math
 from pathlib import Path
+import random
 import stat
 import subprocess
 import sys
@@ -3551,6 +3552,241 @@ class NoIds(unittest.TestCase):
         for name, text in printed.items():
             with self.subTest(printed=name):
                 self.assertEqual([token for token in ids + [M, M.split(".")[1]] if token in text], [])
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Pins: close-v1's outputs as the sources of 5ce1d1e give them, set before close-early-v1 changes resting.py and
+# resting_study.py (its pull request 1). close-v1 must come out byte for byte as before, so no later pull request
+# changes a constant here.
+
+HOUR_OFF = OFF + timedelta(minutes=5)                                       # 14:05 UTC on Monday 1 June 2015
+
+
+def hour_market(market_id=M, off=HOUR_OFF, trades=(), **kwargs):
+    """The hour market: at off - 280 s (14:00:20 on a Monday at the default off: in the first 60 seconds after a whole
+    UTC hour) a rise of traded volume at 2.48 shares its batch with a ladder entry at 2.48, below the favourite's
+    resting LAYs at 2.5 placed at off - 600 s and off - 300 s. trades: more trades, as lp_market takes them."""
+    return lp_market(market_id, off, trades=[(280, FAV, [[2.48, 1.0]]), *trades], **kwargs)
+
+
+# A row and a fill are pinned by the names of the fields they hold at 5ce1d1e, never as tuples: a field added later
+# with a default does not move a pin, and a change to one of these does.
+ROW_FIELDS = ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid", "fills", "null_mid", "null_reason",
+              "trd", "no_status")
+FILL_FIELDS = ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn", "ended")
+# Prices around the favourite's quote on the CLASSIC ladder, in three price ranges: a seeded market takes its
+# favourite's best back, its best lay and its trades on the favourite from one of these lists.
+NEAR = ((1.77, 1.78, 1.79, 1.8, 1.81, 1.82, 1.83, 1.84),
+        (2.42, 2.44, 2.46, 2.48, 2.5, 2.52, 2.54, 2.56, 2.58),
+        (2.9, 2.92, 2.94, 2.96, 2.98, 3.0, 3.05, 3.1, 3.15))
+WALK_SEED, WALK_MARKETS = 20261116, 240
+
+
+def pinned_form(value):
+    """A JSON-ready form of what a walk returns: an OrderRow and a Fill by their pinned fields' names, a Fraction as
+    its exact text, a tuple as a list, a dict by its keys' text (canonical_json sorts them). Anything else refuses."""
+    if isinstance(value, OrderRow):
+        return {name: pinned_form(getattr(value, name)) for name in ROW_FIELDS}
+    if isinstance(value, Fill):
+        return {name: pinned_form(getattr(value, name)) for name in FILL_FIELDS}
+    if isinstance(value, Fraction):
+        return f"{value.numerator}/{value.denominator}"
+    if isinstance(value, (tuple, list)):
+        return [pinned_form(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): pinned_form(item) for key, item in value.items()}
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(f"pin:not_pinned:{type(value).__name__}")
+
+
+def walked_form(walked):
+    """What resting.walk returned for one record, by name and in the plan's cell order: each cell's code or row, the
+    gated flags with no value at t of each cell that passed the record's gates (None for the others), and whether
+    the member was read."""
+    if set(walked.outcomes) != set(PLAN.cells) or not set(walked.flags_missing) <= set(PLAN.cells):
+        raise AssertionError("pin:cells_not_the_plans")
+    return {"outcomes": [pinned_form(walked.outcomes[cell]) for cell in PLAN.cells],
+            "flags_missing": [pinned_form(walked.flags_missing.get(cell)) for cell in PLAN.cells],
+            "replayed": walked.replayed}
+
+
+def seeded_market(rng, index):
+    """(member path, messages) of one seeded market, built with lp_market: an off on a day of the registered year at
+    13:00, 14:00 or 19:00 UTC or some minutes after, so that some windows hold the first minute after a whole hour,
+    on a weekday or on a weekend day; the favourite's quote, 1 to 3 ticks wide, from one of NEAR's lists, moving by
+    a tick in the windows now and then; trades and restatements on the favourite and on the second runner, some in
+    the first minute after the hour; now and then a suspension or an early off (some in a trade's own batch), a
+    quote that crosses an order, a removal, a definition with no status, a malformed trd entry, a country or a
+    missing flag that a gate reads; and a favourite's BSP, missing now and then."""
+    market_id = f"1.19{index:04d}001"
+    day = date(2015, 5, 1) + timedelta(days=rng.randrange(366))
+    minute = rng.choice((0, 0, 2, 5, 9, 10, 30))
+    off = datetime(day.year, day.month, day.day, rng.choice((13, 14, 19)), minute, tzinfo=timezone.utc)
+    near = rng.choice(NEAR)
+    back = rng.randrange(1, len(near) - 4)
+    lay = back + rng.choice((1, 1, 1, 2, 3))
+    books = {3600: book(FAV=(near[back], near[lay]))}
+    if rng.random() < 0.3:
+        moved = back + rng.choice((-1, 1))
+        books[rng.randrange(150, 650)] = book(FAV=(near[moved], near[moved + lay - back]))
+    events = []
+    for _ in range(rng.choice((0, 1, 2, 3, 4, 6))):
+        if 0 < minute <= 11 and rng.random() < 0.4:
+            seconds = minute * 60 - rng.randrange(60_000) / 1000            # in the first 60 s after the hour
+        else:
+            seconds = rng.randrange(5_000, 700_000) / 1000
+        sid = FAV if rng.random() < 0.85 else R2
+        price = rng.choice(near) if sid == FAV else rng.choice((4.0, 4.1))
+        events.append((seconds, sid, price, rng.choice((1.0, 2.0, 4.0, 27.0, 54.0, 104.0)), False))
+    for _ in range(rng.choice((0, 0, 1, 2))):
+        events.append((rng.randrange(5_000, 700_000) / 1000, FAV, rng.choice(near), 0.01, True))
+    traded, trades, restatements = {}, [], []
+    for seconds, sid, price, more, restated in sorted(events, key=lambda item: -item[0]):     # in time order
+        traded[sid, price] = round(traded.get((sid, price), 0) + more, 2)
+        (restatements if restated else trades).append((seconds, sid, [[price, traded[sid, price]]]))
+    winner = rng.choice((FAV, FAV, R2))
+    statuses = {sid: "WINNER" if sid == winner else "LOSER" for sid in SIDS}
+    extra, fields, draw = [], {}, rng.random()
+    at = rng.choice(trades)[0] if trades and rng.random() < 0.5 else None     # a change in a trade's own batch
+    if draw < 0.08:
+        start = at or rng.randrange(100, 650)
+        extra += [status_at(start, "SUSPENDED", off=off, market_id=market_id),
+                  status_at(start - rng.randrange(1, 90), off=off, market_id=market_id)]
+    elif draw < 0.14:
+        extra.append(status_at(at or rng.randrange(15, 300), in_play=True, off=off, market_id=market_id))
+    elif draw < 0.24:
+        size = rng.choice((1.99, 2.0, 5.0))
+        crossing = {"atl": [[near[back], size]]} if rng.random() < 0.5 else {"atb": [[near[lay], size]]}
+        extra.append(mcm(before(rng.randrange(15, 650), off), [{"id": market_id, "rc": [{"id": FAV, **crossing}]}]))
+    elif draw < 0.30:
+        removed = rng.choice((R6, R6, FAV))
+        extra.append(md(market_id, before(rng.randrange(15, 650), off),
+                        definition(off, [runner(sid, "REMOVED" if sid == removed else "ACTIVE") for sid in SIDS])))
+        statuses[removed] = "REMOVED"
+    elif draw < 0.33:
+        extra.append(status_at(rng.randrange(100, 650), status=fx.DROP, off=off, market_id=market_id))
+    elif draw < 0.36:
+        extra.append(mcm(before(rng.randrange(15, 650), off), [{"id": market_id, "rc": [{"id": R3, "trd": [[6.2]]}]}]))
+    elif draw < 0.39:
+        fields["countryCode"] = "US"
+    elif draw < 0.42:
+        fields["bspMarket"] = fx.DROP
+    bsps = {**BSPS, FAV: rng.choice((2.3, 2.45, 2.6, 2.7, 2.8, 3.1, 2.6, 2.7, 2.8, None))}
+    return path(market_id, off), lp_market(market_id, off, books=books, trades=trades, restatements=restatements,
+                                           extra=extra, bsps=bsps, statuses=statuses, **fields)
+
+
+def seeded_batch():
+    """[(member path, messages)] and the market ids: the hour market, then WALK_MARKETS markets seeded by WALK_SEED."""
+    rng = random.Random(WALK_SEED)
+    members = [(path("1.199999001", HOUR_OFF), hour_market("1.199999001"))]
+    members += [seeded_market(rng, index) for index in range(WALK_MARKETS)]
+    return members, [name.rsplit("/", 1)[1][:-4] for name, _ in members]
+
+
+def pinned_rows():
+    """{Cell: [OrderRow]} built by hand, every cell on both labels, that give each rule file a primary. Per cell: on
+    the explore label 240 orders filled under every model at the cell's own BSPs and 100 unfilled (the BSPs of
+    SelectionIsBlindToHoldout.standard), and 5 filled orders that are not scored; on the test label 240 filled at
+    BSPs 2.8 and 2.9 with a null mid at the BSP, 200 unfilled, and 30 filled in the first second under the front
+    model alone, with a mid at t."""
+    rows = {}
+    for cell, bsps in zip(LAY_CELLS + BACK_CELLS, ([2.6, 2.7], [2.7, 2.8], [2.55, 2.6], [2.4, 2.45], [2.45, 2.5],
+                                                   [2.5, 2.55])):
+        given = dict(side=LAY, price=2.5) if cell.rule_id == LAY_RULE else dict(side=BACK, price=2.52)
+        rows[cell] = (block(240, D_DAYS, bsps, label=D, **given)
+                      + block(100, D_DAYS, [2.5], label=D, filled=NONE, **given)
+                      + [row._replace(klass="post_decision_removal", bsp=None)
+                         for row in block(5, D_DAYS, [2.6], label=D, **given)]
+                      + block(240, V_DAYS, [2.8, 2.9], nulls=[2.8, 2.9], **given)
+                      + block(200, V_DAYS, [2.5], filled=NONE, **given)
+                      + block(30, V_DAYS, [2.7], filled=(OPTIMISTIC,), first_second=True, mid=2.51, **given))
+    return rows
+
+
+class CloseV1IsUnchanged(RestingCase):
+    """close-v1's outputs on synthetic inputs, as sha256 constants: the rows the walk returns, the tables of
+    hand-built rows, and the summaries of the shared run."""
+
+    WALK_SHA256 = {"study archive": "8f993ac86e87e1e03d359db524c1885a1e89f7929c007a1d008b4e1d93960467",
+                   "seeded batch": "d38b8875db562db6f6a0cdc9b70be9184e7630f94bea4781d93b0ca4de0a76e3"}
+    TABLES_SHA256 = {"blind": "a6183feedbe60f56e8f58729b1c4868581a1126bb850bb07f489eaf9bd20d90f",
+                     "registered": "6394faeeef16be70f04025e67395afebff57d41b3958cf7a2a8d45e32b45b668"}
+    # The two passes of shared(): the same on two runs and under python3.13 and python3.15 when they were set.
+    SUMMARY_SHA256 = {"blind": "6c1b4f4f4b0b31682dd01b450c24c731d92253a00f3d021cd964486074145d95",
+                      "registered": "23239566f944c79337774fd8d878ed750c83bb3beb3c36318b579ace8891e53a"}
+
+    def walk_sha256(self, members, ids):
+        """(the sha256 of one canonical line per record, [market id, walked_form], in the order of ids; {market id:
+        resting.Walked}) of one archive of members."""
+        root, manifest, records = self.build(members)
+        digest, walked = hashlib.sha256(), {}
+        for market_id in ids:
+            with member_stream(root, manifest, records[market_id]) as stream:
+                walked[market_id] = walk(stream, records[market_id], PLAN, DEFAULT_LIMITS)
+            digest.update(canonical_json([market_id, walked_form(walked[market_id])]) + b"\n")
+        return digest.hexdigest(), walked
+
+    def test_the_hour_market_fills_today(self):
+        rows = self.rows(hour_market(), when=HOUR_OFF)
+        for cell, seconds in zip(LAY_CELLS[:2], (320.0, 20.0)):
+            self.assertEqual([(fill.kind, fill.seconds, fill.after_the_hour) for fill in rows[cell].fills.values()],
+                             [(THROUGH, seconds, True)] * 3)
+            self.assertEqual(rows[cell].trd, dict(zip(TRD_COUNTS, (1, 0, 0))))
+        self.assertEqual([kinds(rows[cell]) for cell in LAY_CELLS[2:] + BACK_CELLS], [UNFILLED] * 4)
+
+    def test_the_walk_of_every_market_of_the_study_archive(self):
+        members, ids = study_members()
+        digest, walked = self.walk_sha256(members, ids)
+        self.assertEqual(len(walked), 29)
+        self.assertEqual(digest, self.WALK_SHA256["study archive"])
+
+    def test_the_walk_of_a_seeded_batch_that_holds_the_hour_market(self):
+        members, ids = seeded_batch()
+        digest, walked = self.walk_sha256(members, ids)
+        with self.subTest(pin="seeded batch"):
+            self.assertEqual(digest, self.WALK_SHA256["seeded batch"])
+        self.assertEqual((len(walked), ids[0]), (WALK_MARKETS + 1, "1.199999001"))
+        hour = walked[ids[0]].outcomes
+        self.assertEqual([kinds(hour[cell])[PESSIMISTIC] for cell in LAY_CELLS], [THROUGH, THROUGH, None])
+        # What the batch holds, so that the digest stands for it: every fill kind, trade fills in the hour seconds,
+        # fills that left the market not OPEN or turned it in play, both ends, both labels in both half-years, five
+        # classes, the codes of the book and of the record, and gated flags with no value at t.
+        outcomes = [item for found in walked.values() for item in found.outcomes.values()]
+        rows = [item for item in outcomes if isinstance(item, OrderRow)]
+        fills_ = [fill for row in rows for fill in row.fills.values()]
+        self.assertEqual({fill.kind for fill in fills_}, {None, *FILL_KINDS})
+        self.assertEqual({fill.kind for fill in fills_ if fill.after_the_hour}, set(FILL_KINDS))
+        self.assertEqual(({fill.transition for fill in fills_}, {fill.turn for fill in fills_}), ({False, True},) * 2)
+        self.assertEqual({fill.ended for fill in fills_}, {None, "pull", "lapse"})
+        self.assertEqual({(row.label, row.half) for row in rows}, {(D, "H1"), (D, "H2"), (V, "H1"), (V, "H2")})
+        self.assertEqual({row.klass for row in rows}, {SCORED, "stream_malformed_after_placement", "missing_bsp",
+                                                      "void_own_runner_removed", "post_decision_removal"})
+        self.assertEqual({row.no_status for row in rows}, {False, True})
+        self.assertEqual({row.null_reason for row in rows}, {None, "in_play", "market_not_open", "not_two_sided"})
+        self.assertTrue(all(any(row.trd[name] for row in rows) for name in TRD_COUNTS))
+        self.assertEqual({item for item in outcomes if isinstance(item, str)},
+                         {"country_not_allowed", "depth_below_min", "ladder_malformed", "market_not_open",
+                          "spread_not_1_or_2_ticks"})
+        self.assertEqual({names for found in walked.values() for names in found.flags_missing.values()},
+                         {(), ("bsp_market",)})
+
+    def test_the_tables_of_hand_built_rows_that_give_two_primaries(self):
+        rows = pinned_rows()
+        for name in ("blind", "registered"):
+            value = summary(PLAN, tally_of(rows), name, "0" * 64)
+            if name == "registered":
+                self.assertEqual(value["selection"]["primaries"], {BACK_RULE: "close-v1-back@-600",
+                                                                   LAY_RULE: "close-v1-lay@-300"})
+            with self.subTest(pass_name=name):
+                self.assertEqual(sha(canonical_json(value) + b"\n" + resting_study.markdown(PLAN, value).encode()),
+                                 self.TABLES_SHA256[name])
+
+    def test_the_summaries_of_the_shared_run(self):
+        given = shared()
+        self.assertEqual({name: json.loads(getattr(given, name)[1])["summary_sha256"]
+                          for name in ("blind", "registered")}, self.SUMMARY_SHA256)
 
 
 class RestingBoundaries(unittest.TestCase):

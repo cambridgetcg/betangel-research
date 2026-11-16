@@ -2300,6 +2300,39 @@ class SelectionIsBlindToHoldoutInTheTables(unittest.TestCase):
         self.assertIsNotNone(found[0][0]["move_figures"]["A from -3600: FLAT"]["x"][resting.AS_WRITTEN]["mean"])
 
 
+def two_primaries():
+    """The rows of SelectionIsBlindToHoldoutInTheTables, first variant: they give each side a primary."""
+    return (rows_of("0.002", "0.004", 1000, moves={-3600: FLAT})
+            + rows_of("0.006", "0.03", 200, band="B", moves={-14400: DRIFT})
+            + rows_of("0.002", "0.004", 400, label=V, moves={-3600: FLAT})
+            + rows_of("0.006", "0.03", 400, band="B", label=V, moves={-14400: DRIFT}))
+
+
+class EarlyPriceV1IsUnchanged(unittest.TestCase):
+    """early-price-v1's tables as the sources of 5ce1d1e give them, set before close-early-v1 changes resting.py and
+    resting_study.py, which early_study imports from (its pull request 1). For two sets of hand-built rows and each
+    pass: the sha256 of the summary's bytes, a newline and its Markdown. early-price-v1 must come out byte for byte
+    as before, so no later pull request changes a constant here."""
+
+    TABLES_SHA256 = {
+        ("blind_rows", "blind"): "faeeeaf6cd20e8ff6e7a2ec355c25c13684f2172f96a350dd2e18d589a6bcaa8",
+        ("blind_rows", "registered"): "cef363deb12b7e670a0dc44fa11bb40173850e95a6096e214b77c3676b12fa66",
+        ("two_primaries", "blind"): "0af971893f4b90c1beed6ea73ff6ce914975d795c36bf1b0645f7234f2911167",
+        ("two_primaries", "registered"): "8e4a9cc137f0340989985220b0ea995057f4652853295efac9919955afbebdef"}
+
+    def test_the_tables_of_hand_built_rows(self):
+        for rows_name, rows in (("blind_rows", blind_rows()), ("two_primaries", two_primaries())):
+            for name in ("blind", "registered"):
+                value = early_study.summary(PLAN, tally_of(rows), name, "0" * 64)
+                if (rows_name, name) == ("two_primaries", "registered"):
+                    self.assertEqual({side: item["cell"] for side, item in value["primaries"].items()},
+                                     {BACK: "B from -14400: DRIFT", LAY: "B from -14400: DRIFT"})
+                with self.subTest(rows=rows_name, pass_name=name):
+                    self.assertEqual(hashlib.sha256(canonical_json(value) + b"\n"
+                                                    + early_study.markdown(PLAN, value).encode()).hexdigest(),
+                                     self.TABLES_SHA256[rows_name, name])
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # No id reaches an output, and the two modules stay inside the backtest closure
 

@@ -44,20 +44,22 @@ from betangel_research.betfair.backtest.movement import (MARKET_CODES, Moment, R
 from betangel_research.betfair.backtest.movement import parse_registration as parse_movement
 from betangel_research.betfair.backtest.replay import ReplayProblem, _member
 from betangel_research.betfair.backtest.resting import (AS_WRITTEN, BLOCKED, BSP_ENDS, CLAIM_END, CLASSES,
-                                                        COUNTS_ONLY, FILLED, FILLED_IS_ALL_PLACED, G, GIVEN_FIRST,
-                                                        HARNESS_CODES, KILL_END, LATER, NET_CLOSED, NET_HELD,
-                                                        NULL_BLOCKS, NULL_LABEL, NULL_UNDEFINED, PLUS_STEP,
-                                                        REST_NOT_GIVEN, SCORED, TRD_COUNTS, UNDERPOWERED, VERDICTS,
-                                                        Cell, Fill, OrderRow, blind_outcome, bound, cr1_test,
-                                                        deciding_end, described, detectable, ends_apart, figures,
-                                                        filled_part, gap, gate, gated, given_figures, given_together,
+                                                        COUNTS_ONLY, EARLY_IDS, EARLY_TRD_COUNTS, FILLED,
+                                                        FILLED_IS_ALL_PLACED, G, GIVEN_FIRST, HARNESS_CODES, KILL_END,
+                                                        LATER, LEFT_OUT, NET_CLOSED, NET_HELD, NULL_BLOCKS, NULL_LABEL,
+                                                        NULL_UNDEFINED, PLUS_STEP, REST_NOT_GIVEN, SCORED, TRD_COUNTS,
+                                                        UNDERPOWERED, VERDICTS, Cell, Fill, OrderRow, blind_outcome,
+                                                        bound, cr1_test, deciding_end, described, detectable,
+                                                        ends_apart, figures, filled_part, gap, gate, gated,
+                                                        given_figures, given_together, minute_after_the_hour,
                                                         named_files, null_gate, one_sided_p, parse_registration,
-                                                        population_codes, quantile_table, record_code, rounded, score,
-                                                        scored, select_primaries, series, spread, verdicts, view_of,
-                                                        walk, whole_hundredths, withheld, without_first_fills)
+                                                        population_codes, quantile_table, race_label, record_code,
+                                                        rounded, score, scored, select_primaries, series, spread,
+                                                        verdicts, view_of, walk, whole_hundredths, withheld,
+                                                        without_first_fills)
 from betangel_research.betfair.backtest.resting_study import (Tally, decide_record, main, record_facts,
                                                               run_study, summary)
-from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide
+from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide, parse_rule
 from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, PassRequest, StudyLedger, verify
 from betangel_research.betfair.backtest.trial_ledger import UnlockError
 
@@ -1054,7 +1056,8 @@ class PopulationCodes(RestingCase):
 
     def test_a_row_holds_no_market_or_selection_id(self):
         self.assertEqual(OrderRow._fields, ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid",
-                                            "fills", "null_mid", "null_reason", "trd", "no_status"))
+                                            "fills", "null_mid", "null_reason", "trd", "no_status", "gap_ticks",
+                                            "placed_in_the_hour", "fill_minute"))
         self.assertEqual(Fill._fields, ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn",
                                         "ended"))
         text = repr(sorted(self.rows(lp_market(trades=[(200, FAV, [[2.48, 1.0]])])).items()))
@@ -3831,6 +3834,627 @@ class CloseV1IsUnchanged(RestingCase):
         given = shared()
         self.assertEqual({name: sha(outputs_of(given.base / name)["summary.md"]) for name in ("blind", "registered")},
                          self.SUMMARY_MD_SHA256)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# close-early-v1 (its pull request 2): the parser and the walk under a new id. No registration of a new id exists
+# yet, so each one here is close-v1's file with edits. The markets are synthetic; pull request 1's hour market is
+# walked on explore dates, since a new id reads the explore label alone.
+
+EARLY = EARLY_IDS[0]
+R5 = SIDS[4]
+DAY_OFF = OFF + timedelta(days=1)                       # 14:00 UTC on Tuesday 2 June 2015, an explore date
+TUESDAY, SATURDAY = HOUR_OFF + timedelta(days=1), HOUR_OFF + timedelta(days=5)      # 14:05 UTC, explore dates
+# The codes an each_active LAY file built by band() can give one runner.
+RUNNER_CODES = ("best_back_out_of_range", "depth_below_min", "spread_not_1_or_2_ticks", "no_reference_price",
+                "price_off_ladder")
+
+
+def as_early(value, study=EARLY):
+    """Make a registration's value a new id's: its id, the hour switch, the explore label alone, four counts."""
+    value["id"] = study
+    value["data"]["traded_volume"]["hour_rises"] = "not_counted"
+    value["data"]["partitions"]["read"] = "explore_only"
+    value["diagnostics"]["trd_counts"].append(LEFT_OUT)
+
+
+def early_files(rules=None, registration=None, study=EARLY):
+    """files() of close-v1's registration made a new id's (as_early), with population.codes as the changed rule
+    files give them; then registration(value)."""
+    raw, split_raw, raws = files(rules=rules)
+    value = json.loads(raw)
+    as_early(value, study)
+    value["population"]["codes"] = list(population_codes([parse_rule(raws[item["name"]])
+                                                         for item in value["data"]["rules"]]))
+    if registration is not None:
+        registration(value)
+    return canonical(value), split_raw, raws
+
+
+def early_plan(**changes):
+    return parse_registration(*early_files(**changes))
+
+
+def band(low="1.50", high="10.00", rows=None):
+    """A rule change: close-v1's LAY file selects each_active, its best back from low to high; rows, when given, is
+    how many of its when rows it keeps (5: no gap rows)."""
+    def change(rule):
+        rule["select"] = "each_active"
+        rule["when"][2]["value"], rule["when"][3]["value"] = low, high
+        if rows is not None:
+            del rule["when"][rows:]
+    return {LAY_RULE: change}
+
+
+EARLY_PLAN = early_plan()
+# The LAY file on each runner from 1.50 to 10.00 at close-v1's 1 or 2 ticks: in the standard book the favourite
+# (2.5 / 2.52), R2 (4.0 / 4.1) and R5 (10.0 / 10.5) pass; R3 and R4 are 3 and 5 ticks wide; R6 is above the range.
+EACH_PLAN = early_plan(rules=band())
+
+
+_SEEDED = {}
+
+
+def seeded_walks():
+    """Pull request 1's seeded batch with its hour market added on an explore date (TUESDAY), built once for this
+    module and walked under close-v1's plan, EARLY_PLAN and EACH_PLAN: a namespace of the market ids, {market id:
+    index record} and walks {"close-v1" | "early" | "each": {market id: Walked}}."""
+    if not _SEEDED:
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        members, ids = seeded_batch()
+        members.append((path("1.199999002", TUESDAY), hour_market("1.199999002", TUESDAY)))
+        ids.append("1.199999002")
+        root = base / "data"
+        root.mkdir()
+        tar = fx.make_tar(base / "data.tar", [(member, bz2.compress(fx.lines(messages)))
+                                              for member, messages in members])
+        ingested = ingest_archive(tar, root)
+        if ingested["status"] != "ingested" or index_archives(root)["status"] != "indexed":
+            raise AssertionError("the seeded archive was not ingested and indexed")
+        digest = ingested["archive_sha256"]
+        manifest, _ = fx.load_manifest(root, digest)
+        data = (root / "index" / digest / fx.market_index.MARKETS_FILE).read_bytes()
+        records = {record["market_id"]: record for record in map(json.loads, data.splitlines())}
+        walks = {}
+        for name, plan in (("close-v1", PLAN), ("early", EARLY_PLAN), ("each", EACH_PLAN)):
+            walks[name] = {}
+            for market_id in ids:
+                with member_stream(root, manifest, records[market_id]) as stream:
+                    walks[name][market_id] = walk(stream, records[market_id], plan, DEFAULT_LIMITS)
+        _SEEDED["value"] = SimpleNamespace(ids=ids, records=records, walks=walks)
+    return _SEEDED["value"]
+
+
+def orders_of(outcome):
+    """The OrderRows of one cell's outcome: none for a code, one for a favourite cell, the tuple's for each_active."""
+    if isinstance(outcome, OrderRow):
+        return [outcome]
+    return list(outcome) if isinstance(outcome, tuple) else []
+
+
+class EarlyRegistration(unittest.TestCase):
+    """The parser takes close-v1 and the new ids; each kind asks for its own keys and refuses the other's."""
+
+    def assertRefused(self, reason, given):
+        with self.assertRaises(RegistrationError) as caught:
+            parse_registration(*given)
+        self.assertEqual(str(caught.exception), f"registration:{reason}")
+
+    def test_both_kinds_of_id_parse(self):
+        new = ("hour_rises_counted", "explore_only", "trd_counts")
+        self.assertEqual((PLAN.study, *(getattr(PLAN, name) for name in new), PLAN.labels_read),
+                         ("close-v1", True, False, TRD_COUNTS, ("PRO-D", "PRO-V")))
+        self.assertEqual(EARLY_IDS, ("close-early-v1", "close-early-fav-v1", "close-early-band-v1"))
+        self.assertEqual(EARLY_TRD_COUNTS, TRD_COUNTS + ("rises_left_out_in_the_hour_seconds",))
+        for study in EARLY_IDS:
+            with self.subTest(study=study):
+                plan = early_plan(study=study)
+                self.assertEqual((plan.study, *(getattr(plan, name) for name in new), plan.labels_read),
+                                 (study, False, True, EARLY_TRD_COUNTS, ("PRO-D",)))
+                self.assertEqual(plan.labels, PLAN.labels)                  # both labels are still named
+                # Every other field is close-v1's.
+                same = {key: item for key, item in vars(plan).items() if key not in ("sha256", "study", *new)}
+                self.assertEqual(same, {key: vars(PLAN)[key] for key in same})
+                self.assertGreater(len(same), 30)
+
+    def test_a_new_id_takes_each_active_and_lists_its_code(self):
+        self.assertEqual([rule.select for rule in EACH_PLAN.rules], ["favourite", "each_active"])
+        self.assertEqual(EACH_PLAN.codes[12:], (
+            "partition_not_registered", "bsp_market_false", "ladder_malformed", "market_not_open",
+            "too_few_active_runners", "no_priced_active_runner", "favourite_tie", "best_back_out_of_range",
+            "depth_below_min", "spread_not_1_or_2_ticks", "no_active_runner", "no_reference_price",
+            "price_off_ladder"))
+        both = early_plan(rules={**band(), BACK_RULE: lambda rule: rule.update(select="each_active")})
+        self.assertEqual([rule.select for rule in both.rules], ["each_active", "each_active"])
+        self.assertEqual(both.codes[15:18], ("market_not_open", "too_few_active_runners", "no_active_runner"))
+        self.assertRefused("population.codes:not_the_implemented_list",
+                           early_files(rules=band(), registration=lambda value: value["population"]["codes"].remove(
+                               "no_active_runner")))
+
+    def test_a_new_id_asks_for_each_new_key(self):
+        cases = {
+            "data.traded_volume:keys_not_the_registered_set":
+                lambda value: value["data"]["traded_volume"].pop("hour_rises"),
+            "data.traded_volume.hour_rises:not_supported":
+                lambda value: value["data"]["traded_volume"].update(hour_rises="counted"),
+            "data.traded_volume.hour_rises:not_text": lambda value: value["data"]["traded_volume"].update(hour_rises=0),
+            "data.partitions:keys_not_the_registered_set": lambda value: value["data"]["partitions"].pop("read"),
+            "data.partitions.read:not_supported": lambda value: value["data"]["partitions"].update(read="both"),
+            "data.partitions.read:not_text": lambda value: value["data"]["partitions"].update(read=None),
+            "diagnostics.trd_counts:not_the_implemented_list": lambda value: value["diagnostics"]["trd_counts"].pop(),
+            "diagnostics.trd_counts:not_the_implemented_list ":
+                lambda value: value["diagnostics"]["trd_counts"].reverse(),
+        }
+        for reason, change in cases.items():
+            with self.subTest(reason=reason):
+                self.assertRefused(reason.strip(), early_files(registration=change))
+
+    def test_close_v1_refuses_each_new_key_with_todays_texts(self):
+        def listed(value):
+            value["population"]["codes"] = list(EACH_PLAN.codes)
+
+        cases = {
+            "data.traded_volume:keys_not_the_registered_set":
+                files(registration=lambda value: value["data"]["traded_volume"].update(hour_rises="not_counted")),
+            "data.partitions:keys_not_the_registered_set":
+                files(registration=lambda value: value["data"]["partitions"].update(read="explore_only")),
+            "diagnostics.trd_counts:not_the_implemented_list":
+                files(registration=lambda value: value["diagnostics"]["trd_counts"].append(LEFT_OUT)),
+            "data.rules[1]:select_not_favourite": files(rules=band(), registration=listed),
+            # Crossed names: a new id's file under close-v1's id, and close-v1's file under a new id.
+            "data.traded_volume:keys_not_the_registered_set ": early_files(study="close-v1"),
+            "data.traded_volume:keys_not_the_registered_set  ":
+                files(registration=lambda value: value.update(id=EARLY)),
+        }
+        for reason, given in cases.items():
+            with self.subTest(reason=reason):
+                self.assertRefused(reason.strip(), given)
+
+    def test_another_id_is_refused(self):
+        for study in ("close-v2", "close-early-v2", "close-early", "early-price-v1", "lp-v1", "CLOSE-V1"):
+            with self.subTest(study=study):
+                self.assertRefused("id:not_supported", files(registration=lambda value: value.update(id=study)))
+                self.assertRefused("id:not_supported", early_files(study=study))
+        for study in ("", " ", None, 1):
+            with self.subTest(study=study):
+                self.assertRefused("id:not_text", files(registration=lambda value: value.update(id=study)))
+
+
+class HourSwitch(RestingCase):
+    """Pull request 1's hour market on explore dates: at off - 280 s (14:00:20) a rise at 2.48 shares its batch with
+    a ladder entry at 2.48, below the favourite's resting LAYs at 2.5, placed at off - 600 s and, exactly on the
+    whole hour, at off - 300 s; both are pulled at off - 120 s (14:03:00)."""
+
+    def test_the_rise_in_the_hour_seconds_fills_nothing_under_a_new_id(self):
+        old = self.rows(hour_market(off=TUESDAY), when=TUESDAY)
+        new = self.rows(hour_market(off=TUESDAY), plan=EARLY_PLAN, when=TUESDAY)
+        monday = self.rows(hour_market(), when=HOUR_OFF)                         # pull request 1's own
+        for cell, seconds in zip(LAY_CELLS[:2], (320.0, 20.0)):
+            self.assertEqual((old[cell].label, new[cell].label, monday[cell].label), (D, D, V))
+            self.assertEqual([(fill.kind, fill.seconds, fill.after_the_hour) for fill in old[cell].fills.values()],
+                             [(THROUGH, seconds, True)] * 3)
+            self.assertEqual(old[cell].trd, dict(zip(TRD_COUNTS, (1, 0, 0))))
+            self.assertEqual(kinds(new[cell]), UNFILLED)
+            self.assertEqual(new[cell].trd, dict(zip(EARLY_TRD_COUNTS, (0, 0, 0, 1))))
+        for cell in PLAN.cells:
+            # Under close-v1's plan the row is pull request 1's but for its date and label.
+            self.assertEqual(old[cell]._replace(label=V, race_date="2015-06-01"), monday[cell])
+            # Under the new id only the fills and the trade counts move, and only of the orders the rise was under.
+            same = ("trd", "fills") if cell.at_s != -120 else ("trd",)
+            self.assertEqual(new[cell]._replace(**dict.fromkeys(same)), old[cell]._replace(**dict.fromkeys(same)))
+        self.assertEqual(new[BACK_CELLS[0]].trd, dict(zip(EARLY_TRD_COUNTS, (0, 0, 0, 1))))   # its runner's rise too
+
+    def test_a_left_out_rise_is_never_counted_later(self):
+        # The front model's LAY needs divisor x (0 + 2) = 4 of volume counted at 2.5 since t. 3 rise at 2.5 at 14:00:25,
+        # in the after-the-hour seconds, then 1 or 4 more at 14:01:40.
+        for later, fills_now in ((4.0, None), (7.0, VOLUME)):
+            messages = lp_market(off=TUESDAY, trades=[(275, FAV, [[2.5, 3.0]]), (200, FAV, [[2.5, later]])])
+            old = self.rows(messages, when=TUESDAY)
+            new = self.rows(messages, plan=EARLY_PLAN, when=TUESDAY)
+            for cell, seconds in zip(LAY_CELLS[:2], (400.0, 100.0)):
+                with self.subTest(later=later, cell=cell.at_s):
+                    self.assertEqual(kinds(old[cell]), {OPTIMISTIC: VOLUME, CENTRAL: None, PESSIMISTIC: None})
+                    self.assertEqual(old[cell].fills[OPTIMISTIC].seconds, seconds)
+                    self.assertEqual(kinds(new[cell]), {OPTIMISTIC: fills_now, CENTRAL: None, PESSIMISTIC: None})
+                    self.assertEqual(new[cell].fills[OPTIMISTIC].seconds, seconds if fills_now else None)
+                    self.assertEqual(old[cell].trd, dict(zip(TRD_COUNTS, (2, 0, 0))))
+                    self.assertEqual(new[cell].trd, dict(zip(EARLY_TRD_COUNTS, (1, 0, 0, 1))))
+
+    def test_a_facing_offer_in_the_hour_seconds_still_fills(self):
+        offer = mcm(before(270, TUESDAY), [{"id": M, "rc": [{"id": FAV, "atl": [[2.5, 5.0]]}]}])     # 14:00:30
+        new = self.rows(hour_market(off=TUESDAY, extra=[offer]), plan=EARLY_PLAN, when=TUESDAY)
+        for cell, seconds in zip(LAY_CELLS[:2], (330.0, 30.0)):
+            self.assertEqual([(fill.kind, fill.seconds, fill.after_the_hour) for fill in new[cell].fills.values()],
+                             [(CROSS, seconds, True)] * 3)
+            self.assertEqual(new[cell].trd, dict(zip(EARLY_TRD_COUNTS, (0, 0, 0, 1))))
+
+    def test_second_60_and_a_saturday_count(self):
+        # 14:01:00.000 is second 60 after the hour, outside the after-the-hour seconds; 14:00:59.999 is inside.
+        for seconds, kind in ((240, THROUGH), (240.001, None)):
+            with self.subTest(seconds=seconds):
+                row = self.rows(lp_market(off=TUESDAY, trades=[(seconds, FAV, [[2.48, 1.0]])]), plan=EARLY_PLAN,
+                                when=TUESDAY)[LAY_CELLS[1]]
+                self.assertEqual(kinds(row), dict.fromkeys(MODELS, kind))
+                self.assertEqual(row.trd, dict(zip(EARLY_TRD_COUNTS, (1, 0, 0, 0) if kind else (0, 0, 0, 1))))
+                if kind:
+                    self.assertEqual({(fill.seconds, fill.after_the_hour) for fill in row.fills.values()},
+                                     {(60.0, False)})
+        # On a Saturday no second is an after-the-hour second: the hour market fills as under close-v1.
+        old = self.rows(hour_market(off=SATURDAY), when=SATURDAY)
+        new = self.rows(hour_market(off=SATURDAY), plan=EARLY_PLAN, when=SATURDAY)
+        for cell, seconds in zip(LAY_CELLS[:2], (320.0, 20.0)):
+            self.assertEqual(new[cell].label, D)
+            self.assertEqual([(fill.kind, fill.seconds, fill.after_the_hour) for fill in new[cell].fills.values()],
+                             [(THROUGH, seconds, False)] * 3)
+            self.assertEqual(new[cell].trd, dict(zip(EARLY_TRD_COUNTS, (1, 0, 0, 0))))
+        for cell in PLAN.cells:
+            self.assertEqual(new[cell]._replace(trd=None), old[cell]._replace(trd=None))
+
+    def test_second_0_is_an_hour_second(self):
+        # A rise at 14:00:00.000 exactly: inside the first LAY's window, and the batch at the second LAY's own t.
+        messages = lp_market(off=TUESDAY, trades=[(300, FAV, [[2.48, 1.0]])])
+        old = self.rows(messages, when=TUESDAY)
+        new = self.rows(messages, plan=EARLY_PLAN, when=TUESDAY)
+        self.assertEqual(kinds(old[LAY_CELLS[0]]), dict.fromkeys(MODELS, THROUGH))
+        self.assertEqual(old[LAY_CELLS[0]].trd, dict(zip(TRD_COUNTS, (1, 0, 0))))
+        self.assertEqual(kinds(new[LAY_CELLS[0]]), UNFILLED)
+        self.assertEqual(new[LAY_CELLS[0]].trd, dict(zip(EARLY_TRD_COUNTS, (0, 0, 0, 1))))
+        self.assertEqual(new[LAY_CELLS[1]].trd, dict(zip(EARLY_TRD_COUNTS, (0, 0, 0, 0))))     # the batch at t itself
+
+    def test_a_left_out_rise_leaves_volume_from_before_t_out_too(self):
+        # 3 trade at 2.5 at 13:58:20, inside the first LAY's window and before the second LAY's t (14:00:00); 3 more
+        # at 14:00:25, in the after-the-hour seconds; 1 more at 14:01:40. The front model needs divisor x (0 + 2) = 4
+        # counted at 2.5 since its own t.
+        messages = lp_market(off=TUESDAY, trades=[(400, FAV, [[2.5, 3.0]]), (275, FAV, [[2.5, 6.0]]),
+                                                  (200, FAV, [[2.5, 7.0]])])
+        old = self.rows(messages, when=TUESDAY)
+        new = self.rows(messages, plan=EARLY_PLAN, when=TUESDAY)
+
+        def front(rows):
+            return [(kinds(rows[cell]), rows[cell].fills[OPTIMISTIC].seconds, tuple(rows[cell].trd.values()))
+                    for cell in LAY_CELLS[:2]]
+
+        only = {OPTIMISTIC: VOLUME, CENTRAL: None, PESSIMISTIC: None}
+        # close-v1 counts all three rises: the first LAY fills at 14:00:25, the second at 14:01:40.
+        self.assertEqual(front(old), [(only, 325.0, (3, 0, 0)), (only, 100.0, (2, 0, 0))])
+        # A new id: the first LAY's fill comes later, at 14:01:40; the second LAY's is gone (1 counted since its t).
+        self.assertEqual(front(new), [(only, 400.0, (2, 0, 0, 1)), (UNFILLED, None, (1, 0, 0, 1))])
+
+    def test_a_window_of_hours_leaves_out_each_hours_rises(self):
+        # Both of close-v1's files, the LAY file as band() makes it, placed 3 hours and 90 minutes before a 14:00 off
+        # (11:00:00 exactly and 12:30) and pulled at 13:58. The favourite trades at 2.48 at 12:00:20 and 13:00:20, in
+        # the after-the-hour seconds, then at 13:20.
+        def hours(rule):
+            rule["times"] = [{"at_s": -10800, "pull_s": -120}, {"at_s": -5400, "pull_s": -120}]
+
+        def lay(rule):
+            band()[LAY_RULE](rule)
+            hours(rule)
+
+        plan = early_plan(rules={BACK_RULE: hours, LAY_RULE: lay}, registration=lambda value: value["grid"].update(
+            cells=4))
+        trades = [(7180, FAV, [[2.48, 1.0]]), (3580, FAV, [[2.48, 2.0]]), (2400, FAV, [[2.48, 3.0]])]
+        walked = self.walked(lp_market(off=DAY_OFF, opening_minutes=200, books={11000: BOOK}, trades=trades),
+                             plan=plan, when=DAY_OFF)
+        found = {(cell.rule_id, cell.at_s): outcome for cell, outcome in walked.outcomes.items()}
+        zeros = dict.fromkeys(EARLY_TRD_COUNTS, 0)
+        for at_s, seconds, left, placed in ((-10800, 8400.0, 2, True), (-5400, 3000.0, 1, False)):
+            with self.subTest(at_s=at_s):
+                (fav, *others), back = found[LAY_RULE, at_s], found[BACK_RULE, at_s]
+                # Only the rise outside the hour seconds counts; the favourite's LAY fills by it, hours after t.
+                self.assertEqual([(fill.kind, fill.seconds, fill.after_the_hour) for fill in fav.fills.values()],
+                                 [(THROUGH, seconds, False)] * 3)
+                self.assertEqual((fav.trd, back.trd), (dict(zip(EARLY_TRD_COUNTS, (1, 0, 0, left))),) * 2)
+                self.assertEqual([(row.price, kinds(row), row.trd) for row in [back, *others]],
+                                 [(P(2.52), UNFILLED, back.trd), (P(4.0), UNFILLED, zeros),
+                                  (P(10.0), UNFILLED, zeros)])
+                self.assertEqual({fill.ended for row in [back, *others] for fill in row.fills.values()}, {"pull"})
+                self.assertEqual({row.placed_in_the_hour for row in [fav, back, *others]}, {placed})
+                self.assertEqual(walked.runner_codes[Cell(LAY_RULE, at_s, -120)],
+                                 {"issued": 3, "spread_not_1_or_2_ticks": 2, "best_back_out_of_range": 1})
+
+
+class NewIdAgainstCloseV1(unittest.TestCase):
+    """The seeded batch (with the hour market on an explore date) under a new id's plan, set against close-v1's: the
+    same rule files, gates and times."""
+
+    def test_a_favourite_cell_is_close_v1s_but_for_the_switch_and_the_labels_read(self):
+        given = seeded_walks()
+        seen = dict.fromkeys(("explore records", "test records", "same rows", "rows with a rise left out",
+                              "rows whose fills moved"), 0)
+        for market_id in given.ids:
+            record, old, new = (given.records[market_id], given.walks["close-v1"][market_id],
+                                given.walks["early"][market_id])
+            dated = race_label(PLAN, record)
+            explore = dated is not None and dated[1] == D
+            seen["explore records" if explore else "test records"] += 1
+            self.assertEqual(new.flags_missing, old.flags_missing if explore else {})
+            self.assertEqual(new.runner_codes, {})
+            if not explore:
+                self.assertFalse(new.replayed)                          # its file is never read
+            for cell in PLAN.cells:
+                was, now = old.outcomes[cell], new.outcomes[cell]
+                with self.subTest(market=market_id, cell=cell):
+                    if not explore:
+                        # The codes of its history gates stay; every other cell is coded from the index record.
+                        self.assertEqual(now, was if was in MARKET_CODES[:12] else "partition_not_registered")
+                        continue
+                    if not isinstance(was, OrderRow):
+                        self.assertEqual(now, was)
+                        continue
+                    # The fourth count is what the switch took from close-v1's counted rises; the other two stay.
+                    self.assertEqual((now.trd[TRD_COUNTS[0]] + now.trd[LEFT_OUT], now.trd[TRD_COUNTS[1]],
+                                      now.trd[TRD_COUNTS[2]]), tuple(was.trd[name] for name in TRD_COUNTS))
+                    if now.trd[LEFT_OUT] == 0:              # no rise of its runner left out in its window
+                        self.assertEqual(now._replace(trd=None), was._replace(trd=None))
+                        seen["same rows"] += 1
+                    else:
+                        seen["rows with a rise left out"] += 1
+                        seen["rows whose fills moved"] += kinds(now) != kinds(was)
+                        moved = dict.fromkeys(("trd", "fills", "fill_minute"))
+                        self.assertEqual(now._replace(**moved), was._replace(**moved))
+                        # The switch can only delay a fill or take it away: understated, never overstated.
+                        for model in MODELS:
+                            earlier, later = was.fills[model].seconds, now.fills[model].seconds
+                            self.assertTrue(later is None or (earlier is not None and earlier <= later),
+                                            (model, earlier, later))
+        self.assertTrue(all(seen.values()), seen)
+
+    def test_each_active_codes_add_up_to_the_records_and_the_runners(self):
+        given = seeded_walks()
+        tallies = {cell: {} for cell in LAY_CELLS}
+        seen = dict.fromkeys(("cells with several rows", "cells with no runner counts"), 0)
+        for market_id in given.ids:
+            record, walked = given.records[market_id], given.walks["each"][market_id]
+            self.assertLessEqual(set(walked.runner_codes), set(LAY_CELLS))
+            for cell in BACK_CELLS:                 # the favourite file's cells are EARLY_PLAN's
+                self.assertEqual(walked.outcomes[cell], given.walks["early"][market_id].outcomes[cell])
+            for cell in LAY_CELLS:
+                outcome, found = walked.outcomes[cell], walked.runner_codes.get(cell)
+                key = "issued" if isinstance(outcome, tuple) else outcome
+                tallies[cell][key] = tallies[cell].get(key, 0) + 1
+                with self.subTest(market=market_id, cell=cell):
+                    if found is None:               # the market rows or the selector failed, or no view was built
+                        self.assertIsInstance(outcome, str)
+                        self.assertNotIn(outcome, RUNNER_CODES)
+                        seen["cells with no runner counts"] += 1
+                        continue
+                    t = decision_time(record, cell.at_s)
+                    self.assertEqual(sum(found.values()), len(active_ids(record, t)))
+                    if isinstance(outcome, tuple):
+                        self.assertEqual(len(outcome), found["issued"])
+                        self.assertTrue(all(row.side == LAY for row in outcome))
+                        seen["cells with several rows"] += len(outcome) > 1
+                    else:
+                        self.assertNotIn("issued", found)
+                        self.assertIn(outcome, found)
+        for cell, counts in tallies.items():
+            self.assertEqual(sum(counts.values()), len(given.ids))
+        self.assertTrue(all(seen.values()), seen)
+
+
+class EachActive(RestingCase):
+    def test_one_row_for_each_runner_that_passes(self):
+        walked = self.walked(lp_market(off=DAY_OFF), plan=EACH_PLAN, when=DAY_OFF)
+        for cell in LAY_CELLS:
+            rows = walked.outcomes[cell]
+            self.assertIsInstance(rows, tuple)                  # the favourite, R2 and R5, in selection-id order
+            self.assertEqual([(row.side, row.price, row.mid, row.bsp, row.gap_ticks) for row in rows],
+                             [(LAY, P(2.5), P(2.51), P(2.6), 1), (LAY, P(4.0), P(4.05), P(4.2), 1),
+                              (LAY, P(10.0), P(10.25), P(11.0), 1)])
+            self.assertEqual([row.fills[PESSIMISTIC].queue for row in rows], [P(50)] * 3)
+            self.assertEqual({(row.label, row.klass) for row in rows}, {(D, SCORED)})
+            self.assertEqual(walked.runner_codes[cell], {"issued": 3, "spread_not_1_or_2_ticks": 2,
+                                                         "best_back_out_of_range": 1})
+        for cell in BACK_CELLS:
+            self.assertIsInstance(walked.outcomes[cell], OrderRow)      # a favourite cell keeps one row
+        self.assertEqual(set(walked.runner_codes), set(LAY_CELLS))
+        self.assertEqual(self.walked(lp_market(off=DAY_OFF), when=DAY_OFF).runner_codes, {})      # close-v1's walk
+        # As for a favourite row (PopulationCodes): no market, event or selection id in the rows or the runner counts.
+        text = repr(sorted(walked.outcomes.items())) + repr(sorted(walked.runner_codes.items()))
+        for token in (M, M.split(".")[1], fx.EVENT, *map(str, SIDS)):
+            self.assertNotIn(token, text)
+
+    def test_each_order_is_judged_alone_and_a_cell_draws_one_null_time(self):
+        rows = self.walked(lp_market(off=DAY_OFF, trades=[(200, R5, [[9.8, 1.0]])]), plan=EACH_PLAN,
+                           when=DAY_OFF).outcomes
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual([kinds(row) for row in rows[cell]], [UNFILLED, UNFILLED, dict.fromkeys(MODELS, THROUGH)])
+            self.assertEqual([row.trd[TRD_COUNTS[0]] for row in rows[cell]], [0, 0, 1])
+        self.assertEqual([kinds(row) for row in rows[LAY_CELLS[2]]], [UNFILLED] * 3)
+        # The market is suspended for 1 ms at the first cell's null time: every order of that cell meets it.
+        cell = LAY_CELLS[0]
+        at_u = (ms(DAY_OFF) - null_time(cell, off=DAY_OFF)) / 1000
+        rows = self.walked(lp_market(off=DAY_OFF, extra=[status_at(at_u, "SUSPENDED", off=DAY_OFF),
+                                                         status_at(at_u - 0.001, off=DAY_OFF)]),
+                           plan=EACH_PLAN, when=DAY_OFF).outcomes
+        self.assertEqual([row.null_reason for row in rows[cell]], ["market_not_open"] * 3)
+        self.assertEqual([(row.null_mid, row.null_reason) for row in rows[LAY_CELLS[1]]],
+                         [(P(2.51), None), (P(4.05), None), (P(10.25), None)])
+
+    def test_no_runner_passes_the_first_runners_code(self):
+        # The favourite shows less than GBP 10; R2, R3, R4 and R5 are 3 or more ticks wide; R6 is above the range.
+        quotes = book(FAV=(2.5, 2.52, 9.99), R2=(4.0, 4.3), R5=(10.0, 11.5))
+        walked = self.walked(lp_market(off=DAY_OFF, books={3600: quotes}), plan=EACH_PLAN, when=DAY_OFF)
+        for cell in LAY_CELLS:
+            self.assertEqual(walked.outcomes[cell], "depth_below_min")
+            self.assertEqual(walked.runner_codes[cell], {"depth_below_min": 1, "spread_not_1_or_2_ticks": 4,
+                                                         "best_back_out_of_range": 1})
+        # When the market rows fail no runner is counted.
+        for messages, code in ((lp_market(off=DAY_OFF, extra=[status_at(700, "SUSPENDED", off=DAY_OFF)]),
+                                "market_not_open"),
+                               (lp_market(off=DAY_OFF, runners=SIDS[:4]), "too_few_active_runners")):
+            with self.subTest(code=code):
+                walked = self.walked(messages, plan=EACH_PLAN, when=DAY_OFF)
+                self.assertEqual({walked.outcomes[cell] for cell in LAY_CELLS}, {code})
+                self.assertEqual(walked.runner_codes, {})
+
+    def test_an_order_off_the_ladder_is_not_placed(self):
+        loose = early_plan(rules=band(rows=5))              # no gap rows: a best back off the ladder can be asked
+        walked = self.walked(lp_market(off=DAY_OFF, books={3600: book(R2=(4.05, 4.1))}), plan=loose, when=DAY_OFF)
+        for cell in LAY_CELLS:
+            self.assertEqual([(row.price, row.gap_ticks) for row in walked.outcomes[cell]],
+                             [(P(2.5), 1), (P(6.0), 3), (P(8.0), 5), (P(10.0), 1)])
+            self.assertEqual(walked.runner_codes[cell], {"issued": 4, "price_off_ladder": 1,
+                                                         "best_back_out_of_range": 1})
+        off_ladder = book(FAV=(2.51, 2.52), R2=(4.05, 4.1), R3=(6.1, 6.6), R4=(8.1, 9.0), R5=(9.9, 10.5))
+        walked = self.walked(lp_market(off=DAY_OFF, books={3600: off_ladder}), plan=loose, when=DAY_OFF)
+        for cell in LAY_CELLS:
+            self.assertEqual(walked.outcomes[cell], "price_off_ladder")
+            self.assertEqual(walked.runner_codes[cell], {"price_off_ladder": 5, "best_back_out_of_range": 1})
+
+    def test_codes_add_up_to_records(self):
+        markets = {
+            "1.180000001": lp_market("1.180000001", DAY_OFF),
+            "1.180000002": lp_market("1.180000002", DAY_OFF, books={3600: book(FAV=(2.5, 2.52, 9.99), R2=(4.0, 4.3),
+                                                                               R5=(10.0, 11.5))}),
+            "1.180000003": lp_market("1.180000003", DAY_OFF, extra=[status_at(700, "SUSPENDED", off=DAY_OFF,
+                                                                              market_id="1.180000003")]),
+            "1.180000004": lp_market("1.180000004", DAY_OFF, runners=SIDS[:4]),
+            "1.180000005": lp_market("1.180000005", OFF),                       # a test-label date
+        }
+        root, manifest, records = self.build([(path(market_id, OFF if market_id.endswith("5") else DAY_OFF),
+                                               messages) for market_id, messages in markets.items()])
+        tallies, orders, runners = {cell: {} for cell in LAY_CELLS}, 0, []
+        for market_id in markets:
+            with member_stream(root, manifest, records[market_id]) as stream:
+                walked = walk(stream, records[market_id], EACH_PLAN, DEFAULT_LIMITS)
+            for cell in LAY_CELLS:
+                outcome = walked.outcomes[cell]
+                key = "issued" if isinstance(outcome, tuple) else outcome
+                tallies[cell][key] = tallies[cell].get(key, 0) + 1
+                orders += len(orders_of(outcome))
+                if cell in walked.runner_codes:
+                    runners.append(sum(walked.runner_codes[cell].values()))
+        for cell, counts in tallies.items():
+            self.assertEqual(counts, {"issued": 1, "depth_below_min": 1, "market_not_open": 1,
+                                      "too_few_active_runners": 1, "partition_not_registered": 1})
+            self.assertEqual(sum(counts.values()), len(markets))
+        self.assertEqual((orders, runners), (3 * len(LAY_CELLS), [len(SIDS)] * 2 * len(LAY_CELLS)))
+
+    def test_a_cell_with_one_order_is_a_tuple_of_one_row(self):
+        walked = self.walked(lp_market(off=DAY_OFF), plan=early_plan(rules=band("4.00", "4.00")), when=DAY_OFF)
+        for cell in LAY_CELLS:
+            self.assertNotIsInstance(walked.outcomes[cell], OrderRow)
+            self.assertEqual([row.price for row in walked.outcomes[cell]], [P(4.0)])
+            self.assertEqual(walked.runner_codes[cell], {"issued": 1, "best_back_out_of_range": 5})
+
+    def test_each_order_has_its_own_class(self):
+        # R5 is removed 200 s before the off: after t for the first two cells, before t for the third.
+        gone = md(M, before(200, DAY_OFF), definition(DAY_OFF, [runner(sid, "REMOVED" if sid == R5 else "ACTIVE")
+                                                                for sid in SIDS]))
+        statuses = {sid: "WINNER" if sid == FAV else "REMOVED" if sid == R5 else "LOSER" for sid in SIDS}
+        rows = self.walked(lp_market(off=DAY_OFF, extra=[gone], statuses=statuses), plan=EACH_PLAN,
+                           when=DAY_OFF).outcomes
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual([(row.price, row.klass, row.bsp) for row in rows[cell]],
+                             [(P(2.5), "post_decision_removal", None), (P(4.0), "post_decision_removal", None),
+                              (P(10.0), "void_own_runner_removed", None)])
+        self.assertEqual([(row.price, row.klass, row.bsp) for row in rows[LAY_CELLS[2]]],
+                         [(P(2.5), SCORED, P(2.6)), (P(4.0), SCORED, P(4.2))])
+
+    def test_each_order_counts_volume_from_its_own_runners_base(self):
+        # 1.5 of backer's stake trade at R2's best back, 4.0, 500 s out (inside the first cell's window, before the
+        # second cell's t), then 1.5 more 200 s out. The front model needs divisor x (0 + 2) = 4 counted since its t.
+        trades = [(500, R2, [[4.0, 3.0]]), (200, R2, [[4.0, 6.0]])]
+        rows = self.walked(lp_market(off=DAY_OFF, trades=trades), plan=EACH_PLAN, when=DAY_OFF).outcomes
+        found = {cell.at_s: [(row.price, kinds(row)[OPTIMISTIC], row.trd[TRD_COUNTS[0]]) for row in rows[cell]]
+                 for cell in LAY_CELLS}
+        self.assertEqual(found[-600], [(P(2.5), None, 0), (P(4.0), VOLUME, 2), (P(10.0), None, 0)])
+        self.assertEqual(found[-300], [(P(2.5), None, 0), (P(4.0), None, 1), (P(10.0), None, 0)])
+
+
+class LabelsRead(RestingCase):
+    def test_a_test_label_record_is_coded_from_its_index_record_and_never_read(self):
+        revised = md(M, before(200), definition(OFF + timedelta(minutes=5), [runner(s) for s in SIDS]))
+        root, manifest, records = self.build([(path(M), lp_market(extra=[revised]))])
+        record = records[M]
+        self.assertEqual(race_label(PLAN, record)[1], V)
+        # The history gates' code stays where it applies; every other cell is partition_not_registered.
+        expected = {cell: "schedule_revised_before_decision" if cell.at_s == -120 else "partition_not_registered"
+                    for cell in PLAN.cells}
+        for name, plan in (("early", EARLY_PLAN), ("each", EACH_PLAN)):
+            with self.subTest(plan=name):
+                walked = walk(Unread(), record, plan, DEFAULT_LIMITS)
+                self.assertEqual(walked.outcomes, expected)
+                self.assertEqual((walked.replayed, walked.flags_missing, walked.runner_codes), (False, {}, {}))
+                self.assertEqual({cell: record_code(plan, record, cell) for cell in plan.cells},
+                                 {cell: (code, ()) for cell, code in expected.items()})
+                self.assertEqual(record_facts(plan, record)[2], expected)       # the runner asks record_code too
+        # close-v1 reads both labels: the same record reaches the book.
+        with member_stream(root, manifest, record) as stream:
+            walked = walk(stream, record, PLAN, DEFAULT_LIMITS)
+        self.assertTrue(walked.replayed)
+        self.assertEqual({cell.at_s for cell, row in walked.outcomes.items() if isinstance(row, OrderRow)},
+                         {-600, -300})
+
+    def test_an_explore_label_record_is_read(self):
+        root, manifest, records = self.build([(path(M, DAY_OFF), lp_market(off=DAY_OFF))])
+        with member_stream(root, manifest, records[M]) as stream:
+            walked = walk(stream, records[M], EARLY_PLAN, DEFAULT_LIMITS)
+        self.assertTrue(walked.replayed)
+        self.assertEqual({(row.label, row.race_date) for row in walked.outcomes.values()}, {(D, "2015-06-02")})
+
+    def test_the_label_comes_before_a_false_flag(self):
+        # A test-label record whose bspMarket is false at t: close-v1 codes the flag; a new id codes the label first,
+        # in population_codes' order, and never reads the file.
+        root, manifest, records = self.build([(path(M), lp_market(bspMarket=False))])
+        record = records[M]
+        self.assertEqual(race_label(PLAN, record)[1], V)
+        self.assertEqual({record_code(PLAN, record, cell)[0] for cell in PLAN.cells}, {"bsp_market_false"})
+        for plan in (EARLY_PLAN, EACH_PLAN):
+            self.assertEqual({record_code(plan, record, cell)[0] for cell in plan.cells}, {"partition_not_registered"})
+            self.assertFalse(walk(Unread(), record, plan, DEFAULT_LIMITS).replayed)
+
+
+class NewRowFields(RestingCase):
+    def test_a_row_built_without_them_takes_their_defaults(self):
+        row = order(2.6)
+        self.assertEqual((row.gap_ticks, row.placed_in_the_hour, row.fill_minute), (None, False, None))
+        self.assertEqual(OrderRow._fields[:13], ROW_FIELDS)
+
+    def test_the_gap_in_ticks_at_t(self):
+        for quote, gap_ticks in (((2.5, 2.52), 1), ((2.5, 2.54), 2)):
+            with self.subTest(quote=quote):
+                for plan in (PLAN, EARLY_PLAN):
+                    rows = self.rows(lp_market(off=DAY_OFF, books={3600: book(FAV=quote)}), plan=plan, when=DAY_OFF)
+                    self.assertEqual({rows[cell].gap_ticks for cell in PLAN.cells}, {gap_ticks})
+
+    def test_an_order_placed_exactly_on_a_weekday_whole_hour(self):
+        for plan in (PLAN, EARLY_PLAN):
+            rows = self.rows(hour_market(off=TUESDAY), plan=plan, when=TUESDAY)
+            self.assertEqual({cell.at_s: rows[cell].placed_in_the_hour for cell in PLAN.cells},
+                             {-600: False, -300: True, -120: False})            # 13:55, 14:00:00 and 14:03
+        rows = self.rows(hour_market(off=SATURDAY), plan=EARLY_PLAN, when=SATURDAY)
+        self.assertEqual({rows[cell].placed_in_the_hour for cell in PLAN.cells}, {False})
+        # Placed at 14:00:59 and at 14:01:00.
+        for off, placed in ((TUESDAY + timedelta(seconds=59), True), (TUESDAY + timedelta(minutes=1), False)):
+            with self.subTest(off=off):
+                rows = self.rows(lp_market(off=off), plan=EARLY_PLAN, when=off)
+                self.assertEqual(rows[LAY_CELLS[1]].placed_in_the_hour, placed)
+
+    def test_a_fill_in_the_second_or_the_third_minute_after_the_hour(self):
+        # 2 of backer's stake at 2.5 at 14:01:00 fills the front model (4 needed); 25 more at 14:02:30 the central one
+        # (54 needed); the back of the queue needs 104.
+        trades = [(240, FAV, [[2.5, 4.0]]), (150, FAV, [[2.5, 54.0]])]
+        rows = self.rows(hour_market(off=TUESDAY, trades=trades), plan=EARLY_PLAN, when=TUESDAY)
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual(kinds(rows[cell]), {OPTIMISTIC: VOLUME, CENTRAL: VOLUME, PESSIMISTIC: None})
+            self.assertEqual(rows[cell].fill_minute, {OPTIMISTIC: 2, CENTRAL: 3, PESSIMISTIC: None})
+        # Under close-v1 the rise in the first minute fills every model there, which no minute here names.
+        rows = self.rows(hour_market(off=TUESDAY, trades=trades), when=TUESDAY)
+        self.assertEqual([rows[cell].fill_minute for cell in LAY_CELLS[:2]], [dict.fromkeys(MODELS)] * 2)
+        # On a Saturday the same fills name no minute.
+        rows = self.rows(lp_market(off=SATURDAY, trades=trades), plan=EARLY_PLAN, when=SATURDAY)
+        self.assertEqual(kinds(rows[LAY_CELLS[1]]), {OPTIMISTIC: VOLUME, CENTRAL: VOLUME, PESSIMISTIC: None})
+        self.assertEqual(rows[LAY_CELLS[1]].fill_minute, dict.fromkeys(MODELS))
+        # The edges of the two minutes, on a weekday and on a Saturday.
+        for off, named in ((TUESDAY, (None, 2, 2, 3, 3, None)), (SATURDAY, (None,) * 6)):
+            hour = ms(off) - 300_000
+            self.assertEqual(tuple(minute_after_the_hour(hour + step)
+                                   for step in (59_999, 60_000, 119_999, 120_000, 179_999, 180_000)), named)
 
 
 class RestingBoundaries(unittest.TestCase):

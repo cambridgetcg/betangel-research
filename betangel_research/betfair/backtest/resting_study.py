@@ -1,8 +1,13 @@
-"""python3 -m betangel_research.betfair.backtest.resting_study: run registered measurement close-v1.
+"""python3 -m betangel_research.betfair.backtest.resting_study: run registered measurements close-v1 and close-early-v1.
 
---study close-v1 --pass blind|registered --registration-sha256 HEX --archive-root DIR --out DIR --code-commit HEX
+There are two kinds of study here, as in resting.py: close-v1 (resting.STUDY_ID), whose passes are blind and
+registered, and the new ids (resting.EARLY_IDS: close-early-v1 and its registered fallbacks), whose passes are blind
+and explore and which read the explore label alone (resting.Plan.labels_read). STUDY_PASSES says which study runs
+which passes; PASSES stays close-v1's two, which early_study imports.
+
+--study ID --pass blind|registered|explore --registration-sha256 HEX --archive-root DIR --out DIR --code-commit HEX
 --ledger DIR --ledger-head none|SEQ:SHA256 [--blind-receipt PATH] [--registration PATH] runs
-research/studies/close-v1.json (or --registration) over every archive ingested and indexed under the data root DIR
+research/studies/<ID>.json (or --registration) over every archive ingested and indexed under the data root DIR
 and writes summary.json, summary.md (totals only) and receipt.json into the new directory --out, through
 "<out>.partial" (mode 0700, files 0600) renamed only when all three are whole. It prints one JSON line of counts,
 codes and hashes and exits 0 (completed) or 2 (refused or failed: --out is not created then). A fault in the code
@@ -12,43 +17,55 @@ nothing here can reach an exchange. It is a module of its own, not a subcommand 
 __main__.py is one of the certified engine's sources and stays byte-identical; this module, resting.py and fills.py
 are in the certificate's source descriptor, so adding them changed the certificate key again.
 
-Refusals, before any record is read, in this order: --study is not close-v1 (nothing is read then); the pass name;
-the registration file's raw bytes must hash to --registration-sha256, the file must lie in a folder named studies,
-and the split file beside that folder and the rule files in rules/ beside it, each a regular file of at most 1 MiB
-named by the registration, must be the bytes it names (resting.parse_registration); --code-commit, the data root
-and --out as movement_study checks them; the blind pass takes no --blind-receipt and the registered pass needs the
-blind pass's canonical, completed receipt of this study, registration, split file, --code-commit, backtest-source
-sha256 and input sha256; every manifest's read limits must be the replay's. Then the study ledger
-(study_ledger.py): --out may not lie inside the ledger directory nor hold it, under any spelling of that directory
-(the folders above --out are compared with it by file identity, since a file system may ignore letter case); the
-ledger is opened with the head the operator typed, and for a registered pass with the entry the blind receipt names
-as its own (ledger_entry) as the anchor, where the entry at that seq must be a look of this study, registration,
-input, backtest sources and commit; then the budgets are checked. A pass whose identity the ledger already holds
-is a repeat.
+Refusals, before any record is read, in this order: --study is not one of STUDIES (nothing is read then); the pass
+is not one of that study's (pass:not_supported; nothing is read then either); the registration file's raw bytes
+must hash to --registration-sha256, the file must lie in a folder named studies, and the split file beside that
+folder and the rule files in rules/ beside it, each a regular file of at most 1 MiB named by the registration, must
+be the bytes it names (resting.parse_registration); the registration's id must be --study
+(study:not_the_registrations: close-v1's file never runs under a new id's name, nor a new id's file under
+close-v1's); --code-commit, the data root and --out as movement_study checks them; the blind pass takes no
+--blind-receipt and every other pass needs the blind pass's canonical, completed receipt of this study,
+registration, split file, --code-commit, backtest-source sha256 and input sha256; every manifest's read limits
+must be the replay's. Then the study ledger (study_ledger.py): --out may not lie inside the ledger directory nor
+hold it, under any spelling of that directory (the folders above --out are compared with it by file identity,
+since a file system may ignore letter case); the ledger is opened with the head the operator typed, and for a
+registered or explore pass with the entry the blind receipt names as its own (ledger_entry) as the anchor, where
+the entry at that seq must be a look of this study, registration, input, backtest sources and commit; then the
+budgets are checked. A pass whose identity the ledger already holds is a repeat. One explore pass per study: an
+explore pass that is not a repeat is refused (explore:already_run) when the ledger holds an explore entry of this
+study id, whatever its identity. The ledger request names the labels the plan reads (both for close-v1, the
+explore label alone for a new id); its kind is look for a blind pass, registered for close-v1's registered pass
+(with the registered m and alpha) and explore for a new id's explore pass (m 0, alpha "0").
 
 The read is lp_study's: every record's months pass the current month gate (sealed months are never read), a market
 id seen twice in the registered tier fails the run (duplicate_market), and the member's path is guarded and its
 bytes hashed against the manifest. What the index record alone says of a record is read first (its month, its race
 date and partition label, each cell's code: resting.record_code); only those calls report malformed_record. A
-record whose cells all have a code, one with an unregistered label included, is never opened. Any other record is
-walked once (resting.walk) to its last pull time. Value rows hold no market or selection id, are kept in memory by
-cell and partition label, and never reach disk.
+record whose cells all have a code, one with an unregistered label or a label the plan does not read included, is
+never opened. The one place a file is opened (_walk) also refuses a record whose label the plan does not read
+(replay:label_not_read): it never fires unless the wiring is wrong, and then the pass fails before it appends. Any
+other record is walked once (resting.walk) to its last pull time. A cell holds one row (a favourite cell) or a tuple
+of rows (a cell of an each_active rule file): the market counts once in the codes, each order once in B1 and in the
+rows. Value rows hold no market or selection id, are kept in memory by cell and partition label read, and never
+reach disk.
 
 After the read the summary's bytes are built in memory; then the ledger gets its one entry (a look for a blind
-pass, the registered entry for a registered pass) before any file or stdout write; then the outputs are written. A
-repeat appends nothing, and its summary must hash to the stored tables hash (ledger:repeat_differs otherwise). A
+pass, the registered entry for a registered pass, the explore entry for an explore pass) before any file or stdout
+write; then the outputs are written. A repeat appends nothing, and its summary must hash to the stored tables hash
+(ledger:repeat_differs otherwise). A
 pass that fails or is stopped during the read has appended and written nothing. If an output cannot be written
 after the append, or the code faults there, the entry stands, the result names the new head (ledger_head) beside
 the failure, and the re-run is a repeat. If the entry was written and only its lock file could not be removed, the
 outputs are still written and the result says ledger_lock_left: a person removes the lock file before the next
 pass. The summary has no clock, so the same registration, input and code give the same bytes. The receipt names the
 hashes, the commit, the ledger head after the pass, the pass's own entry (ledger_entry: the head for a new entry,
-the stored entry for a repeat, so a repeat's receipt still leads the registered pass to the look), the lineage's
-counts of looks and registered passes, started_at and recorded_at, and two totals: bytes_walked, the compressed
-bytes the walks consumed, and bytes_drained, the rest of those members, hashed and not parsed.
+the stored entry for a repeat, so a repeat's receipt still leads the registered or explore pass to the look), the
+lineage's counts of looks and registered passes (an explore entry is in neither count), started_at and recorded_at,
+and two totals: bytes_walked, the compressed bytes the walks consumed, and bytes_drained, the rest of those members,
+hashed and not parsed.
 
-Tables. Both passes (registration blind_pass.releases): B1 coverage by registered month and partition label,
-records with no anchor and with no registered label; per cell B2 the codes, B3 the classes by label, B4 the fill
+Tables of close-v1. Both passes (registration blind_pass.releases): B1 coverage by registered month and partition
+label, records with no anchor and with no registered label; per cell B2 the codes, B3 the classes by label, B4 the fill
 counts by label and model (among them the fills in a batch that left the market not OPEN and those in the batch
 that turned it in play) and the fill counts of the classes that are not scored, B5 the sample SD and symmetric
 ranges of gross g at the BSP as written over each model's filled part (both labels pooled, part and rest), the SD
@@ -69,7 +86,28 @@ group (the same filled_is_all_placed flag); a kill's pooled figures are given on
 they are over number statistics.min_values and are the orders that stand for that label's own optimistic fills,
 and the label gives its own optimistic figures (the label a kill decided is printed either way); and the null's
 main mean over the same orders is withheld when 1 to statistics.min_values - 1 of the claim's orders have no null
-value. Markdown tables print 100 x g as points of stake; summary.json keeps fractions of stake, floats rounded to 6
+value.
+
+Tables of a new id. Its blind look (registration blind_pass.releases) gives close-v1's blind tables on the labels
+the plan reads, with these differences. B1 counts the records of every label and the orders of the labels read;
+B2's columns add up to every index record (one of a label not read is under the code of an earlier gate it fails,
+else partition_not_registered); every other table by label holds the labels read. B4 adds, per label and model,
+the fills by kind in the second and in the third minute after a weekday whole hour (resting.OrderRow.fill_minute).
+B5 gives no SD over all scored orders, and for a model flagged filled_is_all_placed neither an SD nor ranges: its
+counts and the flag alone, so no SD over every scored order stands in for its filled SD. There is no B6: the
+detectable effect describes a test. B7 reads the plan's trade counts (four, the last the rises the hour switch left
+out) and adds the orders placed in the after-the-hour seconds. B8: per cell of an each_active rule file, the runners
+of the markets whose market rows and selector held, by their own code (resting.Walked.runner_codes; issued: ordered
+on). B9: per cell, the orders placed, the scored orders and the pessimistic fills of scored orders by the gap at t
+in CLASSIC ticks (GAP_RANGES, and not_in_a_range for any other gap or none). Its withheld text is its own
+(WITHHELD_EARLY). Its explore pass gives every table of the blind look with equal values (and no withheld text), and
+adds three tables, each headed exploratory with its number of cells c and sqrt(2 ln c): E1 resting.figures per cell
+on the labels read at both BSP ends; E2 the same by half-year, part and rest across the split as in T7; E3 the
+quantiles of the sum of 1 / BSP per market with a scored order. A cell whose pessimistic fills fail resting.gate
+gives counts only in E1 and E2 (reason counts_only; size_gate says which). Nothing in an explore summary is tested,
+bounded, selected or labelled: no selection, verdict or null is computed for it.
+
+Markdown tables print 100 x g as points of stake; summary.json keeps fractions of stake, floats rounded to 6
 places.
 
 Standard library only; it imports the backtest modules named above and nothing outside the package but what they
@@ -96,28 +134,42 @@ from .movement_study import (COMMIT_RE, MAX_RECEIPT_BYTES, SHA256_RE, StudyRefus
                              _read_regular, _refuse, _table, _write)
 from .partition import HALVES, MAX_SPLIT_BYTES
 from .replay import ReplayProblem, _member
-from .resting import (AS_WRITTEN, BSP_ENDS, CLASSES, ENDS, FILLED, FILLED_IS_ALL_PLACED, FLAG_GATES, G, LATER,
-                      MEASURES, NET_CLOSED, NET_HELD, NULL_UNDEFINED, SCORED, STATISTICS, STUDY_ID, TRD_COUNTS,
-                      OrderRow, blind_outcome, described, ends_apart, figures, filled_part, gap, given_figures,
-                      named_files, parse_registration, quantile_table, race_label, record_code, rounded, scored,
-                      select_primaries, series, spread, verdicts, walk, whole_hundredths, withheld,
-                      without_first_fills)
-from .rulefile import MAX_RULE_BYTES
+from .resting import (AS_WRITTEN, BSP_ENDS, CLASSES, COUNTS_ONLY, EARLY_IDS, ENDS, FILLED, FILLED_IS_ALL_PLACED,
+                      FLAG_GATES, G, LATER, MEASURES, NET_CLOSED, NET_HELD, NULL_UNDEFINED, SCORED, SECOND,
+                      STATISTICS, STUDY_ID, THIRD, OrderRow, blind_outcome, described, ends_apart, figures,
+                      filled_part, gap, gate, given_figures, named_files, parse_registration, quantile_table,
+                      race_label, record_code, rounded, scored, select_primaries, series, spread, verdicts, walk,
+                      whole_hundredths, withheld, without_first_fills)
+from .rulefile import EACH_ACTIVE, MAX_RULE_BYTES
 from .runner import RunRefused, _inputs, _record_months, _records, utc_now_text
-from .study_ledger import COMPLETED, LOOK, PassRequest, StudyLedger, head_text, identity, ledger_dir, parse_head
+from .study_ledger import (COMPLETED, EXPLORE_KIND, LOOK, PassRequest, StudyLedger, head_text, identity, ledger_dir,
+                           parse_head)
 from .study_ledger import REGISTERED as REGISTERED_KIND
 from .trial_ledger import LedgerError, UnlockError
 
 SUMMARY_KIND, RECEIPT_KIND, SCHEMA_VERSION = "betangel_resting_summary", "betangel_resting_receipt", 1
-BLIND, REGISTERED = "blind", "registered"
-PASSES = (BLIND, REGISTERED)
-STUDIES = (STUDY_ID,)                               # the studies this module runs
+BLIND, REGISTERED, EXPLORE = "blind", "registered", "explore"
+PASSES = (BLIND, REGISTERED)                        # close-v1's passes (early_study imports this tuple)
+PASS_NAMES = (BLIND, REGISTERED, EXPLORE)           # every pass this module knows
+# The passes each study runs: close-v1 its blind look and its registered pass; a new id its blind look and one
+# explore pass, and no registered pass.
+STUDY_PASSES = {STUDY_ID: PASSES, **dict.fromkeys(EARLY_IDS, (BLIND, EXPLORE))}
+STUDIES = tuple(STUDY_PASSES)                       # the studies this module runs
 REGISTRATIONS = REPOSITORY_ROOT / "research" / "studies"
 STUDIES_FOLDER, RULES_FOLDER = "studies", "rules"
 SUMMARY_JSON, SUMMARY_MD, RECEIPT_JSON = "summary.json", "summary.md", "receipt.json"
 WITHHELD = ("every location statistic of an outcome (an average, a middle value, a raw quantile or a sign), every "
             "interval, test, label and selection, any SD of a figure after commission, the SD over unfilled orders, "
             "and any statistic by price band or half-year: the registration's blind_pass.withholds")
+# A new id's blind look withholds more (registration blind_pass.withholds).
+WITHHELD_EARLY = ("every location statistic of an outcome (an average, a middle value, a raw quantile or a sign), "
+                  "every interval, test, label and selection, any SD of a figure after commission, the SD over "
+                  "unfilled orders and the SD over all scored orders (also where it would stand in for a model's "
+                  "filled SD: that model gives no SD and no ranges, flagged filled_is_all_placed), the detectable "
+                  "effect, any statistic of an outcome by gap, price or half-year, and of a label not read anything "
+                  "but index record counts: the registration's blind_pass.withholds")
+# B9: the ranges of the gap at t in CLASSIC ticks, and the name of the rest (no gap, or one outside them).
+GAP_RANGES, NOT_IN_A_RANGE = ((1, 2), (3, 5), (6, 10), (11, 20)), "not_in_a_range"
 INDEPENDENCE = "under independence; clustering makes it larger"
 EXPLORATORY, NOT_TESTED = "exploratory", "not tested, unadjusted"
 PRIMARY = "primary: tested in T9 only; this row is descriptive"     # a primary cell's rows on the test label
@@ -201,27 +253,35 @@ def _ledger(directory, expected, root, target, request, split_raw, anchor):
 
 
 class Tally:
-    """Everything the summary needs. rows: {Cell: {partition label: [OrderRow]}}, every placed order of every
-    class; no market or selection id enters it."""
+    """Everything the summary needs. rows: {Cell: {partition label read: [OrderRow]}}, every placed order of every
+    class; no market or selection id enters it. Records are counted by every label, orders by the labels read.
+    runner_codes: {Cell of an each_active rule file: {code: runners}} (B8)."""
 
     def __init__(self, plan):
         self.records = self.replayed = self.bytes_walked = self.bytes_drained = 0
         self.months = {month: {"records": dict.fromkeys(plan.labels + (NO_LABEL,), 0),
-                               "orders": dict.fromkeys(plan.labels, 0)}
+                               "orders": dict.fromkeys(plan.labels_read, 0)}
                        for month in plan.months + (OUTSIDE, NO_ANCHOR)}
         self.codes = {cell: dict.fromkeys(plan.codes + (ISSUED,), 0) for cell in plan.cells}
-        self.rows = {cell: {label: [] for label in plan.labels} for cell in plan.cells}
+        self.rows = {cell: {label: [] for label in plan.labels_read} for cell in plan.cells}
         self.flags_missing = {cell: {name: 0 for name, _, _ in FLAG_GATES
                                      if getattr(plan.rule(cell.rule_id).market, name) is True}
                               for cell in plan.cells}
-        self.books = {label: [] for label in plan.labels}       # the sum of 1 / BSP of a market with a scored order
+        self.books = {label: [] for label in plan.labels_read}  # the sum of 1 / BSP of a market with a scored order
+        self.runner_codes = {cell: dict.fromkeys(plan.codes + (ISSUED,), 0) for cell in plan.cells
+                             if plan.rule(cell.rule_id).select == EACH_ACTIVE}
 
 
 def _walk(root, manifest, record, plan, limits):
     """(resting.walk's answer over the record's primary member, the compressed bytes the walk consumed, the bytes
     drained after it), after replay_view's checks of the member; the member's bytes are hashed against the
-    manifest (lp_study._walk's checks)."""
+    manifest (lp_study._walk's checks). First, before the member is looked up: a record whose label the plan does
+    not read is refused (replay:label_not_read). record_code has coded such a record already, so this never fires
+    unless the wiring is wrong; it is the one place a file is opened."""
     market_id = record["market_id"]
+    dated = race_label(plan, record)
+    if dated is None or dated[1] not in plan.labels_read:
+        raise ReplayProblem(f"replay:{market_id}:label_not_read")
     member = _member(manifest, record)
     try:
         raw = safe_target(root, manifest["archive"]["sha256"], member["path"])
@@ -260,7 +320,8 @@ def record_facts(plan, record):
 
 
 def decide_record(plan, record, facts, root, manifest, tally, limits=DEFAULT_LIMITS):
-    """Add one index record to the tally: its codes, and one row per placed order (module docstring)."""
+    """Add one index record to the tally: its codes, one row per placed order, and the runners of each each_active
+    cell by code (module docstring)."""
     month, dated, outcomes = facts
     tally.records += 1
     label = None if dated is None else dated[1]
@@ -275,16 +336,20 @@ def decide_record(plan, record, facts, root, manifest, tally, limits=DEFAULT_LIM
         for cell, names in walked.flags_missing.items():
             for name in names:
                 tally.flags_missing[cell][name] += 1
+        for cell, found in walked.runner_codes.items():
+            for code, runners in found.items():
+                tally.runner_codes[cell][code] += runners
     valued = False
     for cell in plan.cells:
-        row = outcomes[cell]
-        if not isinstance(row, OrderRow):
-            tally.codes[cell][row] += 1
+        outcome = outcomes[cell]
+        if not isinstance(outcome, tuple):          # a code; an OrderRow is a tuple too
+            tally.codes[cell][outcome] += 1
             continue
-        tally.codes[cell][ISSUED] += 1
-        tally.months[month]["orders"][row.label] += 1
-        tally.rows[cell][row.label].append(row)
-        valued = valued or row.klass == SCORED
+        tally.codes[cell][ISSUED] += 1              # the market counts once in the codes, each order once below
+        for row in (outcome,) if isinstance(outcome, OrderRow) else outcome:
+            tally.months[month]["orders"][row.label] += 1
+            tally.rows[cell][row.label].append(row)
+            valued = valued or row.klass == SCORED
     book = bsp_book(record) if valued else None
     if book is not None:
         tally.books[label].append(float(book))
@@ -299,30 +364,78 @@ def _key(cell):
 
 
 def _both(plan, tally, cell):
-    """A cell's rows of both partition labels, the explore label's first."""
-    return [row for label in plan.labels for row in tally.rows[cell][label]]
+    """A cell's rows of every partition label the plan reads (both for close-v1), the explore label's first."""
+    return [row for label in plan.labels_read for row in tally.rows[cell][label]]
+
+
+def _early(plan):
+    """Whether the plan is a new id's (resting.EARLY_IDS), whose tables differ from close-v1's (module docstring)."""
+    return plan.study in EARLY_IDS
 
 
 def _fill_counts(plan, rows, model):
-    """B4 for the scored rows of one cell and label under one model: counts and the fill rate."""
+    """B4 for the scored rows of one cell and label under one model: counts and the fill rate; for a new id also
+    the fills by kind in the second and in the third minute after a weekday whole hour."""
     found = [row.fills[model] for row in rows]
     filled = [fill for fill in found if fill.kind is not None]
-    return {"scored": len(rows), "fills": len(filled), "fill_rate": len(filled) / len(rows) if rows else None,
-            "by_kind": {kind: sum(1 for fill in filled if fill.kind == kind) for kind in FILL_KINDS},
-            "within_s_of_t": {str(seconds): sum(1 for fill in filled if fill.within[index])
-                              for index, seconds in enumerate(plan.within_s)},
-            "after_the_hour": {kind: sum(1 for fill in filled if fill.kind == kind and fill.after_the_hour)
-                               for kind in FILL_KINDS},
-            "left_the_market_not_open": sum(1 for fill in filled if fill.transition),
-            "turned_the_market_in_play": sum(1 for fill in filled if fill.turn),
-            "ended_by": {end: sum(1 for fill in found if fill.ended == end) for end in ENDS}}
+    counts = {"scored": len(rows), "fills": len(filled), "fill_rate": len(filled) / len(rows) if rows else None,
+              "by_kind": {kind: sum(1 for fill in filled if fill.kind == kind) for kind in FILL_KINDS},
+              "within_s_of_t": {str(seconds): sum(1 for fill in filled if fill.within[index])
+                                for index, seconds in enumerate(plan.within_s)},
+              "after_the_hour": {kind: sum(1 for fill in filled if fill.kind == kind and fill.after_the_hour)
+                                 for kind in FILL_KINDS},
+              "left_the_market_not_open": sum(1 for fill in filled if fill.transition),
+              "turned_the_market_in_play": sum(1 for fill in filled if fill.turn),
+              "ended_by": {end: sum(1 for fill in found if fill.ended == end) for end in ENDS}}
+    if _early(plan):                    # fill_minute is None on a row built by hand: no minute is named then
+        counts["minutes_after_the_hour"] = {
+            str(minute): {kind: sum(1 for row in rows if row.fills[model].kind == kind
+                                    and (row.fill_minute or {}).get(model) == minute) for kind in FILL_KINDS}
+            for minute in (SECOND, THIRD)}
+    return counts
+
+
+def _filled_spread(plan, rows, model):
+    """B5 of a new id under one model: spread() of gross g at the BSP as written over the model's filled scored
+    rows, with the flag. A model flagged filled_is_all_placed gives its counts and the flag alone: no SD over every
+    scored order stands in for its filled SD."""
+    part = filled_part(plan, rows, model)
+    values = series(plan, part.rows, G, AS_WRITTEN)
+    found = {"values": len(values), "race_dates": len({day for day, _ in values}), "sd": None, "ranges": None}
+    return dict(found if part.all_placed else spread(plan, values), **{FILLED_IS_ALL_PLACED: part.all_placed})
+
+
+def _gaps(rows):
+    """B9 of one cell's placed rows: {gap range: {placed, scored, pessimistic_fills}} by the gap in CLASSIC ticks at
+    t (OrderRow.gap_ticks), each range of GAP_RANGES and then NOT_IN_A_RANGE for any other gap or none; the
+    pessimistic fills are those of scored rows."""
+    names = [f"{low}-{high}" for low, high in GAP_RANGES]
+    out = {name: {"placed": 0, "scored": 0, "pessimistic_fills": 0} for name in names + [NOT_IN_A_RANGE]}
+    for row in rows:
+        ticks = row.gap_ticks
+        item = out[next((name for name, (low, high) in zip(names, GAP_RANGES)
+                         if ticks is not None and low <= ticks <= high), NOT_IN_A_RANGE)]
+        item["placed"] += 1
+        if row.klass == SCORED:
+            item["scored"] += 1
+            item["pessimistic_fills"] += row.fills[fills.PESSIMISTIC].kind is not None
+    return out
 
 
 def _cell_tables(plan, tally, cell):
-    """Tables B2 to B7 of one cell (module docstring): counts, and of an outcome its spread only."""
+    """Tables B2 to B9 of one cell (module docstring): counts, and of an outcome its spread only."""
     by_label, pooled = tally.rows[cell], _both(plan, tally, cell)
     good, behind = scored(pooled), plan.models[-1]
-    return {
+    if _early(plan):
+        spread_of_g = {"bsp_end": AS_WRITTEN,
+                       "filled": {model: _filled_spread(plan, good, model) for model in plan.models}}
+    else:
+        spread_of_g = {
+            "bsp_end": AS_WRITTEN,
+            "all_scored": {key: item for key, item in spread(plan, series(plan, good, G, AS_WRITTEN)).items()
+                           if key != "ranges"},
+            "filled": {model: blind_outcome(plan, pooled, model, AS_WRITTEN) for model in plan.models}}
+    tables = {
         "rule": cell.rule_id, "side": plan.rule(cell.rule_id).intents[0].side, "at_s": cell.at_s,
         "pull_s": cell.pull_s, "codes": dict(tally.codes[cell]),
         "classes": {label: {klass: sum(1 for row in rows if row.klass == klass) for klass in CLASSES}
@@ -333,23 +446,25 @@ def _cell_tables(plan, tally, cell):
                                                          and row.fills[model].kind is not None)
                                              for model in plan.models} for klass in CLASSES if klass != SCORED}
                              for label, rows in by_label.items()},
-        "spread_of_g": {
-            "bsp_end": AS_WRITTEN,
-            "all_scored": {key: item for key, item in spread(plan, series(plan, good, G, AS_WRITTEN)).items()
-                           if key != "ranges"},
-            "filled": {model: blind_outcome(plan, pooled, model, AS_WRITTEN) for model in plan.models}},
+        "spread_of_g": spread_of_g,
         "queue_at_t": {"model": behind, "orders": len(pooled),
                        "queue_quantiles": quantile_table(plan, [row.fills[behind].queue for row in pooled])},
         "seconds_to_fill": {model: _seconds(plan, [row.fills[model].seconds for row in good
                                                    if row.fills[model].kind is not None])
                             for model in plan.models},
-        "trd_changes": {name: sum(row.trd[name] for row in pooled) for name in TRD_COUNTS},
+        "trd_changes": {name: sum(row.trd[name] for row in pooled) for name in plan.trd_counts},
         "null_values": {"defined": sum(1 for row in good if row.null_mid is not None),
                         "undefined": {reason: sum(1 for row in good if row.null_reason == reason)
                                       for reason in NULL_UNDEFINED}},
         "flags_missing_at_t": dict(tally.flags_missing[cell]),
         "scored_orders_with_a_batch_begun_with_no_status": sum(1 for row in good if row.no_status),
     }
+    if _early(plan):
+        tables["orders_placed_in_the_hour_seconds"] = sum(1 for row in pooled if row.placed_in_the_hour)
+        tables["by_gap_at_t"] = _gaps(pooled)
+        if cell in tally.runner_codes:
+            tables["runners_by_code"] = dict(tally.runner_codes[cell])
+    return tables
 
 
 def _seconds(plan, values):
@@ -463,9 +578,50 @@ def _registered(plan, tally, apart):
     }
 
 
+def _counts_only(tree):
+    """A tree of figures with every statistic in it None and the reason counts_only (a cell below the size gate);
+    counts and flags stay."""
+    if not isinstance(tree, dict):
+        return tree
+    if "mean" in tree or "estimate" in tree:
+        return {key: None if key in STATISTICS else COUNTS_ONLY if key == "reason" else item
+                for key, item in tree.items()}
+    return {key: _counts_only(item) for key, item in tree.items()}
+
+
+def _explore(plan, tally):
+    """Tables E1 to E3 of a new id's explore pass (module docstring), on the labels read, each headed exploratory
+    with c and sqrt(2 ln c). A cell gives figures in E1 and E2 only when the pessimistic model's fills pass the size
+    gate (resting.gate); else counts only. Nothing is tested, bounded, selected or labelled here."""
+    def ends(rows):
+        return {end: figures(plan, rows, end) for end in BSP_ENDS}
+
+    gates, by_cell, halves = {}, {}, {}
+    for cell in plan.cells:
+        key = _key(cell)
+        gates[key], by_cell[key], halves[key] = {}, {}, {}
+        for label in plan.labels_read:
+            rows = scored(tally.rows[cell][label])
+            part = filled_part(plan, rows, fills.PESSIMISTIC)
+            given = gate(plan, part.fills, part.fill_dates)
+            gates[key][label] = {"model": fills.PESSIMISTIC, "fills": part.fills, "fill_race_dates": part.fill_dates,
+                                 "figures_given": given}
+            found, split = ends(rows), _together({half: ends(scored(rows, half=half)) for half in HALVES})
+            by_cell[key][label] = found if given else _counts_only(found)
+            halves[key][label] = split if given else _counts_only(split)
+    return {
+        "figures": dict(_exploratory(len(plan.cells)), heading=EXPLORATORY, size_gate=gates, by_cell=by_cell),
+        "half_years": dict(_exploratory(len(plan.cells) * len(HALVES)), heading=EXPLORATORY, by_cell=halves),
+        # As close-v1's T10, which holds the same table: headed with the pass's number of cells.
+        "bsp_book": dict(_exploratory(len(plan.cells)), heading=EXPLORATORY, by_label={
+            label: {"markets": len(values), "quantiles": quantile_table(plan, values)}
+            for label, values in tally.books.items()}),
+    }
+
+
 def summary(plan, tally, pass_name, input_sha256):
     """The summary of one pass (module docstring), every float rounded; the blind pass's holds no location of an
-    outcome."""
+    outcome, and the explore pass's holds every key and value of the blind pass's but withheld."""
     months = tally.months
     whole, of = whole_hundredths(plan, [row for cell in plan.cells for row in _both(plan, tally, cell)])
     apart = ends_apart(plan, whole, of)
@@ -483,10 +639,14 @@ def summary(plan, tally, pass_name, input_sha256):
              "cells": {_key(cell): _cell_tables(plan, tally, cell) for cell in plan.cells},
              "bsp_precision": {"scored_bsps_whole_hundredths": whole, "scored_bsps_not_whole_hundredths": of - whole,
                                "bsp_ends_decide_apart": apart}}
+    if _early(plan):
+        value["partitions"]["read"] = list(plan.labels_read)
     if pass_name == REGISTERED:
         value.update(_registered(plan, tally, apart))
+    elif pass_name == EXPLORE:
+        value.update(_explore(plan, tally))
     else:
-        value["withheld"] = WITHHELD
+        value["withheld"] = WITHHELD_EARLY if _early(plan) else WITHHELD
     return rounded(value)
 
 
@@ -623,26 +783,80 @@ def _registered_lines(value):
     return lines + [f"Partition labels: explore {labels['explore_label']}, test {labels['test_label']}.", ""]
 
 
+def _early_lines(plan, cells):
+    """A new id's tables B8 and B9, in both of its passes."""
+    runners = {cell: tables["runners_by_code"] for cell, tables in cells.items() if "runners_by_code" in tables}
+    lines = ["## B8 Runners of each each_active cell by their own code (the runners of the markets whose market rows "
+             "and selector held; issued: ordered on)", ""]
+    if runners:
+        lines += _table(["code", *runners], [[code, *(found[code] for found in runners.values())]
+                                             for code in plan.codes + (ISSUED,)
+                                             if any(found[code] for found in runners.values())])
+    else:
+        lines += ["No cell of this study is of an each_active rule file.", ""]
+    names = [*(f"{low}-{high}" for low, high in GAP_RANGES), NOT_IN_A_RANGE]
+    lines += [f"## B9 Orders per cell by the gap at t in CLASSIC ticks (placed, scored, and the {fills.PESSIMISTIC} "
+              "model's fills of scored orders)", ""]
+    return lines + _table(["cell", "gap", "placed", "scored", f"{fills.PESSIMISTIC} fills"],
+                          [[cell, name, *tables["by_gap_at_t"][name].values()]
+                           for cell, tables in cells.items() for name in names])
+
+
+def _explore_lines(value):
+    """A new id's explore tables E1 to E3, each headed exploratory with its c and sqrt(2 ln c)."""
+    lines = []
+    for title, key in (("E1 Intent-to-treat figures per cell", "figures"), ("E2 The same by half-year", "half_years")):
+        table = value[key]
+        lines += [f"## {title} (points of stake; {table['heading']}, descriptive, no p)", "",
+                  f"Cells in this table: c = {table['cells']}; sqrt(2 ln c) = {table['sqrt_2_ln_c']}. A cell whose "
+                  f"{fills.PESSIMISTIC} fills fail the size gate gives counts only.", ""]
+        for cell, by_label in table["by_cell"].items():
+            for label, group in by_label.items():
+                head = f"### {cell}, {label}: {table['heading']}"
+                if key == "figures":
+                    classes, given = value["cells"][cell]["classes"][label], table["size_gate"][cell][label]
+                    lines += [head, "", "Classes: " + ", ".join(f"{name} {count}" for name, count in classes.items())
+                              + f". Size gate: {given['fills']} {given['model']} fills on {given['fill_race_dates']} "
+                              f"race dates; figures given: {'yes' if given['figures_given'] else 'no'}.", ""]
+                    lines += _figure_lines(group)
+                else:
+                    for half, ends in group.items():
+                        lines += [f"{head}, {half}", ""] + _figure_lines(ends)
+    table = value["bsp_book"]
+    keys = next((list(item["quantiles"]) for item in table["by_label"].values() if item["quantiles"]), [])
+    lines += [f"## E3 The sum of 1 / BSP per market with a scored order (nearest-rank quantiles; {table['heading']})",
+              "", f"Cells in this table: c = {table['cells']}; sqrt(2 ln c) = {table['sqrt_2_ln_c']}.", ""]
+    return lines + _table(["label", "markets", *keys], [[label, item["markets"], *((item["quantiles"] or {}).get(q)
+                                                                                    for q in keys)]
+                                                        for label, item in table["by_label"].items()])
+
+
 def markdown(plan, value):
-    """summary.md: the summary's tables as Markdown. Outcomes are printed as points of stake (100 x g)."""
-    registered = value["pass"] == REGISTERED
-    cells, labels = value["cells"], list(plan.labels)
+    """summary.md: the summary's tables as Markdown. Outcomes are printed as points of stake (100 x g). A new id's
+    tables differ from close-v1's as the module docstring says; the explore pass's add E1 to E3."""
+    registered, early = value["pass"] == REGISTERED, _early(plan)
+    cells, labels, read = value["cells"], list(plan.labels), list(plan.labels_read)
     lines = [f"# Study {value['study']}: {value['pass']} pass", "",
              f"- registration sha256: `{value['registration_sha256']}`",
              f"- split file sha256: `{value['partitions_sha256']}`", f"- input sha256: `{value['input_sha256']}`",
              f"- index records: {value['records']}; markets replayed: {value['replayed_markets']}",
              f"- partition labels: explore {labels[0]}, test {labels[1]}",
              "- unit: g is a fraction of the backer's stake; these tables print 100 x g as points of stake", ""]
-    if not registered:
+    if early:
+        lines[-2:-2] = [f"- labels read: {', '.join(read)}; of any other label, index record counts only"]
+    if value["pass"] == BLIND:                      # an explore summary has no withheld text
         lines += [f"Withheld in this pass: {value['withheld']}.", ""]
+    elif value["pass"] == EXPLORE:
+        lines += ["Every table of the blind look, value for value, then E1 to E3: exploratory and descriptive, on the "
+                  "labels read alone.", ""]
     lines += [f"A group with fewer than {plan.min_values} values gives its counts only. A cell is one rule file at "
               "one of its times, named rule@seconds before the off.", ""]
     coverage = value["coverage"]
     lines += ["## B1 Coverage by month (records of the registered tier and orders placed, by partition label)", ""]
     lines += _table(["month", *(f"records {label}" for label in labels), "records, no registered label",
-                     *(f"orders {label}" for label in labels)],
+                     *(f"orders {label}" for label in read)],
                     [[month, *(row["records"][label] for label in labels), row["records"][NO_LABEL],
-                      *(row["orders"][label] for label in labels)] for month, row in coverage["by_month"].items()])
+                      *(row["orders"][label] for label in read)] for month, row in coverage["by_month"].items()])
     lines += [f"Records with no anchor: {coverage['records_without_an_anchor']}. Records with an anchor and no "
               f"registered label: {coverage['records_without_a_registered_label']}.", ""]
     lines += ["## B2 Codes per cell (each column adds up to the record count)", ""]
@@ -654,13 +868,16 @@ def markdown(plan, value):
                                                   for label, classes in tables["classes"].items()])
     lines += ["## B4 Fills of scored orders per cell, label and model (counts)", ""]
     within = [f"within {seconds} s of t" for seconds in plan.within_s]
+    minutes = [(str(minute), kind) for minute in (SECOND, THIRD) for kind in FILL_KINDS] if early else []
     lines += _table(["cell", "label", "model", "scored", "fills", "fill rate", *FILL_KINDS, *within,
                      *(f"after the hour: {kind}" for kind in FILL_KINDS), "left the market not OPEN",
-                     "turned the market in play", *(f"ended by {end}" for end in ENDS)],
+                     "turned the market in play", *(f"ended by {end}" for end in ENDS),
+                     *(f"minute {minute} after the hour: {kind}" for minute, kind in minutes)],
                     [[cell, label, model, item["scored"], item["fills"], item["fill_rate"], *item["by_kind"].values(),
                       *item["within_s_of_t"].values(), *item["after_the_hour"].values(),
                       item["left_the_market_not_open"], item["turned_the_market_in_play"],
-                      *item["ended_by"].values()]
+                      *item["ended_by"].values(),
+                      *(item["minutes_after_the_hour"][minute][kind] for minute, kind in minutes)]
                      for cell, tables in cells.items() for label, models in tables["fills"].items()
                      for model, item in models.items()])
     lines += ["Fills of the orders that are not scored, by class (a class with none is left out here, not in "
@@ -669,18 +886,24 @@ def markdown(plan, value):
                     [[cell, label, klass, *counts.values()] for cell, tables in cells.items()
                      for label, classes in tables["fills_not_scored"].items() for klass, counts in classes.items()
                      if any(counts.values())])
-    lines += ["## B5 Spread of gross g at the BSP as written, both labels pooled (points of stake)", "",
-              "SD and nearest-rank ranges q(1 - a) - q(a) over each model's filled part; where fewer than "
-              f"{plan.min_values} scored orders are unfilled, every scored order stands in ({FILLED_IS_ALL_PLACED}).",
-              ""]
+    if early:
+        lines += ["## B5 Spread of gross g at the BSP as written, on the labels read (points of stake)", "",
+                  "SD and nearest-rank ranges q(1 - a) - q(a) over each model's filled part; where fewer than "
+                  f"{plan.min_values} scored orders are unfilled, neither is given ({FILLED_IS_ALL_PLACED}).", ""]
+    else:
+        lines += ["## B5 Spread of gross g at the BSP as written, both labels pooled (points of stake)", "",
+                  "SD and nearest-rank ranges q(1 - a) - q(a) over each model's filled part; where fewer than "
+                  f"{plan.min_values} scored orders are unfilled, every scored order stands in "
+                  f"({FILLED_IS_ALL_PLACED}).", ""]
     filled = [(cell, model, item) for cell, tables in cells.items()
               for model, item in tables["spread_of_g"]["filled"].items()]
     ranges = next((list(item["ranges"]) for _, _, item in filled if item["ranges"]), [])
     rows = []
     for cell, tables in cells.items():
-        everything = tables["spread_of_g"]["all_scored"]
-        rows.append([cell, "all scored orders", everything["values"], everything["race_dates"],
-                     _points(everything["sd"]), *[None] * len(ranges), None])
+        if not early:                               # a new id gives no SD over all scored orders
+            everything = tables["spread_of_g"]["all_scored"]
+            rows.append([cell, "all scored orders", everything["values"], everything["race_dates"],
+                         _points(everything["sd"]), *[None] * len(ranges), None])
         rows += [[cell, f"{model} filled", item["values"], item["race_dates"], _points(item["sd"]),
                   *(_points((item["ranges"] or {}).get(name)) for name in ranges), item[FILLED_IS_ALL_PLACED]]
                  for model, item in tables["spread_of_g"]["filled"].items()]
@@ -698,26 +921,34 @@ def markdown(plan, value):
     lines += _table(["cell", "model", "fills", *keys],
                     [[cell, model, item["fills"], *((item["seconds_quantiles"] or {}).get(q) for q in keys)]
                      for cell, model, item in seconds])
-    lines += [f"## B6 Detectable effect on the test label (points of stake; {INDEPENDENCE})", ""]
-    lines += _table(["cell", "model", "values", "race dates", FILLED_IS_ALL_PLACED, "detectable effect"],
-                    [[cell, model, item["detectable"]["values"], item["detectable"]["race_dates"],
-                      item["detectable"][FILLED_IS_ALL_PLACED], _points(item["detectable"]["effect"])]
-                     for cell, model, item in filled])
+    if not early:                                   # a new id has no B6: the detectable effect describes a test
+        lines += [f"## B6 Detectable effect on the test label (points of stake; {INDEPENDENCE})", ""]
+        lines += _table(["cell", "model", "values", "race dates", FILLED_IS_ALL_PLACED, "detectable effect"],
+                        [[cell, model, item["detectable"]["values"], item["detectable"]["race_dates"],
+                          item["detectable"][FILLED_IS_ALL_PLACED], _points(item["detectable"]["effect"])]
+                         for cell, model, item in filled])
     precision = value["bsp_precision"]
     lines += ["## B7 Diagnostics (counts)", "",
               f"- scored orders' BSPs that are whole hundredths: {precision['scored_bsps_whole_hundredths']}; that "
               f"are not: {precision['scored_bsps_not_whole_hundredths']}; the two BSP ends decide apart: "
               f"{'yes' if precision['bsp_ends_decide_apart'] else 'no'}", ""]
     flags = sorted({name for tables in cells.values() for name in tables["flags_missing_at_t"]})
-    lines += _table(["cell", *TRD_COUNTS, "scored orders with a batch begun with no status", "null values",
-                     *(f"no null: {reason}" for reason in NULL_UNDEFINED),
+    placed = ["orders placed in the after-the-hour seconds"] if early else []
+    lines += _table(["cell", *plan.trd_counts, *placed, "scored orders with a batch begun with no status",
+                     "null values", *(f"no null: {reason}" for reason in NULL_UNDEFINED),
                      *(f"no value at t: {name}" for name in flags)],
-                    [[cell, *tables["trd_changes"].values(), tables["scored_orders_with_a_batch_begun_with_no_status"],
+                    [[cell, *tables["trd_changes"].values(),
+                      *(tables["orders_placed_in_the_hour_seconds"] for _ in placed),
+                      tables["scored_orders_with_a_batch_begun_with_no_status"],
                       tables["null_values"]["defined"], *tables["null_values"]["undefined"].values(),
                       *(tables["flags_missing_at_t"].get(name) for name in flags)]
                      for cell, tables in cells.items()])
+    if early:
+        lines += _early_lines(plan, cells)
     if registered:
         lines += _registered_lines(value)
+    elif value["pass"] == EXPLORE:
+        lines += _explore_lines(value)
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -763,9 +994,11 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
     try:
         if study not in STUDIES:
             _refuse("study:not_supported")
-        if pass_name not in PASSES:
+        if pass_name not in STUDY_PASSES[study]:      # close-v1 runs no explore pass, a new id no registered pass
             _refuse("pass:not_supported")
         plan, split_raw, alpha = _plan(study, registration_path, registration_sha256_hex)
+        if plan.study != study:                     # close-v1's file under a new id's name, or the reverse
+            _refuse("study:not_the_registrations")
         if not (isinstance(code_commit, str) and COMMIT_RE.fullmatch(code_commit)):
             _refuse("code_commit:malformed")
         guarded = _guarded(archive_root, "archive_root")
@@ -775,7 +1008,7 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
         target = _out_path(out, root)
         if pass_name == BLIND and blind_receipt is not None:
             _refuse("blind_receipt:not_for_the_blind_pass")
-        blind = _blind_receipt(blind_receipt, plan) if pass_name == REGISTERED else None
+        blind = None if pass_name == BLIND else _blind_receipt(blind_receipt, plan)
         try:
             _, sources_sha256 = source_descriptor()
         except CertificateProblem as error:
@@ -792,14 +1025,20 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
                 _refuse(f"input:{archive['archive_sha256']}:limits_not_the_runs")
         if blind is not None and blind[0].get("input_sha256") != input_sha256:
             _refuse("blind_receipt:another_input")
-        request = PassRequest(
-            study=plan.study, lineage=plan.lineage, kind=LOOK, partitions=plan.labels,
+        request = PassRequest(                      # the labels the plan reads: both for close-v1
+            study=plan.study, lineage=plan.lineage, kind=LOOK, partitions=plan.labels_read,
             partitions_sha256=plan.split.sha256, registration_sha256=plan.sha256, input_sha256=input_sha256,
             source_descriptor_sha256=sources_sha256, code_commit=code_commit)
         if pass_name == REGISTERED:
             request = replace(request, kind=REGISTERED_KIND, m=plan.family_m, alpha=alpha)
+        elif pass_name == EXPLORE:                  # m 0 and alpha "0": nothing is tested
+            request = replace(request, kind=EXPLORE_KIND)
         try:
             handle, stored = _ledger(ledger, ledger_head, root, target, request, split_raw, blind and blind[2])
+            # One explore pass per study: a repeat runs again; any other explore entry of this study refuses.
+            if pass_name == EXPLORE and stored is None and any(
+                    entry["kind"] == EXPLORE_KIND and entry["study"] == plan.study for entry in handle.entries()):
+                _refuse("explore:already_run")
         except LedgerError as error:
             raise StudyRefused(str(error)) from None
     except StudyRefused as error:
@@ -851,17 +1090,19 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="python3 -m betangel_research.betfair.backtest.resting_study",
-                                     description="Registered measurement close-v1 on local historical files; an "
-                                                 "order here is simulated and nothing can reach an exchange.")
-    parser.add_argument("--study", required=True, help="the study to run: close-v1")
-    parser.add_argument("--pass", dest="pass_name", required=True, choices=PASSES, help="blind first, then registered")
+                                     description="Registered measurements close-v1 and close-early-v1 on local "
+                                                 "historical files; an order here is simulated and nothing can reach "
+                                                 "an exchange.")
+    parser.add_argument("--study", required=True, help=f"the study to run: one of {', '.join(STUDIES)}")
+    parser.add_argument("--pass", dest="pass_name", required=True, choices=PASS_NAMES,
+                        help="blind first, then registered (close-v1) or explore (a new id)")
     parser.add_argument("--registration-sha256", required=True, help="sha256 of the registration file's raw bytes")
     parser.add_argument("--archive-root", required=True, help="data root with manifests/, raw/ and index/")
     parser.add_argument("--out", required=True, help="a new directory outside every Git worktree and data tree")
     parser.add_argument("--code-commit", required=True, help="the 40-character commit the code was checked out at")
     parser.add_argument("--ledger", required=True, help="the study ledger's directory; it must exist")
     parser.add_argument("--ledger-head", required=True, help="the ledger's last head: none, or SEQ:SHA256")
-    parser.add_argument("--blind-receipt", help="registered pass: the blind pass's receipt.json")
+    parser.add_argument("--blind-receipt", help="registered or explore pass: the blind pass's receipt.json")
     parser.add_argument("--registration", help="registration file (default: research/studies/<study>.json); the "
                                                "split file and rules/ are read beside its studies/ folder")
     return parser

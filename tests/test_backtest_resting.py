@@ -57,6 +57,7 @@ from betangel_research.betfair.backtest.resting import (AS_WRITTEN, BLOCKED, BSP
                                                         rounded, score, scored, select_primaries, series, spread,
                                                         verdicts, view_of, walk, whole_hundredths, withheld,
                                                         without_first_fills)
+from betangel_research.betfair.backtest.resting import STATISTICS
 from betangel_research.betfair.backtest.resting_study import (Tally, decide_record, main, record_facts,
                                                               run_study, summary)
 from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide, parse_rule
@@ -4457,6 +4458,874 @@ class NewRowFields(RestingCase):
                                    for step in (59_999, 60_000, 119_999, 120_000, 179_999, 180_000)), named)
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# close-early-v1 (its pull request 3): the runner under a new id. As above, no registration of a new id exists yet:
+# each one here is close-v1's files with edits (early_files), with both of close-v1's rule files and close-v1's
+# times. The data root is shared()'s, whose race dates hold both partition labels.
+
+def write_early_registration(folder, study=EARLY, **changes):
+    """(path, sha256) of a new id's registration, early_files(**changes), written as write_registration writes
+    close-v1's: studies/<study>.json, the split file beside studies/, the rule files in rules/."""
+    raw, split_raw, rules = early_files(study=study, **changes)
+    for name in ("studies", "rules"):
+        (folder / name).mkdir(parents=True, exist_ok=True)
+    (folder / "studies" / f"{study}.json").write_bytes(raw)
+    (folder / "partitions-v1.json").write_bytes(split_raw)
+    for name, data in rules.items():
+        (folder / "rules" / name).write_bytes(data)
+    return folder / "studies" / f"{study}.json", sha(raw)
+
+
+def opening(labels):
+    """A patch of the runner's _walk, the one place a file is opened: it appends the partition label of every record
+    it is given to labels, then walks it."""
+    real = resting_study._walk
+
+    def recorded(root, manifest, record, plan, limits):
+        labels.append(race_label(plan, record)[1])
+        return real(root, manifest, record, plan, limits)
+
+    return mock.patch.object(resting_study, "_walk", recorded)
+
+
+_EARLY_RUN = {}
+
+
+def early_run():
+    """One blind and one explore pass of a new id through main() over shared()'s data root, run once for this module:
+    EACH_PLAN's rule files with lowered gates, a ledger of their own, and _walk wrapped (opening). A namespace of the
+    folder, the data root and its market ids, the registration and its sha256, the ledger directory, each pass's
+    (exit code, stdout), and the labels of the records each pass opened."""
+    if not _EARLY_RUN:
+        given = shared()
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        registration, digest = write_early_registration(base / "research", rules=band(), registration=lowered)
+        ledger = base / "ledger"
+        ledger.mkdir(mode=0o700)
+        common = ["--study", EARLY, "--registration-sha256", digest, "--registration", str(registration),
+                  "--archive-root", str(given.root), "--code-commit", COMMIT, "--ledger", str(ledger)]
+        opened = {"blind": [], "explore": []}
+        with opening(opened["blind"]):
+            blind = cli(*common, "--pass", "blind", "--out", str(base / "blind"), "--ledger-head", "none")
+        head = json.loads(blind[1]).get("ledger_head", "none")
+        with opening(opened["explore"]):
+            explore = cli(*common, "--pass", "explore", "--out", str(base / "explore"), "--ledger-head", head,
+                          "--blind-receipt", str(base / "blind" / "receipt.json"))
+        _EARLY_RUN["value"] = SimpleNamespace(base=base, root=given.root, ids=given.ids, registration=registration,
+                                              sha=digest, ledger=ledger, blind=blind, explore=explore, opened=opened)
+    return _EARLY_RUN["value"]
+
+
+def index_records(root):
+    """{market id: index record} of a data root that holds one archive."""
+    found = sorted((root / "index").glob(f"*/{fx.market_index.MARKETS_FILE}"))
+    if len(found) != 1:
+        raise AssertionError("not one indexed archive")
+    return {record["market_id"]: record for record in map(json.loads, found[0].read_bytes().splitlines())}
+
+
+def changed_outcomes(messages):
+    """A market's messages with, in every definition, each runner's name changed, its BSP raised by 1 and the result
+    moved from the favourite to R2: what its index record holds of outcomes and runners."""
+    changed = json.loads(json.dumps(messages))
+    for message in changed:
+        for item in message.get("mc", ()):
+            for one in item.get("marketDefinition", {}).get("runners", ()):
+                one["name"] = f"Changed {one['id']}"
+                if "bsp" in one:
+                    one["bsp"] = round(one["bsp"] + 1, 2)
+                if one["status"] in ("WINNER", "LOSER") and one["id"] in (FAV, R2):
+                    one["status"] = "LOSER" if one["id"] == FAV else "WINNER"
+    return changed
+
+
+def leaves(value, trail=()):
+    """(the keys leading to it, the value) of every value of a JSON value that is not a non-empty object."""
+    if isinstance(value, dict) and value:
+        for key, item in value.items():
+            yield from leaves(item, trail + (key,))
+    else:
+        yield trail, value
+
+
+def at(value, trail):
+    """The value at a path of keys."""
+    for key in trail:
+        value = value[key]
+    return value
+
+
+def early_tally(plan, rows):
+    """A Tally of a new id's plan holding hand-built rows {Cell: [OrderRow]} under their own labels, each with the
+    plan's trade counts."""
+    tally = Tally(plan)
+    for cell, found in rows.items():
+        for row in found:
+            tally.rows[cell][row.label].append(row._replace(trd=dict.fromkeys(plan.trd_counts, 0)))
+    return tally
+
+
+def cell_key(cell):
+    return f"{cell.rule_id}@{cell.at_s}"
+
+
+# Keys that a test, a selection, a label or a null would hold: none may be in an explore summary.
+UNTESTED = TESTED | {"selection", "primaries", "eligible", "kill", "test", "null", "verdict", "sensitivity", "withheld"}
+
+
+class EarlyRun(RestingCase):
+    """The runner under a new id: its own two passes, the labels it reads, its blind look and its explore pass."""
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = self.tmp / "ledger"
+        self.ledger.mkdir(mode=0o700)
+        self.given = early_run()
+
+    def run_pass(self, name, out, head="none", **kwargs):
+        arguments = dict(registration_path=self.given.registration, clock=clock)
+        arguments.update(kwargs)
+        return run_study(arguments.pop("study", EARLY), name, arguments.pop("sha", self.given.sha),
+                         arguments.pop("root", self.given.root), out, arguments.pop("commit", COMMIT),
+                         arguments.pop("ledger", self.ledger), head, **arguments)
+
+    def assertRefused(self, result, problem, out=None):
+        self.assertEqual(result, {"status": "refused", "problems": [problem]})
+        self.assertFalse((self.ledger / LEDGER_FILE).exists())
+        if out is not None:
+            self.assertFalse(out.exists())
+
+    def day_root(self):
+        """A data root with the standard market alone, on an explore date."""
+        return build_root(self.tmp, [(path(M, DAY_OFF), lp_market(off=DAY_OFF))], name="day")
+
+    def test_each_study_runs_its_own_passes_only(self):
+        self.assertEqual(resting_study.PASSES, ("blind", "registered"))
+        self.assertEqual(resting_study.STUDY_PASSES, {STUDY: ("blind", "registered"),
+                                                      **dict.fromkeys(EARLY_IDS, ("blind", "explore"))})
+        out = self.tmp / "out"
+        # Refused before anything is read: no file is parsed and none of these paths exists.
+        nowhere = dict(registration_path=self.tmp / "none.json", root=self.tmp / "none", ledger=self.tmp / "none")
+        with mock.patch.object(resting_study, "_plan", side_effect=AssertionError("a file was read")):
+            for study, name in ((STUDY, "explore"), *((study, "registered") for study in EARLY_IDS),
+                                (EARLY, "look"), (EARLY, None)):
+                with self.subTest(study=study, name=name):
+                    self.assertRefused(self.run_pass(name, out, study=study, **nowhere), "pass:not_supported", out)
+            # main() takes the pass name explore; the study refuses a pass that is not its own.
+            for study, name in ((STUDY, "explore"), (EARLY, "registered")):
+                code, printed = cli("--study", study, "--pass", name, "--registration-sha256", "0" * 64,
+                                    "--archive-root", str(self.tmp / "none"), "--out", str(out), "--code-commit",
+                                    COMMIT, "--ledger", str(self.tmp / "none"), "--ledger-head", "none")
+                self.assertEqual((code, json.loads(printed)),
+                                 (2, {"status": "refused", "problems": ["pass:not_supported"]}))
+        # The registered pass of a new id is refused with its own registration and its blind receipt in hand.
+        self.assertRefused(self.run_pass("registered", out, blind_receipt=self.given.base / "blind" / "receipt.json"),
+                           "pass:not_supported", out)
+        # The blind pass of a new id takes no receipt, as close-v1's.
+        self.assertRefused(self.run_pass("blind", out, blind_receipt=self.given.base / "blind" / "receipt.json"),
+                           "blind_receipt:not_for_the_blind_pass", out)
+
+    def test_the_study_must_be_the_registrations_id(self):
+        out, close, receipt = self.tmp / "out", shared(), self.given.base / "blind" / "receipt.json"
+        fav, fav_sha = write_early_registration(self.tmp / "fav", study="close-early-fav-v1", rules=band(),
+                                                registration=lowered)
+        crossed = [(EARLY, close.registration, close.sha, ("blind", "explore")),          # close-v1's file
+                   (STUDY, self.given.registration, self.given.sha, ("blind", "registered")),     # a new id's file
+                   (EARLY, fav, fav_sha, ("blind", "explore")),                         # another new id's file
+                   ("close-early-band-v1", self.given.registration, self.given.sha, ("blind", "explore"))]
+        with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+            for study, registration, digest, names in crossed:
+                for name in names:
+                    with self.subTest(study=study, registration=registration.name, name=name):
+                        result = self.run_pass(name, out, study=study, registration_path=registration, sha=digest,
+                                               blind_receipt=None if name == "blind" else receipt)
+                        self.assertRefused(result, "study:not_the_registrations", out)
+        # Each file under its own id runs.
+        done = self.run_pass("blind", out, study="close-early-fav-v1", registration_path=fav, sha=fav_sha,
+                             root=self.day_root())
+        self.assertEqual((done["status"], done["study"], done["issued"]["close-v1-lay@-300"]), ("completed",
+                                                                                              "close-early-fav-v1", 1))
+
+    def test_blind_then_explore(self):
+        given = self.given
+        self.assertEqual((given.blind[0], given.explore[0]), (0, 0), (given.blind[1], given.explore[1]))
+        blind, explore = json.loads(given.blind[1]), json.loads(given.explore[1])
+        files_ = {name: outputs_of(given.base / name) for name in ("blind", "explore")}
+        cells = [cell_key(cell) for cell in EACH_PLAN.cells]
+        for result, name in ((blind, "blind"), (explore, "explore")):
+            self.assertEqual((result["status"], result["study"], result["pass"], result["records"],
+                              result["replayed_markets"]), ("completed", EARLY, name, 29, 12))
+            self.assertEqual(result["issued"], dict.fromkeys(cells, 12))
+            # A favourite cell holds one order a market; an each_active cell one on each runner that passes, three.
+            self.assertEqual(result["scored"], {cell: 36 if cell.startswith(LAY_RULE) else 12 for cell in cells})
+            self.assertEqual(result["ledger_counts"], {"looks": 1, "registered": 0})   # an explore entry is neither
+            self.assertFalse(result["ledger_repeat"])
+
+        # The ledger: a look and an explore entry, each naming the explore label alone, with m 0 and alpha "0".
+        look, entry = verify(given.ledger / LEDGER_FILE)
+        for item, result, name in ((look, blind, "blind"), (entry, explore, "explore")):
+            self.assertEqual(result["ledger_head"], f"{item['seq']}:{item['entry_sha256']}")
+            self.assertEqual(result["summary_sha256"], sha(files_[name]["summary.json"]))
+            self.assertEqual((item["study"], item["lineage"], item["partitions"], item["partitions_sha256"],
+                              item["registration_sha256"], item["input_sha256"], item["code_commit"],
+                              item["tables_sha256"], item["result"], item["m"], item["alpha"]),
+                             (EARLY, "close", [D], PLAN.split.sha256, given.sha, result["input_sha256"], COMMIT,
+                              result["summary_sha256"], "completed", 0, "0"))
+        self.assertEqual([item["kind"] for item in (look, entry)], ["look", "explore"])
+
+        # The receipts: the explore pass names the blind receipt's hash, each pass its own entry.
+        receipts = {name: json.loads(files_[name]["receipt.json"]) for name in files_}
+        self.assertIsNone(receipts["blind"]["blind_receipt_sha256"])
+        self.assertEqual(receipts["explore"]["blind_receipt_sha256"], sha(files_["blind"]["receipt.json"]))
+        self.assertEqual([(receipts[name]["study"], receipts[name]["pass"], receipts[name]["ledger_entry"],
+                           receipts[name]["ledger_head"]) for name in files_],
+                         [(EARLY, "blind", blind["ledger_head"], blind["ledger_head"]),
+                          (EARLY, "explore", explore["ledger_head"], explore["ledger_head"])])
+        # The members read or drained are the explore-date markets' (the first twelve of the study archive), whole.
+        opened = sum(member.stat().st_size for member in raw_members(given.root) if member.name[:-4] in given.ids[:12])
+        for receipt in receipts.values():
+            self.assertGreater(receipt["bytes_walked"], 0)
+            self.assertEqual(receipt["bytes_walked"] + receipt["bytes_drained"], opened)
+
+        # The blind tables: records of every label; orders, and every table by label, of the explore label alone.
+        value = json.loads(files_["blind"]["summary.json"])
+        self.assertEqual(sorted(value["cells"]), sorted(cells))
+        self.assertEqual(value["partitions"], {"explore_label": D, "test_label": V, "read": [D]})
+        self.assertEqual(value["coverage"]["by_month"]["2015-06"],
+                         {"records": {D: 6, V: 8, "no_registered_label": 0}, "orders": {D: 72}})
+        self.assertEqual({month: list(row["orders"]) for month, row in value["coverage"]["by_month"].items()},
+                         {month: [D] for month in value["coverage"]["by_month"]})
+        for cell, tables in value["cells"].items():
+            self.assertEqual({code: count for code, count in tables["codes"].items() if count},
+                             {"plan_not_registered": 1, "no_view": 1, "partition_not_registered": 15, "issued": 12})
+            self.assertEqual([set(tables[key]) for key in ("classes", "fills", "fills_not_scored")], [{D}] * 3)
+            self.assertEqual(set(tables["trd_changes"]), set(EARLY_TRD_COUNTS))
+            self.assertEqual((tables["trd_changes"][LEFT_OUT], tables["orders_placed_in_the_hour_seconds"]), (0, 0))
+            self.assertEqual(sum(item["placed"] for item in tables["by_gap_at_t"].values()),
+                             sum(tables["classes"][D].values()))
+        each = value["cells"]["close-v1-lay@-300"]                                  # an each_active cell
+        self.assertEqual((each["classes"][D][SCORED], sum(each["classes"][D].values())), (36, 36))
+        self.assertEqual({code: count for code, count in each["runners_by_code"].items() if count},
+                         {"issued": 36, "spread_not_1_or_2_ticks": 24, "best_back_out_of_range": 12})
+        self.assertNotIn("runners_by_code", value["cells"]["close-v1-back@-300"])
+        nothing = {"placed": 0, "scored": 0, "pessimistic_fills": 0}
+        self.assertEqual(each["by_gap_at_t"], {"1-2": {"placed": 36, "scored": 36, "pessimistic_fills": 4},
+                                               "3-5": nothing, "6-10": nothing, "11-20": nothing,
+                                               "not_in_a_range": nothing})
+        central = each["fills"][D][CENTRAL]
+        self.assertEqual((central["scored"], central["fills"], central["by_kind"]),
+                         (36, 8, {THROUGH: 4, CROSS: 0, VOLUME: 4}))
+        self.assertEqual(central["minutes_after_the_hour"], {"2": dict.fromkeys(FILL_KINDS, 0),
+                                                             "3": dict.fromkeys(FILL_KINDS, 0)})
+
+        # The explore tables, on the explore label alone, each headed exploratory with c and sqrt(2 ln c).
+        value = json.loads(files_["explore"]["summary.json"])
+        self.assertEqual([(value[key]["heading"], value[key]["cells"], value[key]["sqrt_2_ln_c"])
+                          for key in ("figures", "half_years", "bsp_book")],
+                         [("exploratory", 6, round(math.sqrt(2 * math.log(6)), 6)),
+                          ("exploratory", 12, round(math.sqrt(2 * math.log(12)), 6)),
+                          ("exploratory", 6, round(math.sqrt(2 * math.log(6)), 6))])
+        figures_ = value["figures"]
+        self.assertEqual({cell: list(by_label) for cell, by_label in figures_["by_cell"].items()},
+                         {cell: [D] for cell in cells})
+        self.assertEqual({cell: item[D]["figures_given"] for cell, item in figures_["size_gate"].items()},
+                         dict.fromkeys(cells, True))
+        # E1 by hand: every placed order of an each_active cell (the favourite and the two other runners that pass)
+        # scored at its own price against BSP as written, and the back of the queue's fills, the favourite's in the
+        # markets with a trade through its price.
+        group = figures_["by_cell"]["close-v1-lay@-300"][D][AS_WRITTEN]
+        placed = [1 - 2.5 / bsp for bsp in [2.6, 2.65, 2.6, 2.7, 2.75, 2.7] * 2] + [1 - 4.0 / 4.2] * 12 + \
+            [1 - 10.0 / 11.0] * 12
+        self.assertEqual((group["placed"]["bets"], group["placed"]["race_dates"]), (36, 4))
+        self.assertAlmostEqual(group["placed"]["mean"], sum(placed) / 36, places=6)
+        behind = group["models"][PESSIMISTIC]
+        self.assertEqual((behind["fills"], behind["fill_race_dates"], behind[FILLED_IS_ALL_PLACED]), (4, 4, False))
+        self.assertAlmostEqual(behind["filled"][G]["mean"], sum(1 - 2.5 / bsp for bsp in (2.6, 2.7, 2.6, 2.7)) / 4,
+                               places=6)
+        self.assertGreater(figures_["by_cell"]["close-v1-lay@-300"][D][PLUS_STEP]["placed"]["mean"],
+                           group["placed"]["mean"])
+        # E2: both half-years of the explore label; E3 its markets with a scored order.
+        halves = value["half_years"]["by_cell"]["close-v1-lay@-300"]
+        self.assertEqual((list(halves), sorted(halves[D])), ([D], ["H1", "H2"]))
+        self.assertEqual([halves[D][half][AS_WRITTEN]["placed"]["bets"] for half in ("H1", "H2")], [18, 18])
+        self.assertEqual((list(value["bsp_book"]["by_label"]), value["bsp_book"]["by_label"][D]["markets"]), ([D], 12))
+        self.assertEqual(set(walk_keys(value)) & UNTESTED, set())
+
+        # The Markdown: the blind look's tables line for line, then E1 to E3.
+        text, blind_text = files_["explore"]["summary.md"].decode(), files_["blind"]["summary.md"].decode()
+        self.assertIn(blind_text.split("## B1", 1)[1], text)
+        for phrase in ("## E1", "## E2", "## E3", "c = 6; sqrt(2 ln c) = 1.893018", "c = 12; sqrt(2 ln c) =",
+                       f"### close-v1-lay@-300, {D}: exploratory\n", f"### close-v1-lay@-300, {D}: exploratory, H2\n",
+                       "figures given: yes", "- labels read: PRO-D"):
+            self.assertIn(phrase, text)
+        for phrase in ("T5", "T7", "T8", "T9", "T10", "Withheld in this pass", "p one-sided", "Holm", "kill",
+                       "lower bound", "primar", "not tested", f"{V}: exploratory"):
+            self.assertNotIn(phrase, text)
+
+    def test_no_test_label_file_is_opened_by_either_pass(self):
+        # The one place a file is opened saw explore-date records alone, in both passes.
+        self.assertEqual(self.given.opened, {"blind": [D] * 12, "explore": [D] * 12})
+        # _walk itself refuses a record whose label the plan does not read, before it looks for the member: there is
+        # no root and no manifest here to open it from.
+        root, manifest, records = self.build([(path(M), lp_market())])            # 1 June 2015: the test label
+        self.assertEqual(race_label(PLAN, records[M])[1], V)
+        for plan in (EARLY_PLAN, EACH_PLAN):
+            with self.subTest(select=plan.rules[1].select):
+                with self.assertRaises(ReplayProblem) as caught:
+                    resting_study._walk(None, None, records[M], plan, DEFAULT_LIMITS)
+                self.assertEqual(str(caught.exception), f"replay:{M}:label_not_read")
+        walked, consumed, _ = resting_study._walk(root, manifest, records[M], PLAN, DEFAULT_LIMITS)  # close-v1 reads
+        self.assertTrue(walked.replayed and consumed > 0)
+        # A race date with no label is a label no plan reads.
+        _, _, edge = self.build([(path(M, EDGE), lp_market(off=EDGE))])
+        for plan in (PLAN, EARLY_PLAN):
+            with self.assertRaises(ReplayProblem) as caught:
+                resting_study._walk(None, None, edge[M], plan, DEFAULT_LIMITS)
+            self.assertEqual(str(caught.exception), f"replay:{M}:label_not_read")
+        # A wiring mistake that let every cell of a test-label record through: the pass fails at the file open and
+        # appends and writes nothing.
+        real = resting_study.record_facts
+
+        def through(plan, record):
+            month, dated, codes = real(plan, record)
+            return month, dated, dict.fromkeys(codes)
+
+        with mock.patch.object(resting_study, "record_facts", through):
+            result = self.run_pass("blind", self.tmp / "out", root=one_market_root(self.tmp))
+        self.assertEqual(result, {"status": "failed", "failure": "replay:label_not_read"})
+        self.assertEqual((list(self.ledger.iterdir()), (self.tmp / "out").exists()), ([], False))
+
+    def test_changing_every_test_label_record_moves_no_byte_of_either_pass(self):
+        """Every test-label record of the study archive gets other BSPs, another winner and other runner names. Both
+        passes of the new id give the same summary.json and summary.md, but for the input's hash; close-v1's blind
+        pass, which reads that label, does not."""
+        given, close = self.given, shared()
+        members, ids = study_members()
+        before = index_records(given.root)
+        tested = {market_id for market_id, record in before.items()
+                  if (race_label(PLAN, record) or (None, None))[1] == V}
+        self.assertEqual(len(tested), 15)              # twelve dated markets, four runners, a removal, a BASIC file
+        root = build_root(self.tmp, [(name, changed_outcomes(messages) if market_id in tested else messages)
+                                     for (name, messages), market_id in zip(members, ids)], name="changed")
+        after = index_records(root)
+        self.assertEqual(set(after), set(before))
+        for market_id, record in after.items():
+            for key in ("evaluator_only_outcome", "decision_time"):
+                with self.subTest(market=market_id, key=key):
+                    self.assertEqual(record[key] != before[market_id][key], market_id in tested)
+        ledger = self.tmp / "changed-ledger"
+        ledger.mkdir(mode=0o700)
+        blind = self.run_pass("blind", self.tmp / "blind", root=root, ledger=ledger)
+        explore = self.run_pass("explore", self.tmp / "explore", blind["ledger_head"], root=root, ledger=ledger,
+                                blind_receipt=self.tmp / "blind" / "receipt.json")
+        first = json.loads(given.blind[1])["input_sha256"]
+        for name, result in (("blind", blind), ("explore", explore)):
+            self.assertEqual(result["status"], "completed", result)
+            self.assertNotEqual(result["input_sha256"], first)
+            for item in ("summary.json", "summary.md"):
+                with self.subTest(name=name, item=item):
+                    self.assertEqual(outputs_of(self.tmp / name)[item].replace(result["input_sha256"].encode(),
+                                                                               first.encode()),
+                                     outputs_of(given.base / name)[item])
+            # The receipts' counts and bytes walked and drained are the same too.
+            receipts = [json.loads(outputs_of(folder)["receipt.json"])
+                        for folder in (self.tmp / name, given.base / name)]
+            kept = ("counts", "bytes_walked", "bytes_drained")
+            self.assertEqual([receipts[0][key] for key in kept], [receipts[1][key] for key in kept])
+        # close-v1 reads the test label: the same change moves its blind tables.
+        ledger = self.tmp / "close-ledger"
+        ledger.mkdir(mode=0o700)
+        old = self.run_pass("blind", self.tmp / "close", study=STUDY, registration_path=close.registration,
+                            sha=close.sha, root=root, ledger=ledger)
+        self.assertEqual(old["status"], "completed", old)
+        self.assertNotEqual(outputs_of(self.tmp / "close")["summary.json"].replace(old["input_sha256"].encode(),
+                                                                                    first.encode()),
+                            outputs_of(close.base / "blind")["summary.json"])
+
+    def test_every_value_of_the_blind_summary_is_in_the_explore_summary(self):
+        blind, explore = (json.loads(outputs_of(self.given.base / name)["summary.json"]) for name in ("blind",
+                                                                                                    "explore"))
+        self.assertEqual((blind["pass"], explore["pass"]), ("blind", "explore"))
+        self.assertEqual(set(blind) - set(explore), {"withheld"})
+        self.assertEqual(set(explore) - set(blind), {"figures", "half_years", "bsp_book"})
+        found = [(trail, item) for trail, item in leaves(blind) if trail[0] not in ("pass", "withheld")]
+        self.assertGreater(len(found), 1000)
+        self.assertEqual([trail for trail, item in found if at(explore, trail) != item], [])
+
+    def test_the_blind_look_of_a_new_id_holds_no_location_of_an_outcome(self):
+        files_ = outputs_of(self.given.base / "blind")
+        value = json.loads(files_["summary.json"])
+        keys = set(walk_keys(value))
+        self.assertEqual(set(value), {"kind", "schema_version", "study", "pass", "registration_sha256",
+                                      "partitions_sha256", "input_sha256", "partitions", "records",
+                                      "replayed_markets", "coverage", "cells", "bsp_precision", "withheld"})
+        self.assertEqual(value["withheld"], resting_study.WITHHELD_EARLY)
+        self.assertEqual(keys & REGISTERED_ONLY, set())
+        self.assertEqual([key for key in keys if "mean" in key.lower() or "median" in key.lower()], [])
+        self.assertEqual({key for key in keys if "quantile" in key}, {"queue_quantiles", "seconds_quantiles"})
+        self.assertEqual({key for key in keys if "net" in key}, set())
+        # No SD over all scored orders and no detectable effect, under any key.
+        self.assertEqual(keys & {"all_scored", "detectable", "effect", "bsp_book"}, set())
+        # Every float is a fill rate, an SD or a range of gross g over a model's fills, or a quantile of a queue size
+        # or of seconds.
+        allowed = {("fill_rate",), ("spread_of_g", "filled", "sd"), ("spread_of_g", "filled", "ranges"),
+                   ("queue_at_t", "queue_quantiles"), ("seconds_to_fill", "seconds_quantiles")}
+        names = set(MODELS) | set(PLAN.labels) | set(value["cells"]) | {"cells", "fills"}
+        places = {tuple(key for key in trail if key not in names and not key[0].isdigit())
+                  for trail, _ in walk_floats(value)}
+        self.assertEqual(places, allowed)
+        for tables in value["cells"].values():
+            self.assertEqual(set(tables["spread_of_g"]), {"bsp_end", "filled"})
+            for item in tables["spread_of_g"]["filled"].values():
+                self.assertEqual(set(item), {"values", "race_dates", "sd", "ranges", FILLED_IS_ALL_PLACED})
+        text = files_["summary.md"].decode()
+        for word in ("mean", "median", "p one-sided", "holm", "ci low", "net_held", "net_closed", "## t", "## e",
+                     "## b6", "primar", "exploratory", "not tested", "sqrt", *VERDICTS, BLOCKED):
+            self.assertNotIn(word, text.lower())
+        columns = markdown_columns(text)
+        self.assertNotIn("detectable effect", columns)
+        self.assertNotIn("all scored orders", columns["group"])
+        for heading in ("B1", "B2", "B3", "B4", "B5", "B7", "B8", "B9"):
+            self.assertIn(f"## {heading} ", text)
+        self.assertIn("Withheld in this pass", text)
+
+    def test_a_flagged_model_gives_no_sd_and_the_sd_over_all_scored_orders_never_stands_in(self):
+        """Hand-built rows under the registered gates: in the first cell fewer than 100 scored orders are unfilled
+        under every model (flagged), in the second 150 are."""
+        bsps = [2.4, 2.6, 2.8, 3.0]
+        rows = {LAY_CELLS[0]: block(300, D_DAYS, bsps, label=D) + block(50, D_DAYS, [2.2, 3.4], label=D, filled=NONE),
+                LAY_CELLS[1]: block(240, D_DAYS, bsps, label=D) + block(150, D_DAYS, [2.2, 3.4], label=D,
+                                                                         filled=NONE)}
+        value = summary(EARLY_PLAN, early_tally(EARLY_PLAN, rows), "blind", "0" * 64)
+        flagged, given = (value["cells"][cell_key(cell)]["spread_of_g"] for cell in LAY_CELLS[:2])
+        filled = [row for row in rows[LAY_CELLS[1]] if row.fills[PESSIMISTIC].kind is not None]
+        for model in MODELS:
+            self.assertEqual(flagged["filled"][model], {"values": 350, "race_dates": 16, "sd": None, "ranges": None,
+                                                        FILLED_IS_ALL_PLACED: True})
+            self.assertEqual((given["filled"][model]["values"], given["filled"][model][FILLED_IS_ALL_PLACED]),
+                             (240, False))
+            self.assertAlmostEqual(given["filled"][model]["sd"],
+                                   sample_sd([x for _, x in series(PLAN, filled, G, AS_WRITTEN)]), places=6)
+            self.assertIsNotNone(given["filled"][model]["ranges"])
+        # The SD over every scored order of either cell is nowhere in the summary. close-v1's tables of the same rows
+        # print it, beside the filled SDs and in place of the flagged ones.
+        everything = [round(sample_sd([x for _, x in series(PLAN, scored(found), G, AS_WRITTEN)]), 6)
+                      for found in rows.values()]
+        self.assertEqual([sd for sd in everything if sd in [item for _, item in walk_floats(value)]], [])
+        old = summary(PLAN, tally_of(rows), "blind", "0" * 64)
+        self.assertEqual([sd for sd in everything if sd in [item for _, item in walk_floats(old)]], everything)
+        text = resting_study.markdown(EARLY_PLAN, value)
+        self.assertNotIn("all scored orders", markdown_columns(text)["group"])
+        self.assertEqual(markdown_columns(text)["SD"].count("-"), 3 * (len(EARLY_PLAN.cells) - 1))
+
+    def test_a_change_of_sign_of_every_g_moves_nothing_a_new_ids_blind_look_gives(self):
+        """As for close-v1 (BlindReleases): every row's BSP is replaced by the one that turns its g into minus g. The
+        blind look of a new id stays as it is but for the count of whole-hundredth BSPs."""
+        def mirrored(row):
+            return row._replace(bsp=row.price / (2 - row.price / row.bsp))
+
+        rows = {}
+        for index, cell in enumerate(LAY_CELLS):        # 801 fills: no registered quantile falls on a whole rank
+            bsps = [2.3 + (step * (index + 1)) % 61 / 100 for step in range(61)]
+            rows[cell] = block(801, D_DAYS, bsps, label=D) + block(301, D_DAYS, bsps[::-1], label=D, filled=NONE)
+        first, second = (summary(EARLY_PLAN, early_tally(EARLY_PLAN, found), "blind", "0" * 64)
+                         for found in (rows, {cell: [mirrored(row) for row in found] for cell, found in rows.items()}))
+        spread_ = first["cells"][cell_key(LAY_CELLS[1])]["spread_of_g"]["filled"][CENTRAL]
+        self.assertEqual((spread_["values"], spread_[FILLED_IS_ALL_PLACED]), (801, False))
+        self.assertGreater(spread_["sd"], 0.01)
+        self.assertNotEqual(first["bsp_precision"], second["bsp_precision"])
+        self.assertEqual({**first, "bsp_precision": None}, {**second, "bsp_precision": None})
+        self.assertEqual(resting_study.markdown(EARLY_PLAN, {**first, "bsp_precision": second["bsp_precision"]}),
+                         resting_study.markdown(EARLY_PLAN, second))
+        g = [[value for _, value in series(PLAN, scored(found[LAY_CELLS[0]]), G, AS_WRITTEN)]
+             for found in (rows, {LAY_CELLS[0]: [mirrored(row) for row in rows[LAY_CELLS[0]]]})]
+        self.assertEqual(g[0], [-value for value in g[1]])
+
+    def test_the_counts_a_new_id_adds_to_the_blind_look(self):
+        """The hour market on an explore date under EACH_PLAN, with 2 of backer's stake at the favourite's 2.5 at
+        14:01:00 and 25 more at 14:02:30 (NewRowFields): in the each_active cells at 13:55 and 14:00:00 the front
+        model's order on the favourite fills in the second minute after the hour and the central model's in the third;
+        the orders placed at 14:00:00 are in the after-the-hour seconds; the rise at 14:00:20 is left out."""
+        trades = [(240, FAV, [[2.5, 4.0]]), (150, FAV, [[2.5, 54.0]])]
+        root, manifest, records = self.build([(path(M, TUESDAY), hour_market(off=TUESDAY, trades=trades))])
+        tally = Tally(EACH_PLAN)
+        decide_record(EACH_PLAN, records[M], record_facts(EACH_PLAN, records[M]), root, manifest, tally)
+        value = summary(EACH_PLAN, tally, "blind", "0" * 64)
+        each = value["cells"]["close-v1-lay@-300"]                                  # an each_active cell
+        zero = dict.fromkeys(FILL_KINDS, 0)
+        self.assertEqual({model: item["minutes_after_the_hour"] for model, item in each["fills"][D].items()},
+                         {OPTIMISTIC: {"2": {**zero, VOLUME: 1}, "3": zero},
+                          CENTRAL: {"2": zero, "3": {**zero, VOLUME: 1}}, PESSIMISTIC: {"2": zero, "3": zero}})
+        self.assertEqual({cell: tables["orders_placed_in_the_hour_seconds"] for cell, tables in value["cells"].items()},
+                         {"close-v1-back@-600": 0, "close-v1-back@-300": 1, "close-v1-back@-120": 0,
+                          "close-v1-lay@-600": 0, "close-v1-lay@-300": 3, "close-v1-lay@-120": 0})
+        self.assertEqual({cell: tables["trd_changes"][LEFT_OUT] for cell, tables in value["cells"].items()},
+                         {"close-v1-back@-600": 1, "close-v1-back@-300": 1, "close-v1-back@-120": 0,
+                          "close-v1-lay@-600": 1, "close-v1-lay@-300": 1, "close-v1-lay@-120": 0})
+        self.assertEqual({cell: {code: count for code, count in tables["runners_by_code"].items() if count}
+                          for cell, tables in value["cells"].items() if "runners_by_code" in tables},
+                         dict.fromkeys((cell_key(cell) for cell in LAY_CELLS),
+                                       {"issued": 3, "spread_not_1_or_2_ticks": 2, "best_back_out_of_range": 1}))
+        self.assertEqual(each["by_gap_at_t"]["1-2"], {"placed": 3, "scored": 3, "pessimistic_fills": 0})
+        text = resting_study.markdown(EACH_PLAN, value)
+        shown = markdown_columns(text)
+        # B4: the front and the central model's rows of the two each_active cells whose windows hold the trades.
+        self.assertEqual(shown[f"minute 2 after the hour: {VOLUME}"].count("1"), 2)
+        self.assertEqual(shown[f"minute 3 after the hour: {VOLUME}"].count("1"), 2)
+        self.assertEqual(shown["orders placed in the after-the-hour seconds"], ["0", "1", "0", "0", "3", "0"])
+        self.assertEqual(shown[LEFT_OUT], ["1", "1", "0", "1", "1", "0"])
+        self.assertIn("| issued | 3 | 3 | 3 |", text)                                         # B8: runners ordered on
+        # B9 by hand: two placed orders in each gap range and two outside them, one scored order of the two filled.
+        gaps = [1, 2, 3, 5, 6, 10, 11, 20, 21, None]
+        found = [order(2.6, filled=MODELS if index % 2 == 0 else NONE, label=D, day=D_DAYS[0])._replace(gap_ticks=ticks)
+                 for index, ticks in enumerate(gaps)]
+        found.append(order(2.6, label=D, day=D_DAYS[0])._replace(gap_ticks=2, klass="post_decision_removal", bsp=None))
+        value = summary(EARLY_PLAN, early_tally(EARLY_PLAN, {LAY_CELLS[0]: found}), "blind", "0" * 64)
+        two = {"placed": 2, "scored": 2, "pessimistic_fills": 1}
+        self.assertEqual(value["cells"][cell_key(LAY_CELLS[0])]["by_gap_at_t"],
+                         {"1-2": {"placed": 3, "scored": 2, "pessimistic_fills": 1}, "3-5": two, "6-10": two,
+                          "11-20": two, "not_in_a_range": two})
+
+    def test_the_explore_summary_tests_nothing_and_gives_counts_only_below_the_gate(self):
+        """Hand-built rows under the registered gates, over both half-years, in three cells: in the first the back of
+        the queue fills enough orders on enough race dates, in the second one order too few, in the third on one race
+        date too few."""
+        least, dates = EARLY_PLAN.min_tested_values, EARLY_PLAN.min_tested_race_dates
+        # Explore dates enough for an interval in each half-year, the second half of them in H2.
+        days = [(date(2015, 5, 2) + timedelta(days=index)).isoformat() for index in range(2 * EARLY_PLAN.min_clusters)]
+        self.assertLessEqual(least, 240)
+        self.assertLessEqual(dates, len(days))
+
+        def halves(found):
+            return [row._replace(half="H2") if row.race_date in days[len(days) // 2:] else row for row in found]
+
+        bsps = [2.4, 2.6, 2.8, 3.0]
+        rows = {cell: halves(block(fills_, chosen, bsps, label=D) + block(240, chosen, [2.5], label=D, filled=NONE))
+                for cell, fills_, chosen in ((LAY_CELLS[0], 240, days), (LAY_CELLS[1], least - 1, days),
+                                             (LAY_CELLS[2], 240, days[:dates - 1]))}
+        with mock.patch.object(resting_study, "select_primaries", side_effect=AssertionError("selected")), \
+                mock.patch.object(resting_study, "verdicts", side_effect=AssertionError("labelled")), \
+                mock.patch("betangel_research.betfair.backtest.resting.null_gate", side_effect=AssertionError("null")):
+            value = summary(EARLY_PLAN, early_tally(EARLY_PLAN, rows), "explore", "0" * 64)
+            text = resting_study.markdown(EARLY_PLAN, value)
+        gates = {cell: item[D] for cell, item in value["figures"]["size_gate"].items()}
+        self.assertEqual({cell: item["figures_given"] for cell, item in gates.items()},
+                         {**{cell_key(cell): False for cell in BACK_CELLS}, cell_key(LAY_CELLS[0]): True,
+                          cell_key(LAY_CELLS[1]): False, cell_key(LAY_CELLS[2]): False})
+        self.assertEqual([gates[cell_key(cell)] for cell in LAY_CELLS],
+                         [{"model": PESSIMISTIC, "fills": 240, "fill_race_dates": len(days), "figures_given": True},
+                          {"model": PESSIMISTIC, "fills": least - 1, "fill_race_dates": len(days),
+                           "figures_given": False},
+                          {"model": PESSIMISTIC, "fills": 240, "fill_race_dates": dates - 1, "figures_given": False}])
+        # Over the gate: figures at both BSP ends, and in both half-years.
+        group = value["figures"]["by_cell"][cell_key(LAY_CELLS[0])][D]
+        for end in BSP_ENDS:
+            self.assertIsNotNone(group[end]["models"][PESSIMISTIC]["filled"][NET_CLOSED]["ci_high"])
+        split = value["half_years"]["by_cell"][cell_key(LAY_CELLS[0])][D]
+        for half in ("H1", "H2"):
+            self.assertIsNotNone(split[half][AS_WRITTEN]["models"][PESSIMISTIC]["filled"][NET_CLOSED]["mean"])
+        # Under the gate: counts only in E1 and E2, though a group of 100 or more would otherwise give its figures.
+        for cell in LAY_CELLS[1:]:
+            for key in ("figures", "half_years"):
+                with self.subTest(cell=cell, key=key):
+                    found = [item for _, item in walk_items(value[key]["by_cell"][cell_key(cell)])
+                             if isinstance(item, dict) and ("mean" in item or "estimate" in item)]
+                    self.assertGreater(len(found), 20)
+                    for item in found:
+                        self.assertEqual({name: item[name] for name in STATISTICS if name in item},
+                                         {name: None for name in STATISTICS if name in item})
+                        self.assertEqual(item["reason"], COUNTS_ONLY)
+            self.assertEqual(value["figures"]["by_cell"][cell_key(cell)][D][AS_WRITTEN]["placed"]["bets"],
+                             len(rows[cell]))
+        # Nothing tested, bounded, selected or labelled; no label of a verdict anywhere.
+        self.assertEqual(set(walk_keys(value)) & UNTESTED, set())
+        self.assertEqual([item for _, item in walk_items(value)
+                          if isinstance(item, str) and item in VERDICTS + (BLOCKED,)], [])
+        for phrase in ("## E1", "## E2", "## E3", "figures given: yes", "figures given: no",
+                       "No cell of this study is of an each_active rule file."):
+            self.assertIn(phrase, text)
+        for phrase in ("T8", "T9", "p one-sided", "Holm", "kill", "lower bound", "primar", "Withheld in this pass"):
+            self.assertNotIn(phrase, text)
+
+    def test_the_explore_pass_needs_this_studys_blind_receipt(self):
+        root = self.day_root()
+        blind = self.run_pass("blind", self.tmp / "blind", root=root)
+        self.assertEqual((blind["status"], blind["replayed_markets"]), ("completed", 1), blind)
+        head, out, forged = blind["ledger_head"], self.tmp / "explore", self.tmp / "forged.json"
+        receipt = json.loads((self.tmp / "blind" / "receipt.json").read_bytes())
+        before = (self.ledger / LEDGER_FILE).read_bytes()
+
+        def explore(path_, ledger_head=head, out_=out):
+            return self.run_pass("explore", out_, ledger_head, root=root, blind_receipt=path_)
+
+        cases = [(None, "blind_receipt:missing"),
+                 (shared().base / "blind" / "receipt.json", "blind_receipt:not_a_completed_blind_receipt"),
+                 ({"study": "close-early-fav-v1"}, "blind_receipt:not_a_completed_blind_receipt"),
+                 ({"pass": "explore"}, "blind_receipt:not_a_completed_blind_receipt"),
+                 ({"status": "failed"}, "blind_receipt:not_a_completed_blind_receipt"),
+                 ({"registration_sha256": "1" * 64}, "blind_receipt:another_registration"),
+                 ({"partitions_sha256": "1" * 64}, "blind_receipt:another_split"),
+                 ({"code_commit": "f" * 40}, "blind_receipt:another_code"),
+                 ({"source_descriptor_sha256": "3" * 64}, "blind_receipt:another_code"),
+                 ({"input_sha256": "2" * 64}, "blind_receipt:another_input"),
+                 ({"ledger_entry": "0:" + "f" * 64}, "ledger:anchor_mismatch")]
+        with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+            for given, problem in cases:
+                with self.subTest(problem=problem, given=given):
+                    if isinstance(given, dict):
+                        forged.write_bytes(canonical_json({**receipt, **given}) + b"\n")
+                        given = forged
+                    self.assertEqual(explore(given), {"status": "refused", "problems": [problem]})
+                    self.assertFalse(out.exists())
+        self.assertEqual((self.ledger / LEDGER_FILE).read_bytes(), before)
+        # This study's own receipt: the pass runs.
+        done = explore(self.tmp / "blind" / "receipt.json")
+        self.assertEqual((done["status"], done["ledger_repeat"]), ("completed", False), done)
+        self.assertEqual([entry["kind"] for entry in verify(self.ledger / LEDGER_FILE)], ["look", "explore"])
+        self.assertEqual(json.loads(outputs_of(out)["receipt.json"])["blind_receipt_sha256"],
+                         sha((self.tmp / "blind" / "receipt.json").read_bytes()))
+        # A repeat appends nothing and gives the same bytes.
+        after = (self.ledger / LEDGER_FILE).read_bytes()
+        again = explore(self.tmp / "blind" / "receipt.json", done["ledger_head"], self.tmp / "again")
+        self.assertEqual((again["status"], again["ledger_repeat"], again["ledger_head"], again["summary_sha256"]),
+                         ("completed", True, done["ledger_head"], done["summary_sha256"]))
+        for item in ("summary.json", "summary.md"):
+            self.assertEqual(outputs_of(self.tmp / "again")[item], outputs_of(out)[item])
+        self.assertEqual((self.ledger / LEDGER_FILE).read_bytes(), after)
+
+    def test_one_explore_pass_per_study(self):
+        root = self.day_root()
+        blind = self.run_pass("blind", self.tmp / "blind", root=root)
+        done = self.run_pass("explore", self.tmp / "explore", blind["ledger_head"], root=root,
+                             blind_receipt=self.tmp / "blind" / "receipt.json")
+        self.assertEqual(done["status"], "completed", done)
+        # The study's second look, at another commit, and an explore pass from it: another identity, refused before
+        # the read.
+        other = self.run_pass("blind", self.tmp / "blind2", done["ledger_head"], root=root, commit="f" * 40)
+        self.assertEqual((other["status"], other["ledger_counts"]), ("completed", {"looks": 2, "registered": 0}))
+        before = (self.ledger / LEDGER_FILE).read_bytes()
+        with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+            result = self.run_pass("explore", self.tmp / "explore2", other["ledger_head"], root=root, commit="f" * 40,
+                                   blind_receipt=self.tmp / "blind2" / "receipt.json")
+        self.assertEqual(result, {"status": "refused", "problems": ["explore:already_run"]})
+        self.assertEqual(((self.ledger / LEDGER_FILE).read_bytes(), (self.tmp / "explore2").exists()), (before, False))
+        # An explore entry of another study, of the same lineage, does not count against this one.
+        fresh = self.tmp / "fresh"
+        fresh.mkdir(mode=0o700)
+        look = self.run_pass("blind", self.tmp / "blind3", root=root, ledger=fresh)
+        head = entry_in(fresh, look["ledger_head"], kind="explore", study="close-early-fav-v1", partitions=(D,))
+        third = self.run_pass("explore", self.tmp / "explore3", head, root=root, ledger=fresh,
+                              blind_receipt=self.tmp / "blind3" / "receipt.json")
+        self.assertEqual(third["status"], "completed", third)
+        self.assertEqual([(entry["kind"], entry["study"]) for entry in verify(fresh / LEDGER_FILE)],
+                         [("look", EARLY), ("explore", "close-early-fav-v1"), ("explore", EARLY)])
+
+    # Hand-built rows for the explore pass's size gate, its half-years and its Markdown.
+
+    def gate_days(self):
+        """Twice the plan's min_clusters explore dates from 2 May 2015, all in H1 as block() builds them."""
+        return [(date(2015, 5, 2) + timedelta(days=index)).isoformat() for index in range(2 * EARLY_PLAN.min_clusters)]
+
+    def explore_of(self, rows):
+        """The explore summary of hand-built rows {Cell: [OrderRow]} under EARLY_PLAN."""
+        return summary(EARLY_PLAN, early_tally(EARLY_PLAN, rows), "explore", "0" * 64)
+
+    def test_the_size_gate_reads_the_pessimistic_models_fills(self):
+        """One pessimistic fill too few, and 240 more orders filled under the optimistic model alone: counts only."""
+        least, days, bsps, cell = EARLY_PLAN.min_tested_values, self.gate_days(), [2.4, 2.6, 2.8, 3.0], LAY_CELLS[0]
+        rows = {cell: block(least - 1, days, bsps, label=D) + block(240, days, bsps, label=D, filled=(OPTIMISTIC,))
+                + block(240, days, [2.5], label=D, filled=NONE)}
+        value = self.explore_of(rows)
+        self.assertEqual(value["figures"]["size_gate"][cell_key(cell)][D],
+                         {"model": PESSIMISTIC, "fills": least - 1, "fill_race_dates": len(days),
+                          "figures_given": False})
+        group = value["figures"]["by_cell"][cell_key(cell)][D][AS_WRITTEN]
+        self.assertEqual(group["models"][OPTIMISTIC]["fills"], least - 1 + 240)
+        self.assertEqual(list(walk_floats(value["figures"]["by_cell"][cell_key(cell)])), [])
+        self.assertEqual(list(walk_floats(value["half_years"]["by_cell"][cell_key(cell)])), [])
+
+    def test_the_size_gate_counts_the_models_own_fills(self):
+        """150 orders filled under every model and 60 unfilled: every model is flagged filled_is_all_placed, and the
+        gate counts the 150 fills, not the 210 rows that stand in for them."""
+        days, bsps, cell = self.gate_days(), [2.4, 2.6, 2.8, 3.0], LAY_CELLS[0]
+        rows = {cell: block(150, days, bsps, label=D) + block(60, days, [2.5], label=D, filled=NONE)}
+        value = self.explore_of(rows)
+        self.assertEqual(value["figures"]["size_gate"][cell_key(cell)][D],
+                         {"model": PESSIMISTIC, "fills": 150, "fill_race_dates": len(days), "figures_given": False})
+        group = value["figures"]["by_cell"][cell_key(cell)][D][AS_WRITTEN]
+        self.assertTrue(group["models"][PESSIMISTIC][FILLED_IS_ALL_PLACED])
+        self.assertEqual(group["placed"]["bets"], 210)
+        self.assertEqual(list(walk_floats(value["figures"]["by_cell"][cell_key(cell)])), [])
+
+    def test_a_half_year_gives_its_placed_figure_only_when_the_other_does(self):
+        """A cell over the gate with 16 orders in H2: E1 gives the cell's figures; E2 gives counts only in both
+        half-years, H1's with reason rest_not_given."""
+        days, bsps, cell = self.gate_days(), [2.4, 2.6, 2.8, 3.0], LAY_CELLS[0]
+        rows = block(240, days, bsps, label=D) + block(240, days, [2.5], label=D, filled=NONE)
+        rows = [row._replace(half="H2") if row.race_date == days[-1] else row for row in rows]
+        value = self.explore_of({cell: rows})
+        self.assertTrue(value["figures"]["size_gate"][cell_key(cell)][D]["figures_given"])
+        self.assertIsNotNone(value["figures"]["by_cell"][cell_key(cell)][D][AS_WRITTEN]["placed"]["mean"])
+        split = value["half_years"]["by_cell"][cell_key(cell)][D]
+        self.assertEqual([split[half][AS_WRITTEN]["placed"]["bets"] for half in ("H1", "H2")], [464, 16])
+        for half in ("H1", "H2"):
+            self.assertEqual(list(walk_floats(split[half])), [], half)
+        self.assertEqual(split["H1"][AS_WRITTEN]["placed"]["reason"], REST_NOT_GIVEN)
+
+    def test_a_half_year_of_a_new_id_gives_a_figure_only_if_the_other_half_does(self):
+        """A cell over the size gate whose second half-year holds fewer than min_values fills: E1 gives the cell's
+        filled figures; E2 gives them in neither half-year, so that the small half's cannot be worked out from the
+        cell's and the other half's."""
+        days = [(date(2015, 5, 2) + timedelta(days=index)).isoformat() for index in range(40)]
+        few = EARLY_PLAN.min_values - 1
+        rows = []
+        for half, chosen, count in (("H1", days[:20], 300), ("H2", days[20:], few)):
+            rows += [row._replace(half=half) for row in block(count, chosen, [2.4, 2.6, 2.8, 3.0], label=D)
+                     + block(200, chosen, [2.5, 2.7], label=D, filled=NONE)]
+        value = self.explore_of({LAY_CELLS[0]: rows})
+        key = cell_key(LAY_CELLS[0])
+        self.assertTrue(value["figures"]["size_gate"][key][D]["figures_given"])
+        halves = value["half_years"]["by_cell"][key][D]
+        for end in BSP_ENDS:
+            whole = value["figures"]["by_cell"][key][D][end]
+            for model in MODELS:
+                with self.subTest(end=end, model=model):
+                    self.assertIsNotNone(whole["models"][model]["filled"][NET_CLOSED]["mean"])
+                    first, second = (halves[half][end]["models"][model] for half in ("H1", "H2"))
+                    self.assertEqual((first["fills"], second["fills"]), (300, few))
+                    for item, reason in ((first, REST_NOT_GIVEN), (second, COUNTS_ONLY)):
+                        for figure in (*item["filled"].values(), item["value_per_placed"]):
+                            self.assertEqual({name: figure[name] for name in STATISTICS if name in figure},
+                                             {name: None for name in STATISTICS if name in figure})
+                            self.assertEqual(figure["reason"], reason)
+            # Every order's own figure is given in both halves: each half holds min_values scored orders.
+            self.assertEqual([halves[half][end]["placed"]["mean"] is None for half in ("H1", "H2")], [False, False])
+
+    def test_the_size_gate_of_a_new_id_reads_the_pessimistic_model_and_scored_orders_alone(self):
+        """A cell where the optimistic model's fills pass the size gate and the pessimistic model's are one too few,
+        with five filled orders that are not scored: counts only in E1 and E2, over the scored orders."""
+        least, dates = EARLY_PLAN.min_tested_values, EARLY_PLAN.min_tested_race_dates
+        days = [(date(2015, 5, 2) + timedelta(days=index)).isoformat() for index in range(2 * dates)]
+        bsps = [2.4, 2.6, 2.8, 3.0]
+        rows = block(least - 1, days, bsps, label=D) + block(least, days, bsps, label=D, filled=(OPTIMISTIC,)) + \
+            block(2 * least, days, [2.5], label=D, filled=NONE) + \
+            [row._replace(klass="post_decision_removal") for row in block(5, days, bsps, label=D)]
+        value = self.explore_of({LAY_CELLS[0]: rows})
+        key = cell_key(LAY_CELLS[0])
+        self.assertEqual(value["figures"]["size_gate"][key][D],
+                         {"model": PESSIMISTIC, "fills": least - 1, "fill_race_dates": len(days),
+                          "figures_given": False})
+        group = value["figures"]["by_cell"][key][D][AS_WRITTEN]
+        self.assertEqual((group["placed"]["bets"], group["models"][OPTIMISTIC]["fills"]),
+                         (4 * least - 1, 2 * least - 1))
+        for name in ("figures", "half_years"):
+            found = [item for _, item in walk_items(value[name]["by_cell"][key])
+                     if isinstance(item, dict) and ("mean" in item or "estimate" in item)]
+            self.assertGreater(len(found), 20)
+            for item in found:
+                self.assertEqual({name_: item[name_] for name_ in STATISTICS if name_ in item},
+                                 {name_: None for name_ in STATISTICS if name_ in item})
+                self.assertEqual(item["reason"], COUNTS_ONLY)
+
+    def test_an_explore_figure_reads_scored_orders_alone(self):
+        """30 orders of another class, with no BSP, beside 480 scored ones: E1 is over the scored orders; the class
+        is counted in B3."""
+        days, bsps, cell = self.gate_days(), [2.4, 2.6, 2.8, 3.0], LAY_CELLS[0]
+        rows = block(240, days, bsps, label=D) + block(240, days, [2.5], label=D, filled=NONE)
+        rows += [row._replace(klass="post_decision_removal", bsp=None) for row in block(30, days, bsps, label=D)]
+        value = self.explore_of({cell: rows})
+        group = value["figures"]["by_cell"][cell_key(cell)][D][AS_WRITTEN]
+        self.assertEqual((group["placed"]["bets"], group["models"][PESSIMISTIC]["fills"]), (480, 240))
+        self.assertEqual(value["cells"][cell_key(cell)]["classes"][D]["post_decision_removal"], 30)
+
+    def test_orders_placed_in_the_hour_seconds_count_every_class(self):
+        cell = LAY_CELLS[0]
+        rows = [order(2.6, label=D, day=D_DAYS[0])._replace(placed_in_the_hour=True),
+                order(2.6, label=D, day=D_DAYS[0])._replace(placed_in_the_hour=True, klass="post_decision_removal",
+                                                           bsp=None),
+                order(2.6, label=D, day=D_DAYS[0])]
+        value = summary(EARLY_PLAN, early_tally(EARLY_PLAN, {cell: rows}), "blind", "0" * 64)
+        self.assertEqual(value["cells"][cell_key(cell)]["orders_placed_in_the_hour_seconds"], 2)
+
+    def test_the_withheld_text_names_what_a_new_id_adds(self):
+        for phrase in ("the SD over all scored orders", "the detectable effect", "by gap, price or half-year",
+                       "index record counts"):
+            self.assertIn(phrase, resting_study.WITHHELD_EARLY)
+        # The whole text, as a literal: a reworded or shortened text fails here, not only a lost phrase.
+        self.assertEqual(resting_study.WITHHELD_EARLY,
+                         "every location statistic of an outcome (an average, a middle value, a raw quantile or a "
+                         "sign), every interval, test, label and selection, any SD of a figure after commission, "
+                         "the SD over unfilled orders and the SD over all scored orders (also where it would stand "
+                         "in for a model's filled SD: that model gives no SD and no ranges, flagged "
+                         "filled_is_all_placed), the detectable effect, any statistic of an outcome by gap, price "
+                         "or half-year, and of a label not read anything but index record counts: the "
+                         "registration's blind_pass.withholds")
+
+    def test_the_markdown_minutes_are_bound_to_their_cell_and_model(self):
+        """B4 of the hour market (test_the_counts_a_new_id_adds_to_the_blind_look): in the each_active cell at
+        14:00:00, the optimistic model's fill is in the second minute and the central model's in the third."""
+        trades = [(240, FAV, [[2.5, 4.0]]), (150, FAV, [[2.5, 54.0]])]
+        root, manifest, records = self.build([(path(M, TUESDAY), hour_market(off=TUESDAY, trades=trades))])
+        tally = Tally(EACH_PLAN)
+        decide_record(EACH_PLAN, records[M], record_facts(EACH_PLAN, records[M]), root, manifest, tally)
+        text = resting_study.markdown(EACH_PLAN, summary(EACH_PLAN, tally, "blind", "0" * 64))
+        b4 = markdown_columns(text.split("## B4", 1)[1].split("Fills of the orders", 1)[0])
+        second, third = (b4[f"minute {minute} after the hour: {VOLUME}"] for minute in (2, 3))
+        found = {(cell, model): pair for cell, model, *pair in zip(b4["cell"], b4["model"], second, third)}
+        self.assertEqual((found["close-v1-lay@-300", OPTIMISTIC], found["close-v1-lay@-300", CENTRAL]),
+                         (["1", "0"], ["0", "1"]))
+
+    def test_the_markdown_of_b9_binds_each_count_to_its_column(self):
+        gaps = [1, 2, 3, 5, 6, 10, 11, 20, 21, None]
+        found = [order(2.6, filled=MODELS if index % 2 == 0 else NONE, label=D, day=D_DAYS[0])._replace(gap_ticks=ticks)
+                 for index, ticks in enumerate(gaps)]
+        found.append(order(2.6, label=D, day=D_DAYS[0])._replace(gap_ticks=2, klass="post_decision_removal", bsp=None))
+        value = summary(EARLY_PLAN, early_tally(EARLY_PLAN, {LAY_CELLS[0]: found}), "blind", "0" * 64)
+        b9 = markdown_columns(resting_study.markdown(EARLY_PLAN, value).split("## B9", 1)[1])
+        rows = {(cell, gap_): rest for cell, gap_, *rest in zip(b9["cell"], b9["gap"], b9["placed"], b9["scored"],
+                                                                 b9[f"{PESSIMISTIC} fills"])}
+        self.assertEqual(rows[cell_key(LAY_CELLS[0]), "1-2"], ["3", "2", "1"])
+
+    def test_the_markdown_of_e2_prints_the_half_years_own_figures(self):
+        days = self.gate_days()
+        rows = block(240, days, [2.4, 2.6, 2.8, 3.0], label=D) + block(240, days, [2.5], label=D, filled=NONE)
+        rows = [row._replace(half="H2") if row.race_date in days[len(days) // 2:] else row for row in rows]
+        text = resting_study.markdown(EARLY_PLAN, self.explore_of({LAY_CELLS[0]: rows}))
+        e1 = markdown_columns(text.split("## E1", 1)[1].split("## E2", 1)[0])
+        e2 = markdown_columns(text.split("## E2", 1)[1].split("## E3", 1)[0])
+        self.assertIn("480", e1["n"])
+        self.assertNotIn("480", e2["n"])
+        self.assertIn("240", e2["n"])
+
+    def test_the_markdown_of_b5_of_a_new_id_says_neither_is_given(self):
+        text = resting_study.markdown(EARLY_PLAN, summary(EARLY_PLAN, early_tally(EARLY_PLAN, {}), "blind", "0" * 64))
+        self.assertIn("neither is given", text)
+        self.assertIn("on the labels read (points of stake)", text)
+        self.assertNotIn("stands in", text)
+        self.assertNotIn("both labels pooled", text)
+
+    def test_no_output_of_a_new_id_holds_a_market_or_selection_id(self):
+        """As NoIds, over both passes of a new id, whose tables add runners by code and one row per runner."""
+        given = self.given
+        ids = given.ids + [market_id.split(".")[1] for market_id in given.ids] + [str(sid) for sid in SIDS] + \
+            [fx.EVENT]
+        offs = study_offs() + [EDGE, OFF]
+        ids += sorted({off.date().isoformat() for off in offs} | {"2016-05-01"}) + \
+            [str(ms(off))[:-3] for off in offs] + [iso(off)[:16] for off in offs]
+        self.assertLessEqual({"2015-06-01", "2016-04-30", "2015-06-01T14:00", "1433167200"}, set(ids))
+        for name in ("blind", "explore"):
+            for item, data in outputs_of(given.base / name).items():
+                with self.subTest(out=name, file=item):
+                    self.assertEqual([token for token in ids if token in data.decode()], [])
+        printed = {"blind": given.blind[1], "explore": given.explore[1],
+                   "ledger": (given.ledger / LEDGER_FILE).read_text()}
+        for name, text in printed.items():
+            with self.subTest(printed=name):
+                self.assertEqual([token for token in ids if token in text], [])
+
+
 class RestingBoundaries(unittest.TestCase):
     MODULES = ("fills", "resting", "resting_study")
 
@@ -4481,8 +5350,8 @@ class RestingBoundaries(unittest.TestCase):
                          {"betangel_research", "betangel_research.betfair", "betangel_research.temporal"})
         self.assertLessEqual({f"betangel_research.betfair.backtest.{name}" for name in self.MODULES}, loaded)
 
-    def test_the_runner_takes_one_study_and_every_argument_the_ledger_needs(self):
-        self.assertEqual(resting_study.STUDIES, (STUDY,))
+    def test_the_runner_takes_its_studies_and_every_argument_the_ledger_needs(self):
+        self.assertEqual(resting_study.STUDIES, (STUDY,) + EARLY_IDS)
         parser = resting_study.build_parser()
         required = {action.dest for action in parser._actions if action.required}
         self.assertEqual(required, {"study", "pass_name", "registration_sha256", "archive_root", "out",

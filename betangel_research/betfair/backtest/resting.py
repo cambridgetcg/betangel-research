@@ -1,15 +1,18 @@
-"""Registered measurement close-v1: resting orders on the favourite before the off, on historical files (pure).
+"""Registered measurements close-v1 and close-early-v1: resting orders before the off, on historical files (pure).
 
-It asks whether a resting GBP 2 order on the favourite, placed minutes before the off and pulled before it, gets a
-price that beats BSP once only the orders that would fill are counted (docs/research-loop.md). An "order" here is a
-simulated intent inside the backtest package; nothing here can reach an exchange. It is not a backtest contract and
-changes no existing source file, but as modules of this package fills.py and this file are in the engine
-certificate's source descriptor, so adding them changed the certificate key again: any later P0 run-backtest needs
-certify-engine at these sources. Nothing here opens a file, reads a clock or uses the random module.
+close-v1 asks whether a resting GBP 2 order on the favourite, placed minutes before the off and pulled before it,
+gets a price that beats BSP once only the orders that would fill are counted (docs/research-loop.md). close-early-v1
+asks the same of resting orders placed hours before the off, on the favourite and on each runner of a price range,
+and reads the explore label alone. So there are two kinds of study here: close-v1 (STUDY_ID), and the new ids
+(EARLY_IDS: close-early-v1 and its registered fallback close-early-fav-v1 and close-early-band-v1, parsed alike).
+An "order" here is a simulated intent inside the backtest package; nothing here can reach an exchange. It is not a
+backtest contract, but as modules of this package fills.py and this file are in the engine certificate's source
+descriptor, so any change to them moves the certificate key: any later P0 run-backtest needs certify-engine at
+these sources. Nothing here opens a file, reads a clock or uses the random module.
 
 Three files decide everything, and this module reads its values from them: the registration
-(research/studies/close-v1.json), the rule files it names (research/rules/, parsed by rulefile.parse_rule) and the
-split file it names (research/partitions-v1.json, parsed by partition.parse_split).
+(research/studies/close-v1.json, or a new id's), the rule files it names (research/rules/, parsed by
+rulefile.parse_rule) and the split file it names (parsed by partition.parse_split).
 
 Registration (parse_registration): the exact keys of the registration at every level, every value of its type and
 domain, the file in its one byte form (sorted keys, indent 2, ASCII, one final newline), and every list of codes,
@@ -17,20 +20,27 @@ classes, models, fill kinds, reasons and labels equal to this module's own, in o
 of the split file and of each rule file, checks each sha256 against the one the registration names, and refuses:
 rule files whose lineages differ; a partition label the split refuses (unknown, sealed, never, no budget) or of
 the wrong role; a rule file whose when row uses one of this module's own codes (HARNESS_CODES) or a code the
-registration's population.codes does not hold; a fixed price off the CLASSIC ladder. This version walks one order
-per cell to a pull time before the off, so it also refuses a rule file that does not select the favourite, has
-more or fewer than one intent, keeps its order, or has a time with no pull time. The answer is one frozen Plan.
-A cell is one rule file at one of its times (Cell).
+registration's population.codes does not hold; a fixed price off the CLASSIC ladder. Its id is close-v1 or one of
+EARLY_IDS (any other: id:not_supported), and Plan.study is the file's id. A new id's registration also holds
+data.traded_volume.hour_rises, "not_counted", and data.partitions.read, "explore_only", and lists four trade
+counts (EARLY_TRD_COUNTS); close-v1's holds neither key, so its key sets stay exact, and lists the three
+(TRD_COUNTS). Each cell walks its orders to a pull time before the off, so every rule file has exactly one intent,
+lapses and has a pull time at every time; close-v1's rule files select the favourite (select_not_favourite), a new
+id's select the favourite or each_active. The answer is one frozen Plan, whose last fields default to close-v1's
+values. A cell is one rule file at one of its times (Cell).
 
 Population (record_code, then the walk): per cell, the first code that applies, in population_codes' order.
 From the index record alone: movement.market_code's first twelve codes, through an adapter that holds the rule
 file's market block and a minimum field of 0 (the field size is the rule file's own row); partition_not_registered
-when the race date's label is not one of the two the registration names; then a flag code (bsp_market_false) when
-the rule file gates that flag and its value as of t is exactly false. A gated flag with no value at t passes and
-is reported (flags_missing). A record whose cells all have a code is never opened. In the walk: a view problem
-(as lp.walk_market, never met for a cell that passed the record's gates); the code rulefile.decide gives for the
-view at t (ladder_malformed first: a ladder entry, a trd entry or an rc runner id published at or before t could
-not be read); price_off_ladder when the order's price is not a CLASSIC price. A cell with no code holds one order.
+when the race date's label is not one the plan reads (Plan.labels_read: both labels the registration names for
+close-v1, the explore label alone for a new id); then a flag code (bsp_market_false) when the rule file gates that
+flag and its value as of t is exactly false. A gated flag with no value at t passes and is reported
+(flags_missing). A record whose cells all have a code is never opened. In the walk: a view problem (as
+lp.walk_market, never met for a cell that passed the record's gates); the code rulefile.decide gives for the view
+at t (ladder_malformed first: a ladder entry, a trd entry or an rc runner id published at or before t could not be
+read; under each_active, when no runner passes, the first runner's code); price_off_ladder when no order's price
+is a CLASSIC price. A favourite cell with no code holds one order. An each_active cell with no code holds one order
+on each runner that passes, each judged alone; an order whose price is off the CLASSIC ladder is not placed.
 
 The view (view_of): the rulefile.RuleView of a movement.Moment. It holds one RunnerView per runner ACTIVE and
 listed at t, and refuses (ValueError) unless the ids it is given are exactly the Moment's own active runners and
@@ -42,24 +52,33 @@ reader and fold (market_index._messages, _checked_changes, _Market), replay.Pric
 lp.TradedFold, messages sharing a pt as one batch, and a heap of timed events fired after the last batch
 published at or before their time. It stops at the first message published after the last pull time of the cells
 it walks; nothing later is parsed. A decide event captures movement's Moment at t (which refuses, ReplayProblem,
-unless the fold equals the index at t), builds the view, asks rulefile.decide and places the order as one lp.Leg
+unless the fold equals the index at t), builds the view, asks rulefile.decide and places each order as one lp.Leg
 per fill model: its queue is the model's fraction of the size shown at t at its price on its own side (a LAY
 rests on atb, a BACK on atl), its base a copy of the runner's counted volume at t. Each batch after t up to and
-including the pull time is judged by fills.py's rules. A lapse order is no longer judged once inPlay was true
-before a batch; it stays ended even if inPlay is later published false. A null event captures the runner's quote
-and the market's status and inPlay at a time u drawn at placement from metrics.HashStream with the registered
-seed and label, uniform over the whole milliseconds of (t, pull time].
+including the pull time is judged by fills.py's rules. The hour switch: under a plan that does not count hour
+rises (Plan.hour_rises_counted false: a new id), a batch whose pt lies in the after-the-hour seconds counts no
+rise, so lp.TradedFold.count is not called and such a rise fills nothing by trade_through or volume_at_price, then
+or later; quote_cross is judged as before. A lapse order is no longer judged once inPlay was true before a batch;
+it stays ended even if inPlay is later published false. A null event captures the runner's quote and the market's
+status and inPlay at a time u drawn at placement from metrics.HashStream with the registered seed and label,
+uniform over the whole milliseconds of (t, pull time]: one draw per market and cell, which the orders of an
+each_active cell share. For a cell of an each_active rule file the walk also counts the runners of the view at t
+by their own code (Walked.runner_codes, runner_codes).
 
-Per cell the walk returns a code or one OrderRow. A row holds no market id and no selection id: the side and
-price; per model a Fill (the queue at t, the fill kind or None, seconds from t to the fill, whether it came within
-each of the registered seconds of t, in the after-the-hour seconds, in a batch that left the market not OPEN, in
-the batch that turned the market in play, and for an unfilled order whether the pull or the lapse ended it: the
-lapse when inPlay was true in force after some batch at or after t and before the pull time); the mid at t; the
-mid at u or the reason it has none (NULL_UNDEFINED); three counts of the runner's trd rises over (t, pull time]
-(TRD_COUNTS); whether some batch in (t, pull time] began with no market status at all (no_status: a definition
-that carried none, or an image with no definition, came before it; such a batch is not open, so nothing fills in
-it); the class; the BSP as written when the class is scored; the partition label, the half-year and the race date
-(the cluster key).
+Per cell the walk returns a code, one OrderRow (a favourite cell) or a tuple of OrderRows in selection-id order (an
+each_active cell). A row holds no market id, no selection id and no clock time: the side and price; per model a
+Fill (the queue at t, the fill kind or None, seconds from t to the fill, whether it came within each of the
+registered seconds of t, in the after-the-hour seconds, in a batch that left the market not OPEN, in the batch that
+turned the market in play, and for an unfilled order whether the pull or the lapse ended it: the lapse when inPlay
+was true in force after some batch at or after t and before the pull time); the mid at t; the mid at u or the
+reason it has none (NULL_UNDEFINED); the plan's counts of the runner's trd rises over (t, pull time]
+(Plan.trd_counts: TRD_COUNTS, and for a new id a fourth, LEFT_OUT); whether some batch in (t, pull time] began with
+no market status at all (no_status: a definition that carried none, or an image with no definition, came before
+it; such a batch is not open, so nothing fills in it); the class; the BSP as written when the class is scored; the
+partition label, the half-year and the race date (the cluster key); then, as last fields with defaults, the gap in
+CLASSIC ticks from the runner's best back to its best lay at t (gap_ticks, None when either is missing or off the
+ladder), whether t lies in the after-the-hour seconds (placed_in_the_hour), and per model whether its fill came in
+the second or the third minute after a whole UTC hour on a Monday to Friday (fill_minute: 2, 3 or None).
 
 Classes (CLASSES), from facts that do not depend on a fill, the first that applies: movement.measure's five
 (outcome_unknown, void_own_runner_removed, post_decision_removal, result_revised_after_close, missing_bsp); then
@@ -97,7 +116,7 @@ here is evidence of profitability.
 """
 
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field, replace     # record_code has a local named field
 from fractions import Fraction
 import heapq
 import itertools
@@ -105,8 +124,8 @@ import math
 import re
 
 from . import fills, rulefile
-from .lp import (BACK, FILL_KINDS, LAY, TIERS, TRADED_BASIS, TRADED_DIVISOR, TRADED_KEY, TradedFold, _Batch, _rules,
-                 _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top, wide)
+from .lp import (BACK, DAY_MS, FILL_KINDS, HOUR_MS, LAY, TIERS, TRADED_BASIS, TRADED_DIVISOR, TRADED_KEY, TradedFold,
+                 _Batch, _rules, _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top, wide)
 from .market_index import _as_of, _checked_changes, _last, _Market, _messages, _Unreadable, loads_strict
 from .metrics import HashStream
 from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LADDER_NAMES, LADDERS, MARKET_CODES,
@@ -116,9 +135,12 @@ from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LAD
                        registration_sha256, sample_sd, student_t_cdf, student_t_quantile, tick_index)
 from .partition import EXPLORE, HALVES, HOLDOUT, PartitionError, file_bytes, parse_split
 from .replay import PriceFold, ReplayProblem
-from .rulefile import FAVOURITE, LAPSE, RuleError, RuleView, RunnerView, parse_rule
+from .rulefile import EACH_ACTIVE, FAVOURITE, LAPSE, RuleError, RuleView, RunnerView, parse_rule
 
 STUDY_ID = "close-v1"
+# The new ids: close-early-v1, and its registered fallback, one rule file each. They are parsed alike.
+EARLY_IDS = ("close-early-v1", "close-early-fav-v1", "close-early-band-v1")
+STUDY_IDS = (STUDY_ID,) + EARLY_IDS
 TRIALS = "independent"
 PARTITION_NOT_REGISTERED, PRICE_OFF_LADDER = "partition_not_registered", "price_off_ladder"
 # The codes one index record can give a cell before its file is opened: movement.market_code's first twelve (its
@@ -131,7 +153,10 @@ FLAG_GATES = (("bsp_market", "bspMarket", "bsp_market_false"),
 # This module's own codes: a when row of a rule file may use none of them (decide's own are refused by rulefile).
 HARNESS_CODES = RECORD_CODES + tuple(code for _, _, code in FLAG_GATES) + (rulefile.LADDER_MALFORMED,
                                                                           PRICE_OFF_LADDER, ISSUED)
-SELECTOR_CODES = {FAVOURITE: (rulefile.NO_PRICED_ACTIVE_RUNNER, rulefile.FAVOURITE_TIE)}
+SELECTOR_CODES = {FAVOURITE: (rulefile.NO_PRICED_ACTIVE_RUNNER, rulefile.FAVOURITE_TIE),
+                  EACH_ACTIVE: (rulefile.NO_ACTIVE_RUNNER,)}
+# The selectors a rule file may use: close-v1's walk is the favourite's alone; a new id's takes both.
+SELECTORS = {STUDY_ID: (FAVOURITE,), **dict.fromkeys(EARLY_IDS, (FAVOURITE, EACH_ACTIVE))}
 SCORED, MALFORMED_AFTER = "scored", "stream_malformed_after_placement"
 CLASSES = ("outcome_unknown", "void_own_runner_removed", "post_decision_removal", "result_revised_after_close",
            "missing_bsp", MALFORMED_AFTER, SCORED)
@@ -143,6 +168,13 @@ NULL_UNDEFINED = ("member_unreadable", "market_not_open", "in_play", "not_two_si
 # outside the after-the-hour seconds, at a price that was the best back or best lay just before the batch (the
 # check of the counting rule, as lp-v1's); rises in a batch that was not open.
 TRD_COUNTS = ("rises_counted", "rises_not_counted_at_touch_outside_the_hour", "rises_in_a_batch_not_open")
+# A new id's fourth count: rises of the order's runner in an open batch in the after-the-hour seconds, at a price
+# the batch also carries an atb or atl entry at, so that the counting rule would have counted them: what the hour
+# switch left out (data.traded_volume.hour_rises).
+LEFT_OUT = "rises_left_out_in_the_hour_seconds"
+EARLY_TRD_COUNTS = TRD_COUNTS + (LEFT_OUT,)
+NOT_COUNTED, EXPLORE_ONLY = "not_counted", "explore_only"      # a new id's hour_rises and partitions.read
+SECOND, THIRD = 2, 3                        # the minutes after a whole hour that a fill_minute names
 VERDICTS = ("kill_optimistic", "underpowered", "edge_candidate", "measurement_pilot_candidate", "unresolved")
 BLOCKED, FILLED_IS_ALL_PLACED = "claim_blocked_by_placebo", "filled_is_all_placed"
 HOLM = "holm"
@@ -180,8 +212,10 @@ Part = namedtuple("Part", ("rows", "fills", "fill_dates", "all_placed"))
 Selection = namedtuple("Selection", ("eligible", "primaries"))
 # One model's answer for one order (module docstring). within: one bool per Plan.within_s.
 Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn", "ended"))
+# The last three fields have defaults, so a row can still be built from the thirteen older fields alone.
 OrderRow = namedtuple("OrderRow", ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid", "fills",
-                                   "null_mid", "null_reason", "trd", "no_status"))
+                                   "null_mid", "null_reason", "trd", "no_status", "gap_ticks", "placed_in_the_hour",
+                                   "fill_minute"), defaults=(None, False, None))
 _Gate = namedtuple("_Gate", ("tiers", "start_month", "end_month", "countries", "event_type_id", "market_type",
                              "betting_type", "number_of_winners", "min_active_runners"))
 
@@ -195,7 +229,9 @@ class Plan:
     registration's; split is the partition.Split and rules the rulefile.Rules, in the registration's order; cells
     is every Cell, rule by rule, each rule's times in order. queue_fractions is {model: exact fraction}. The levels
     and thresholds are exact Fractions; pilot_floor is below 0. label_note and exposure_note are the two sentences
-    the registration says are printed with every label."""
+    the registration says are printed with every label. The last three fields default to close-v1's values: every
+    rise in the after-the-hour seconds counts (hour_rises_counted), a pass reads both labels (explore_only false;
+    labels_read), and the trade counts are TRD_COUNTS. A new id's plan sets them from its registration."""
 
     sha256: str
     study: str
@@ -240,11 +276,19 @@ class Plan:
     detectable_level: Fraction
     label_note: str
     exposure_note: str
+    hour_rises_counted: bool = True         # data.traded_volume.hour_rises; a new id's is "not_counted"
+    explore_only: bool = False              # data.partitions.read; a new id's is "explore_only"
+    trd_counts: tuple = TRD_COUNTS          # diagnostics.trd_counts
 
     @property
     def labels(self):
-        """The two partition labels a pass reads: (explore, test)."""
+        """The two partition labels the registration names: (explore, test)."""
         return self.explore_label, self.test_label
+
+    @property
+    def labels_read(self):
+        """The partition labels a pass reads: both labels, or the explore label alone (explore_only)."""
+        return (self.explore_label,) if self.explore_only else self.labels
 
     @property
     def months(self):
@@ -323,16 +367,20 @@ def _level(value, place):
     return level
 
 
-def _split(data, expected, raw):
-    """The Split of the split file's bytes and the registration's (explore, test) labels."""
+def _split(data, expected, raw, read=False):
+    """The Split of the split file's bytes and the registration's (explore, test) labels. read: whether
+    data.partitions holds the key read (a new id's), which must then be "explore_only"."""
     if not isinstance(raw, bytes) or registration_sha256(raw) != expected[1]:
         _fail("data.split", "sha256_mismatch")
     try:
         split = parse_split(raw)
     except PartitionError as error:
         _fail("data.split", str(error))
-    partitions = _object(data["partitions"], "data.partitions", ("explore", "rule", "test"))
+    partitions = _object(data["partitions"], "data.partitions",
+                         ("explore", "read", "rule", "test") if read else ("explore", "rule", "test"))
     _text(partitions["rule"], "data.partitions.rule")
+    if read:
+        _text(partitions["read"], "data.partitions.read", EXPLORE_ONLY)
     for key, role in (("explore", EXPLORE), ("test", HOLDOUT)):
         problem = split.label_problem(partitions[key])
         if problem is not None:
@@ -342,9 +390,9 @@ def _split(data, expected, raw):
     return split, partitions["explore"], partitions["test"]
 
 
-def _rule_files(named, raws, codes):
+def _rule_files(named, raws, codes, selectors=(FAVOURITE,)):
     """The Rules of the named rule files' bytes, after the checks of the module docstring; codes is the
-    registration's population.codes as written."""
+    registration's population.codes as written, selectors the study's (SELECTORS)."""
     if not isinstance(raws, dict):
         _fail("data.rules", "not_given")
     rules = []
@@ -361,8 +409,8 @@ def _rule_files(named, raws, codes):
             _fail(place, str(error))
         if name != f"{rule.id}.json":
             _fail(place, "name_not_the_rule_id")
-        if rule.select not in SELECTOR_CODES:
-            _fail(place, "select_not_favourite")
+        if rule.select not in selectors:
+            _fail(place, "select_not_favourite")    # close-v1's; a new id takes every selector rulefile does
         if len(rule.intents) != 1:
             _fail(place, "not_one_intent")
         if rule.intents[0].persist != LAPSE:
@@ -388,7 +436,9 @@ def parse_registration(raw, split_raw, rules_raw):
     RegistrationError otherwise."""
     top = _loaded(raw)
     _text(top["schema"], "schema", SCHEMA)
-    _text(top["id"], "id", STUDY_ID)
+    if _text(top["id"], "id") not in STUDY_IDS:
+        _fail("id", "not_supported")
+    early = top["id"] in EARLY_IDS              # a new id: the hour switch, the explore label alone, four counts
     _text(top["status"], "status", "registered")
     if not isinstance(top["registered_on"], str) or not DATE_RE.fullmatch(top["registered_on"]):
         _fail("registered_on", "not_a_date")
@@ -414,7 +464,9 @@ def parse_registration(raw, split_raw, rules_raw):
     if any(ladders[tier] != LADDER_NAMES[tier] for tier in tiers):
         _fail("data.ladders", "not_supported")
     traded = _object(data["traded_volume"], "data.traded_volume", ("after_the_hour_s", "basis", "divisor", "key",
-                                                                    "rule"))
+                                                                    "rule") + (("hour_rises",) if early else ()))
+    if early:
+        _text(traded["hour_rises"], "data.traded_volume.hour_rises", NOT_COUNTED)
     _text(traded["key"], "data.traded_volume.key", TRADED_KEY)
     _text(traded["basis"], "data.traded_volume.basis", TRADED_BASIS)
     _text(traded["rule"], "data.traded_volume.rule")
@@ -423,12 +475,12 @@ def parse_registration(raw, split_raw, rules_raw):
     months = (data["start_month"], data["end_month"])
     if not all(isinstance(month, str) and MONTH_RE.fullmatch(month) for month in months) or months[0] > months[1]:
         _fail("data.months", "malformed")
-    split, explore, test = _split(data, split_named, split_raw)
+    split, explore, test = _split(data, split_named, split_raw, read=early)
 
     population = _object(top["population"], "population", ("codes", "codes_rule", "price_ladder", "quotes", "source"))
     for key in ("codes_rule", "price_ladder", "quotes", "source"):
         _text(population[key], f"population.{key}")
-    rules = _rule_files(rules_named, rules_raw, _texts(population["codes"], "population.codes"))
+    rules = _rule_files(rules_named, rules_raw, _texts(population["codes"], "population.codes"), SELECTORS[top["id"]])
     codes = _codes(population["codes"], "population.codes", population_codes(rules))
     cells = tuple(Cell(rule.id, at_s, pull_s) for rule in rules for at_s, pull_s in rule.times)
     grid = _object(top["grid"], "grid", ("anchor", "cells", "rule", "trials"))
@@ -529,9 +581,9 @@ def parse_registration(raw, split_raw, rules_raw):
     _text(uncertainty["rule"], "uncertainty.rule")
     diagnostics = _object(top["diagnostics"], "diagnostics", ("rule", "trd_counts", "within_s"))
     _text(diagnostics["rule"], "diagnostics.rule")
-    _codes(diagnostics["trd_counts"], "diagnostics.trd_counts", TRD_COUNTS)
+    trd_counts = _codes(diagnostics["trd_counts"], "diagnostics.trd_counts", EARLY_TRD_COUNTS if early else TRD_COUNTS)
     plan = Plan(
-        sha256=registration_sha256(raw), study=STUDY_ID, lineage=rules[0].lineage, split=split, rules=rules,
+        sha256=registration_sha256(raw), study=top["id"], lineage=rules[0].lineage, split=split, rules=rules,
         cells=cells, explore_label=explore, test_label=test, tiers=tiers,
         ladders={tier: LADDERS[tier] for tier in tiers}, start_month=months[0], end_month=months[1],
         divisor=TRADED_DIVISOR,
@@ -557,7 +609,8 @@ def parse_registration(raw, split_raw, rules_raw):
         bsp_whole_share=_rate(ends["whole_hundredths_share"], "measurement.bsp_ends.whole_hundredths_share"),
         quantiles=quantiles, power=_level(statistics["power"], "statistics.power"),
         detectable_level=_level(statistics["detectable_level"], "statistics.detectable_level"),
-        label_note=verdicts["printed_with"], exposure_note=exposure["printed_with_every_label"])
+        label_note=verdicts["printed_with"], exposure_note=exposure["printed_with_every_label"],
+        hour_rises_counted=not early, explore_only=early, trd_counts=trd_counts)
     if file_bytes(top) != raw:                  # last: every value is now known to be small (as partition.py)
         _fail("file", "not_canonical")
     return plan
@@ -577,7 +630,9 @@ def race_label(plan, record):
 
 def record_code(plan, record, cell):
     """(code, ()) when the index record alone gives the cell a code (RECORD_CODES, then a flag code); else
-    (None, the gated flags with no true or false value as of t): the cell reaches the book."""
+    (None, the gated flags with no true or false value as of t): the cell reaches the book. A record whose label is
+    not one the plan reads (Plan.labels_read) is partition_not_registered here, at every cell its history gates let
+    through; this is the one function the runner's record facts and the walk both ask."""
     rule = plan.rule(cell.rule_id)
     market = rule.market
     gate = _Gate(plan.tiers, plan.start_month, plan.end_month, market.countries, market.event_type_id,
@@ -585,7 +640,7 @@ def record_code(plan, record, cell):
     code = market_code(gate, record, cell.at_s)
     if code is not None:
         return code, ()
-    if race_label(plan, record)[1] not in plan.labels:
+    if race_label(plan, record)[1] not in plan.labels_read:
         return PARTITION_NOT_REGISTERED, ()
     t, definition, missing = decision_time(record, cell.at_s), record["decision_time"]["definition"], []
     for name, field, failed in FLAG_GATES:
@@ -625,26 +680,29 @@ def view_of(moment, active, malformed=False):
 
 @dataclass(frozen=True)
 class Walked:
-    """outcomes {Cell: a population code, or the OrderRow of an issued cell} for every cell of the plan;
-    flags_missing {Cell: the gated flags with no value at t} for every cell that passed the record's gates;
-    replayed, whether the member was read."""
+    """outcomes {Cell: a population code, the OrderRow of an issued favourite cell, or the tuple of OrderRows of an
+    issued each_active cell} for every cell of the plan; flags_missing {Cell: the gated flags with no value at t} for
+    every cell that passed the record's gates; replayed, whether the member was read; runner_codes {Cell:
+    runner_codes' counts} for every cell of an each_active rule file whose view at t was built and whose market rows
+    and selector held (B8)."""
 
     outcomes: dict
     flags_missing: dict
     replayed: bool
+    runner_codes: dict = dataclass_field(default_factory=dict)
 
 
 class _Order:
     """One placed order while it is walked: its cell, the rulefile.Intent, t and the pull time in ms, one lp.Leg per
-    model, the runners ACTIVE and listed at t, the mid at t, and what the walk fills in."""
+    model, the runners ACTIVE and listed at t, the mid at t, the gap in ticks at t, and what the walk fills in."""
 
     __slots__ = ("cell", "intent", "t", "end", "legs", "active", "mid", "lapsed", "transition", "null", "trd",
-                 "no_status")
+                 "no_status", "gap")
 
-    def __init__(self, cell, intent, t, end, legs, active, centre):
+    def __init__(self, cell, intent, t, end, legs, active, centre, names, gap):
         self.cell, self.intent, self.t, self.end, self.legs, self.active = cell, intent, t, end, legs, active
         self.mid, self.lapsed, self.transition, self.null = centre, False, {}, None
-        self.trd, self.no_status = dict.fromkeys(TRD_COUNTS, 0), False
+        self.trd, self.no_status, self.gap = dict.fromkeys(names, 0), False, gap
 
 
 def _mid(plan, quote):
@@ -669,6 +727,33 @@ def _null(plan, capture):
     return _mid(plan, quote)
 
 
+def minute_after_the_hour(pt):
+    """SECOND or THIRD when ms pt lies in the second or the third minute after a whole UTC hour on a Monday to
+    Friday (UTC, by lp.after_the_hour's day rule), else None: the check of the after-the-hour seconds, where a
+    restatement sent later than they reach would show."""
+    minute = pt % HOUR_MS // 60_000 + 1
+    return minute if minute in (SECOND, THIRD) and (pt // DAY_MS + 3) % 7 < 5 else None
+
+
+def runner_codes(view, rule):
+    """B8 of an each_active rule file at one view: {code: runners} over the view's runners, each by the code
+    rulefile.decide gives for a view that keeps the market's fields and holds that runner alone (the code of its
+    first failing runner row, or no_reference_price), price_off_ladder when its order's price is not a CLASSIC
+    price, else issued (ordered on). {} unless the market rows and the selector hold: decide gives no_active_runner
+    for the view with no runner (it reached the selector), and the view has a runner."""
+    if not view.runners or rulefile.decide(replace(view, runners=()), rule).code != rulefile.NO_ACTIVE_RUNNER:
+        return {}
+    found = {}
+    for runner in view.runners:
+        decision = rulefile.decide(replace(view, runners=(runner,)), rule)
+        code = decision.code
+        if code is None:
+            code = ISSUED if all(tick_index(intent.price) is not None for intent in decision.intents) \
+                else PRICE_OFF_LADDER
+        found[code] = found.get(code, 0) + 1
+    return found
+
+
 def _row(plan, record, placed, dated, malformed, in_play):
     """The OrderRow of one walked order (module docstring). dated: race_label's answer; malformed: the pts of
     unreadable ladder or trd entries; in_play: the market's inPlay timeline as far as it was read."""
@@ -691,9 +776,12 @@ def _row(plan, record, placed, dated, malformed, in_play):
                             after_the_hour(leg.fill_pt, plan.after_the_hour_s), *placed.transition[model], None)
     null_mid, null_reason = _null(plan, placed.null)
     day, label, half = dated
+    minutes = {model: None if leg.fill_pt is None else minute_after_the_hour(leg.fill_pt)
+               for model, leg in placed.legs.items()}
     return OrderRow(side=intent.side, price=intent.price, label=label, half=half, race_date=day, klass=klass,
                     bsp=bsp if klass == SCORED else None, mid=placed.mid, fills=found, null_mid=null_mid,
-                    null_reason=null_reason, trd=dict(placed.trd), no_status=placed.no_status)
+                    null_reason=null_reason, trd=dict(placed.trd), no_status=placed.no_status, gap_ticks=placed.gap,
+                    placed_in_the_hour=after_the_hour(t, plan.after_the_hour_s), fill_minute=minutes)
 
 
 def walk(stream, record, plan, limits):
@@ -716,7 +804,7 @@ def walk(stream, record, plan, limits):
     heapq.heapify(events)
     market, prices, ladders, traded = None, PriceFold(), LadderFold(plan.ladders[record["provenance"]["plan"]]), \
         TradedFold()
-    orders = []
+    orders, runners_by_code = [], {}
 
     def state():                                # (status, inPlay) in force after every message applied so far
         if market is None:
@@ -727,28 +815,40 @@ def walk(stream, record, plan, limits):
         moment = _moment(record, market, prices, ladders, cell.at_s, time)
         if moment.view is None:
             return moment.reason
-        active = active_ids(record, time)
-        decision = rulefile.decide(view_of(moment, active, any(pt <= time for pt in traded.malformed)),
-                                   plan.rule(cell.rule_id))
+        active, rule = active_ids(record, time), plan.rule(cell.rule_id)
+        view = view_of(moment, active, any(pt <= time for pt in traded.malformed))
+        decision = rulefile.decide(view, rule)
+        if rule.select == EACH_ACTIVE:
+            found = runner_codes(view, rule)
+            if found:
+                runners_by_code[cell] = found
         if decision.code is not None:
             if decision.code not in plan.codes:
                 raise ValueError("resting:code_not_in_population_codes")
             return decision.code
-        intent = decision.intents[0]            # one order a cell: the plan's rule files have one intent
-        if tick_index(intent.price) is None:
+        # Every intent is an order: one under the favourite (the plan's rule files have one intent), one per runner
+        # that passes under each_active, each judged alone. An order whose price is off the CLASSIC ladder is not
+        # placed; the cell's code is price_off_ladder only when no order is left.
+        intents = sorted((intent for intent in decision.intents if tick_index(intent.price) is not None),
+                         key=lambda intent: intent.selection_id)
+        if not intents:
             return PRICE_OFF_LADDER
-        sid, end = intent.selection_id, off + intent.pull_s * 1000
-        back_book, lay_book = ladders.books.get(sid, ({}, {}))
-        shown = (back_book if intent.side == LAY else lay_book).get(intent.price)    # a LAY rests on the back side
-        shown, base = shown[1] if shown else Fraction(0), dict(traded.counted.get(sid, {}))
-        legs = {model: Leg(cell.at_s, model, intent.side, sid, intent.price,
-                           fills.queue_ahead(plan.queue_fractions[model], shown), time, end, base)
-                for model in plan.models}
-        placed = _Order(cell, intent, time, end, legs, active, _mid(plan, moment.quote(sid))[0])
+        end = off + intents[0].pull_s * 1000    # one pull time a cell
         label = NULL_LABEL.format(market_id=market_id, at_s=cell.at_s, rule_id=cell.rule_id)
-        heapq.heappush(events, (time + 1 + HashStream(plan.null_seed, label).below(end - time), next(order), NULL,
-                                placed))
-        orders.append(placed)
+        u = time + 1 + HashStream(plan.null_seed, label).below(end - time)     # one draw per market and cell
+        gaps = {runner.selection_id: runner.spread_ticks for runner in view.runners}
+        for intent in intents:
+            sid = intent.selection_id
+            back_book, lay_book = ladders.books.get(sid, ({}, {}))
+            shown = (back_book if intent.side == LAY else lay_book).get(intent.price)    # a LAY rests on the back side
+            shown, base = shown[1] if shown else Fraction(0), dict(traded.counted.get(sid, {}))
+            legs = {model: Leg(cell.at_s, model, intent.side, sid, intent.price,
+                               fills.queue_ahead(plan.queue_fractions[model], shown), time, end, base)
+                    for model in plan.models}
+            placed = _Order(cell, intent, time, end, legs, active, _mid(plan, moment.quote(sid))[0], plan.trd_counts,
+                            gaps[sid])
+            heapq.heappush(events, (u, next(order), NULL, placed))
+            orders.append(placed)
         return None
 
     def handle(time, kind, payload):
@@ -764,11 +864,16 @@ def walk(stream, record, plan, limits):
 
     def close(pt, batch, prior, before):        # one pt batch is complete: count its trades, then fill
         was_open, was_in_play = fills.is_open(before[0]), before[1] is True     # (status, inPlay) before the batch
-        counted = {}
+        hour = after_the_hour(pt, plan.after_the_hour_s)                        # read first: the hour switch
+        switched = hour and not plan.hour_rises_counted
+        counted, dropped = {}, {}
         for rid, price, rise in fills.counted_rises(batch, was_open):
+            if switched:                        # never counted, then or later: traded.count is not called
+                dropped.setdefault(rid, set()).add(price)
+                continue
             traded.count(rid, price, rise)
             counted.setdefault(rid, set()).add(price)
-        hour, after = after_the_hour(pt, plan.after_the_hour_s), state()
+        after = state()
         left = (not fills.is_open(after[0]), after[1] is True and not was_in_play)  # not OPEN now; turned in play
         for placed in orders:
             if not placed.t < pt <= placed.end:
@@ -776,6 +881,7 @@ def walk(stream, record, plan, limits):
             placed.no_status = placed.no_status or before[0] is None
             intent = placed.intent
             sid, now = intent.selection_id, counted.get(intent.selection_id, ())
+            out = dropped.get(sid, ())
             for rid, price, _ in batch.rises:
                 if rid != sid:
                     continue
@@ -783,11 +889,13 @@ def walk(stream, record, plan, limits):
                     placed.trd[TRD_COUNTS[2]] += 1
                 elif price in now:
                     placed.trd[TRD_COUNTS[0]] += 1
+                elif price in out:              # empty unless the switch is on and the batch is in the hour seconds
+                    placed.trd[LEFT_OUT] += 1
                 elif not hour and any(quote is not None and quote[0] == price for quote in prior[sid]):
                     placed.trd[TRD_COUNTS[1]] += 1
             placed.lapsed = placed.lapsed or (was_in_play and intent.persist == LAPSE)
             shown = None
-            if batch.image or sid in batch.changed:
+            if (batch.image or sid in batch.changed) and any(leg.live(pt) for leg in placed.legs.values()):
                 shown = facing(ladders, placed.legs[plan.models[0]])     # one side and price for every model
             at_price = traded.counted.get(sid, {}).get(intent.price, 0)
             for model, leg in placed.legs.items():
@@ -858,9 +966,12 @@ def walk(stream, record, plan, limits):
             raise ReplayProblem(f"replay:{market_id}:unreadable_before_view_ends")
     malformed = sorted(set(ladders.malformed) | set(traded.malformed))
     in_play = market.fields.get("inPlay", []) if market is not None else []
-    for placed in orders:
-        outcomes[placed.cell] = _row(plan, record, placed, dated, malformed, in_play)
-    return Walked(outcomes=outcomes, flags_missing=missing, replayed=True)
+    rows = {}
+    for placed in orders:                       # in placement order: a cell's orders by selection id
+        rows.setdefault(placed.cell, []).append(_row(plan, record, placed, dated, malformed, in_play))
+    for cell, found in rows.items():            # a favourite cell keeps its one row; an each_active cell, a tuple
+        outcomes[cell] = tuple(found) if plan.rule(cell.rule_id).select == EACH_ACTIVE else found[0]
+    return Walked(outcomes=outcomes, flags_missing=missing, replayed=True, runner_codes=runners_by_code)
 
 
 # ---------------------------------------------------------------------------------------------------------------

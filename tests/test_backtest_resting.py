@@ -3707,15 +3707,22 @@ def pinned_rows():
 
 class CloseV1IsUnchanged(RestingCase):
     """close-v1's outputs on synthetic inputs, as sha256 constants: the rows the walk returns, the tables of
-    hand-built rows, and the summaries of the shared run."""
+    hand-built rows and of the runner's tally of the seeded batch, and the summaries (summary.json and summary.md)
+    of the shared run."""
 
     WALK_SHA256 = {"study archive": "8f993ac86e87e1e03d359db524c1885a1e89f7929c007a1d008b4e1d93960467",
                    "seeded batch": "d38b8875db562db6f6a0cdc9b70be9184e7630f94bea4781d93b0ca4de0a76e3"}
     TABLES_SHA256 = {"blind": "a6183feedbe60f56e8f58729b1c4868581a1126bb850bb07f489eaf9bd20d90f",
                      "registered": "6394faeeef16be70f04025e67395afebff57d41b3958cf7a2a8d45e32b45b668"}
-    # The two passes of shared(): the same on two runs and under python3.13 and python3.15 when they were set.
+    # The two passes of shared(), summary.json then summary.md: the same on two runs and under python3.13 and
+    # python3.15 when they were set.
     SUMMARY_SHA256 = {"blind": "6c1b4f4f4b0b31682dd01b450c24c731d92253a00f3d021cd964486074145d95",
                       "registered": "23239566f944c79337774fd8d878ed750c83bb3beb3c36318b579ace8891e53a"}
+    SUMMARY_MD_SHA256 = {"blind": "5f0e57227c45360c3d3c3c3c19129c812e7f3692bda7fdb89d0901c4ff53bffe",
+                         "registered": "5c8c97e0a4290e5d3dfc3ed84e20d16e46144802a797f792f11781723e45a2ec"}
+    # The runner's own tally of the seeded batch, as the tables of both passes: set the same way.
+    SEEDED_TABLES_SHA256 = {"blind": "7224f46ebcbf7b4ca3e306284ec03ec3a3243877c27c3962ff6db5ba672712ce",
+                            "registered": "9dc7bddbe0fc58dfc12a788f9a7c55aa5f8b4fd564661f8f68437727acaad8cb"}
 
     def walk_sha256(self, members, ids):
         """(the sha256 of one canonical line per record, [market id, walked_form], in the order of ids; {market id:
@@ -3783,10 +3790,47 @@ class CloseV1IsUnchanged(RestingCase):
                 self.assertEqual(sha(canonical_json(value) + b"\n" + resting_study.markdown(PLAN, value).encode()),
                                  self.TABLES_SHA256[name])
 
+    def test_the_tables_of_the_seeded_batch(self):
+        """The runner's own tally (decide_record) of the seeded batch, as the summary and its Markdown of each pass:
+        the tables over rows that hold what the hand-built rows and the study archive leave at 0."""
+        members, ids = seeded_batch()
+        root, manifest, records = self.build(members)
+        tally = Tally(PLAN)
+        for market_id in ids:
+            decide_record(PLAN, records[market_id], record_facts(PLAN, records[market_id]), root, manifest, tally)
+        for name in ("blind", "registered"):
+            value = summary(PLAN, tally, name, "0" * 64)
+            with self.subTest(pass_name=name):
+                self.assertEqual(sha(canonical_json(value) + b"\n" + resting_study.markdown(PLAN, value).encode()),
+                                 self.SEEDED_TABLES_SHA256[name])
+        # What these tables hold, so that the constants stand for it: fills of every kind, and of every kind in the
+        # hour seconds; fills that left the market not OPEN or turned it in play; orders ended by the lapse; all three
+        # trade counts; scored orders with a no-status batch; gated flags with no value at t; and a model flagged
+        # filled_is_all_placed that still has an SD.
+        cells = list(value["cells"].values())
+        counts = [item for tables in cells for models in tables["fills"].values() for item in models.values()]
+        for kind in FILL_KINDS:
+            self.assertTrue(any(item["by_kind"][kind] for item in counts), kind)
+            self.assertTrue(any(item["after_the_hour"][kind] for item in counts), kind)
+        self.assertTrue(all(any(item[key] for item in counts)
+                            for key in ("left_the_market_not_open", "turned_the_market_in_play")))
+        self.assertTrue(any(item["ended_by"]["lapse"] for item in counts))
+        for name in TRD_COUNTS:
+            self.assertTrue(any(tables["trd_changes"][name] for tables in cells), name)
+        self.assertTrue(any(tables["scored_orders_with_a_batch_begun_with_no_status"] for tables in cells))
+        self.assertTrue(any(any(tables["flags_missing_at_t"].values()) for tables in cells))
+        spreads = [item for tables in cells for item in tables["spread_of_g"]["filled"].values()]
+        self.assertTrue(any(item[FILLED_IS_ALL_PLACED] and item["sd"] is not None for item in spreads))
+
     def test_the_summaries_of_the_shared_run(self):
         given = shared()
         self.assertEqual({name: json.loads(getattr(given, name)[1])["summary_sha256"]
                           for name in ("blind", "registered")}, self.SUMMARY_SHA256)
+
+    def test_the_markdown_of_the_shared_run(self):
+        given = shared()
+        self.assertEqual({name: sha(outputs_of(given.base / name)["summary.md"]) for name in ("blind", "registered")},
+                         self.SUMMARY_MD_SHA256)
 
 
 class RestingBoundaries(unittest.TestCase):

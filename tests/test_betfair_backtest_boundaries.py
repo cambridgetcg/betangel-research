@@ -131,6 +131,8 @@ FORBIDDEN_BETFAIR = {
                    "evidence; the gateway's first-byte predicate and latch table"),
     "pilot_run": ("the RS-19 pilot executor: typed lines, the live journal, the recording admission, Keychain reads "
                   "and capture reads through the read sessions and gateways the CLI hands it"),
+    "pilot_summary": ("pilot-summary (s1, step 1): a read-only count of the live journal and the contract; imports "
+                      "pilot_run, which loads credentials, arming, auth, the journal writer and admission"),
     "presence": "operator presence on the controlling terminal before each live action",
     "reconcile": "reconciles live order state against the exchange through a ReadClient",
     "recorder": "live stream recorder: esa.StreamClient, the profile's recordings dir and recorder lock",

@@ -2312,13 +2312,21 @@ class EarlyPriceV1IsUnchanged(unittest.TestCase):
     """early-price-v1's tables as the sources of 5ce1d1e give them, set before close-early-v1 changes resting.py and
     resting_study.py, which early_study imports from (its pull request 1). For two sets of hand-built rows and each
     pass: the sha256 of the summary's bytes, a newline and its Markdown. early-price-v1 must come out byte for byte
-    as before, so no later pull request changes a constant here."""
+    as before, so no later pull request changes a constant here. The two end-to-end passes of shared() were added by
+    the drift check's first commit (early-price-2015-16-v1), on the sources of 76a9595, before it changed early.py
+    and early_study.py."""
 
     TABLES_SHA256 = {
         ("blind_rows", "blind"): "faeeeaf6cd20e8ff6e7a2ec355c25c13684f2172f96a350dd2e18d589a6bcaa8",
         ("blind_rows", "registered"): "cef363deb12b7e670a0dc44fa11bb40173850e95a6096e214b77c3676b12fa66",
         ("two_primaries", "blind"): "0af971893f4b90c1beed6ea73ff6ce914975d795c36bf1b0645f7234f2911167",
         ("two_primaries", "registered"): "8e4a9cc137f0340989985220b0ea995057f4652853295efac9919955afbebdef"}
+    # The two passes of shared(), summary.json then summary.md: the same on two runs and under python3.13 and
+    # python3.15 when they were set.
+    SUMMARY_SHA256 = {"blind": "2c58d34941dbe3f7e7684acfd0d2c4668633e32e47e60e78b0d4c3ebf905b74d",
+                      "registered": "a9fe6adf10bd690558fc7cbe3b3ee64385365284ad38f1489cd4645ffc3e0319"}
+    SUMMARY_MD_SHA256 = {"blind": "09280307c825efeb9cbb5042d3f377c8884d087e3aeb6cfc35f260e5dbd15a4c",
+                         "registered": "35aa502e07df757ed44626ccd74e00c2f2909930ba976c731cfaa73fd5a430cc"}
 
     def test_the_tables_of_hand_built_rows(self):
         for rows_name, rows in (("blind_rows", blind_rows()), ("two_primaries", two_primaries())):
@@ -2331,6 +2339,16 @@ class EarlyPriceV1IsUnchanged(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(canonical_json(value) + b"\n"
                                                     + early_study.markdown(PLAN, value).encode()).hexdigest(),
                                      self.TABLES_SHA256[rows_name, name])
+
+    def test_the_summaries_of_the_shared_run(self):
+        given = shared()
+        self.assertEqual({name: json.loads(getattr(given, name)[1])["summary_sha256"]
+                          for name in ("blind", "registered")}, self.SUMMARY_SHA256)
+
+    def test_the_markdown_of_the_shared_run(self):
+        given = shared()
+        self.assertEqual({name: hashlib.sha256(outputs_of(given.base / name)["summary.md"]).hexdigest()
+                          for name in ("blind", "registered")}, self.SUMMARY_MD_SHA256)
 
 
 # ---------------------------------------------------------------------------------------------------------------

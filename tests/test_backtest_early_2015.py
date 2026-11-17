@@ -42,7 +42,7 @@ RESEARCH = REPO / "research"
 STUDY = early.DRIFT_CHECK_ID
 D, V = "PRO-D", "PRO-V"
 # The registration's sha256 as reviewed: any change to the file must change this line too (a new registration).
-REGISTRATION_SHA256 = "1d57d8248195dd7ff7a17a061e7bb87746b9ef302c2cad0e5787a63ecc4bca43"
+REGISTRATION_SHA256 = "bc66167cecd5169183dcae39847b3748ebc09a385411b46788deb0f8e9c904b3"
 # Split file version 3 as merged; tests/test_backtest_close_early.py pins the same hash.
 V3_SHA256 = "fd35425aab3717099f0be2ce497505ec57fc37549cd24d470e3d6961ff792b65"
 REGISTRATION_FILE = RESEARCH / "studies" / f"{STUDY}.json"
@@ -118,8 +118,25 @@ def changed(trail):
     return any(trail[:len(prefix)] == prefix for prefix in CHANGED)
 
 
-def decimals(raw):
-    return set(re.findall(rb"-?\d+\.\d+", raw))
+# A number of the text, for the kinds-only test: a sha256 is dropped first; a date, a month, a span of years or a time
+# is one token; a sign belongs to a number only when no letter, digit, point or hyphen comes before it (so the
+# hyphens of an id or a file name are not minus signs); thousands may be grouped by commas, and a percent sign is
+# kept.
+HASH = re.compile(rb"[0-9a-f]{64}")
+NUMBER = re.compile(rb"\d{4}-\d{2}-\d{2}|\d{4}-\d{2}(?!\d)|\d{2}:\d{2}:\d{2}"
+                    rb"|(?:(?<![\w.-])[-+])?\d+(?:,\d{3})*(?:\.\d+)?%?")
+# Every number the registration may hold beyond early-price-v1's file. The line's five (Yu's OK on the fields,
+# 2026-11-16); alpha 0.0; the section number 10.1; the 1.2 and 65% of the known release (an upper limit set by the
+# share of dates on PRO-D, not a figure of any study); S3's 1500 values (and its 120 race dates, which early-price-v1's
+# file already holds), this study's own stop gates; and dates and the one time of decided_by.
+NUMBERS_ALLOWED = {b"-0.012", b"-0.006", b"-0.018", b"0.009", b"-0.015", b"0.0", b"10.1", b"1.2", b"65%", b"1500",
+                   b"120"}
+DATES_ALLOWED = {b"2015-05", b"2016-04", b"2015-05-01", b"2015-10-31", b"2015-11-01", b"2016-04-30", b"2026-10-17",
+                 b"2026-11-14", b"2026-11-16", b"2026-11-17", b"18:43:51"}
+
+
+def numbers(raw):
+    return set(NUMBER.findall(HASH.sub(b"", raw)))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -257,6 +274,22 @@ class TheWords(unittest.TestCase):
         self.assertIn("2026-11-16 (18:43:51 UTC)", text)
         self.assertTrue(text.endswith("the cells, the passes and the line in verdicts.rule are lab-Claude's."))
         self.assertNotIn("/Users/", text)
+        # Each of the three readings is labelled as lab-Claude's, not Yu's words.
+        self.assertIn("lab-Claude reads that as yes to the offer as worded; the reading is lab-Claude's, not Yu's "
+                      "words", text)
+        self.assertIn("lab-Claude reads it as covering this much, and the reading is lab-Claude's, not Yu's words: a "
+                      "LAY is thinkable", text)
+        self.assertIn("That this covers these fields is lab-Claude's reading", text)
+        self.assertNotIn("It covers this much", text)
+
+    def test_the_known_releases_say_the_explore_pass_names_the_moved_cells(self):
+        """The blind look lists the two moved cells unnamed; the explore pass names them on PRO-D with the same
+        counts, so the two passes together name the blind look's PRO-V counts of DRIFT and STEAM."""
+        text = VALUE["exposure"]["blind_pass_releases"]
+        self.assertIn("The explore pass names DRIFT and STEAM on PRO-D with the counts the blind look gave unnamed, so "
+                      "after the explore pass the blind look's PRO-V counts and pooled spreads (B7) of the two moved "
+                      "cells are known by name", text)
+        self.assertTrue(text.endswith("no mean, sign or interval of x on PRO-V."))
 
     def test_the_signed_prediction_and_the_line(self):
         self.assertEqual(VALUE["verdicts"]["prediction"], PREDICTION)
@@ -274,13 +307,18 @@ class TheWords(unittest.TestCase):
         self.assertEqual((sorted(cites), sorted(VALUE["exposure"]["lines"])), (sorted(V3.prior_exposure),) * 2)
         self.assertEqual(len(cites), 8)
 
-    def test_kinds_only_the_decimals_beyond_early_price_v1s_are_the_lines(self):
+    def test_kinds_only_every_number_beyond_early_price_v1s_is_on_the_list(self):
         """The registration may carry, of the figures behind it, the five numbers of the line and nothing else
-        (Yu's OK on the fields, 2026-11-16). So every decimal number not in early-price-v1's file is one of them, alpha
-        0.0, the section number 10.1 or the 1.2 of the known release (an upper limit set by the 65% of dates on
-        PRO-D, not a figure of any study)."""
-        self.assertEqual(sorted(decimals(RAW) - decimals(EARLY_RAW)),
-                         sorted({b"-0.012", b"-0.006", b"-0.018", b"0.009", b"-0.015", b"0.0", b"10.1", b"1.2"}))
+        (Yu's OK on the fields, 2026-11-16). So every number not in early-price-v1's file, an integer or a decimal,
+        is on the list: one of the five, a design number of this study, a date or the time of decided_by."""
+        extra = numbers(RAW) - numbers(EARLY_RAW)
+        self.assertEqual(sorted(extra - NUMBERS_ALLOWED - DATES_ALLOWED), [])
+        self.assertLessEqual({b"-0.012", b"-0.006", b"-0.018", b"0.009", b"-0.015"}, extra)
+        # The tokens: a grouped count and a percentage are numbers, the parts of a date or an id are not.
+        self.assertEqual(sorted(numbers(b"held 12,345 values (67890) at -0.25% from -14400 on 2026-11-16 at 18:43:51 "
+                                        b"in p0-basic-2015-16 and B@-600, YU-ANSWERS-2026-11-16.md")),
+                         sorted({b"12,345", b"67890", b"-0.25%", b"-14400", b"2026-11-16", b"18:43:51", b"2015-16",
+                                 b"0", b"-600"}))
 
 
 # ---------------------------------------------------------------------------------------------------------------

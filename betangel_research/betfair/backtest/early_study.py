@@ -154,8 +154,8 @@ AGED = (BEFORE_REMOVAL, STALE, PRICED)              # the runner codes whose pri
 SHOWN_ORDER = MOVES + (MOVED_LARGER, MOVED_SMALLER)
 # The explore pass: what it says of the test label, which it does not read, and of the cells its tables leave out.
 LOCKED_NOT_READ = ("not read in this pass: its index records are counted by month (B1) and coded "
-                   "partition_not_registered at every time the history gates let through (B2), and no file of its "
-                   "race dates is opened")
+                   "partition_not_registered at every time where none of the first thirteen codes applies (the "
+                   "history gates and the field; B2), and no file of its race dates is opened")
 EXPLORED_ONLY = ("Of the level cells at the other times and of the move cells from the later start, this pass gives "
                  "counts only (B3, B4 and B6).")
 

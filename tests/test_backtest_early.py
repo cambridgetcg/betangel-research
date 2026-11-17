@@ -48,7 +48,7 @@ from betangel_research.betfair.backtest.lp import BACK, LAY
 from betangel_research.betfair.backtest.movement import RegistrationError, exact, replay_market
 from betangel_research.betfair.backtest.partition import file_bytes, parse_split
 from betangel_research.betfair.backtest.replay import ReplayProblem, _member
-from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, StudyLedger, head_text, verify
+from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, PassRequest, StudyLedger, head_text, verify
 
 import test_betfair_backtest_replay as fx
 from test_backtest_lane import SPLIT_SHA256 as V1_SHA256
@@ -209,7 +209,7 @@ PLAN = parse_registration(REGISTRATION_RAW, V2_RAW)
 # The drift check's id. Until its own registration exists, its tests here use early-price-v1's file with the id
 # changed: the parser and the runner do not care which labels they are given.
 DRIFT_CHECK = early.DRIFT_CHECK_ID
-TIMES =(-14400, -7200, -3600, -1800, -600)
+TIMES = (-14400, -7200, -3600, -1800, -600)
 DECIDED_BY = ("lab-Claude proposed this study on 2026-11-12 after a design round and its reviews. Yu, 2026-11-12, "
               "after lab-Claude wrote that it read Yu's message as a go to build the study as a pull request: "
               "\"go\". Yu chose none of the numbers here. Merging this registration and the split file version 2 "
@@ -2532,8 +2532,10 @@ class DriftCheckRun(unittest.TestCase):
     def test_no_locked_date_file_is_opened_by_the_explore_pass(self):
         given = self.given
         self.assertEqual(given.opened["explore"], sorted(given.ids[name] for name in EXPLORE_DATED))
+        self.assertFalse(set(given.opened["explore"]) & {given.ids[name] for name in LOCKED_DATED})
         self.assertEqual(given.opened["blind"], sorted(market_id for name, market_id in given.ids.items()
                                                        if name not in NEVER_OPENED))
+        self.assertLessEqual({given.ids[name] for name in LOCKED_DATED}, set(given.opened["blind"]))
         receipt = json.loads(outputs_of(given.base / "explore")["receipt.json"])
         explore_ids = {given.ids[name] for name in EXPLORE_DATED}
         opened = sum(member.stat().st_size for member in raw_members(given.root) if member.name[:-4] in explore_ids)
@@ -2743,6 +2745,9 @@ class DriftCheckRun(unittest.TestCase):
         # A record with no off time has no label: it keeps its codes, which all come from the history gates.
         none = (early_study.NO_ANCHOR, None, dict.fromkeys(TIMES, ("anchor_not_known_by_decision", False)))
         self.assertEqual(early_study._read_only(none, (D,)), none)
+        # The header line the explore pass prints says the same: the thirteen codes stay, not the gates alone.
+        self.assertIn("partition_not_registered at every time where none of the first thirteen codes applies (the "
+                      "history gates and the field; B2)", early_study.LOCKED_NOT_READ)
 
     # T13
     def test_the_real_gates_give_counts_only_in_the_explore_pass(self):
@@ -2772,6 +2777,43 @@ class DriftCheckRun(unittest.TestCase):
         entry = verify(self.ledger / LEDGER_FILE)[1]
         self.assertEqual((entry["kind"], entry["partitions"], entry["m"], entry["alpha"]), ("explore", [D], 0, "0"))
 
+    # T7, the other side: E2 is under part and rest
+    def test_e2_holds_back_a_cell_by_part_and_rest(self):
+        """E2 is under part and rest with no primary: the earlier start's cells in the order DRIFT, FLAT, STEAM, each
+        given only if every class then holds min_values values. Here 50 of band B's 800 members have no move from
+        -14400, so STEAM (150 values of its own) is held back, and DRIFT and FLAT print."""
+        rows = (rows_of("-0.02", "0.02", 300, band="B", moves={-14400: DRIFT})
+                + rows_of("0.0", "0.02", 300, band="B", moves={-14400: FLAT})
+                + rows_of("0.01", "0.02", 150, band="B", moves={-14400: STEAM})
+                + rows_of("0.0", "0.02", 50, band="B", moves={-3600: FLAT}))
+        value = early_study.summary(DRIFT_PLAN, tally_of(rows, DRIFT_PLAN), "explore", "0" * 64)
+        found = value["move_figures"]["by_cell"]
+        for name, given in ((DRIFT, True), (FLAT, True), (STEAM, False)):
+            for end in resting.BSP_ENDS:
+                with self.subTest(cell=name, end=end):
+                    item = found[f"B from -14400: {name}"][D]["x"][end]
+                    self.assertEqual(item["mean"] is not None, given)
+                    self.assertEqual(item["reason"] == resting.REST_NOT_GIVEN, not given)
+        self.assertEqual(found["B from -14400: STEAM"][D]["x"][resting.AS_WRITTEN]["values"], 150)
+        self.assertIsNotNone(value["level_figures"]["by_cell"]["B@-600"][D]["x"][resting.AS_WRITTEN]["mean"])
+
+    # T11, the other side: explore:already_run counts this study's explore lines only
+    def test_another_studys_explore_line_leaves_this_studys_explore_pass_free(self):
+        """The lab's one ledger also holds other studies' explore lines (close-early-v1's, of lineage close): such a
+        line, between this study's look and its explore pass, does not refuse the explore pass."""
+        blind = self.run_pass("blind", self.tmp / "blind")
+        self.assertEqual(blind["status"], "completed", blind)
+        other = PassRequest(study="close-early-v1", lineage="close", kind="explore", partitions=(D,),
+                            partitions_sha256=V2_SHA256, registration_sha256="4" * 64, input_sha256="5" * 64,
+                            source_descriptor_sha256="6" * 64, code_commit="7" * 40)
+        head = head_text(StudyLedger.open(self.ledger, blind["ledger_head"]).record(other, V2_RAW, "8" * 64,
+                                                                                     "completed", clock))
+        explore = self.run_pass("explore", self.tmp / "explore", head,
+                                blind_receipt=self.tmp / "blind" / "receipt.json")
+        self.assertEqual(explore.get("status"), "completed", explore)
+        self.assertFalse(explore["ledger_repeat"])
+        self.assertEqual([(entry["study"], entry["kind"]) for entry in verify(self.ledger / LEDGER_FILE)],
+                         [(DRIFT_CHECK, "look"), ("close-early-v1", "explore"), (DRIFT_CHECK, "explore")])
 
 
 # ---------------------------------------------------------------------------------------------------------------

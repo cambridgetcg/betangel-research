@@ -1,6 +1,6 @@
 # Research lane: the data split, the study ledger, rule files and close-v1
 
-Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). early-price-v1, a study on the BASIC files, with the split file version 2, came in a pull request of its own (#67), which lab-Claude merged on 2026-11-12 under Yu's word of that day ([who merges and who starts a pass](#who-merges-and-who-starts-a-pass)). When that pull request was written (2026-11-12), no pass had run: nothing here had read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The middle, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. [The split, version 2](#the-split-version-2) and [early-price-v1](#early-price-v1-early-prices-against-bsp) cover the proposed PR. inplay-v1 is planned for PR C and is not built. close-early-v1, early resting LAYs on the explore dates only, came in four pull requests and a speed-up from 2026-11-16 (#70 its pins, #71 its parser and walk, #73 its runner, #74 the speed-up, and the fourth its frozen files); [the split, version 3](#the-split-version-3) and [close-early-v1](#close-early-v1-early-resting-lays-explore-dates-only), at the end of this page, cover them. When the fourth was written (2026-11-17), no pass of close-early-v1 had run.
+Status: PR A (#64) and PR B (#65) of three stacked PRs, merged on Yu's word of 2026-11-12 ("Yes merge all"). early-price-v1, a study on the BASIC files, with the split file version 2, came in a pull request of its own (#67), which lab-Claude merged on 2026-11-12 under Yu's word of that day ([who merges and who starts a pass](#who-merges-and-who-starts-a-pass)). When that pull request was written (2026-11-12), no pass had run: nothing here had read a data file or written a ledger entry. The first half of this page covers PR A: frozen rule files, a data split and a ledger of every pass. The middle, from [close-v1](#close-v1-resting-orders-on-the-favourite) on, covers PR B: the first study that uses them, and its pass runner. [The split, version 2](#the-split-version-2) and [early-price-v1](#early-price-v1-early-prices-against-bsp) cover the proposed PR. inplay-v1 is planned for PR C and is not built. close-early-v1, early resting LAYs on the explore dates only, came in four pull requests and a speed-up from 2026-11-16 (#70 its pins, #71 its parser and walk, #73 its runner, #74 the speed-up, and the fourth its frozen files); [the split, version 3](#the-split-version-3) and [close-early-v1](#close-early-v1-early-resting-lays-explore-dates-only), near the end of this page, cover them. When the fourth was written (2026-11-17), no pass of close-early-v1 had run. early-price-2015-16-v1, the drift check, runs early-price-v1's measurement unchanged on the 2015-16 BASIC files and names split file version 3. It came in a pull request of its own (2026-11-17), which changes `early.py` and `early_study.py`; [early-price-2015-16-v1](#early-price-2015-16-v1-the-drift-check-on-the-2015-16-basic-year), the last section of this page, covers it. When that pull request was written (2026-11-17), no pass of the drift check had run.
 
 For Yu, Nuance, Astra and the lab operator. Author: lab-Claude, 2026-11-11, against betangel-research main b9099ff.
 
@@ -87,7 +87,7 @@ Until 2026-11-12 every merge in this lane waited for Yu's "merge", and every pas
   | `result` | `completed`, or `engine_check_failed` (a `look` only) |
   | `recorded_at` | UTC text from the caller's clock |
 
-- **The three kinds.** A `look` is the entry for a blind pass. A blind pass is planned to show counts and how spread out the values are (SDs and ranges), with no average and no result. That is the runner's job: the ledger does not check what a pass shows. A `registered` entry is the one test on the holdout. `explore` is a pass over explore labels only; close-early-v1's explore pass writes it ([close-early-v1](#close-early-v1-early-resting-lays-explore-dates-only)).
+- **The three kinds.** A `look` is the entry for a blind pass. A blind pass is planned to show counts and how spread out the values are (SDs and ranges), with no average and no result. That is the runner's job: the ledger does not check what a pass shows. A `registered` entry is the one test on the holdout. `explore` is a pass over explore labels only; close-early-v1's explore pass writes it ([close-early-v1](#close-early-v1-early-resting-lays-explore-dates-only)), and so does the early-price runner for `early-price-2015-16-v1` ([the drift check](#early-price-2015-16-v1-the-drift-check-on-the-2015-16-basic-year)).
 - **One entry per pass.** The ledger has two calls for a runner. `check` comes before the read and refuses a spent budget. `record` is meant to be called after the read and before any output is written; it appends the one entry. Called in that order, a pass that stops during the read has written nothing. The order is the runner's duty: the ledger cannot tell when it is called. Both calls take the split file's bytes, not a parsed split.
 - **A repeat.** A run is known by its study, kind, registration, input, sources and commit. The same run again appends nothing and counts against no budget. Its tables hash and result must equal the stored ones, else `ledger:repeat_differs`.
 - **Budgets.** Checked before the read, so a refusal costs no night, and again at the append.
@@ -476,12 +476,12 @@ Every figure here is a guess that the blind pass replaces.
 
   | Argument | Meaning |
   |---|---|
-  | `--study early-price-v1` | the only study it runs; anything else is refused before a file is read |
-  | `--pass blind\|registered` | blind first |
-  | `--registration-sha256 HEX`, `--registration PATH` | the hash must match; the default file is `research/studies/early-price-v1.json`, and the split file is read beside its `studies/` folder |
+  | `--study early-price-v1\|early-price-2015-16-v1` | one of the two studies it runs (the second is [the drift check](#early-price-2015-16-v1-the-drift-check-on-the-2015-16-basic-year)); anything else is refused before a file is read. The registration's own id must be this one (`study:not_the_registrations`) |
+  | `--pass blind\|registered\|explore` | blind first; then early-price-v1's registered pass, or the drift check's one explore pass. A pass that is not the study's own is refused before a file is read (`pass:not_supported`) |
+  | `--registration-sha256 HEX`, `--registration PATH` | the hash must match; the default file is `research/studies/<study>.json`, and the split file is read beside its `studies/` folder |
   | `--archive-root DIR`, `--out DIR`, `--code-commit HEX` | the BASIC data root; a new output directory; the commit the code was checked out at |
   | `--ledger DIR`, `--ledger-head none\|SEQ:SHA256` | the ledger directory and its newest head; both required |
-  | `--blind-receipt PATH` | registered pass only: the blind pass's `receipt.json` |
+  | `--blind-receipt PATH` | every pass but the blind one (early-price-v1's registered pass, the drift check's explore pass): the blind pass's `receipt.json` |
 
 - **Before it reads a record** it refuses, in close-v1's order: another study or pass name; a wrong hash; a registration not in a `studies` folder; a split file that is not the bytes named; a bad commit, data root or `--out`; a blind receipt of another kind, study, registration, split, commit, set of sources or input; then the ledger: `--out` inside it, a head other than the newest, a blind receipt whose look it does not hold, a spent budget.
 - **The ledger.** The blind pass is a `look` of lineage `early-price` on `BASIC-D` and `BASIC-V`. The registered pass is the lineage's one test on `BASIC-V`, with family size 2, and spends 0.02 of 2024's 0.10. It also counts once against `BASIC-D`'s explore budget of 10.
@@ -530,14 +530,15 @@ Every figure here is a guess that the blind pass replaces.
 - Each runner is its own module, not a subcommand of the backtest CLI: that CLI's `__main__.py` is a certified source and stays byte-identical.
 - movement-v1 and lp-v1 are untouched. As before, a re-run of either study's registered pass works only from a clean clone at its own commit ([lp study](lp-study.md), operator step 9).
 - **close-v1 after this merge.** The package sources change, so close-v1's registered pass runs only from the checkout its blind pass ran at. From a later commit it refuses (`blind_receipt:another_code`). If close-v1's blind pass has run and its registered pass has not, Yu is told before this PR merges.
-- **Later BASIC studies.** No other BASIC study registers until a split file carries an `early-price-v1` exposure sentence (the rule in [the split, version 2](#the-split-version-2)).
+- **Later BASIC studies.** No other BASIC study registers until a split file carries an `early-price-v1` exposure sentence (the rule in [the split, version 2](#the-split-version-2)). Version 3 carries one ([the split, version 3](#the-split-version-3)).
 - The `ltp_to_bsp_movement_non_executable` metric that P0's contract declares and never built is done here as a lane study, not in P0.
 - One dated line each in [backtest plan](backtest-plan.md) §13 for PR A and for early-price-v1.
 - **close-early-v1** adds no module. Its pull requests changed `resting.py` and `resting_study.py` and added data files, tests and the two sections below, so the count of certified files stays 33. The sources' hash moved with #71, #73 and #74, so the engine certificate's key moved too: a later P0 `run-backtest` needs `certify-engine` at these sources. One dated line in [backtest plan](backtest-plan.md) §13.
+- **early-price-2015-16-v1** (the drift check) adds no module either. Like close-early-v1's #71, #73 and #74, it changes existing source files: `early.py` and `early_study.py`. In `early.py` the parser takes a second study id (two constants, the id check, the plan's study taken from the file, one docstring sentence). In `early_study.py` a table says which study runs which pass; a registration whose id is not `--study` is refused; the drift check gets a third pass, `explore`, with its own ledger line, one explore pass per study, the locked label coded so that its files are never opened, and the tables E1 to E3; and three small edits let the shared Markdown serve a third pass with the same bytes for the first two. Why: one measurement, run on another year, with no new copy of the code ([what changed in the code](#what-changed-in-the-code)). No measurement function changes, and early-price-v1's outputs are pinned byte for byte by a test committed before any source line moved. The count of certified files stays 33. The sources' hash moves, so the engine certificate's key moves: a later P0 `run-backtest` needs `certify-engine` at these sources. A repeat of an early-price-v1, close-v1 or close-early-v1 pass works only from its own commit. When the pull request was written, no study had a blind pass waiting for its second pass; lab-Claude checks that again before it merges ([the drift check's operator steps](#operator-steps-for-the-drift-check-after-this-pull-request-merges), step 1). One dated line in [backtest plan](backtest-plan.md) §13.
 
 ## The split, version 3
 
-- **What it is.** [research/partitions-v3.json](../research/partitions-v3.json): version 2 plus three `prior_exposure` sentences, and nothing else. Its sha256 is pinned in `tests/test_backtest_close_early.py`. close-early-v1 names it. Nothing is run or registered by the file alone.
+- **What it is.** [research/partitions-v3.json](../research/partitions-v3.json): version 2 plus three `prior_exposure` sentences, and nothing else. Its sha256 is pinned in `tests/test_backtest_close_early.py`, and again in `tests/test_backtest_early_2015.py`. close-early-v1 and early-price-2015-16-v1 name it. Nothing is run or registered by the file alone.
 - **The three sentences, by kind.** The file holds their words; none holds a figure, a label or a cell of a result.
   - `close-v1`: what close-v1 read of the 2015-16 PRO year (`PRO-V` dates included), that it spent the `close` lineage's one test on `PRO-V`, and the kinds of figure it released on the lab.
   - `early-price-v1`: what early-price-v1 read of the 2023 and 2024 BASIC files, that it spent the `early-price` lineage's one test on `BASIC-V`, the kinds of figure it released on the lab, and what its designer also knew.
@@ -545,9 +546,10 @@ Every figure here is a guess that the blind pass replaces.
 - **Why they may be in Git.** Yu answered lab-Claude's question of 2026-11-16 on what may enter Git; that the answer covers these three sentences is lab-Claude's reading, and the record is in the lab's notes.
 - **What did not change.** Every date row, the salt, the half-years, `max_looks` 2, every budget and role, and the five old sentences. So every date gets the same label and the same half under versions 1, 2 and 3; a test checks every date from 2015 to 2027. The `schema` text is still `betangel.partitions/v1`: "v3" is the file's name.
 - **Versions 1 and 2 stay.** Their bytes and pinned hashes do not move. close-v1 keeps naming version 1 and early-price-v1 version 2. One ledger holds the lines of all three: what is spent is counted by study id, lineage and label, not by file ([the split, version 2](#the-split-version-2)).
-- **The `early-price-v1` sentence.** [The split, version 2](#the-split-version-2) asks that no other BASIC study registers until a split file carries one. Version 3 is such a file.
+- **The `early-price-v1` sentence.** [The split, version 2](#the-split-version-2) asks that no other BASIC study registers until a split file carries one. Version 3 is such a file. early-price-2015-16-v1, a BASIC study, names version 3, so it meets that rule.
+- **BASIC files of the PRO year.** A label belongs to a race date, not to a file. So `PRO-D` and `PRO-V` apply to the BASIC files of 2015-05-01 to 2016-04-30 as they do to the PRO files of those dates. The names say PRO; the files can be BASIC. early-price-2015-16-v1 reads BASIC files under these two labels.
 - **What merging it fixes for good.** The three sentences. A wrong one costs a version 4.
-- **Owed.** The next split file owes a `close-early-v1` sentence: what close-early-v1 read and released. It is written once the study's passes have run.
+- **Owed.** The next split file owes a `close-early-v1` sentence: what close-early-v1 read and released. It is written once the study's passes have run. It owes an `early-price-2015-16-v1` sentence on the same terms.
 
 ## close-early-v1: early resting LAYs, explore dates only
 
@@ -723,3 +725,197 @@ lab-Claude reads the blind tables in daylight and writes its reading down before
 - **Nor an early-price-v1 pass.** Its receipts check the same backtest sources, so a pass of it from this main would not be a repeat either. Never start one.
 - **A receipt's `ledger_counts` does not count explore lines.**
 - **The next split file owes a `close-early-v1` sentence.**
+
+## early-price-2015-16-v1: the drift check on the 2015-16 BASIC year
+
+- **The question.** On the explore dates of the 2015-16 BASIC year (`PRO-D`), does the last traded price 10 minutes before the off of band-B runners (4.00 to under 10.00) whose price drifted since 4 hours before the off sit below BSP, as the registration's line defines it? The study runs early-price-v1's measurement, cells and rules, unchanged, on the BASIC files of 2015-05 to 2016-04. early-price-v1 never opened them, and [its section](#the-files-and-the-years) stays true of it; this study does open them. The score is early-price-v1's: x = LTP / BSP − 1 per runner. x below 0 means the last trade was below BSP, the side a LAY wants.
+- **What kind of study it is.** A registered offline check, not a backtest contract and not a test: a description with its closing line written first. There is no registered pass, no test, no p-value, no selection and no label. No alpha is spent, and the `early-price` lineage's one test on `PRO-V` stays unspent. It spends one of the new id's two looks and one of `PRO-D`'s 20 explore passes for the lineage `early-price`. early-price-v1's ledger lines name `BASIC-D` and `BASIC-V`, so they count nothing against `PRO-D`.
+- **Lineage `early-price`, a new id.** The lineage is kept, so the ledger shows it is the same idea, counts its explore passes under one name and goes on refusing a second test of the lineage on 2024. The new id gets two looks of its own.
+- **What it cannot show.** Anything about today's market: the files are of another decade. What price could have been had: BASIC files hold last traded prices, with no quotes and no sizes. Whether the price goes on drifting or the last trade only prints on the low side of the gap: the files do not say which side of the gap a trade was on. And the year is not fresh (below). So it can weaken or support an idea; it cannot confirm one and it cannot show an edge. Printed above E1 (`verdicts.printed_with`): "A last traded price is not a price anyone could have taken. The 2015-16 year is another decade and is not fresh. This can weaken or support an idea; it cannot confirm one and it cannot show an edge."
+- **The labels, in plain words.** A label belongs to a race date, not to a file ([the split, version 3](#the-split-version-3)). `PRO-D` and `PRO-V` are the split file's labels for the race dates of 2015-05-01 to 2016-04-30, so a BASIC file of such a date carries the label a PRO file of it carries. `PRO-D` is the explore label. `PRO-V` is the locked label: the registration's key for it is `test` because the parser fixes the key's name, and nothing is tested.
+- **What was known.** The year is not fresh on any date, `PRO-V` dates included: P0 read these BASIC files, and movement-v1, lp-v1 and close-v1 read the PRO files of the same races. The idea is not fresh either: the two cells were named, and the numbers of the line set, after early-price-v1's results on 2023 and 2024 were read. The registration's `exposure` cites version 3's eight `prior_exposure` ids, with one line for each, by kind.
+- **Where the rules are.** The registration [research/studies/early-price-2015-16-v1.json](../research/studies/early-price-2015-16-v1.json) (sha256 `1d57d8248195dd7ff7a17a061e7bb87746b9ef302c2cad0e5787a63ecc4bca43`) names [research/partitions-v3.json](../research/partitions-v3.json) (sha256 `fd35425aab3717099f0be2ce497505ec57fc37549cd24d470e3d6961ff792b65`). Both hashes are pinned in `tests/test_backtest_early_2015.py`. Every field the design does not set is early-price-v1's, byte for byte: the cells, the timing, the population, the statistics, the uncertainty, the diagnostics, what is not measured, and the measurement but for its part-and-rest text. A test checks that. The blocks `family`, `selection` and `verdicts`, the field `registered_pass.test_label_move_means` and `data.halves` are kept because the parser takes one exact key set; each says in its own text that nothing reads it. The code is early-price-v1's: `early.py` and `early_study.py` now run two studies ([what changed in the code](#what-changed-in-the-code)).
+- **Who starts its passes.** The registration's `decided_by` relies on the standing word of 2026-11-12 ([who merges and who starts a pass](#who-merges-and-who-starts-a-pass)) for merging this pull request, once a reviewer other than the builder has read it and the whole suite passes, and for starting its two night passes under the operator steps below. Its `blind_pass.rule` puts the explore pass on a later night than the blind look, after lab-Claude has read the blind tables. The standing word does not cover live code, the order path, a money number, a policy page, the lab's rule file, another author's pull request, a daytime pass, or putting any result into Git.
+- **What Yu said yes to.** The registration quotes it.
+  - On 2026-11-14 lab-Claude asked Yu: "Is a LAY thinkable at all? If no, I drop the drift flag. If yes, I check it offline in small steps before asking for anything live." Item 1 of Yu's three-part reply that day was "yes lay is ok". Items 2 and 3 answered other questions of lab-Claude's and are not relied on. lab-Claude's reading, not Yu's words: a LAY is thinkable, so lab-Claude may check a LAY idea offline in small steps. It does not cover a live LAY, any live rule, any stake, liability or other money number, a closing bet at the starting price, or the policy pages; each of those stays Yu's.
+  - On 2026-11-16 lab-Claude asked Yu whether, for this check, its two cell names, the direction it tests, its five threshold numbers and the sentence that these were set after reading the earlier results may enter Git. Yu's reply of that day ended "yes to both on git." That this covers these fields is lab-Claude's reading; the record is in the lab's notes. Yu chose none of the numbers: the cells, the passes and the line are lab-Claude's.
+
+### The two named cells
+
+- **`B from -14400: DRIFT`.** The band-B runners priced 10 minutes before the off whose price drifted between 4 hours and 30 minutes before the off: ln(LTP at T-30 / LTP at T-4 h) of +0.05 or more, early-price-v1's move rule ([the cells](#the-cells)). The line reads this cell alone.
+- **`A from -14400: DRIFT`.** The same cell in band A (1.50 to under 4.00). It is exploratory: it gets fixed words, and no outcome.
+- Both were named before any pass, and after early-price-v1's results were read.
+
+### What each night releases and withholds
+
+- **Night 1, the blind look.** early-price-v1's blind pass, with no change to its tables, over both labels. It opens the files of both labels.
+
+  | Table | `PRO-D` (explore dates) | `PRO-V` (locked dates) |
+  |---|---|---|
+  | Files opened | yes | yes |
+  | B1 records by month | counts | counts |
+  | B2 market codes per time | one table for all records, not by label | |
+  | B3 markets viewed, markets with a priced runner, runner codes, priced runners per band | counts | counts |
+  | B4 classes of priced runners | counts | counts |
+  | B5 the age of the price (seconds, quantiles) | both labels together | |
+  | B6 undefined moves by reason; per move cell its members, scored values, race dates and k | counts | counts |
+  | B7 the SD and three ranges of x per move cell | both labels together only | |
+  | B8 the detectable effect on the locked label | printed; it describes a test that is not run, and is not read | |
+  | B9 whole-hundredth BSPs and the switch; `bspMarket` with no value; bytes | both labels together | |
+
+  - **Withheld,** as early-price-v1's blind pass withholds them: every mean, median, sign, interval and quantile of x; any spread by label; every spread of a level cell; the names DRIFT and STEAM (the two moved cells of a start show as `moved_larger` and `moved_smaller`); a move cell's spread when either label holds fewer than 100 of its scored values; the earlier start's spreads in a band when the two starts' scored members differ by fewer than 100. That last rule can hide the spread of the very cells the line reads. Their counts still print, and nothing in the line needs B7.
+  - **B8 still prints.** The blind tables are early-price-v1's, so B8 prints too, and its heading still says "both years", which here means both labels. It describes a test this study does not run. Nothing is decided by it.
+- **Night 2, the explore pass, once.** New runner code, no new measurement code. It opens explore-date files only.
+
+  | Table | `PRO-D` (explore dates) | `PRO-V` (locked dates) |
+  |---|---|---|
+  | Files opened | yes | none |
+  | B1 records by month | counts | index record counts only (the blind look gave them) |
+  | B2 market codes per time | one table; a `PRO-V` record is coded `partition_not_registered` at every time where none of the first thirteen codes (the history gates and the field) applies | |
+  | B3, B4, B6 | counts, with DRIFT and STEAM named | every count is 0 |
+  | B5 ages | `PRO-D` alone | |
+  | B7, B8 | no spread and no detectable effect: every cell shows its counts and `rest_not_given` or `counts_only` | |
+  | B9 | `PRO-D` alone; the switch printed here decides nothing | |
+  | E1 the two level cells at 10 minutes (`A@-600`, `B@-600`): members, each class's size, n, race dates, mean x, SD and 95% interval at both BSP ends | headed exploratory; c = 2 and `sqrt(2 ln c)` | nothing |
+  | E2 the six move cells from the 4-hour start (DRIFT, FLAT and STEAM in bands A and B): the same figures | headed exploratory; c = 6 and `sqrt(2 ln c)`; under part and rest | nothing |
+  | E3 quantiles of the sum of 1 / BSP per market with a scored value | printed | nothing |
+
+  - **Withheld by the explore pass:** every figure of the move cells from the 1-hour start and of the level cells at the other times but their counts; every mean, SD, range or interval of `PRO-V`; every test, p-value, bound, selection, label or half-year figure; every net.
+  - **Why eight cells.** The question needs these and no others; each further mean is one more thing to be tempted by.
+  - **Part and rest** (the registration's `measurement.part_and_rest`). Nothing is selected or tested, so no figure is decided first. Inside each band's level cell at T-10 on `PRO-D`, the move cells of one start share no runner. The 4-hour start is checked first, and in it DRIFT, FLAT and STEAM (`early.given_move_cells` with no primary). A cell is given only if it, and what is left of its band's level cell, hold 100 scored values or none; else it shows its counts and `rest_not_given`. Nothing is pooled over the two labels.
+  - **Printed above E1:** `verdicts.printed_with`, `exposure.printed_with_every_label`, `measurement.bsp_ends.limit` and `measurement.removals`. Every interval is descriptive.
+
+### The freeze between the two nights
+
+- Nothing in the registration or the code may change between the two passes.
+- The explore pass needs this study's blind receipt. The runner refuses a receipt of another study, registration, split file, commit, set of backtest sources or input, and one whose look this ledger does not hold (the existing `blind_receipt:*` codes).
+- Both passes run from the same clean checkout at the same commit, on two nights, so the blind tables are read first.
+- The second look stays possible, as for every study. It is for a changed registration, after the blind look shows a rule wrong: a new hash, put to Yu first. A stop is not a reason for one.
+
+### The drift check's stop rules (S1 to S4)
+
+After the blind look lab-Claude reads the tables in daylight and writes its reading down before night 2. As `blind_pass.rule` words them, lab-Claude stops, tells Yu, and runs nothing more until Yu answers, if any of these holds.
+
+| Rule | Fires when |
+|---|---|
+| S1 | on either label, fewer than half the markets viewed at 4 hours before the off have a priced runner (B3) |
+| S2 | on either label, the markets viewed at 4 hours before the off are fewer than half the markets viewed at 10 minutes before the off (B3) |
+| S3 | on `PRO-D`, in the group `B from -14400`, either moved cell has fewer than 1,500 scored values, or scored values on fewer than 120 race dates (B6); the blind look does not say which moved cell is DRIFT, so both must pass |
+| S4 | the blind receipt's `input_sha256` is not P0's recorded value (`6e5a8275…27c2`, [backtest plan](backtest-plan.md) §10.1); then an archive was added or the index was rebuilt, and the exposure lines may not describe this input |
+
+- S2 closes a hole in S1: if the old files start late, most markets are not viewed at 4 hours at all, and S1 would look only at the few that are.
+- No code enforces S1 to S4: lab-Claude does, in writing. A wrong data root spends no look: if no record of the root reaches the view, the pass fails with `input:no_registered_market` before the ledger gets a line.
+
+### The line, written before any pass
+
+As the registration words it (`verdicts.rule`), lab-Claude reads one outcome from the explore pass's `summary.json`.
+
+- **The cell:** `B from -14400: DRIFT` on `PRO-D`, as table E2 gives it.
+- **The figures:** at each BSP end, as fractions of the stake to 6 places (0.012 is 1.2 points): the cell's `mean`, `ci_low` and `ci_high` of x, and the `mean` of x of `B from -14400: FLAT`.
+- **At one end** the cell **shows** when `mean <= -0.012` and `ci_high < 0`; it is **absent** when `mean >= -0.006` and `ci_low > -0.018`.
+- **The outcome** is the first of these that applies.
+  1. **Unclear:** at either end the cell's mean or interval is not given (fewer than 100 values, fewer than 15 race dates, or `rest_not_given`).
+  2. **The drift shows:** at both ends the cell shows, and its mean is at least 0.009 below FLAT's mean.
+  3. **Unclear, a level and not a move:** at both ends the cell shows, and at either end FLAT's mean is not given or the cell's mean is less than 0.009 below it.
+  4. **The drift is absent:** at both ends the cell is absent.
+  5. **Unclear.**
+- **The two ends.** If the blind look's B9 says the two BSP ends do not decide apart, the BSP as written is read alone wherever the line says both ends. The switch read is the blind look's, because it counts both labels together; the one the explore pass prints decides nothing.
+- **Nothing else enters the outcome:** not STEAM, not the band's level, not band A, not a part of the year, not a count by k, and no figure worked out afterwards.
+- **Beside the cell, deciding nothing:** `B from -14400: FLAT` and `B from -14400: STEAM`; the level cell `B@-600`; the mean of band B at T-10 without the cell, which lab-Claude works out from E1 and E2 as (N_L × m_L − N_C × m_C) / (N_L − N_C), with N the values and m the means (arithmetic on printed figures, with no interval, and no table of the pass); and E3, since a market whose BSPs add up to more than 100% lifts every x by about that much.
+- **Band A, in fixed words that are no outcome.** `A from -14400: DRIFT` is reported in the same way, headed exploratory: **seen again** when, at both ends, `mean <= -0.015` and `ci_high < 0`; **not seen at that size** when, at both ends, `ci_low > -0.015`; else **unclear**. Nothing is built on band A's words; they go to Yu with the report.
+- **What an outcome leads to.**
+
+  | Outcome | Leads to |
+  |---|---|
+  | The drift shows | lab-Claude may register the next small step: a facts pass at 10 minutes before the off on the 2015-16 PRO files that uses no BSP and no result: how far the offered lay price sits above the last traded price, and on which side of the gap the last trade printed. Its closing line goes into its own registration first. |
+  | The drift is absent | no further work on the 2015-16 year for this cell |
+  | Unclear | reported to Yu as unclear, with its reason; lab-Claude starts no further step on that year for this cell |
+  | A stop after the blind look (S1 to S4) | Yu is told, and nothing more runs until Yu answers |
+
+- **No outcome leads to** a live rule, a live LAY or any change to the order path; a money number or a change to a policy page; a test on `PRO-V`; a second explore pass, a changed line, or another cell made "the" cell after the fact; a reading of any 2024 cell that early-price-v1 gave as counts only; or any result in Git, a pull-request body or `reports/` without Yu's OK on the exact fields.
+- **Where the numbers come from.** lab-Claude set them with early-price-v1's results in view. The arithmetic behind them, and how likely each outcome is, are in a note on the lab and not in Git.
+- **The prediction** (in the registration, word for word; signed by lab-Claude on 2026-11-17, before the build and before any pass): "Signed by lab-Claude on 2026-11-17, before the build and before any pass. (a) The blind look passes S1 to S3, with about three chances in four; the likeliest stop is the files not reaching back four hours. (b) The mean x of B from -14400: DRIFT on PRO-D at the BSP as written lies below -0.006, and more likely than not at or below -0.012. (c) Shows about one chance in two, absent about one in ten, unclear about two in five. (d) Band A most likely reads unclear (about six in ten), seen again about three in ten, not seen at that size about one in ten."
+
+### Known small releases
+
+As the registration's `exposure.blind_pass_releases` says them:
+
+- **The blind look.** The 12 SDs show which move cells are noisier; B6 shows how often prices move and by how much the two moved cells differ in size. It lists the two moved cells unnamed, but lab-Claude knows from early-price-v1's registered pass which of the two was the larger on 2023 and 2024, so the listing hides less here than it did there. Whether that holds in 2015-16 is not known.
+- **The two passes together.** A move cell's pooled SD (B7) beside its `PRO-D` mean and SD (E2) puts an upper limit on how far its `PRO-V` mean lies from its `PRO-D` mean: about 1.2 times the cell's SD, with 65% of the dates on `PRO-D`. That shows a sign only if a mean were larger than the spread of single values. early-price-v1 names the same kind of release ([limits, stated plainly](#limits-stated-plainly)).
+- **Printed, not read.** Every pass parses every index line, and every index line holds BSP and results ([what is enforced, and what is not](#what-is-enforced-and-what-is-not)). So the promise for `PRO-V` in the explore pass is: no file is opened, and nothing is printed but index record counts.
+
+### The runner and the ledger for the drift check
+
+- **Command.** early-price-v1's runner (`python3.13 -B -m betangel_research.betfair.backtest.early_study`) with `--study early-price-2015-16-v1`: `--pass blind`, then on a later night `--pass explore` with `--blind-receipt`. Give no `--registration`: the runner reads `research/studies/early-price-2015-16-v1.json` and `research/partitions-v3.json` beside it.
+- **Refused before any record is read:** this study's registered pass and early-price-v1's explore pass (`pass:not_supported`); this file under early-price-v1's id, and early-price-v1's file under this one (`study:not_the_registrations`); a second explore pass of this study that is not a repeat (`explore:already_run`). A repeat of the same run appends nothing and must give the same summary bytes.
+- **The ledger.** Night 1 is a `look` of lineage `early-price` naming `PRO-D` and `PRO-V`, with version 3's sha256, m 0 and alpha "0"; it uses one of this id's two looks. Night 2 is an `explore` line naming `PRO-D` alone, with m 0 and alpha "0"; it counts once against `PRO-D`'s explore budget for the lineage `early-price`. The ledger refuses an explore line that names `PRO-V` (`ledger:entry:explore_touches_another_role`), and a registered line with this registration's alpha "0.0" (`ledger:entry:m_or_alpha_malformed`).
+- **A receipt's `ledger_counts`** counts the lineage's looks and registered lines, early-price-v1's included, and no explore line. After night 2 the ledger's last line shows the explore line; the receipt does not.
+- **A `PRO-V` record in the explore pass** is coded from its index line: at every time it keeps a code of the history gates and the field if one applies, and gets `partition_not_registered` at every other time. So it has a code at every time and its file is never opened. It counts in B1 and B2 only. The explore pass's `summary.md` says so in one header line.
+- **Outputs** as early-price-v1's: `summary.json`, `summary.md` (totals only) and `receipt.json`, in a new mode-700 directory.
+
+### What changed in the code
+
+- **`early.py`**, a few lines: two constants (`DRIFT_CHECK_ID`, `STUDY_IDS`); the registration's id must be one of the two, else `registration:id:not_supported`; the plan's study is the file's own id; one docstring sentence. Nothing from `race_label` on changes: not the codes, the fold, the price rules, the cells, the classes, the scores, the blind spreads, the selection, the verdicts or part and rest. The key sets, the lineage check and the imports are as they were.
+- **`early_study.py`.** `PASSES_OF` says which study runs which passes: early-price-v1 `blind` and `registered`, the drift check `blind` and `explore`. A registration whose id is not `--study` is refused. Every pass but the blind one needs the blind receipt. The explore pass has its own ledger line and the one-explore-pass check. `_read_only` recodes a record of another label from its index facts, in the explore pass only. `_explored` and `_explored_lines` give E1 to E3 from existing functions. Three small edits to the shared Markdown (the withheld line prints when the summary has that key; the `moved_larger` sentence prints in the blind pass only; B9 names the labels it counts) give early-price-v1's two passes the same bytes as before. The command line's choices and help name both studies.
+- **early-price-v1's outputs are pinned.** The first commit of the pull request, a test only, on the untouched sources of 76a9595, pins the sha256 of `summary.json` and of `summary.md` of both end-to-end passes of the synthetic `shared()` run (`EarlyPriceV1IsUnchanged` in `tests/test_backtest_early.py`; the same on two runs and under python3.13 and python3.15), beside the class's four hand-built table constants from close-early-v1's pull request 1. No later commit changes them, nor close-v1's `CloseV1IsUnchanged` constants, nor the hashes of early-price-v1's registration and of split files 1 and 2.
+- **Tests.** `DriftCheckRun` in `tests/test_backtest_early.py` runs the mechanism on early-price-v1's synthetic archive with the id changed: each study runs its own passes only; blind then explore, end to end; no locked-date file opened by the explore pass; every locked-label count 0 but B1's; the explore label's counts equal to the blind look's; E1 and E2 hold their cells only; no test, selection or label; the receipt's checks; one explore pass, and a repeat with the same bytes; counts only under the real gates. `tests/test_backtest_early_2015.py` checks the real files: version 3 and the registration in their one byte form with their pinned hashes; the parse under version 3, and the refusal under version 2's bytes; the same measurement as early-price-v1; the quoted words and the signed prediction; what the ledger takes of this study; and, on a small synthetic root, that the blind look opens the two 2015-16 BASIC files and the explore pass the explore-date file only. early-price-v1, over the same root, opens its own year's file and neither 2015-16 file.
+
+### Operator steps for the drift check (after this pull request merges)
+
+`<LAB RUNS>` below stands for the full path of `~/.local/state/lab-runs`, and `<BASIC ROOT>` for the BASIC data root early-price-v1 read (its step 6).
+
+**Before either night.**
+
+1. **Review and merge.** A reviewer who is not a builder reads the pull request. The whole suite passes under python3.13 and python3.15. lab-Claude checks whether any study has a blind pass waiting for its second pass; such a second pass then runs from the checkout its blind pass ran at, never from this main. Then lab-Claude merges under the standing word. No result figure goes into the pull-request body.
+2. **Which two nights.** lab-Claude tells Yu which two nights it plans. Never a night on which another pass of any study runs on this ledger: one pass at a time per ledger, across studies. Never start a close-v1, early-price-v1 or close-early-v1 pass from this main ([what merging this fixes, and what is owed](#what-merging-this-fixes-and-what-is-owed)).
+
+**Night 1, the blind look.**
+
+3. **Who and when.** lab-Claude itself starts it; never a subagent or another agent. Between 23:00 and 06:45 London (check with `TZ=Europe/London date`), at low priority, under the 06:45 guard. Nothing live: no live command running, no armed session, no resting order, nothing heavy, and no other pass on this ledger. If any of these is not so, do not start.
+4. **A start script of its own.** The lab's guards have a study's commit and hash written in: early-price-v1's (`~/agenttool/notes/research/2026-11-12-next-lineage/ops/run-early-pass.sh`) runs this runner on the BASIC root but takes `blind` or `registered` only, and close-early-v1's copy of close-v1's guard takes `blind` or `explore`. lab-Claude writes a copy for this study that takes `blind` or `explore`. The copy names the clean checkout of step 6, its commit, the registration's hash `1d57d8248195dd7ff7a17a061e7bb87746b9ef302c2cad0e5787a63ecc4bca43`, `--study early-price-2015-16-v1`, `<BASIC ROOT>` and outputs under `<LAB RUNS>/early-price-2015-16-v1/`; for `explore` it passes `--blind-receipt <LAB RUNS>/early-price-2015-16-v1/blind/receipt.json`. Like close-early-v1's copy, it refuses if `<LAB RUNS>/ACTIVE` or `<LAB RUNS>/HOLD` exists, writes the run marker `<LAB RUNS>/ACTIVE` before the pass and removes it after, whatever the result, runs the pass under `nice -n 10` and ends it at 06:45 local. A subagent may not start it.
+5. **The clock.** The guard reads the Mac's local time. Before the night, check that `date` prints London time and that the recorder is booked for 07:00.
+6. **A clean checkout** of the merged commit in a new directory of its own. Never the live clone, and never at the top of `~`, `~/Library` or `~/.config` (the lab's rule 2a). Note the commit (`git rev-parse HEAD`). Run `shasum -a 256 research/studies/early-price-2015-16-v1.json`: it must print `1d57d8248195dd7ff7a17a061e7bb87746b9ef302c2cad0e5787a63ecc4bca43`, the hash pinned in `tests/test_backtest_early_2015.py` (`REGISTRATION_SHA256`).
+7. **The data root.** `<BASIC ROOT>`, already ingested and indexed, in a root of its own. A root in which no record reaches the view fails with `input:no_registered_market` and spends no look; any other mistake that lets the pass complete spends one.
+8. **The ledger and the outputs.** The shared ledger directory `<LAB RUNS>/ledger`: mode 700 and writable, and the ledger file writable. Its newest head comes from the shared head note, and it must equal the last line of `study-ledger-v1.jsonl` (its `seq`, a colon, its `entry_sha256`); `none` only if the ledger has no line yet. Make the output parent once: `mkdir -m 700 -p <LAB RUNS>/early-price-2015-16-v1`. Do not write the run marker by hand: the start script does.
+9. **Run** it with the start script of step 4, never by hand. The script runs this command from the clean checkout:
+
+   ```sh
+   PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 \
+     python3.13 -B -m betangel_research.betfair.backtest.early_study --study early-price-2015-16-v1 --pass blind \
+     --registration-sha256 1d57d8248195dd7ff7a17a061e7bb87746b9ef302c2cad0e5787a63ecc4bca43 \
+     --archive-root <BASIC ROOT> --code-commit <commit from step 6> \
+     --ledger <LAB RUNS>/ledger --ledger-head <the newest head> \
+     --out <LAB RUNS>/early-price-2015-16-v1/blind
+   ```
+
+10. **Afterwards.** Copy `ledger_head` from the printed line into the shared head note. In daylight, read the blind tables and write the reading down in a totals-only note on the lab, before night 2:
+    - S4: the receipt's `input_sha256` against P0's value. S1 and S2 from B3. S3 from B6.
+    - What the look says about the old files: B2's `anchor_not_known_by_decision` at -14400 (do the files reach back 4 hours?); B3's stale and never-changed prices and B5's ages (how often is the price sent?); B4's `missing_bsp` and `outcome_unknown` (is BSP there?); B9's whole-hundredth BSPs and the switch; B1 by month (is it a whole year?).
+    - If any of S1 to S4 holds: tell Yu and stop. Run nothing more.
+    - Do not use B7 or B8 to change anything. Nothing in the registration or the code may change now.
+
+**Night 2, the explore pass, a later night.**
+
+11. Steps 3, 5 and 8 again, with the same checkout, the same commit and no file touched. Then once, with the same start script:
+
+    ```sh
+    PATH=/opt/homebrew/bin:$PATH BETANGEL_BETFAIR_FORBID_NETWORK=1 PYTHONDONTWRITEBYTECODE=1 \
+      python3.13 -B -m betangel_research.betfair.backtest.early_study --study early-price-2015-16-v1 --pass explore \
+      --registration-sha256 1d57d8248195dd7ff7a17a061e7bb87746b9ef302c2cad0e5787a63ecc4bca43 \
+      --archive-root <BASIC ROOT> --code-commit <the same commit> \
+      --ledger <LAB RUNS>/ledger --ledger-head <the newest head> \
+      --blind-receipt <LAB RUNS>/early-price-2015-16-v1/blind/receipt.json \
+      --out <LAB RUNS>/early-price-2015-16-v1/explore
+    ```
+
+12. **Checks before reading any mean.** Copy the new head into the shared head note. The explore pass's `PRO-D` counts in B3, B4 and B6 equal the blind look's, with the two unnamed moved cells matched to DRIFT and STEAM. Every `PRO-V` count is 0 but B1's (and B2's `partition_not_registered`). The ledger's last line is of kind `explore` and names `PRO-D` alone; the receipt's `ledger_counts` will not show it. If one of these fails, stop and tell Yu.
+13. **The reading.** Apply the line clause by clause, from `summary.json`, at both BSP ends. Write a totals-only results note on the lab: the outcome and the clause that gave it; the cell's figures at both ends; FLAT, STEAM, the level and the rest of the band beside it; E3; band A's words; the prediction read against the result.
+14. **Tell Yu** what ran and what came out, in plain words, with what the outcome leads to. The outputs stay on the lab. Nothing enters Git, a pull-request body or `reports/` without Yu's OK on the exact fields.
+15. **If a pass stops at the very end**, or prints `failed` with a `ledger_head` beside the failure, its ledger line stands. Do as close-v1's step 9 says under "If a pass stops at the very end": the head is the last line of `study-ledger-v1.jsonl`; a person checks that no pass is running and removes a leftover lock file or `.partial` folder; then the same pass is run again with that head. It is a repeat: it adds no ledger line and writes the files.
+
+### What merging this fixes, and what is owed
+
+- **Fixed for good:** the registration, with its two cells, its line and five numbers, the stop rules, the prediction and every field copied from early-price-v1. Any change is a new sha256, and after night 1 it costs the study's second look.
+- **A pass of another study from this main is not a repeat.** The backtest sources change, so a close-v1, early-price-v1 or close-early-v1 pass started from this main would not repeat a pass of an earlier commit: a blind pass would spend a look, and a second pass would refuse (`blind_receipt:another_code`). close-early-v1's passes run from its own clean checkout (its step 4). Never start one of them from this main.
+- **The next split file owes** an `early-price-2015-16-v1` sentence, written once the study's passes have run, beside the `close-early-v1` one ([the split, version 3](#the-split-version-3)).
+- **Still owed after early-price-v1:** two page corrections promised after its registered pass, to its [honest power](#honest-power) paragraph and to the words "not which is which" in its known residual release and its limits. This pull request leaves early-price-v1's section as it was.

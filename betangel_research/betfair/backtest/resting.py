@@ -58,12 +58,14 @@ rests on atb, a BACK on atl), its base a copy of the runner's counted volume at 
 including the pull time is judged by fills.py's rules. The hour switch: under a plan that does not count hour
 rises (Plan.hour_rises_counted false: a new id), a batch whose pt lies in the after-the-hour seconds counts no
 rise, so lp.TradedFold.count is not called and such a rise fills nothing by trade_through or volume_at_price, then
-or later; quote_cross is judged as before. A lapse order is no longer judged once inPlay was true before a batch;
-it stays ended even if inPlay is later published false. A null event captures the runner's quote and the market's
-status and inPlay at a time u drawn at placement from metrics.HashStream with the registered seed and label,
-uniform over the whole milliseconds of (t, pull time]: one draw per market and cell, which the orders of an
-each_active cell share. For a cell of an each_active rule file the walk also counts the runners of the view at t
-by their own code (Walked.runner_codes, runner_codes).
+or later; quote_cross is judged as before. The best back and best lay just before a batch, which the second trade
+count reads, are each resting runner's lp.top, kept between batches and read again only after a change that may
+move that runner's ladder (_stale); with KEEP_TOPS false every batch reads them afresh, as before. A lapse order
+is no longer judged once inPlay was true before a batch; it stays ended even if inPlay is later published false. A
+null event captures the runner's quote and the market's status and inPlay at a time u drawn at placement from
+metrics.HashStream with the registered seed and label, uniform over the whole milliseconds of (t, pull time]: one
+draw per market and cell, which the orders of an each_active cell share. For a cell of an each_active rule file
+the walk also counts the runners of the view at t by their own code (Walked.runner_codes, runner_codes).
 
 Per cell the walk returns a code, one OrderRow (a favourite cell) or a tuple of OrderRows in selection-id order (an
 each_active cell). A row holds no market id, no selection id and no clock time: the side and price; per model a
@@ -126,7 +128,7 @@ import re
 from . import fills, rulefile
 from .lp import (BACK, DAY_MS, FILL_KINDS, HOUR_MS, LAY, TIERS, TRADED_BASIS, TRADED_DIVISOR, TRADED_KEY, TradedFold,
                  _Batch, _rules, _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top, wide)
-from .market_index import _as_of, _checked_changes, _last, _Market, _messages, _Unreadable, loads_strict
+from .market_index import _as_of, _checked_changes, _last, _Market, _messages, _runner_id, _Unreadable, loads_strict
 from .metrics import HashStream
 from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LADDER_NAMES, LADDERS, MARKET_CODES,
                        MAX_REGISTRATION_BYTES, MONTH_RE, QUANTILE_METHOD, SCHEMA, UNCERTAINTY_METHOD, LadderFold,
@@ -204,6 +206,9 @@ TOP_KEYS = ("blind_pass", "data", "decided_by", "diagnostics", "doc", "exposure"
 DATA_KEYS = ("duplicates", "end_month", "files", "ladders", "month", "partitions", "provider", "rules", "source",
              "split", "start_month", "tiers", "traded_volume")
 DECIDE, NULL = "decide", "null"
+# The walk keeps each resting runner's top of book between batches (_stale). False: every batch reads lp.top afresh,
+# as before; the outputs are the same, and the tests walk both ways.
+KEEP_TOPS = True
 
 Cell = namedtuple("Cell", ("rule_id", "at_s", "pull_s"))
 # The scored rows that stand for one model's filled orders, that model's own fills and their race dates (what a
@@ -784,6 +789,19 @@ def _row(plan, record, placed, dated, malformed, in_play):
                     placed_in_the_hour=after_the_hour(t, plan.after_the_hour_s), fill_minute=minutes)
 
 
+def _stale(tops, change):
+    """Forget the kept lp.top ({runner: top}, walk) of every runner whose ladder one market change may move; called
+    before movement.LadderFold folds the change. LadderFold.change moves a runner's books only through an rc entry
+    that names it (by market_index._runner_id, as LadderFold reads the id) or through an image, which clears every
+    book it does not carry. A definition moves none, but an image and a definition forget every runner all the same:
+    a refresh too many costs one lp.top, a refresh too few could change an output."""
+    if change.get("img") or "marketDefinition" in change:
+        tops.clear()
+        return
+    for item in change.get("rc") or ():
+        tops.pop(_runner_id(item.get("id")), None)
+
+
 def walk(stream, record, plan, limits):
     """The Walked of one index record: every cell's code from the record alone and, when some cell reaches the
     book, the rest from the record's primary member's decompressed stream (module docstring). stream is not read
@@ -804,7 +822,7 @@ def walk(stream, record, plan, limits):
     heapq.heapify(events)
     market, prices, ladders, traded = None, PriceFold(), LadderFold(plan.ladders[record["provenance"]["plan"]]), \
         TradedFold()
-    orders, runners_by_code = [], {}
+    orders, runners_by_code, tops = [], {}, {}  # tops: {runner: lp.top} as of the last change folded (_stale)
 
     def state():                                # (status, inPlay) in force after every message applied so far
         if market is None:
@@ -937,7 +955,13 @@ def walk(stream, record, plan, limits):
             break
         if fresh:                               # the market and the resting orders' quotes just before this pt batch
             runners, fresh = {placed.intent.selection_id for placed in orders if placed.t < pt <= placed.end}, False
-            prior = {sid: top(ladders, sid) for sid in runners}
+            if KEEP_TOPS:                       # read again only where a change since may have moved the ladder
+                for sid in runners:
+                    if sid not in tops:
+                        tops[sid] = top(ladders, sid)
+                prior = {sid: tops[sid] for sid in runners}
+            else:
+                prior = {sid: top(ladders, sid) for sid in runners}
             pending = _Batch() if runners else None
             before = state()
         for mid_, change in checked:
@@ -947,6 +971,8 @@ def walk(stream, record, plan, limits):
                 market = _Market(market_id, pt)
             market.change(pt, change)
             prices.change(pt, change)
+            if tops:                            # before the fold, so that no kept top is older than the books
+                _stale(tops, change)
             ladders.change(pt, change)
             moved = traded.change(pt, change)
             if pending is not None:

@@ -3,8 +3,9 @@ and simulated s1 sessions, offline and synthetic.
 
 The edit table below is the whole difference from p1: it is applied to p1's parsed value, and the result in the one
 byte form (json.dumps with sort_keys, indent 2 and ensure_ascii, then a newline, the form that reproduces p1's bytes)
-must be s1's bytes exactly. Each number of Yu's is pinned by value, with Yu's words and their date beside it. No test
-here reads a page.
+must be s1's bytes exactly. Each number of Yu's is pinned by value, with Yu's words and their date beside it. Tests 1
+to 8 read no page. Tests 9 to 11 read the pages that carry s1's text: the config fragment on the plan, merged key by key
+into a valid config; every hash beside s1 on each page; and RS-19's quotes of the frozen texts against the file.
 
 The sessions run pilot-register and pilot-run through cli.main in the test_betfair_support_run world (build_run with
 s1's bytes and a config that holds s1's caps): a temporary state root, a fake clock, fake Keychain, transport, git,
@@ -25,12 +26,14 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from betangel_research.betfair import paths as paths_module
 from betangel_research.betfair import pilot, pilot_gate
+from betangel_research.betfair.config import load_config
 from betangel_research.betfair.gateway import OrderGateway
 
 import test_betfair_support as support
@@ -725,6 +728,189 @@ class SessionTests(S1Case):
         self.assertEqual(env.confirmer.prompts, [])                         # before any typed line
         self.assertEqual(sr.notes(env, "registration"), [])
         self.assertEqual(sr.credential_reads(env), [])
+
+
+# --- commit 2, tests 9 to 11: the pages ----------------------------------------------------------------------------
+
+PAGES = {
+    "RS-19": "docs/betfair-pilot-policy.md",
+    "note": "docs/betfair-pilot-engineering.md",
+    "plan": "docs/betfair-pilot-1-plan.md",
+    "order-path": "docs/betfair-order-path.md",
+    "backtest-plan": "docs/backtest-plan.md",
+}
+BETFAIR_PAGES = ("RS-19", "note", "plan", "order-path")
+S1_SECTION_HEADINGS = {"RS-19": "## s1: a small copy of this rule, registered first",
+                       "note": "## 18. s1: a small copy of contract p1, registered first (2026-11-17)"}
+PRECEDENCE = ("For s1, this section governs where it differs from the text above; the text above stands for "
+              "contract p1.")
+FRAGMENT_HEADING = "### s1: the config fragment for Yu"
+YU_KEEPS = ("caps.max_transactions_per_hour", "caps.funds_reserve", "caps.funds_max_age_s", "rules.min_stake")
+HEX64 = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{64}(?![0-9A-Za-z])")
+HEX12 = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{12}(?![0-9A-Za-z])")
+LABEL = re.compile(r"(?<![0-9A-Za-z_./-])([sp]1)(?![0-9A-Za-z_-])")      # "s1", "s1's", "p1": not s1-fav-t5.json
+QUOTE = re.compile(r'^- `([a-z0-9_.\[\]]+)`: "(.*)"$')
+
+
+def page(name):
+    return (REPO / PAGES[name]).read_text(encoding="utf-8")
+
+
+def under_heading(text, heading):
+    """The lines under a heading line, up to the next heading of the same or a higher level (fences skipped)."""
+    lines = text.split("\n")
+    starts = [i for i, line in enumerate(lines) if line == heading]
+    if len(starts) != 1:
+        raise AssertionError(f"{heading!r} found {len(starts)} times")
+    level = len(heading) - len(heading.lstrip("#"))
+    body, fenced = [], False
+    for line in lines[starts[0] + 1:]:
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("#") and len(line) - len(line.lstrip("#")) <= level:
+            break
+        body.append(line)
+    return body
+
+
+def frozen_value(value, path):
+    name, _, index = path.partition("[")
+    found = get(value, name)
+    return found[int(index[:-1])] if index else found
+
+
+def leaves(value, prefix=()):
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield from leaves(inner, prefix + (key,))
+    else:
+        yield prefix, value
+
+
+def set_keys(base, fragment):
+    """The plan's instruction: set each key of the fragment inside the objects already there; leave every other key.
+    An object the base lacks (orders.pilot before any pilot) is created."""
+    merged = copy.deepcopy(base)
+    for path, value in leaves(fragment):
+        target = merged
+        for part in path[:-1]:
+            target = target.setdefault(part, {})
+        target[path[-1]] = copy.deepcopy(value)
+    return merged
+
+
+class PageTests(unittest.TestCase):
+    def fragment(self):
+        body = "\n".join(under_heading(page("plan"), FRAGMENT_HEADING))
+        blocks = re.findall(r"```json\n(.*?)\n```", body, re.S)
+        self.assertEqual(len(blocks), 1)                                # one fenced block under the heading
+        return json.loads(blocks[0]), body
+
+    def test_9_the_config_fragment_set_key_by_key_holds_s1(self):
+        fragment, body = self.fragment()
+        # It is s1's config: Pilot 1's profile with s1's two caps and path, and s1's sha256.
+        self.assertEqual(fragment, support.deep_merge(sp.pilot_profile(S1_SHA256), S1_CONFIG))
+        paths = {".".join(path) for path, _ in leaves(fragment)}
+        self.assertEqual(len([p for p in paths if p.startswith("orders.caps.")]) + 1, 13)   # + the tolerance
+        for key in YU_KEEPS + ("live.armed",):
+            self.assertNotIn("orders." + key, paths)
+            self.assertIn(key.split(".")[-1], body)                     # named on the plan, not set by the block
+        # A valid live config with Yu's own values for the four keys the file does not fix.
+        test_paths = temp_paths(self)
+        base = support.deep_merge(support.make_test_config(test_paths), gw.LIVE_OVERRIDES)
+        mine = {"caps.max_transactions_per_hour": 250, "caps.funds_reserve": 5.0, "caps.funds_max_age_s": 45,
+                "rules.min_stake": 1.5}
+        for path, value in mine.items():
+            put(base["orders"], path, value)
+        for path, _ in leaves(fragment):
+            if path[:2] != ("orders", "pilot"):
+                self.assertIsNot(get(base, ".".join(path[:-1])), MISSING)   # inside objects already there
+        merged = set_keys(base, fragment)
+        for path, value in leaves(base):                                # every other key keeps its value
+            if ".".join(path) not in paths:
+                self.assertEqual(get(merged, ".".join(path)), value, path)
+        test_paths.config_path.parent.mkdir(parents=True, exist_ok=True)
+        test_paths.config_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+        config = load_config(test_paths.config_path, paths=test_paths)
+        contract = pilot.contract_from_bytes(S1_RAW)
+        self.assertEqual(pilot_gate.config_holds_contract(config, contract, pilot.decimal_loads(S1_RAW)["caps"]), [])
+        self.assertEqual(config["orders"]["pilot"]["contract_sha256"], S1_SHA256)
+        self.assertEqual(config["orders"]["pilot"]["contract_path"], S1_PATH)
+        for path, value in mine.items():
+            self.assertEqual(get(config["orders"], path), value)
+        # Replacing whole objects instead would drop Yu's keys, and the loader would fill them silently with the
+        # code's defaults (config.py merges over DEFAULTS): Yu's values for them would be lost.
+        replaced = copy.deepcopy(base)
+        replaced["orders"]["caps"] = copy.deepcopy(fragment["orders"]["caps"])
+        replaced["orders"]["rules"] = copy.deepcopy(fragment["orders"]["rules"])
+        test_paths.config_path.write_text(json.dumps(replaced, indent=2), encoding="utf-8")
+        lost = load_config(test_paths.config_path, paths=test_paths)
+        for path, value in mine.items():
+            self.assertNotEqual(get(lost["orders"], path), value, path)
+
+    def test_10_every_hash_beside_s1_is_s1s(self):
+        """Each 64-character hash and each 12-character hex token is read with the nearest label before it on its
+        line. A 64-character hash labelled "s1", or on a line that names s1's file with no nearer "p1", is s1's
+        sha256; one labelled "p1" is p1's. A 12-character token labelled "s1" is s1's prefix, and one labelled "p1"
+        is p1's. At least one s1 hit of each kind per Betfair page (the 64-character one on all five pages), on RS-19
+        the hash of the build consent, on its "raw-bytes sha256" line, which names no file, and p1's prefix on each
+        page that tells a reader how to tell the two banners apart (the note, the plan, order-path); the plan's
+        session sheet holds the exact stop line for p1's banner."""
+        def nearest_label(line, start):
+            labels = [m.group(1) for m in LABEL.finditer(line) if m.end() <= start]
+            return labels[-1] if labels else None
+
+        for name in PAGES:
+            full = prefix = p1_full = p1_prefix = consent = 0
+            with self.subTest(page=name):
+                text = page(name)
+                if name in BETFAIR_PAGES:
+                    self.assertNotIn("<" * 2, text)                     # no blank of the build brief left
+                for line in text.split("\n"):
+                    for match in HEX64.finditer(line):
+                        label = nearest_label(line, match.start())
+                        if label == "p1":
+                            self.assertEqual(match.group(), P1_SHA256, line[:80])
+                            p1_full += 1
+                        elif label == "s1" or "s1-fav-t5.json" in line:
+                            self.assertEqual(match.group(), S1_SHA256, line[:80])
+                            full += 1
+                            if label == "s1" and "raw-bytes sha256" in line:
+                                consent += 1
+                    for match in HEX12.finditer(line):
+                        label = nearest_label(line, match.start())
+                        if label == "s1":
+                            self.assertEqual(match.group(), S1_SHA256[:12], line[:80])
+                            prefix += 1
+                        elif label == "p1":
+                            self.assertEqual(match.group(), P1_SHA256[:12], line[:80])
+                            p1_prefix += 1
+                self.assertGreaterEqual(full, 1)
+                if name in ("note", "plan", "order-path"):
+                    self.assertGreaterEqual(p1_prefix, 1)               # how to tell p1's banner from s1's
+                if name in BETFAIR_PAGES:
+                    self.assertGreaterEqual(prefix, 1)
+                if name == "RS-19":
+                    self.assertGreaterEqual(consent, 1)                 # the build consent names s1 by this hash
+                    self.assertGreaterEqual(p1_full, 1)                 # verdict.kept_blocks names p1 by its own
+        # The session sheet's stop line: the banner showing p1's prefix means the wrong file is registered or armed.
+        self.assertIn(f"If the banner shows p1's `{P1_SHA256[:12]}`, stop.", page("plan"))
+
+    def test_11_the_pages_quotes_of_the_frozen_texts_equal_the_file(self):
+        s1 = s1_value()
+        section = under_heading(page("RS-19"), S1_SECTION_HEADINGS["RS-19"])
+        quoted = [QUOTE.match(line).groups() for line in section if QUOTE.match(line)]
+        self.assertEqual(sorted(path for path, _ in quoted), sorted(FROZEN_TEXTS))   # each once, none missing
+        for path, text in quoted:
+            with self.subTest(frozen=path):
+                self.assertEqual(text, FROZEN_TEXTS[path])
+                self.assertEqual(text, frozen_value(s1, path))
+        self.assertIn('`endings.protocol_violation` is p1\'s: "' + s1["endings"]["protocol_violation"] + '".',
+                      "\n".join(section))
+        for name, heading in S1_SECTION_HEADINGS.items():                # the precedence sentence opens both
+            with self.subTest(section=name):
+                first = next(line for line in under_heading(page(name), heading) if line.strip())
+                self.assertEqual(first, PRECEDENCE)
 
 
 # --- rule 17: no CLI call outside the guarded helpers ---------------------------------------------------------------

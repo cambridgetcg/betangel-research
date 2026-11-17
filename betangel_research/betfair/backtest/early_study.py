@@ -1,9 +1,14 @@
-"""python3 -m betangel_research.betfair.backtest.early_study: run registered measurement early-price-v1.
+"""python3 -m betangel_research.betfair.backtest.early_study: run registered measurements early-price-v1 and
+early-price-2015-16-v1.
 
---study early-price-v1 --pass blind|registered --registration-sha256 HEX --archive-root DIR --out DIR
---code-commit HEX --ledger DIR --ledger-head none|SEQ:SHA256 [--blind-receipt PATH] [--registration PATH] runs
-research/studies/early-price-v1.json (or --registration) over every archive ingested and indexed under the data root
-DIR and writes summary.json, summary.md (totals only) and receipt.json into the new directory --out, through
+There are two studies of the lineage early-price here, with one measurement (early.py): early-price-v1, whose
+passes are blind and registered, and the drift check early-price-2015-16-v1 (early.DRIFT_CHECK_ID), whose passes
+are blind and explore and which has no registered pass. PASSES_OF says which study runs which passes.
+
+--study ID --pass blind|registered|explore --registration-sha256 HEX --archive-root DIR --out DIR --code-commit HEX
+--ledger DIR --ledger-head none|SEQ:SHA256 [--blind-receipt PATH] [--registration PATH] runs
+research/studies/<ID>.json (or --registration) over every archive ingested and indexed under the data root DIR and
+writes summary.json, summary.md (totals only) and receipt.json into the new directory --out, through
 "<out>.partial" (mode 0700, files 0600) renamed only when all three are whole. It prints one JSON line of counts,
 codes and hashes and exits 0 (completed) or 2 (refused or failed: --out is not created then). A fault in the code
 itself prints the failure internal:<exception class name> and nothing else of the error (main): a traceback or a
@@ -12,22 +17,30 @@ module of its own, not a subcommand of the backtest CLI, because __main__.py is 
 sources and stays byte-identical; this module and early.py are in the certificate's source descriptor, so adding
 them changed the certificate key again.
 
-Refusals, before any record is read, in this order (resting_study's): --study is not early-price-v1 (nothing is read
-then); the pass name; the registration file's raw bytes must hash to --registration-sha256, the file must lie in a
-folder named studies, and the split file beside that folder, a regular file of at most 1 MiB named by the
-registration, must be the bytes it names (early.parse_registration); --code-commit, the data root and --out as
-movement_study checks them; the blind pass takes no --blind-receipt and the registered pass needs the blind pass's
-canonical, completed receipt (kind betangel_early_receipt) of this study, registration, split file, --code-commit,
-backtest-source sha256 and input sha256; every manifest's read limits must be the replay's. Then the study ledger
-(study_ledger.py, through resting_study._ledger): --out apart from the ledger directory under any spelling of it;
-the ledger opened with the head the operator typed, and for a registered pass with the entry the blind receipt names
-as its own as the anchor; then the budgets. A pass whose identity the ledger already holds is a repeat.
+Refusals, before any record is read, in this order (resting_study's): --study is not one of STUDIES (nothing is read
+then); the pass is not one of that study's (pass:not_supported; nothing is read then either); the registration
+file's raw bytes must hash to --registration-sha256, the file must lie in a folder named studies, and the split file
+beside that folder, a regular file of at most 1 MiB named by the registration, must be the bytes it names
+(early.parse_registration); the registration's id must be --study (study:not_the_registrations: one study's file
+never runs under the other's name); --code-commit, the data root and --out as movement_study checks them; the blind
+pass takes no --blind-receipt and every other pass needs the blind pass's canonical, completed receipt (kind
+betangel_early_receipt) of this study, registration, split file, --code-commit, backtest-source sha256 and input
+sha256; every manifest's read limits must be the replay's. Then the study ledger (study_ledger.py, through
+resting_study._ledger): --out apart from the ledger directory under any spelling of it; the ledger opened with the
+head the operator typed, and for a registered or explore pass with the entry the blind receipt names as its own as
+the anchor; then the budgets. A pass whose identity the ledger already holds is a repeat. One explore pass per
+study: an explore pass that is not a repeat is refused (explore:already_run) when the ledger holds an explore entry
+of this study id, whatever its identity.
 
 The read is resting_study's: every record's months pass the current month gate (sealed months are never read), a
 market id seen twice in the BASIC tier fails the run (duplicate_market), and the member's path is guarded and its
 bytes hashed against the manifest. What the index record alone says is read first (its month, its race date, label
 and half-year, and each time's code: early.record_code); only those calls report malformed_record. A record with a
-code at every time is never opened: so no file of 2025, of 2015-16 or of another plan is opened. Any other record
+code at every time is never opened: so no file of a month the registration does not name (for early-price-v1, of
+2025 or of 2015-16) or of another plan is opened. The explore pass reads the explore label alone (_read_only): a
+record of any other label keeps, at every time, a code of the history gates and the field, and is coded
+partition_not_registered at every other time, so no file of a test-label race date is opened; such a record counts
+in B1 and B2 only. Any other record
 is opened once and folded to the latest time that reached the view, at most 10 minutes before the off
 (early.assess); the rest of the file is hashed, not parsed. When no record reaches the view at any time (for
 example a PRO data root given by mistake), the pass fails with input:no_registered_market before the ledger gets
@@ -35,8 +48,9 @@ an entry, so a wrong root spends no look. The tally keeps counts, the ages of pr
 1 / BSP per market with a scored value, and the priced value rows. A row holds no market or selection id, name or
 time of a market, stays in memory and never reaches disk.
 
-After the read the summary's bytes are built in memory; then the ledger gets its one entry (a look for a blind
-pass, the registered entry for a registered pass) before any file or stdout write; then the outputs are written. A
+After the read the summary's bytes are built in memory; then the ledger gets its one entry (a look naming both
+labels for a blind pass, the registered entry for a registered pass, and for an explore pass an explore entry naming
+the explore label alone, with m 0 and alpha "0") before any file or stdout write; then the outputs are written. A
 repeat appends nothing, and its summary must hash to the stored tables hash (ledger:repeat_differs otherwise). A
 pass that fails or is stopped during the read has appended and written nothing. If an output cannot be written
 after the append, or the code faults there, the entry stands, the result names the new head (ledger_head) beside
@@ -47,7 +61,7 @@ splits into bytes read and bytes drained depends on the bz2 reader's read-ahead,
 versions (8 KiB on 3.13, 128 KiB on 3.15), so the split is in the receipt only. The receipt has resting_study's
 keys.
 
-Tables (the registration's blind_pass.releases and registered_pass.releases). Both passes: B1 records by registered
+Tables (the registration's blind_pass.releases and registered_pass.releases). Every pass: B1 records by registered
 month and label, records with no off time and with no registered label, files opened; B2 the market codes per time
 (each time adds up to the record count); B3 per time and label the markets viewed, the markets with a priced runner,
 the runner codes (no_ltp by kind) and the priced runners per band; B4 the classes of priced runners per time, band
@@ -70,6 +84,15 @@ labels on the full values, then part and rest (early.given_move_cells, early.kil
 figures, and its standing in R3 (its SE, mean / SE and detectable effect), are given only when given_move_cells
 gives it; a primary that the test label does not give keeps its label, counts, checks and Holm result (rejected or
 not) and loses its mean, SE and p, and then neither side prints a Holm-adjusted p (early.shown).
+The explore pass (the drift check's) names the cells and gives the tables B1 to B9 over the explore label alone:
+every count of the test label is 0 but B1's records by month, B7 and B8 give no spread (the test label holds no
+value, so every cell shows rest_not_given or counts_only), and B9's switch is the explore label's. It gives no
+withheld text and adds: E1 the level cells at entry_s on the explore label at both BSP ends (early.figures); E2 the
+move cells from the earlier start on the explore label, under part and rest with no primary
+(early.given_move_cells), each headed exploratory with c and sqrt(2 ln c); E3 the quantiles of the sum of 1 / BSP
+per market with a scored value on the explore label. The plan's four notes print above E1. Nothing of the other
+level cells or of the move cells from the later start but their counts, and no selection, test, label, half-year
+figure or net is computed for it.
 Markdown tables print 100 x x as points of stake; summary.json keeps fractions of stake, floats rounded to 6 places.
 
 Standard library only; it imports the backtest modules named above and nothing outside the package but what they
@@ -88,8 +111,9 @@ from .archive import DEFAULT_LIMITS, REPOSITORY_ROOT, ArchiveProblem, HashingRea
     safe_target, utc_month
 from .certificate import CertificateProblem, source_descriptor
 from .contract import canonical_json
-from .early import (BEFORE_REMOVAL, CHANGES_BETWEEN, MOVED_LARGER, MOVED_SMALLER, MOVES, NO_LTP, NO_LTP_KINDS,
-                    PRICED, RUNNER_CODES, STALE, STUDY_ID, UNDEFINED, VIEWED, Assessed, LevelCell, assess,
+from .early import (BEFORE_REMOVAL, CHANGES_BETWEEN, DRIFT_CHECK_ID, MOVED_LARGER, MOVED_SMALLER, MOVES, NO_LTP,
+                    NO_LTP_KINDS, PARTITION_NOT_REGISTERED, PRICED, RECORD_CODES, RUNNER_CODES, STALE, STUDY_ID,
+                    UNDEFINED, VIEWED, Assessed, LevelCell, assess,
                     blind_names, blind_spreads,
                     bsp_switch, by_cell, changes_between, figures, given_move_cells, kill_given, parse_registration,
                     race_label, record_code, select, shown, split_named, test_counts, verdicts)
@@ -101,16 +125,20 @@ from .movement_study import (COMMIT_RE, MAX_RECEIPT_BYTES, SHA256_RE, StudyRefus
 from .partition import MAX_SPLIT_BYTES
 from .replay import ReplayProblem, _member
 from .resting import AS_WRITTEN, BSP_ENDS, G, NET_HELD, SCORED, quantile_table, rounded, scored
-from .resting_study import (BLIND, EXPLORATORY, NO_ANCHOR, NO_LABEL, NOT_TESTED, OUTSIDE, PASSES, RECEIPT_JSON,
+from .resting_study import (BLIND, EXPLORATORY, EXPLORE, NO_ANCHOR, NO_LABEL, NOT_TESTED, OUTSIDE, RECEIPT_JSON,
                             RECORD_ERRORS, REGISTERED, STUDIES_FOLDER, SUMMARY_JSON, SUMMARY_MD, _exploratory,
                             _ledger)
 from .runner import RunRefused, _inputs, _record_months, _records, utc_now_text
-from .study_ledger import COMPLETED, LOOK, PassRequest, head_text, parse_head
+from .study_ledger import COMPLETED, EXPLORE_KIND, LOOK, PassRequest, head_text, parse_head
 from .study_ledger import REGISTERED as REGISTERED_KIND
 from .trial_ledger import LedgerError, UnlockError
 
 SUMMARY_KIND, RECEIPT_KIND, SCHEMA_VERSION = "betangel_early_summary", "betangel_early_receipt", 1
-STUDIES = (STUDY_ID,)                               # the studies this module runs
+PASS_NAMES = (BLIND, REGISTERED, EXPLORE)           # every pass this module knows
+# The passes each study runs: early-price-v1 its blind pass and its registered pass; the drift check its blind look
+# and one explore pass, and no registered pass.
+PASSES_OF = {STUDY_ID: (BLIND, REGISTERED), DRIFT_CHECK_ID: (BLIND, EXPLORE)}
+STUDIES = tuple(PASSES_OF)                          # the studies this module runs
 REGISTRATIONS = REPOSITORY_ROOT / "research" / "studies"
 WITHHELD = ("every location statistic of x (an average, a middle value, a raw quantile or a sign), every interval, "
             "test, label and selection, any figure by half-year, any SD of a net, the names of the two moved cells, "
@@ -124,6 +152,12 @@ COUNTS_ONLY_TEST = "counts only: of {}'s move cells only the primaries print a m
 RUNNER_TALLY = NO_LTP_KINDS + RUNNER_CODES[1:] + (PRICED,)
 AGED = (BEFORE_REMOVAL, STALE, PRICED)              # the runner codes whose price has a band and a change (B5)
 SHOWN_ORDER = MOVES + (MOVED_LARGER, MOVED_SMALLER)
+# The explore pass: what it says of the test label, which it does not read, and of the cells its tables leave out.
+LOCKED_NOT_READ = ("not read in this pass: its index records are counted by month (B1) and coded "
+                   "partition_not_registered at every time the history gates let through (B2), and no file of its "
+                   "race dates is opened")
+EXPLORED_ONLY = ("Of the level cells at the other times and of the move cells from the later start, this pass gives "
+                 "counts only (B3, B4 and B6).")
 
 
 def _plan(study, path, expected):
@@ -234,6 +268,19 @@ def record_facts(plan, record):
         elif not plan.start_month <= month <= plan.end_month:
             month = OUTSIDE
     return month, race_label(plan, record), {at_s: record_code(plan, record, at_s) for at_s in plan.times_s}
+
+
+def _read_only(facts, labels):
+    """record_facts' answer for a pass that reads only the partition labels named (the explore pass: the explore
+    label alone). A record whose label is one of them comes back as it was. Any other record keeps, at every time, a
+    code of movement.market_code's thirteen (RECORD_CODES[:13]: the history gates and the field, from the index
+    record alone); every other time, with a code or none, is coded partition_not_registered, that code's place in
+    the registered order. So such a record has a code at every time, and decide_record never opens its file."""
+    month, dated, coded = facts
+    if dated is not None and dated[1] in labels:
+        return facts
+    return month, dated, {at_s: (code if code in RECORD_CODES[:13] else PARTITION_NOT_REGISTERED, False)
+                          for at_s, (code, _) in coded.items()}
 
 
 def decide_record(plan, record, facts, root, manifest, tally, limits=DEFAULT_LIMITS):
@@ -421,6 +468,29 @@ def _registered(plan, cells, switch, books):
     }
 
 
+def _explored(plan, cells, books):
+    """E1 to E3 of the drift check's explore pass (module docstring), on the explore label alone: E1 the level cells
+    at entry_s, E2 the move cells from the earlier start under part and rest with no primary (given_move_cells),
+    each headed exploratory with c and sqrt(2 ln c); E3 the sum of 1 / BSP per market with a scored value. Nothing
+    is selected, tested or labelled, and no row of another label is read."""
+    explore = plan.explore_label
+    given = given_move_cells(plan, cells, explore, dict.fromkeys(plan.sides))
+    levels = [cell for cell in plan.level_cells if cell.at_s == plan.entry_s]
+    moves = [cell for cell in _listed(plan, {cell: cell.move for cell in plan.move_cells})
+             if cell.start_s == plan.starts_s[0]]           # band by band, and in a band DRIFT, FLAT, STEAM
+    return {
+        "explore_notes": [plan.label_note, plan.exposure_note, plan.bsp_limit, plan.removal_note],
+        "locked_label": LOCKED_NOT_READ, "explored_cells": EXPLORED_ONLY,
+        "level_figures": dict(_exploratory(len(levels)), heading=EXPLORATORY, not_comparable=NOT_COMPARABLE,
+                              by_cell={_level_key(cell): {explore: figures(plan, _of(cells[cell], explore))}
+                                       for cell in levels}),
+        "move_figures": dict(_exploratory(len(moves)), heading=EXPLORATORY, by_cell={
+            _move_key(cell, cell.move): {explore: figures(plan, _of(cells[cell], explore), given=cell in given)}
+            for cell in moves}),
+        "bsp_book": {explore: {"markets": len(books[explore]), "quantiles": quantile_table(plan, books[explore])}},
+    }
+
+
 def summary(plan, tally, pass_name, input_sha256):
     """The summary of one pass (module docstring), every float rounded; the blind pass's holds no location of x."""
     cells = by_cell(plan, tally.rows)
@@ -447,6 +517,8 @@ def summary(plan, tally, pass_name, input_sha256):
                                "bytes_of_files_opened": tally.bytes_walked + tally.bytes_drained}}
     if pass_name == REGISTERED:
         value.update(_registered(plan, cells, switch, tally.books))
+    elif pass_name == EXPLORE:
+        value.update(_explored(plan, cells, tally.books))
     else:
         value["withheld"] = WITHHELD
     return rounded(value)
@@ -565,6 +637,34 @@ def _registered_lines(plan, value):
                                                         for label, item in books.items()])
 
 
+def _explored_lines(plan, value):
+    """The drift check's explore tables E1 to E3, with the four notes printed above E1."""
+    explore = value["partitions"]["explore_label"]
+    levels, moves, books = value["level_figures"], value["move_figures"], value["bsp_book"]
+    lines = [*(f"- {text}" for text in value["explore_notes"]), f"- {value['explored_cells']}", ""]
+    for name, title, table, note in (
+            ("E1", f"Level cells at {plan.entry_s} on {explore}", levels, levels["not_comparable"]),
+            ("E2", f"Move cells from {plan.starts_s[0]} on {explore}", moves,
+             "part and rest: the earlier start first, and in it DRIFT, FLAT, STEAM")):
+        lines += [f"## {name} {title} (points of stake; {table['heading']}, descriptive; {note})", "",
+                  f"Cells in this table: c = {table['cells']}; sqrt(2 ln c) = {table['sqrt_2_ln_c']}."
+                  + ("" if name == "E1" else f" A cell that shows rest_not_given is held back: it, or what is left "
+                                             f"of its band's level cell at {plan.entry_s}, holds some scored values "
+                                             f"but fewer than {plan.min_values}."), ""]
+        lines += _table(FIGURE_COLUMNS, _figure_rows([(cell, label, table["heading"], found)
+                                                      for cell, by_label in table["by_cell"].items()
+                                                      for label, found in by_label.items()]))
+        lines += [f"Classes of the members of {name}'s cells", ""]
+        lines += _table(["cell", "label", *plan.classes],
+                        [[cell, label, *found["classes"].values()] for cell, by_label in table["by_cell"].items()
+                         for label, found in by_label.items()])
+    keys = next((list(item["quantiles"]) for item in books.values() if item["quantiles"]), [])
+    lines += [f"## E3 The sum of 1 / BSP per market with a scored value on {explore} (nearest-rank quantiles)", ""]
+    return lines + _table(["label", "markets", *keys], [[label, item["markets"], *((item["quantiles"] or {}).get(q)
+                                                                                  for q in keys)]
+                                                        for label, item in books.items()])
+
+
 def markdown(plan, value):
     """summary.md: the summary's tables as Markdown. x is printed as points of stake (100 x x)."""
     registered = value["pass"] == REGISTERED
@@ -576,10 +676,11 @@ def markdown(plan, value):
              f"- split file sha256: `{value['partitions_sha256']}`", f"- input sha256: `{value['input_sha256']}`",
              f"- index records: {value['records']}; files opened: {value['replayed_markets']}",
              f"- partition labels: explore {labels[0]}, test {labels[1]}",
+             *([f"- {labels[1]}: {value['locked_label']}"] if value["pass"] == EXPLORE else []),
              "- x = LTP / BSP - 1 per runner, a fraction of the stake; these tables print 100 x x as points of stake",
              f"- times are seconds before the off; a level cell is a band at a time (A@-600), a move cell a band's "
              f"runners at {plan.entry_s} by their move from a start", ""]
-    if not registered:
+    if "withheld" in value:
         lines += [f"Withheld in this pass: {value['withheld']}.", ""]
     lines += [f"A group with fewer than {plan.min_values} values gives its counts only.", ""]
     coverage = value["coverage"]
@@ -617,8 +718,9 @@ def markdown(plan, value):
     lines += [f"## B6 Moves of the runners priced at {plan.entry_s}, per band, start and label (counts)", "",
               "Undefined moves by reason and the members of the cells add up to the level cell's members. k is the "
               "number of price changes after the end price, up to the entry price."
-              + ("" if registered else " The two moved cells of a start are shown as moved_larger and moved_smaller,"
-                                       " by scored values of both labels together, not by their direction."), ""]
+              + ("" if value["pass"] != BLIND else " The two moved cells of a start are shown as moved_larger and"
+                                                     " moved_smaller, by scored values of both labels together, not"
+                                                     " by their direction."), ""]
     lines += _table(["group", "label", "members", *UNDEFINED, "flagged suspension_in_window"],
                     [[group, label, item["members"], *item["undefined"].values(), item["flagged"]]
                      for group, by_label in groups.items() for label, item in by_label.items()])
@@ -645,8 +747,9 @@ def markdown(plan, value):
                     [[cell, item["detectable"]["test_values"], item["detectable"]["test_race_dates"],
                       _points(item["detectable"]["effect"])] for cell, item in spreads.items()])
     precision = value["bsp_precision"]
+    read = "both labels" if value["pass"] != EXPLORE else f"{labels[0]} alone"
     lines += ["## B9 Diagnostics (counts)", "",
-              f"- scored BSPs of the level cells at {plan.entry_s}, both labels, that are whole hundredths: "
+              f"- scored BSPs of the level cells at {plan.entry_s}, {read}, that are whole hundredths: "
               f"{precision['scored_bsps_whole_hundredths']}; that are not: "
               f"{precision['scored_bsps_not_whole_hundredths']}; the two BSP ends decide apart: "
               f"{'yes' if precision['bsp_ends_decide_apart'] else 'no'}",
@@ -656,6 +759,8 @@ def markdown(plan, value):
               f"{precision['bytes_of_files_opened']}", ""]
     if registered:
         lines += _registered_lines(plan, value)
+    elif value["pass"] == EXPLORE:
+        lines += _explored_lines(plan, value)
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
@@ -671,8 +776,9 @@ def _counts(plan, tally):
             "scored": {str(at_s): held[at_s] for at_s in plan.times_s}}
 
 
-def _tally(plan, root, archives, limits):
-    """Decide every record of every archive (module docstring)."""
+def _tally(plan, root, archives, limits, labels=None):
+    """Decide every record of every archive (module docstring). labels: the partition labels the pass reads (the
+    explore pass: the explore label alone; _read_only), or None for every label the plan names."""
     tally, seen = Tally(plan), set()
     for archive in archives:
         sha = archive["archive_sha256"]
@@ -692,6 +798,8 @@ def _tally(plan, root, archives, limits):
                 facts = record_facts(plan, record)
             except RECORD_ERRORS:
                 raise RunRefused(f"input:{sha}:malformed_record") from None
+            if labels is not None:
+                facts = _read_only(facts, labels)
             decide_record(plan, record, facts, root, archive["manifest"], tally, limits)
     if not tally.replayed:          # another data root, or the wrong plan: fail before the ledger spends a look
         raise RunRefused("input:no_registered_market")
@@ -706,9 +814,11 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
     try:
         if study not in STUDIES:
             _refuse("study:not_supported")
-        if pass_name not in PASSES:
+        if pass_name not in PASSES_OF[study]:       # early-price-v1 runs no explore pass, the drift check no registered
             _refuse("pass:not_supported")
         plan, split_raw, alpha = _plan(study, registration_path, registration_sha256_hex)
+        if plan.study != study:                     # one study's file under the other's name
+            _refuse("study:not_the_registrations")
         if not (isinstance(code_commit, str) and COMMIT_RE.fullmatch(code_commit)):
             _refuse("code_commit:malformed")
         guarded = _guarded(archive_root, "archive_root")
@@ -718,7 +828,7 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
         target = _out_path(out, root)
         if pass_name == BLIND and blind_receipt is not None:
             _refuse("blind_receipt:not_for_the_blind_pass")
-        blind = _blind_receipt(blind_receipt, plan) if pass_name == REGISTERED else None
+        blind = None if pass_name == BLIND else _blind_receipt(blind_receipt, plan)
         try:
             _, sources_sha256 = source_descriptor()
         except CertificateProblem as error:
@@ -741,14 +851,20 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
             source_descriptor_sha256=sources_sha256, code_commit=code_commit)
         if pass_name == REGISTERED:
             request = replace(request, kind=REGISTERED_KIND, m=plan.family_m, alpha=alpha)
+        elif pass_name == EXPLORE:                  # the explore label alone; m 0 and alpha "0": nothing is tested
+            request = replace(request, kind=EXPLORE_KIND, partitions=(plan.explore_label,))
         try:
             handle, stored = _ledger(ledger, ledger_head, root, target, request, split_raw, blind and blind[2])
+            # One explore pass per study: a repeat runs again; any other explore entry of this study refuses.
+            if pass_name == EXPLORE and stored is None and any(
+                    entry["kind"] == EXPLORE_KIND and entry["study"] == plan.study for entry in handle.entries()):
+                _refuse("explore:already_run")
         except LedgerError as error:
             raise StudyRefused(str(error)) from None
     except StudyRefused as error:
         return {"status": "refused", "problems": [str(error)]}
     try:
-        tally = _tally(plan, root, archives, limits)
+        tally = _tally(plan, root, archives, limits, (plan.explore_label,) if pass_name == EXPLORE else None)
     except (RunRefused, ReplayProblem, StudyRefused) as error:
         return {"status": "failed", "failure": _failure(error)}
     value = summary(plan, tally, pass_name, input_sha256)
@@ -794,17 +910,19 @@ def run_study(study, pass_name, registration_sha256_hex, archive_root, out, code
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="python3 -m betangel_research.betfair.backtest.early_study",
-                                     description="Registered measurement early-price-v1 on local historical files; "
-                                                 "nothing is ordered and nothing can reach an exchange.")
-    parser.add_argument("--study", required=True, help="the study to run: early-price-v1")
-    parser.add_argument("--pass", dest="pass_name", required=True, choices=PASSES, help="blind first, then registered")
+                                     description="Registered measurements early-price-v1 and early-price-2015-16-v1 "
+                                                 "on local historical files; nothing is ordered and nothing can "
+                                                 "reach an exchange.")
+    parser.add_argument("--study", required=True, help=f"the study to run: one of {', '.join(STUDIES)}")
+    parser.add_argument("--pass", dest="pass_name", required=True, choices=PASS_NAMES,
+                        help=f"blind first, then registered ({STUDY_ID}) or explore ({DRIFT_CHECK_ID})")
     parser.add_argument("--registration-sha256", required=True, help="sha256 of the registration file's raw bytes")
     parser.add_argument("--archive-root", required=True, help="the BASIC data root with manifests/, raw/ and index/")
     parser.add_argument("--out", required=True, help="a new directory outside every Git worktree and data tree")
     parser.add_argument("--code-commit", required=True, help="the 40-character commit the code was checked out at")
     parser.add_argument("--ledger", required=True, help="the study ledger's directory; it must exist")
     parser.add_argument("--ledger-head", required=True, help="the ledger's last head: none, or SEQ:SHA256")
-    parser.add_argument("--blind-receipt", help="registered pass: the blind pass's receipt.json")
+    parser.add_argument("--blind-receipt", help="registered or explore pass: the blind pass's receipt.json")
     parser.add_argument("--registration", help="registration file (default: research/studies/<study>.json); the "
                                                "split file is read beside its studies/ folder")
     return parser

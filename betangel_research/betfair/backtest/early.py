@@ -9,7 +9,9 @@ file, but as a module of this package it is in the engine certificate's source d
 the certificate key again. Nothing here opens a file, reads a clock or uses the random module.
 
 Two files decide everything: the registration (research/studies/early-price-v1.json) and the split file it names
-(research/partitions-v2.json, parsed by partition.parse_split).
+(research/partitions-v2.json, parsed by partition.parse_split). The parser takes two registrations of the lineage
+alike, early-price-v1's and the drift check's (DRIFT_CHECK_ID, the same measurement on the 2015-16 BASIC files):
+Plan.study is the file's id, and any other id is refused (id:not_supported).
 
 Registration (parse_registration): the exact keys at every level, every value of its type and domain, the file in
 its one byte form, and every list of codes, classes, cells, reasons and labels equal to this module's own, in
@@ -123,6 +125,9 @@ from .resting import (AS_WRITTEN, BSP_ENDS, BSP_STEP, CLAIM_END, COUNTS_ONLY, G,
                       ends_apart, gate, gated, given_together, score, scored, spread, whole_hundredths, withheld)
 
 STUDY_ID, LINEAGE = "early-price-v1", "early-price"
+# The drift check: early-price-v1's measurement on the 2015-16 BASIC files; the parser takes both ids alike.
+DRIFT_CHECK_ID = "early-price-2015-16-v1"
+STUDY_IDS = (STUDY_ID, DRIFT_CHECK_ID)
 TIERS = ("BASIC",)
 PRICE_KEY = "ltp"
 SIDES = (BACK, LAY)
@@ -389,7 +394,8 @@ def parse_registration(raw, split_raw):
     check in the module docstring; RegistrationError otherwise."""
     top = _loaded(raw)
     _text(top["schema"], "schema", SCHEMA)
-    _text(top["id"], "id", STUDY_ID)
+    if _text(top["id"], "id") not in STUDY_IDS:
+        _fail("id", "not_supported")
     _text(top["lineage"], "lineage", LINEAGE)
     _text(top["status"], "status", "registered")
     if not isinstance(top["registered_on"], str) or not DATE_RE.fullmatch(top["registered_on"]):
@@ -536,7 +542,7 @@ def parse_registration(raw, split_raw):
         _text(exposure[key], f"exposure.{key}")
 
     plan = Plan(
-        sha256=registration_sha256(raw), study=STUDY_ID, lineage=LINEAGE, split=split, explore_label=explore,
+        sha256=registration_sha256(raw), study=top["id"], lineage=LINEAGE, split=split, explore_label=explore,
         test_label=test, halves=halves, tiers=TIERS, start_month=months[0], end_month=months[1],
         countries=countries, event_type_id=population["event_type_id"], market_type=population["market_type"],
         betting_type=population["betting_type"],

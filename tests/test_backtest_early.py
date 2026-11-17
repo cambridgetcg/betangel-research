@@ -10,8 +10,9 @@ two BASIC budgets and one exposure sentence, how one ledger keeps the budgets of
 files, the registration's checks, the codes, prices, cells and classes early.assess gives on these synthetic
 shapes, and what the scores, the blind figures, the selection, the labels and part and rest do with hand-built value
 rows. The pass runner (early_study) is run through main() on a synthetic archive, with a copy of the registration
-whose gates are lowered, and with a study ledger in a temporary folder. They say nothing about real Betfair files or
-results.
+whose gates are lowered, and with a study ledger in a temporary folder. The drift check (early-price-2015-16-v1) is
+run the same way, with early-price-v1's file under the drift check's id: its blind look, its one explore pass, and
+that the explore pass opens no file of a locked-label date. They say nothing about real Betfair files or results.
 """
 
 import ast
@@ -205,7 +206,10 @@ REGISTRATION = REPO / "research" / "studies" / "early-price-v1.json"
 REGISTRATION_SHA256 = "2297d300c7fd1a03513e8a3e56ade50ac27f193fe012dd3d0e982989e21c9bf0"
 REGISTRATION_RAW = REGISTRATION.read_bytes()
 PLAN = parse_registration(REGISTRATION_RAW, V2_RAW)
-TIMES = (-14400, -7200, -3600, -1800, -600)
+# The drift check's id. Until its own registration exists, its tests here use early-price-v1's file with the id
+# changed: the parser and the runner do not care which labels they are given.
+DRIFT_CHECK = early.DRIFT_CHECK_ID
+TIMES =(-14400, -7200, -3600, -1800, -600)
 DECIDED_BY = ("lab-Claude proposed this study on 2026-11-12 after a design round and its reviews. Yu, 2026-11-12, "
               "after lab-Claude wrote that it read Yu's message as a go to build the study as a pull request: "
               "\"go\". Yu chose none of the numbers here. Merging this registration and the split file version 2 "
@@ -414,11 +418,25 @@ class Registration(unittest.TestCase):
             ("data.prices.key:not_supported", setting("data", "prices", "key", "trd")),
             ("lineage:not_supported", setting("lineage", "close")),
             ("id:not_supported", setting("id", "close-v1")),
+            ("id:not_supported", setting("id", "early-price-v2")),
+            ("id:not_text", setting("id", "")),
             ("top:keys_not_the_registered_set", extra_key),
         )
         for reason, change in cases:
             with self.subTest(reason=reason):
                 self.assertRefused(reason, change)
+
+    def test_the_drift_checks_id_parses_alike(self):
+        """The same bytes with the drift check's id: a plan with that study id and its own sha256, and nothing else
+        different. early-price-v1's file still gives early-price-v1 (test_the_repository_registration_...)."""
+        self.assertEqual((early.STUDY_ID, DRIFT_CHECK, early.STUDY_IDS), ("early-price-v1", "early-price-2015-16-v1",
+                                                                    ("early-price-v1", "early-price-2015-16-v1")))
+        raw, split_raw = reg_files(setting("id", DRIFT_CHECK))
+        drift = parse_registration(raw, split_raw)
+        self.assertEqual((drift.study, drift.lineage, drift.sha256), (DRIFT_CHECK, "early-price",
+                                                                      hashlib.sha256(raw).hexdigest()))
+        self.assertNotEqual(drift.sha256, PLAN.sha256)
+        self.assertEqual(replace(drift, study=PLAN.study, sha256=PLAN.sha256), PLAN)
 
     def test_only_the_one_byte_form_is_taken(self):
         self.assertRefused("file:not_canonical", raw=REGISTRATION_RAW + b"\n")
@@ -1690,14 +1708,14 @@ def lowered(value):
     value["selection"]["max_detectable"] = "0.5"
 
 
-def write_registration(folder, change=lowered):
+def write_registration(folder, change=lowered, study=STUDY):
     """(path, sha256) of a registration written with its split file into folder, in the shape the runner reads:
-    studies/early-price-v1.json, the split file beside studies/."""
+    studies/<study>.json (early-price-v1.json unless named), the split file beside studies/."""
     raw, split_raw = reg_files(change)
     (folder / "studies").mkdir(parents=True, exist_ok=True)
-    (folder / "studies" / "early-price-v1.json").write_bytes(raw)
+    (folder / "studies" / f"{study}.json").write_bytes(raw)
     (folder / "partitions-v2.json").write_bytes(split_raw)
-    return folder / "studies" / "early-price-v1.json", hashlib.sha256(raw).hexdigest()
+    return folder / "studies" / f"{study}.json", hashlib.sha256(raw).hexdigest()
 
 
 def cli(*arguments):
@@ -1759,9 +1777,9 @@ def mean_of(values):
     return math.fsum(values) / len(values)
 
 
-def tally_of(rows):
+def tally_of(rows, plan=PLAN):
     """An early_study.Tally holding hand-built priced rows."""
-    tally = early_study.Tally(PLAN)
+    tally = early_study.Tally(plan)
     tally.rows.extend(rows)
     return tally
 
@@ -2352,6 +2370,411 @@ class EarlyPriceV1IsUnchanged(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# The drift check's passes (early-price-2015-16-v1): its blind look and its one explore pass, on the study archive.
+# Its registration does not exist here yet, so the runner is given early-price-v1's file with the id changed (and,
+# but in the last test, the gates lowered): 2023 dates are the explore label, 2024 dates the locked one.
+
+def as_drift_check(value):
+    """early-price-v1's registration under the drift check's id, with the gates lowered (lowered)."""
+    lowered(value)
+    value["id"] = DRIFT_CHECK
+
+
+DRIFT_PLAN = plan_of(setting("id", DRIFT_CHECK))                  # the real gates
+# The study archive's markets on the explore label (2023), which alone the explore pass opens.
+EXPLORE_DATED = ("dated0", "dated1", "dated2", "dated3", "malformed")
+LOCKED_DATED = ("dated4", "dated5", "dated6", "dated7")
+# Keys and words of a test, a p-value, Holm, a bound, the selection, a primary, a label, a half-year or a net.
+NOT_EXPLORED = {"test", "p_one_sided", "p_two_sided", "holm_p_adjusted", "holm_rejected", "bound", "selection",
+                "primaries", "eligible", "mean_over_se", "label", "half_years", "mean_above_0", "kill", "net_lower",
+                "checks", "both", "withheld", "verdicts", "figures_given", "kill_figures_given"}
+NOT_EXPLORED_WORDS = ("p one-sided", "p-value", "holm", "bound", "selection", "eligible", "primar", "half-year",
+                      "net_held", "## r", "withheld in this pass", "mean / se", "rejected", "moved_larger",
+                      "moved_smaller", *early.VERDICTS)
+
+
+def opened_ids(walked):
+    """The market ids a wrapped _walk was given, sorted."""
+    return sorted(call.args[2]["market_id"] for call in walked.call_args_list)
+
+
+def leaves_of(value, trail=()):
+    """(the keys leading to it, the value) of every value of a JSON value that is not a non-empty object."""
+    if isinstance(value, dict) and value:
+        for key, item in value.items():
+            yield from leaves_of(item, trail + (key,))
+    else:
+        yield trail, value
+
+
+_EXPLORED = {}
+
+
+def explored():
+    """One blind look and one explore pass of the drift check through main() over shared()'s data root, with a
+    ledger of their own and _walk wrapped, run once for this module: a namespace of the folder, the registration
+    and its sha256, the ledger directory, each pass's (exit code, stdout) and the market ids each pass opened."""
+    if not _EXPLORED:
+        given = shared()
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        registration, digest = write_registration(base / "research", as_drift_check, DRIFT_CHECK)
+        ledger = base / "ledger"
+        ledger.mkdir(mode=0o700)
+        common = ["--study", DRIFT_CHECK, "--registration-sha256", digest, "--registration", str(registration),
+                  "--archive-root", str(given.root), "--code-commit", COMMIT, "--ledger", str(ledger)]
+        opened = {}
+        with mock.patch.object(early_study, "_walk", wraps=early_study._walk) as walked:
+            blind = cli(*common, "--pass", "blind", "--out", str(base / "blind"), "--ledger-head", "none")
+        opened["blind"] = opened_ids(walked)
+        head = json.loads(blind[1]).get("ledger_head", "none")
+        with mock.patch.object(early_study, "_walk", wraps=early_study._walk) as walked:
+            explore = cli(*common, "--pass", "explore", "--out", str(base / "explore"), "--ledger-head", head,
+                          "--blind-receipt", str(base / "blind" / "receipt.json"))
+        opened["explore"] = opened_ids(walked)
+        _EXPLORED["value"] = SimpleNamespace(base=base, root=given.root, registration=registration, sha=digest,
+                                             ledger=ledger, ids=given.ids, blind=blind, explore=explore,
+                                             opened=opened)
+    return _EXPLORED["value"]
+
+
+class DriftCheckRun(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.tmp = Path(folder.name).resolve()
+        self.ledger = self.tmp / "ledger"
+        self.ledger.mkdir(mode=0o700)
+        self.given = explored()
+
+    def run_pass(self, name, out, head="none", **kwargs):
+        arguments = dict(registration_path=self.given.registration, clock=clock)
+        arguments.update(kwargs)
+        return early_study.run_study(arguments.pop("study", DRIFT_CHECK), name, arguments.pop("sha", self.given.sha),
+                                     arguments.pop("root", self.given.root), out, arguments.pop("commit", COMMIT),
+                                     arguments.pop("ledger", self.ledger), head, **arguments)
+
+    def assertRefused(self, result, problem, out=None):
+        self.assertEqual(result, {"status": "refused", "problems": [problem]})
+        self.assertFalse((self.ledger / LEDGER_FILE).exists())
+        if out is not None:
+            self.assertFalse(out.exists())
+
+    def results(self):
+        return {name: json.loads(getattr(self.given, name)[1]) for name in ("blind", "explore")}
+
+    def summaries(self):
+        return {name: json.loads(outputs_of(self.given.base / name)["summary.json"]) for name in ("blind", "explore")}
+
+    def copied_ledger(self):
+        """A copy of the shared drift-check ledger in this test's folder, so that a test may append to it."""
+        copy_ = self.tmp / "ledger-copy"
+        copy_.mkdir(mode=0o700)
+        (copy_ / LEDGER_FILE).write_bytes((self.given.ledger / LEDGER_FILE).read_bytes())
+        return copy_
+
+    # T2
+    def test_each_study_runs_its_own_passes_only(self):
+        out = self.tmp / "out"
+        nowhere = dict(registration_path=self.tmp / "none.json", root=self.tmp / "none", ledger=self.tmp / "none")
+        # Refused before any path is read: none of these paths exists.
+        self.assertRefused(self.run_pass("explore", out, study=STUDY, **nowhere), "pass:not_supported", out)
+        self.assertRefused(self.run_pass("registered", out, **nowhere), "pass:not_supported", out)
+        for study in ("early-price-v2", "close-early-v1"):
+            self.assertRefused(self.run_pass("blind", out, study=study, **nowhere), "study:not_supported", out)
+        # One study's file never runs under the other's name, whichever pass is asked for.
+        shared_ = shared()
+        for name in ("blind", "explore"):
+            self.assertRefused(self.run_pass(name, out, registration_path=shared_.registration, sha=shared_.sha),
+                               "study:not_the_registrations", out)
+        for name in ("blind", "registered"):
+            self.assertRefused(self.run_pass(name, out, study=STUDY), "study:not_the_registrations", out)
+
+    # T3
+    def test_blind_then_explore(self):
+        given = self.given
+        self.assertEqual((given.blind[0], given.explore[0]), (0, 0), (given.blind[1], given.explore[1]))
+        results, files = self.results(), {name: outputs_of(given.base / name) for name in ("blind", "explore")}
+        for name, result in results.items():
+            self.assertEqual((result["status"], result["study"], result["pass"], result["records"],
+                              result["replayed_markets"], result["ledger_repeat"]),
+                             ("completed", DRIFT_CHECK, name, 12, 9 if name == "blind" else 5, False))
+            self.assertEqual(result["ledger_counts"], {"looks": 1, "registered": 0})    # an explore is neither
+            self.assertEqual(result["summary_sha256"], hashlib.sha256(files[name]["summary.json"]).hexdigest())
+        # The ledger: a look naming both labels, then an explore line naming the explore label alone, m 0, alpha 0.
+        entries = verify(given.ledger / LEDGER_FILE)
+        self.assertEqual([(entry["seq"], entry["kind"], entry["study"], entry["lineage"], entry["partitions"],
+                           entry["partitions_sha256"], entry["registration_sha256"], entry["code_commit"],
+                           entry["m"], entry["alpha"], entry["result"]) for entry in entries],
+                         [(0, "look", DRIFT_CHECK, "early-price", [D, V], V2_SHA256, given.sha, COMMIT, 0, "0",
+                           "completed"),
+                          (1, "explore", DRIFT_CHECK, "early-price", [D], V2_SHA256, given.sha, COMMIT, 0, "0",
+                           "completed")])
+        for entry, name in zip(entries, ("blind", "explore")):
+            self.assertEqual((results[name]["ledger_head"], entry["tables_sha256"]),
+                             (f"{entry['seq']}:{entry['entry_sha256']}", results[name]["summary_sha256"]))
+        # The receipts: the 23 keys, and the explore pass names the blind receipt's hash.
+        receipts = {name: json.loads(files[name]["receipt.json"]) for name in files}
+        for name, receipt in receipts.items():
+            self.assertEqual(len(receipt), 23)
+            self.assertEqual(set(receipt), set(json.loads(outputs_of(shared().base / "blind")["receipt.json"])))
+            self.assertEqual((receipt["kind"], receipt["study"], receipt["pass"], receipt["status"],
+                              receipt["registration_sha256"], receipt["ledger_head"], receipt["ledger_entry"]),
+                             ("betangel_early_receipt", DRIFT_CHECK, name, "completed", given.sha,
+                              results[name]["ledger_head"], results[name]["ledger_head"]))
+        self.assertIsNone(receipts["blind"]["blind_receipt_sha256"])
+        self.assertEqual(receipts["explore"]["blind_receipt_sha256"],
+                         hashlib.sha256(files["blind"]["receipt.json"]).hexdigest())
+        self.assertEqual(json.loads(files["explore"]["summary.json"])["kind"], "betangel_early_summary")
+
+    # T4
+    def test_no_locked_date_file_is_opened_by_the_explore_pass(self):
+        given = self.given
+        self.assertEqual(given.opened["explore"], sorted(given.ids[name] for name in EXPLORE_DATED))
+        self.assertEqual(given.opened["blind"], sorted(market_id for name, market_id in given.ids.items()
+                                                       if name not in NEVER_OPENED))
+        receipt = json.loads(outputs_of(given.base / "explore")["receipt.json"])
+        explore_ids = {given.ids[name] for name in EXPLORE_DATED}
+        opened = sum(member.stat().st_size for member in raw_members(given.root) if member.name[:-4] in explore_ids)
+        self.assertEqual(receipt["bytes_walked"] + receipt["bytes_drained"], opened)
+        self.assertEqual(self.summaries()["explore"]["bsp_precision"]["bytes_of_files_opened"], opened)
+
+    # T5
+    def test_every_count_of_the_locked_label_is_0_but_b1s(self):
+        blind, explore = self.summaries()["blind"], self.summaries()["explore"]
+        under = [(trail, item) for trail, item in leaves_of(explore) if V in trail]
+        self.assertGreater(len(under), 100)
+        self.assertEqual([(trail, item) for trail, item in under if trail[:2] != ("coverage", "by_month")
+                          and item != 0], [])
+        self.assertEqual([trail for trail, _ in walk_floats(explore) if V in trail], [])
+        # B1 is the blind look's; B2 codes the locked label's records partition_not_registered.
+        self.assertEqual(explore["coverage"], blind["coverage"])
+        self.assertEqual(sum(row[V] for row in explore["coverage"]["by_month"].values()), 4)
+        for at_s, codes in explore["codes"].items():
+            late = int(at_s) > -5000
+            self.assertEqual({code: count for code, count in codes.items() if count},
+                             {"viewed": 4 if late else 5, "partition_not_registered": 4, "plan_not_registered": 1,
+                              "month_not_registered": 2, **({"price_change_malformed": 1} if late else {})}, at_s)
+        self.assertEqual(explore["bsp_precision"]["bsp_market_with_no_value"], dict.fromkeys(explore["codes"], 0))
+        # B7 and B8: no spread at all, and no detectable effect.
+        for cell, item in explore["spreads"]["by_cell"].items():
+            self.assertEqual((item["sd"], item["ranges"], item["detectable"]["effect"]), (None, None, None), cell)
+            self.assertIn(item["reason"], (resting.REST_NOT_GIVEN, resting.COUNTS_ONLY))
+            self.assertEqual((item["detectable"]["test_values"], item["detectable"]["test_race_dates"]), (0, 0))
+        self.assertTrue(any(item["values"] for item in explore["spreads"]["by_cell"].values()))
+
+    # T6
+    def test_the_explore_labels_counts_are_the_blind_looks(self):
+        blind, explore = self.summaries()["blind"], self.summaries()["explore"]
+        for at_s in map(str, TIMES):
+            self.assertEqual(explore["runners"][at_s][D], blind["runners"][at_s][D], at_s)
+            for band in ("A", "B"):
+                self.assertEqual(explore["classes"][at_s][band][D], blind["classes"][at_s][band][D], (at_s, band))
+        self.assertGreater(explore["runners"]["-600"][D]["priced"], 0)
+        for group, by_label in blind["move_groups"].items():
+            seen, named = by_label[D], explore["move_groups"][group][D]
+            with self.subTest(group=group):
+                self.assertEqual({key: named[key] for key in ("members", "undefined", "flagged")},
+                                 {key: seen[key] for key in ("members", "undefined", "flagged")})
+                self.assertEqual((set(seen["cells"]), set(named["cells"])),
+                                 ({"FLAT", "moved_larger", "moved_smaller"}, set(early.MOVES)))
+                self.assertEqual(named["cells"]["FLAT"], seen["cells"]["FLAT"])
+                self.assertEqual(sorted(canonical_json(named["cells"][name]) for name in (DRIFT, STEAM)),
+                                 sorted(canonical_json(seen["cells"][name]) for name in ("moved_larger",
+                                                                                       "moved_smaller")))
+        # From -3600 band A's moved cell is A2's STEAM (DRIFT is empty): the larger.
+        self.assertEqual(explore["move_groups"]["A from -3600"][D]["cells"][STEAM],
+                         blind["move_groups"]["A from -3600"][D]["cells"]["moved_larger"])
+        self.assertEqual(explore["move_groups"]["A from -3600"][D]["cells"][DRIFT]["members"], 0)
+
+    # T7
+    def test_e1_and_e2_hold_their_cells_only(self):
+        explore = self.summaries()["explore"]
+        levels, moves = explore["level_figures"], explore["move_figures"]
+        self.assertEqual((levels["cells"], levels["heading"], moves["cells"], moves["heading"]),
+                         (2, "exploratory", 6, "exploratory"))
+        self.assertAlmostEqual(levels["sqrt_2_ln_c"], math.sqrt(2 * math.log(2)), places=6)
+        self.assertAlmostEqual(moves["sqrt_2_ln_c"], math.sqrt(2 * math.log(6)), places=6)
+        self.assertEqual(list(levels["by_cell"]), ["A@-600", "B@-600"])
+        self.assertEqual(set(moves["by_cell"]), {f"{band} from -14400: {move}" for move in early.MOVES
+                                                 for band in ("A", "B")})
+        self.assertEqual({label for table in (levels, moves) for by_label in table["by_cell"].values()
+                          for label in by_label}, {D})
+        # E1 is R1's figure for the explore label, checked by hand as R1 is: A1 at 2.5 and A2 at 2.9.
+        level = levels["by_cell"]["A@-600"][D]
+        written = [2.5 / (2.52 + shift) - 1 for shift in SHIFTS] + [2.9 / (3.1 + shift) - 1 for shift in SHIFTS]
+        self.assertEqual((level["members"], level["classes"]["scored"], level["x"][resting.AS_WRITTEN]["values"],
+                          level["x"][resting.AS_WRITTEN]["race_dates"]), (8, 8, 8, 4))
+        self.assertAlmostEqual(level["x"][resting.AS_WRITTEN]["mean"], mean_of(written), places=6)
+        registered = json.loads(outputs_of(shared().base / "registered")["summary.json"])
+        for cell in levels["by_cell"]:
+            self.assertEqual(levels["by_cell"][cell][D], registered["level_figures"]["by_cell"][cell][D], cell)
+        # E2: A1 drifted from -14400 (2.1 to 2.4) and A2 steamed (3.5 to 2.8); no runner of band A is FLAT.
+        drift = moves["by_cell"]["A from -14400: DRIFT"][D]
+        self.assertEqual((drift["members"], drift["x"][resting.AS_WRITTEN]["values"]), (4, 4))
+        self.assertAlmostEqual(drift["x"][resting.AS_WRITTEN]["mean"],
+                               mean_of([2.5 / (2.52 + shift) - 1 for shift in SHIFTS]), places=6)
+        self.assertEqual(moves["by_cell"]["A from -14400: FLAT"][D]["members"], 0)
+        # E3 is R6's figure for the explore label.
+        self.assertEqual(explore["bsp_book"], {D: registered["bsp_book"][D]})
+        self.assertEqual(explore["bsp_book"][D]["markets"], 5)
+
+    # T8
+    def test_the_explore_pass_tests_selects_and_labels_nothing(self):
+        given = self.given
+        files = outputs_of(given.base / "explore")
+        value = json.loads(files["summary.json"])
+        keys = set(walk_keys(value))
+        self.assertEqual(keys & NOT_EXPLORED, set())
+        self.assertEqual({key for key in keys if any(part in key for part in ("net", "half", "holm", "primar"))},
+                         set())
+        self.assertEqual(set(value) - set(self.summaries()["blind"]),
+                         {"explore_notes", "locked_label", "explored_cells", "level_figures", "move_figures",
+                          "bsp_book"})
+        self.assertEqual(set(self.summaries()["blind"]) - set(value), {"withheld"})
+        text = files["summary.md"].decode()
+        lowered_text = text.lower()
+        for word in NOT_EXPLORED_WORDS:
+            self.assertNotIn(word, lowered_text)
+        # The four notes print above E1, and the header says the locked label is not read.
+        notes = [PLAN.label_note, PLAN.exposure_note, PLAN.bsp_limit, PLAN.removal_note]
+        self.assertEqual(value["explore_notes"], notes)
+        for note in notes:
+            self.assertLess(text.index(f"- {note}"), text.index("## E1 "))
+        header = text.split("\n\n")[1]
+        self.assertTrue(header.startswith("- registration sha256: "))
+        self.assertIn(f"\n- {V}: {early_study.LOCKED_NOT_READ}\n", header)
+        self.assertTrue(early_study.LOCKED_NOT_READ.startswith("not read in this pass: "))
+        self.assertEqual([line[:6] for line in text.splitlines() if line.startswith("## E")],
+                         ["## E1 ", "## E2 ", "## E3 "])
+        self.assertIn("c = 2; sqrt(2 ln c) = 1.17741.", text)
+        self.assertIn("c = 6; sqrt(2 ln c) =", text)
+        for word in ("DRIFT", "STEAM", "exploratory", "## B9 ", f"{D} alone"):
+            self.assertIn(word, text)
+
+    # T9
+    def test_changing_every_locked_label_row_leaves_e1_to_e3(self):
+        """Hand-built rows through summary: the explore tables read no row of the locked label, whatever it holds
+        (in a real explore pass it holds none)."""
+        explore = two_primaries()[:1200]
+        variants = (two_primaries()[1200:], [mirrored(row) for row in two_primaries()[1200:]] + rows_of(
+            "0.5", "0.2", 300, band="B", label=V, moves={-14400: STEAM}))
+        books = ([1.0 + index / 1000 for index in range(150)],
+                 [[1.2] * 120, [0.9 + index / 500 for index in range(300)]])
+        found = []
+        for test, book in zip(variants, books[1]):
+            tally = tally_of(explore + test, DRIFT_PLAN)
+            tally.books = {D: list(books[0]), V: list(book)}
+            value = early_study.summary(DRIFT_PLAN, tally, "explore", "0" * 64)
+            found.append((value, early_study.markdown(DRIFT_PLAN, value)))
+        tables = ("explore_notes", "locked_label", "explored_cells", "level_figures", "move_figures", "bsp_book")
+        self.assertEqual(*({key: value[key] for key in tables} for value, _ in found))
+        self.assertNotEqual(found[0][0]["classes"], found[1][0]["classes"])          # the locked rows did change
+        self.assertIsNotNone(found[0][0]["move_figures"]["by_cell"]["B from -14400: DRIFT"][D]["x"][
+            resting.AS_WRITTEN]["mean"])
+        self.assertIsNotNone(found[0][0]["level_figures"]["by_cell"]["A@-600"][D]["x"][resting.AS_WRITTEN]["mean"])
+        self.assertIsNotNone(found[0][0]["bsp_book"][D]["quantiles"])
+        sections = [text[text.index("## E1 "):] for _, text in found]
+        self.assertEqual(sections[0], sections[1])
+
+    # T10
+    def test_the_explore_pass_needs_this_studys_blind_receipt(self):
+        given, out = self.given, self.tmp / "out"
+        self.assertRefused(self.run_pass("explore", out), "blind_receipt:missing", out)
+        # early-price-v1's own blind receipt is another study's.
+        self.assertRefused(self.run_pass("explore", out, blind_receipt=shared().base / "blind" / "receipt.json"),
+                           "blind_receipt:not_a_completed_blind_receipt", out)
+        receipt = json.loads((given.base / "blind" / "receipt.json").read_bytes())
+        forged = self.tmp / "forged.json"
+        for change, problem in (({"study": STUDY}, "blind_receipt:not_a_completed_blind_receipt"),
+                                ({"pass": "explore"}, "blind_receipt:not_a_completed_blind_receipt"),
+                                ({"registration_sha256": "1" * 64}, "blind_receipt:another_registration"),
+                                ({"partitions_sha256": V1_SHA256}, "blind_receipt:another_split"),
+                                ({"code_commit": "f" * 40}, "blind_receipt:another_code"),
+                                ({"source_descriptor_sha256": "3" * 64}, "blind_receipt:another_code"),
+                                ({"input_sha256": "2" * 64}, "blind_receipt:another_input")):
+            with self.subTest(change=change):
+                forged.write_bytes(canonical_json({**receipt, **change}) + b"\n")
+                self.assertRefused(self.run_pass("explore", out, blind_receipt=forged), problem, out)
+        # The receipt's look must be in this ledger.
+        self.assertRefused(self.run_pass("explore", out, blind_receipt=given.base / "blind" / "receipt.json"),
+                           "ledger:truncated_before_anchor", out)
+
+    # T11
+    def test_one_explore_pass_and_a_repeat_gives_the_same_bytes(self):
+        given, ledger = self.given, self.copied_ledger()
+        receipt = given.base / "blind" / "receipt.json"
+        head, before = json.loads(given.explore[1])["ledger_head"], (ledger / LEDGER_FILE).read_bytes()
+        again = self.run_pass("explore", self.tmp / "again", head, ledger=ledger, blind_receipt=receipt)
+        self.assertEqual((again["status"], again["ledger_repeat"], again["ledger_head"], again["summary_sha256"]),
+                         ("completed", True, head, json.loads(given.explore[1])["summary_sha256"]))
+        for item in ("summary.json", "summary.md"):
+            self.assertEqual(outputs_of(self.tmp / "again")[item], outputs_of(given.base / "explore")[item])
+        self.assertEqual((ledger / LEDGER_FILE).read_bytes(), before)
+        # A second look under another commit is taken; an explore pass with its receipt is another identity of
+        # this study's explore pass, and it is refused before the read.
+        second = self.run_pass("blind", self.tmp / "second", head, ledger=ledger, commit="1" * 40)
+        self.assertEqual((second["status"], second["ledger_repeat"]), ("completed", False))
+        before = (ledger / LEDGER_FILE).read_bytes()
+        with mock.patch.object(early_study, "_tally", side_effect=AssertionError("the archive was read")):
+            refused = self.run_pass("explore", self.tmp / "third", second["ledger_head"], ledger=ledger,
+                                    commit="1" * 40, blind_receipt=self.tmp / "second" / "receipt.json")
+        self.assertEqual(refused, {"status": "refused", "problems": ["explore:already_run"]})
+        self.assertEqual(((ledger / LEDGER_FILE).read_bytes(), (self.tmp / "third").exists()), (before, False))
+
+    # T12
+    def test_the_explore_pass_codes_another_labels_record_from_its_facts(self):
+        codes = {-14400: ("anchor_not_known_by_decision", False), -7200: (None, True), -3600: (None, False),
+                 -1800: ("bsp_market_false", False), -600: ("market_not_open", False)}
+        mine = ("2023-06", ("2023-06-01", D, None), dict(codes))
+        self.assertIs(early_study._read_only(mine, (D,)), mine)
+        self.assertEqual(early_study._read_only(mine, (V,)), ("2023-06", ("2023-06-01", D, None), {
+            -14400: ("anchor_not_known_by_decision", False), -7200: ("partition_not_registered", False),
+            -3600: ("partition_not_registered", False), -1800: ("partition_not_registered", False),
+            -600: ("partition_not_registered", False)}))
+        # Each of the thirteen codes of the record alone stays; the three after them become partition_not_registered.
+        for code in early.RECORD_CODES:
+            with self.subTest(code=code):
+                facts = ("2024-03", ("2024-03-01", V, "H1"), dict.fromkeys(TIMES, (code, False)))
+                expected = code if code in movement.MARKET_CODES[:13] else "partition_not_registered"
+                self.assertEqual(early_study._read_only(facts, (D,))[2], dict.fromkeys(TIMES, (expected, False)))
+        self.assertEqual(early.RECORD_CODES[13:], ("partition_not_registered", "bsp_market_false", "market_not_open"))
+        # A record with no off time has no label: it keeps its codes, which all come from the history gates.
+        none = (early_study.NO_ANCHOR, None, dict.fromkeys(TIMES, ("anchor_not_known_by_decision", False)))
+        self.assertEqual(early_study._read_only(none, (D,)), none)
+
+    # T13
+    def test_the_real_gates_give_counts_only_in_the_explore_pass(self):
+        """The early-price-v1 registration as it is, but the id: 8 or 10 values a cell and label, far below 100."""
+        registration, digest = write_registration(self.tmp / "research", setting("id", DRIFT_CHECK), DRIFT_CHECK)
+        arguments = dict(registration_path=registration, sha=digest)
+        blind = self.run_pass("blind", self.tmp / "blind", **arguments)
+        self.assertEqual(blind["status"], "completed", blind)
+        explore = self.run_pass("explore", self.tmp / "explore", blind["ledger_head"], **arguments,
+                                blind_receipt=self.tmp / "blind" / "receipt.json")
+        self.assertEqual(explore["status"], "completed", explore)
+        files = outputs_of(self.tmp / "explore")
+        value = json.loads(files["summary.json"])
+        statistics = {"mean", "median", "estimate", "se", "t_critical", "ci_low", "ci_high", "sd", "ranges",
+                      "effect", "seconds_quantiles", "quantiles"}
+        self.assertEqual([(key, item) for key, item in walk_items(value) if key in statistics and item is not None
+                          and not isinstance(item, (dict, list))], [])
+        self.assertEqual([key for key, item in walk_items(value) if key in statistics and item], [])
+        self.assertEqual({trail[-1] for trail, _ in walk_floats(value)}, {"sqrt_2_ln_c"})
+        self.assertEqual({item["x"][end]["reason"] for table in ("level_figures", "move_figures")
+                          for by_label in value[table]["by_cell"].values() for item in by_label.values()
+                          for end in resting.BSP_ENDS}, {resting.COUNTS_ONLY})
+        shown_ = {column.split(" (")[0]: cells
+                  for column, cells in markdown_columns(files["summary.md"].decode()).items()}
+        self.assertEqual({column: cells for column, cells in shown_.items()
+                          if column in {"SD", "mean", "CI low", "CI high", "0.5"} and set(cells) - {"-"}}, {})
+        entry = verify(self.ledger / LEDGER_FILE)[1]
+        self.assertEqual((entry["kind"], entry["partitions"], entry["m"], entry["alpha"]), ("explore", [D], 0, "0"))
+
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # No id reaches an output, and the two modules stay inside the backtest closure
 
 class NoIds(unittest.TestCase):
@@ -2424,10 +2847,13 @@ class EarlyBoundaries(unittest.TestCase):
         self.assertFalse(called & {"open", "read_bytes", "read_text", "write_bytes", "write_text", "mkdir", "unlink",
                                    "iterdir", "glob", "rglob", "stat", "exists"})
 
-    def test_the_runner_takes_one_study_and_every_argument_the_ledger_needs(self):
+    def test_the_runner_takes_two_studies_and_every_argument_the_ledger_needs(self):
         self.assertEqual((early_study.STUDIES, early_study.RECEIPT_KIND, early_study.SUMMARY_KIND),
-                         ((STUDY,), "betangel_early_receipt", "betangel_early_summary"))
+                         ((STUDY, DRIFT_CHECK), "betangel_early_receipt", "betangel_early_summary"))
+        self.assertEqual(early_study.PASSES_OF, {STUDY: ("blind", "registered"), DRIFT_CHECK: ("blind", "explore")})
         parser = early_study.build_parser()
+        self.assertEqual(next(action.choices for action in parser._actions if action.dest == "pass_name"),
+                         ("blind", "registered", "explore"))
         required = {action.dest for action in parser._actions if action.required}
         self.assertEqual(required, {"study", "pass_name", "registration_sha256", "archive_root", "out",
                                     "code_commit", "ledger", "ledger_head"})

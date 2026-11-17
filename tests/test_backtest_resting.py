@@ -63,6 +63,10 @@ from betangel_research.betfair.backtest.resting_study import (Tally, decide_reco
 from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide, parse_rule
 from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, PassRequest, StudyLedger, verify
 from betangel_research.betfair.backtest.trial_ledger import UnlockError
+from betangel_research.betfair.backtest import resting
+from betangel_research.betfair.backtest.lp import tick_step, top as lp_top
+from betangel_research.betfair.backtest.market_index import _runner_id
+from betangel_research.betfair.backtest.movement import LADDERS, LadderFold
 
 import test_betfair_backtest_replay as fx
 from test_backtest_lp import (BOOK, BSPS, FAV, M, OFF, R2, R3, R6, SIDS, before, book, ladder_move, lp_market,
@@ -5324,6 +5328,487 @@ class EarlyRun(RestingCase):
         for name, text in printed.items():
             with self.subTest(printed=name):
                 self.assertEqual([token for token in ids if token in text], [])
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The kept top of book (resting.KEEP_TOPS): the walk keeps each resting runner's lp.top between batches and reads it
+# again only after a change that may move that runner's ladder (resting._stale). No output may move, so every walk
+# here is set against the walk that reads lp.top afresh at every batch (KEEP_TOPS false: the walk's line before).
+
+PLANS = (("close-v1", PLAN), ("early", EARLY_PLAN), ("each", EACH_PLAN))
+DEEP_SEED, DEEP_MARKETS = 20261117, 12
+# The runners an order can rest on in a deep market: the favourite, and R2 and R5, which EACH_PLAN's band also passes
+# in the standard book.
+DEEP_ORDERED = (FAV, R2, R5)
+
+
+def deep_market(rng, index):
+    """(member path, messages) of one seeded market on an explore date with deep ladders: the standard book with 3,
+    10, 20 or 40 more CLASSIC prices a side for every runner an hour before the off; then, from 700 s to 5 s before
+    the off, an event every 0 to 4 seconds (0: in the last event's batch), most of them on the runners an order can
+    rest on: the quote shifted by one tick or by several (prices removed at the near side and added at the far side,
+    holes filled again), a best price deleted, a new best price inside the spread, a size changed, a side emptied by
+    an empty list and later filled again, trades with their ladder entry, and rises of traded volume alone (no ladder
+    entry) at the best prices, at the best prices before the runner's last move, and deeper; and on the market:
+    images that leave one to three runners out, so that LadderFold clears their books (most with a definition; an
+    image without one leaves the market with no status until the next definition), each followed in a later batch by
+    a rise alone at a left-out runner's last best price; suspensions and reopenings; a definition again as it was; a
+    runner removed by a definition, its ladder emptied after; and now and then a turn in play before the off. No
+    book is ever crossed."""
+    market_id = f"1.17{index:04d}001"
+    day = date(2015, 5, 1) + timedelta(days=rng.randrange(330))
+    while PLAN.split.label(day.isoformat()) != D:
+        day += timedelta(days=1)
+    off = datetime(day.year, day.month, day.day, rng.choice((13, 14, 19)), rng.choice((0, 4, 10, 30)),
+                   tzinfo=timezone.utc)
+    depth = rng.choice((3, 10, 20, 40))
+
+    def side(best, step, old=None):             # depth + 1 prices from best, `step` ticks apart; old sizes kept
+        prices = [tick_step(best, step * k) for k in range(depth + 1)]
+        return {price: (old or {}).get(price) or float(rng.randrange(10, 80)) for price in prices if price is not None}
+
+    def delta(old, new):                        # the PRO ladder update that takes one side from old to new
+        return ([[float(price), size] for price, size in sorted(new.items()) if old.get(price) != size]
+                + [[float(price), 0] for price in sorted(old) if price not in new])
+
+    books = {sid: (side(P(back), -1), side(P(lay), 1)) for sid, (back, lay) in BOOK.items()}
+    removed, status, in_play, holes, previous, traded, queued = None, "OPEN", False, [], {}, {}, []
+    turn_at = rng.choice((None, None, None, rng.randrange(15_000, 90_000)))     # ms before the off
+
+    def now_definition():
+        return definition(off, [runner(sid, "REMOVED" if sid == removed else "ACTIVE") for sid in SIDS],
+                          status=status, in_play=in_play)
+
+    def bests(sid):
+        back, lay = books[sid]
+        return [price for price in (max(back, default=None), min(lay, default=None)) if price is not None]
+
+    def move(sid, back, lay):                   # the rc entry that takes a runner's books to (back, lay)
+        item, previous[sid] = {"id": sid}, bests(sid) or previous.get(sid, [])
+        for key, old, new in (("atb", books[sid][0], back), ("atl", books[sid][1], lay)):
+            if new != old:
+                item[key] = delta(old, new) if new else []
+        books[sid] = (back, lay)
+        return item
+
+    def rise(sid, price, entry=False):          # a rise of traded volume at price, with a ladder entry there or alone
+        traded[sid, price] = round(traded.get((sid, price), 0) + rng.choice((0.01, 1.0, 2.0)), 2)
+        item = {"id": sid, "trd": [[float(price), traded[sid, price]]]}
+        if entry:                               # the level's size again, or the deletion of a level not shown
+            back, lay = books[sid]
+            key, ladder = ("atl", lay) if price in lay else ("atb", back)
+            shown = float(rng.randrange(10, 80)) if price in ladder else 0
+            item[key] = [[float(price), shown]]
+            if shown:
+                ladder[price] = shown
+        return item
+
+    def pick(sid, shown=False):                 # a price for a rise: a best price, an earlier one, or deeper
+        back, lay = books[sid]
+        prices = bests(sid) * 3 + ([] if shown else previous.get(sid, []) * 2)
+        prices += [rng.choice(sorted(set(back) | set(lay)))] if back or lay else []
+        return rng.choice(prices or previous.get(sid) or [P(BOOK[sid][0])])
+
+    messages = [md(market_id, off - timedelta(hours=2), now_definition()),
+                mcm(before(3600, off), [{"id": market_id, "rc": [{"id": sid, "atb": delta({}, back),
+                                                                  "atl": delta({}, lay)}
+                                                                 for sid, (back, lay) in books.items()]}])]
+    now = 700_000
+    while now > 5_000:
+        step = rng.choice((0, 1_000, 2_000, 3_000, 4_000))
+        now -= step or (250 if queued else 0)   # a queued event comes in a later batch
+        live, holes[:] = [sid for sid in SIDS if sid != removed], [sid for sid in holes if sid != removed]
+        sid = rng.choice([sid for sid in DEEP_ORDERED if sid != removed]) if rng.random() < 0.85 else rng.choice(live)
+        back, lay = books[sid]
+        change, draw = {"id": market_id}, rng.random()
+        if turn_at is not None and now <= turn_at and not in_play:
+            in_play = True
+            change["marketDefinition"] = now_definition()
+        elif queued:
+            what, sid = queued.pop(0)
+            if what == "reopen":
+                change["marketDefinition"] = now_definition()
+            elif what == "empty":
+                change["rc"] = [move(sid, {}, {})]
+            else:                               # a rise alone at a left-out runner's last best price
+                change["rc"] = [rise(sid, rng.choice(previous[sid]))]
+        elif draw < 0.22 and back and lay:      # the quote shifted by k ticks; from 6 ticks out, towards BOOK's
+            k = rng.choice((1, 1, 1, 2, 3, 6)) * rng.choice((-1, 1))
+            drift = spread_ticks(P(BOOK[sid][0]), max(back))
+            if drift is not None and abs(drift) >= 6:
+                k = -abs(k) if drift > 0 else abs(k)
+            change["rc"] = [move(sid, side(tick_step(max(back), k), -1, back), side(tick_step(min(lay), k), 1, lay))]
+        elif draw < 0.30 and len(back) > 1 and len(lay) > 1:   # a best price deleted
+            if rng.random() < 0.5:
+                change["rc"] = [move(sid, {price: size for price, size in back.items() if price != max(back)}, lay)]
+            else:
+                change["rc"] = [move(sid, back, {price: size for price, size in lay.items() if price != min(lay)})]
+        elif draw < 0.38 and back and lay and spread_ticks(max(back), min(lay)) > 1:  # a new best inside the spread
+            if rng.random() < 0.5:
+                change["rc"] = [move(sid, {**back, tick_step(max(back), 1): float(rng.randrange(10, 80))}, lay)]
+            else:
+                change["rc"] = [move(sid, back, {**lay, tick_step(min(lay), -1): float(rng.randrange(10, 80))})]
+        elif draw < 0.44 and back and lay:      # a size changed, at the best price or deeper
+            ladder = back if rng.random() < 0.5 else lay
+            changed = {**ladder, rng.choice(sorted(ladder)): float(rng.randrange(10, 80))}
+            change["rc"] = [move(sid, changed, lay) if ladder is back else move(sid, back, changed)]
+        elif draw < 0.48 and back and lay:      # a side emptied by an empty list
+            change["rc"] = [move(sid, {}, lay) if rng.random() < 0.5 else move(sid, back, {})]
+            holes.append(sid)
+        elif draw < 0.55 and holes:             # a side or a runner filled again
+            sid = holes.pop(0)
+            back, lay = books[sid]
+            best_back = max(back) if back else tick_step(min(lay), -rng.choice((1, 2))) if lay else P(BOOK[sid][0])
+            best_lay = min(lay) if lay else tick_step(best_back, rng.choice((1, 2)))
+            change["rc"] = [move(sid, back or side(best_back, -1), lay or side(best_lay, 1))]
+        elif draw < 0.78:                       # a rise alone
+            change["rc"] = [rise(sid, pick(sid))]
+        elif draw < 0.90:                       # a trade: a rise with its ladder entry
+            change["rc"] = [rise(sid, pick(sid, shown=True), entry=True)]
+        elif draw < 0.94:                       # an image that leaves runners out
+            out = rng.sample(live, rng.choice((1, 1, 2, 3)))
+            if not set(out) & set(DEEP_ORDERED) and rng.random() < 0.75:
+                out[0] = rng.choice([sid for sid in DEEP_ORDERED if sid != removed])
+            change.update(img=True, rc=[])
+            for other in SIDS:
+                if other in out:
+                    previous[other], books[other] = bests(other) or previous.get(other, []), ({}, {})
+                    holes.append(other)
+                elif books[other][0] or books[other][1]:
+                    change["rc"].append({"id": other, "atb": delta({}, books[other][0]),
+                                         "atl": delta({}, books[other][1])})
+            if rng.random() < 0.75:
+                change["marketDefinition"] = now_definition()
+            else:
+                queued.append(("reopen", None))
+            if previous.get(out[0]):
+                queued.append(("rise", out[0]))
+        elif draw < 0.97:                       # suspended, or open again
+            status = "SUSPENDED" if status == "OPEN" else "OPEN"
+            change["marketDefinition"] = now_definition()
+        elif draw < 0.985 and removed is None:  # a runner removed
+            removed = rng.choice((R6, R6, SIDS[3], R2, FAV))
+            change["marketDefinition"] = now_definition()
+            queued.append(("empty", removed))
+        else:                                   # the definition again, as it was
+            change["marketDefinition"] = now_definition()
+        if len(change) == 1:                    # nothing above applied: a rise alone at a best price
+            change["rc"] = [rise(sid, pick(sid))]
+        messages.append(mcm(ms(off) - now, [change]))
+    winner = rng.choice([sid for sid in (FAV, FAV, R2) if sid != removed])
+    statuses = {sid: "REMOVED" if sid == removed else "WINNER" if sid == winner else "LOSER" for sid in SIDS}
+    bsps = {**BSPS, FAV: rng.choice((2.4, 2.6, None))}
+    bsps = {sid: None if sid == removed else value for sid, value in bsps.items()}
+    return path(market_id, off), messages + fx.settle(market_id, off, statuses, bsps)
+
+
+def deep_set():
+    """[(member path, messages)] and the market ids of DEEP_MARKETS deep markets seeded by DEEP_SEED."""
+    rng = random.Random(DEEP_SEED)
+    members = [deep_market(rng, index) for index in range(DEEP_MARKETS)]
+    return members, [name.rsplit("/", 1)[1][:-4] for name, _ in members]
+
+
+_KEPT = {}
+
+
+def kept_walks():
+    """The markets the kept tops are compared on, archived and walked once for this module: pull request 1's seeded
+    batch (its hour market first), the hour market on an explore date (TUESDAY) and the deep set. A namespace of
+    the archive (root, manifest, records {market id: index record}), the market ids (ids, deep_ids) and walks
+    {(plan name, kept, market id): Walked} (kept_walk)."""
+    if not _KEPT:
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        members, ids = seeded_batch()
+        members.append((path("1.199999002", TUESDAY), hour_market("1.199999002", TUESDAY)))
+        ids.append("1.199999002")
+        deep, deep_ids = deep_set()
+        root = base / "data"
+        root.mkdir()
+        tar = fx.make_tar(base / "data.tar", [(member, bz2.compress(fx.lines(messages)))
+                                              for member, messages in members + deep])
+        ingested = ingest_archive(tar, root)
+        if ingested["status"] != "ingested" or index_archives(root)["status"] != "indexed":
+            raise AssertionError("the archive of the kept tops was not ingested and indexed")
+        digest = ingested["archive_sha256"]
+        manifest, _ = fx.load_manifest(root, digest)
+        data = (root / "index" / digest / fx.market_index.MARKETS_FILE).read_bytes()
+        given = SimpleNamespace(root=root, manifest=manifest, ids=ids, deep_ids=deep_ids,
+                                records={record["market_id"]: record for record in map(json.loads, data.splitlines())})
+        given.walks = kept_walk(given, ids + deep_ids)
+        _KEPT["value"] = given
+    return _KEPT["value"]
+
+
+def kept_walk(given, ids, kept=(True, False), stale=None):
+    """{(plan name, kept, market id): Walked}: each record of ids in kept_walks' archive under each of PLANS, with the
+    kept tops (resting.KEEP_TOPS true, with resting._stale or stale in its place) and without them."""
+    found = {}
+    for name, plan in PLANS:
+        for keep in kept:
+            with mock.patch.object(resting, "KEEP_TOPS", keep), \
+                    mock.patch.object(resting, "_stale", stale or resting._stale):
+                for market_id in ids:
+                    with member_stream(given.root, given.manifest, given.records[market_id]) as stream:
+                        found[name, keep, market_id] = walk(stream, given.records[market_id], plan, DEFAULT_LIMITS)
+    return found
+
+
+def named_form(value):
+    """Everything a walk returns, by name and with its type: a Walked by each of its fields, an OrderRow, a Fill and
+    a Cell by every field they hold (the three newer OrderRow fields and Walked.runner_codes included), a dict as
+    its [key, value] pairs in order, a Fraction as its exact text. Anything else refuses."""
+    if isinstance(value, resting.Walked):
+        return {name: named_form(item) for name, item in vars(value).items()}
+    if isinstance(value, tuple) and hasattr(value, "_fields"):
+        return [type(value).__name__, {name: named_form(getattr(value, name)) for name in value._fields}]
+    if isinstance(value, Fraction):
+        return ["Fraction", f"{value.numerator}/{value.denominator}"]
+    if isinstance(value, dict):
+        return ["dict", [[named_form(key), named_form(item)] for key, item in value.items()]]
+    if isinstance(value, (tuple, list)):
+        return [type(value).__name__, [named_form(item) for item in value]]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return [type(value).__name__, value]
+    raise TypeError(f"form:unknown:{type(value).__name__}")
+
+
+class KeptTops(RestingCase):
+    """The walk with the kept tops against the walk that reads lp.top afresh at every batch."""
+
+    def test_every_output_is_the_one_the_walk_gives_reading_the_top_afresh(self):
+        """Pull request 1's seeded batch (its hour market first), the hour market on an explore date and the deep set,
+        under close-v1's plan, EARLY_PLAN and EACH_PLAN: what each walk returns, in pull request 1's pinned form, by
+        every field's name and as a whole, is the same with the kept tops as without them."""
+        self.assertIs(resting.KEEP_TOPS, True)
+        given = kept_walks()
+        seen = {}
+        for name, _ in PLANS:
+            for market_id in given.ids + given.deep_ids:
+                kept, afresh = given.walks[name, True, market_id], given.walks[name, False, market_id]
+                with self.subTest(plan=name, market=market_id):
+                    self.assertEqual(walked_form(kept), walked_form(afresh))
+                    self.assertEqual(named_form(kept), named_form(afresh))
+                    self.assertEqual(kept, afresh)
+                where = "deep" if market_id in given.deep_ids else "seeded"
+                rows = [row for outcome in kept.outcomes.values() for row in orders_of(outcome)]
+                for what, count in (("records read", kept.replayed), ("rows", len(rows)),
+                                    ("rows whose second trade count reads the top",
+                                     sum(row.trd[TRD_COUNTS[1]] > 0 for row in rows)),
+                                    ("cells with several rows", sum(len(orders_of(outcome)) > 1
+                                                                    for outcome in kept.outcomes.values()))):
+                    seen[name, where, what] = seen.get((name, where, what), 0) + count
+        # What the markets hold, so that the comparison stands for it: under every plan, rows in both sets whose
+        # second trade count read the top before a batch; an each_active cell with several rows.
+        self.assertTrue(all(seen[name, where, what] for name, _ in PLANS for where in ("seeded", "deep")
+                            for what in ("records read", "rows", "rows whose second trade count reads the top")), seen)
+        self.assertTrue(seen["each", "deep", "cells with several rows"] and seen["each", "seeded",
+                                                                                  "cells with several rows"], seen)
+
+    def test_a_kept_top_too_old_moves_the_second_trade_count_of_the_deep_set(self):
+        """The comparison above can fail: with either of two wrong forms of resting._stale, the deep set moves under
+        every plan, and only in the second trade count of some rows. One forgets nothing on an image or a
+        definition (a left-out runner keeps its top from before the image); one forgets nothing on an rc entry (a
+        runner keeps its top from before a move)."""
+        def market_wide_only(tops, change):
+            if change.get("img") or "marketDefinition" in change:
+                tops.clear()
+
+        def rc_only(tops, change):
+            for item in change.get("rc") or ():
+                tops.pop(_runner_id(item.get("id")), None)
+
+        given = kept_walks()
+        for wrong in (rc_only, market_wide_only):
+            found = kept_walk(given, given.deep_ids, kept=(True,), stale=wrong)
+            for name, _ in PLANS:
+                moved = 0
+                for market_id in given.deep_ids:
+                    kept, afresh = found[name, True, market_id], given.walks[name, False, market_id]
+                    moved += kept != afresh
+                    with self.subTest(wrong=wrong.__name__, plan=name, market=market_id):
+                        self.assertEqual((kept.flags_missing, kept.replayed, kept.runner_codes),
+                                         (afresh.flags_missing, afresh.replayed, afresh.runner_codes))
+                        for cell, outcome in afresh.outcomes.items():
+                            self.assertIs(type(kept.outcomes[cell]), type(outcome))
+                            pairs = list(zip(orders_of(kept.outcomes[cell]), orders_of(outcome), strict=True))
+                            if not pairs:
+                                self.assertEqual(kept.outcomes[cell], outcome)
+                            for row, right in pairs:
+                                self.assertEqual(row._replace(trd={}), right._replace(trd={}))
+                                self.assertEqual({**row.trd, TRD_COUNTS[1]: None}, {**right.trd, TRD_COUNTS[1]: None})
+                with self.subTest(wrong=wrong.__name__, plan=name):
+                    self.assertGreater(moved, 0)
+
+    def test_a_change_forgets_every_runner_whose_ladder_it_may_move(self):
+        """lp.top read afresh at every change: over every market change of the deep set and of pull request 1's
+        seeded batch, folded by a LadderFold as the walk folds them, a runner that resting._stale keeps has the same
+        books after the change as before, and so the same lp.top."""
+        deep, _ = deep_set()
+        seen = dict.fromkeys(("images", "definitions", "runners kept", "runners forgotten", "books moved"), 0)
+        for _, messages in deep + seeded_batch()[0]:
+            fold = LadderFold(LADDERS["PRO"])
+            for message in messages:
+                for change in message.get("mc", []) if isinstance(message, dict) else ():
+                    known = set(SIDS) | set(fold.books)
+                    books = {sid: tuple(map(dict, fold.books.get(sid, ({}, {})))) for sid in known}
+                    tops = {sid: lp_top(fold, sid) for sid in known}
+                    kept = dict(tops)
+                    resting._stale(kept, change)
+                    fold.change(message["pt"], change)
+                    for sid in known | set(fold.books):
+                        moved = fold.books.get(sid, ({}, {})) != books.get(sid, ({}, {}))
+                        seen["books moved"] += moved
+                        seen["runners kept" if sid in kept else "runners forgotten"] += 1
+                        if sid in kept:
+                            self.assertFalse(moved, (message["pt"], sid))
+                            self.assertEqual(lp_top(fold, sid), kept[sid])
+                    seen["images"] += change.get("img") is True
+                    seen["definitions"] += "marketDefinition" in change
+        self.assertTrue(all(seen.values()), seen)
+
+    def test_what_a_change_makes_the_walk_read_again(self):
+        def left(change):
+            tops = dict.fromkeys((FAV, R2, R3), "kept")
+            resting._stale(tops, change)
+            return sorted(tops)
+
+        everyone = definition(OFF, [runner(sid) for sid in SIDS])
+        self.assertEqual(left({"id": M}), [FAV, R2, R3])
+        self.assertEqual(left({"id": M, "img": False}), [FAV, R2, R3])
+        # An rc entry forgets the runner it names, whatever it carries; an id in text is read as LadderFold reads it.
+        self.assertEqual(left({"id": M, "rc": [{"id": FAV, "atb": [[2.5, 0]]}]}), [R2, R3])
+        self.assertEqual(left({"id": M, "rc": [{"id": R2, "trd": [[4.0, 1.0]]}, {"id": str(R3), "atl": []}]}), [FAV])
+        self.assertEqual(left({"id": M, "rc": [{"id": R6, "ltp": 15.0}]}), [FAV, R2, R3])
+        # An rc entry with no readable id folds nothing.
+        self.assertEqual(left({"id": M, "rc": [{"id": -1, "atb": [[2.5, 1.0]]}, {"atl": [[2.52, 1.0]]}]}),
+                         [FAV, R2, R3])
+        # An image or a definition forgets every runner, an image the runners it carries too (LadderFold clears their
+        # books before it folds the image's entries).
+        for change in ({"img": True}, {"img": True, "rc": [{"id": R6, "atb": [[15.0, 1.0]]}]},
+                       {"img": True, "rc": [{"id": FAV, "atb": [[2.5, 50.0]]}, {"id": R2, "atl": [[4.1, 75.0]]}]},
+                       {"marketDefinition": everyone}, {"img": True, "marketDefinition": everyone}):
+            with self.subTest(change=sorted(change)):
+                self.assertEqual(left({"id": M, **change}), [])
+
+    def test_an_image_that_leaves_the_resting_runner_out_and_a_removal(self):
+        # The orders of both rule files at 600 s rest on the favourite until 120 s before the off. At 500 s an image
+        # with its definition leaves the favourite out, so LadderFold clears its books: a rise alone at 450 s at 2.5,
+        # its best price before the image, is not at the top. Its book is back at 420 s, and a rise alone at 2.5 at
+        # 400 s is at the top. R6 is removed by a definition at 380 s. R3's rises alone come between.
+        image = md(M, before(500, DAY_OFF), definition(DAY_OFF, [runner(sid) for sid in SIDS]), img=True,
+                   rc=[{"id": sid, "atb": [[back, 50.0]], "atl": [[lay, 75.0]]} for sid, (back, lay) in BOOK.items()
+                       if sid != FAV])
+        again = mcm(before(420, DAY_OFF), [{"id": M, "rc": [{"id": FAV, "atb": [[2.5, 50.0]], "atl": [[2.52, 75.0]]}]}])
+        gone = md(M, before(380, DAY_OFF), definition(DAY_OFF, [runner(sid, "REMOVED" if sid == R6 else "ACTIVE")
+                                                                for sid in SIDS]))
+        rises = [(seconds, R3, [[6.0, index + 1.0]]) for index, seconds in enumerate((590, 570, 470, 410, 360, 340))]
+        statuses = {sid: "WINNER" if sid == FAV else "REMOVED" if sid == R6 else "LOSER" for sid in SIDS}
+        messages = lp_market(off=DAY_OFF, extra=[image, again, gone], statuses=statuses,
+                             restatements=rises + [(450, FAV, [[2.5, 1.0]]), (400, FAV, [[2.5, 2.0]])])
+        found, reads = {}, {}
+        for kept in (True, False):
+            calls = []
+
+            def counted(ladders, selection_id):
+                calls.append(selection_id)
+                return lp_top(ladders, selection_id)
+
+            with mock.patch.object(resting, "KEEP_TOPS", kept), mock.patch.object(resting, "top", counted):
+                found[kept] = self.walked(messages, when=DAY_OFF)
+            reads[kept] = len(calls)
+            rows = found[kept].outcomes
+            self.assertEqual({cell.at_s: rows[cell].trd[TRD_COUNTS[1]] for cell in PLAN.cells},
+                             {-600: 1, -300: 0, -120: 0})
+            self.assertEqual({rows[cell].trd[TRD_COUNTS[0]] + rows[cell].trd[TRD_COUNTS[2]] for cell in PLAN.cells},
+                             {0})
+        self.assertEqual(named_form(found[True]), named_form(found[False]))
+        # Each of the six orders reads the top once for its null. Before a batch the walk reads it afresh at each of
+        # the eleven batches from 590 s to 340 s; kept, only before the first batch (590 s) and after a change that may
+        # move the favourite's book: the image (read at 470 s), the favourite's rise alone at 450 s (at 420 s), its
+        # book back (at 410 s), its rise alone at 400 s (at 380 s), and the definition (at 360 s).
+        self.assertEqual(reads, {True: 6 + 6, False: 6 + 11})
+
+    def test_a_runner_that_rests_again_after_a_gap_reads_its_top_again(self):
+        # A new id's plan whose two times leave a gap: both rule files rest on the favourite in a window of 200 s,
+        # then, after 100 s in which no order rests, in a window of 180 s. A rise alone on R3 at 500 s before the
+        # off, in the first window, makes the walk keep the favourite's top (2.5 / 2.52). At 350 s, while no order
+        # rests, the favourite's quote moves to 2.48 / 2.5. A rise alone at 2.48 at 250 s is at the top before its
+        # batch (the second trade count) only if the walk forgot the kept top at the move made while nothing rested.
+        plan = early_plan(rules={name: lambda rule: rule.update(times=[{"at_s": -600, "pull_s": -400},
+                                                                       {"at_s": -300, "pull_s": -120}])
+                                 for name in (LAY_RULE, BACK_RULE)},
+                          registration=lambda value: value["grid"].update(cells=4))
+        moved = mcm(before(350, DAY_OFF), [{"id": M, "rc": [{"id": FAV, "atb": [[2.5, 0], [2.48, 50.0]],
+                                                              "atl": [[2.52, 0], [2.5, 75.0]]}]}])
+        messages = lp_market(off=DAY_OFF, extra=[moved],
+                             restatements=[(500, R3, [[6.0, 1.0]]), (250, FAV, [[2.48, 1.0]])])
+        found = {}
+        for kept in (True, False):
+            with mock.patch.object(resting, "KEEP_TOPS", kept):
+                found[kept] = self.walked(messages, plan=plan, when=DAY_OFF)
+            rows = found[kept].outcomes
+            with self.subTest(kept=kept):
+                self.assertEqual({(cell.rule_id, cell.at_s): (rows[cell].price, rows[cell].trd[TRD_COUNTS[1]])
+                                  for cell in plan.cells},
+                                 {(LAY_RULE, -600): (P(2.5), 0), (BACK_RULE, -600): (P(2.52), 0),
+                                  (LAY_RULE, -300): (P(2.48), 1), (BACK_RULE, -300): (P(2.5), 1)})
+        self.assertEqual(named_form(found[True]), named_form(found[False]))
+        self.assertEqual(found[True], found[False])
+
+
+    def test_an_image_that_carries_the_resting_runner_at_new_prices_reads_its_top_again(self):
+        # The orders of both rule files at 600 s rest on the favourite until 120 s before the off. At 500 s an image
+        # with its definition carries every runner, the favourite at 2.48 / 2.54 where it was at 2.5 / 2.52, so
+        # LadderFold clears the favourite's books and sets them anew. A rise alone at 2.48 at 450 s is at the top
+        # before its batch (the second trade count) only if the walk forgot the favourite's kept top at the image,
+        # although the image carries it. Its book is back at 420 s, before the later orders are placed.
+        image = md(M, before(500, DAY_OFF), definition(DAY_OFF, [runner(sid) for sid in SIDS]), img=True,
+                   rc=[{"id": sid, "atb": [[2.48 if sid == FAV else back, 50.0]],
+                        "atl": [[2.54 if sid == FAV else lay, 75.0]]} for sid, (back, lay) in BOOK.items()])
+        again = mcm(before(420, DAY_OFF), [{"id": M, "rc": [{"id": FAV, "atb": [[2.48, 0], [2.5, 50.0]],
+                                                              "atl": [[2.54, 0], [2.52, 75.0]]}]}])
+        messages = lp_market(off=DAY_OFF, extra=[image, again], restatements=[(450, FAV, [[2.48, 1.0]])])
+        found = {}
+        for kept in (True, False):
+            with mock.patch.object(resting, "KEEP_TOPS", kept):
+                found[kept] = self.walked(messages, when=DAY_OFF)
+            rows = found[kept].outcomes
+            with self.subTest(kept=kept):
+                self.assertEqual({(cell.rule_id, cell.at_s): (rows[cell].price, rows[cell].trd[TRD_COUNTS[1]])
+                                  for cell in PLAN.cells},
+                                 {(LAY_RULE, at_s): (P(2.5), int(at_s == -600)) for at_s in (-600, -300, -120)}
+                                 | {(BACK_RULE, at_s): (P(2.52), int(at_s == -600)) for at_s in (-600, -300, -120)})
+                self.assertEqual({rows[cell].trd[TRD_COUNTS[0]] + rows[cell].trd[TRD_COUNTS[2]] for cell in PLAN.cells},
+                                 {0})
+        self.assertEqual(named_form(found[True]), named_form(found[False]))
+        self.assertEqual(found[True], found[False])
+
+    def test_a_second_change_for_the_market_in_one_message_is_read_too(self):
+        # The orders of both rule files at 600 s rest on the favourite until 120 s before the off. One message at
+        # 450 s carries two changes for the market: a rise alone on R3, then the favourite's quote moved from
+        # 2.5 / 2.52 to 2.48 / 2.54. A rise alone at 2.48 at 440 s is at the top before its batch (the second trade
+        # count) only if the walk forgot the favourite's kept top at the second change. Its book is back at 420 s.
+        both = mcm(before(450, DAY_OFF), [{"id": M, "rc": [{"id": R3, "trd": [[6.0, 1.0]]}]},
+                                          {"id": M, "rc": [{"id": FAV, "atb": [[2.5, 0], [2.48, 50.0]],
+                                                            "atl": [[2.52, 0], [2.54, 75.0]]}]}])
+        again = mcm(before(420, DAY_OFF), [{"id": M, "rc": [{"id": FAV, "atb": [[2.48, 0], [2.5, 50.0]],
+                                                              "atl": [[2.54, 0], [2.52, 75.0]]}]}])
+        messages = lp_market(off=DAY_OFF, extra=[both, again], restatements=[(440, FAV, [[2.48, 1.0]])])
+        found = {}
+        for kept in (True, False):
+            with mock.patch.object(resting, "KEEP_TOPS", kept):
+                found[kept] = self.walked(messages, when=DAY_OFF)
+            rows = found[kept].outcomes
+            with self.subTest(kept=kept):
+                self.assertEqual({(cell.rule_id, cell.at_s): (rows[cell].price, rows[cell].trd[TRD_COUNTS[1]])
+                                  for cell in PLAN.cells},
+                                 {(LAY_RULE, at_s): (P(2.5), int(at_s == -600)) for at_s in (-600, -300, -120)}
+                                 | {(BACK_RULE, at_s): (P(2.52), int(at_s == -600)) for at_s in (-600, -300, -120)})
+        self.assertEqual(named_form(found[True]), named_form(found[False]))
+        self.assertEqual(found[True], found[False])
 
 
 class RestingBoundaries(unittest.TestCase):

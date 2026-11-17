@@ -1183,7 +1183,8 @@ class BacktestBoundaryTests(unittest.TestCase):
         # split and study ledger), plus rulefile.py (the lane's rule-file parser and evaluator), plus fills.py,
         # resting.py and resting_study.py (registered measurement close-v1: the fill models, the registration and
         # the walk, and the pass runner), plus early.py and early_study.py (registered measurement early-price-v1:
-        # the registration, the price rules and the cells, and the pass runner).
+        # the registration, the price rules and the cells, and the pass runner). close-early-v1 added no module: #71,
+        # #73 and #74 changed resting.py and resting_study.py; the rest added tests, data files and docs.
         self.assertEqual(len(descriptor["files"]), 33)
 
     def test_offline_syntax_floor_is_python_3_10(self):

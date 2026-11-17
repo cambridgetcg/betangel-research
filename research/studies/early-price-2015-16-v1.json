@@ -1,0 +1,352 @@
+{
+  "blind_pass": {
+    "releases": [
+      "B1: records by registered month and partition label; records with no off time; records with no registered label; files opened",
+      "B2: market codes per time, each column adding up to the record count",
+      "B3: per time and label: markets viewed; markets with a priced runner; runner codes, with no_ltp split in its three kinds (diagnostics.no_ltp_kinds); priced runners per band",
+      "B4: classes of priced runners per time, band and label",
+      "B5: the age of the LTP in seconds as quantiles, per time and band, over the runners coded ltp_before_last_removal, ltp_stale or priced (in a band, with a change); an age is not an outcome",
+      "B6: per start, band and label: undefined moves by reason (reasons and cells add up to the level cell's members); members flagged suspension_in_window; per move cell: members, scored values, race dates, and members at k = 1, 2 and 3_or_more. The two moved cells are shown unnamed: FLAT, moved_larger, moved_smaller, ordered by scored values of both labels together; a tie goes to the registered order",
+      "B7: the spread of x at the BSP as written, both labels pooled, for the 12 move cells named as in B6: the SD and the ranges q95 - q05, q90 - q10, q75 - q25 (resting.spread)",
+      "B8: per move cell, the detectable effect on PRO-V, (t(0.99; G_V - 1) + t(0.8; G_V - 1)) x SE x sqrt(n / n_V), with SE the CR1 SE of B7's pooled values and n their count; empty whenever B7's SD is. The blind tables are early-price-v1's, unchanged, so this table still prints, and its heading still says from a clustered SE over both years, which here means both labels. It describes a test that this study does not run. Nothing is decided by it",
+      "B9: counts of scored BSPs that are whole hundredths and not, and the switch; bspMarket with no value at t; the compressed bytes of the files opened (one total)"
+    ],
+    "rule": "The blind look runs first, once, over the whole input, and gives only what releases lists; the labels are shown apart only for counts. lab-Claude reads it before anything else runs. lab-Claude stops, tells Yu, and runs nothing more until Yu answers, if any of these holds. S1: on either label, fewer than half the markets viewed at 4 hours before the off have a priced runner (B3). S2: on either label, the markets viewed at 4 hours before the off are fewer than half the markets viewed at 10 minutes before the off (B3). S3: on PRO-D, in the group B from -14400, either moved cell has fewer than 1500 scored values or scored values on fewer than 120 race dates (B6); the blind look does not say which moved cell is DRIFT, so both must pass. S4: the blind receipt's input_sha256 is not the value recorded for P0's run in docs/backtest-plan.md section 10.1; then an archive was added or the index was rebuilt, and the exposure lines may not describe this input. If none holds, the explore pass runs once, on a later night, at the same code commit and backtest sources, and only with the blind receipt of this registration, split file and input; the runner refuses anything else. Nothing in this file or in the code may change between the two passes. A change to this file is a new sha256 and a new registration; it costs the second look and is put to Yu first. A stop is not a reason for a second look. No code enforces S1 to S4: lab-Claude does, and writes its reading of the blind tables down before the explore pass.",
+    "withholds": [
+      "every mean, median, raw quantile, sign, interval, test, label and selection of x; any figure by half-year; any SD of a net",
+      "the names DRIFT and STEAM: more DRIFT than STEAM would give the rough sign of the early level cells",
+      "any SD, range or SE by label: a pooled SD beside the two labels' own gives the gap between the two labels' means",
+      "a move cell's SD, ranges and B8 when either label holds fewer than statistics.min_values of its scored values: the pooled SD beside the explore label's own mean and SD (E2) would give the small part's figures, down to a single value; those cells show counts and rest_not_given in the blind look, and the explore pass gives no pooled spread at all",
+      "every spread of a level cell: the cells at entry_s hold the same x as the move cells",
+      "any spread over a union of move cells or over the values with an undefined move",
+      "the earlier start's SDs, ranges and B8 in a band, when the two starts' scored members (both labels) differ by fewer than statistics.min_values values; those cells show counts and rest_not_given",
+      "any count by result; any id, name or per-market row; any statistic under statistics.min_values values"
+    ]
+  },
+  "cells": {
+    "bands_h": [
+      [
+        "A",
+        150,
+        400
+      ],
+      [
+        "B",
+        400,
+        1000
+      ]
+    ],
+    "level": {
+      "count": 10,
+      "rule": "One level cell per time and band, in hundredths of a price, low included and high not: band A is 1.50 <= LTP < 4.00 and band B is 4.00 <= LTP < 10.00, by the LTP at t. Its members are the runners priced at that time in that band; its values are the scored members. Each time needs its own fresh price, so the cells at different times hold different runners and are not comparable across times. Level cells are described, never tested and never selected.",
+      "times_s": [
+        -14400,
+        -7200,
+        -3600,
+        -1800,
+        -600
+      ]
+    },
+    "move": {
+      "changes_between": [
+        "1",
+        "2",
+        "3_or_more"
+      ],
+      "count": 12,
+      "end_s": -1800,
+      "entry_s": -600,
+      "flags": [
+        "suspension_in_window"
+      ],
+      "names": [
+        "DRIFT",
+        "FLAT",
+        "STEAM"
+      ],
+      "rule": "Two starts x DRIFT, FLAT and STEAM x two bands, listed in that order: start by start, then DRIFT, FLAT, STEAM, then band A before band B. Every move cell is entered at entry_s. Its members are the members of the level cell at entry_s in that band whose move from that start is defined. A signal price at time u exists when the market is viewed at u, the runner is ACTIVE and listed at u, and its LTP at u is usable, has changed, changed after the last removal and is fresh at u; there is no band test at u. For a start s the move is undefined for the first of undefined_reasons that applies: window_unknown or removal_in_window when movement.window_problem over (s, entry_s] gives that answer (window_unknown is expected never to happen; it stays because the helper can return it); no_view_at_start when the market has any market code at s; no_start_price when the runner is not ACTIVE and listed at s, or is no_ltp, ltp_never_changed or ltp_before_last_removal at s; start_price_stale when it is ltp_stale at s; then no_view_at_end, no_end_price and end_price_stale, the same at end_s. A suspension in the window does not undefine the move: when window_problem answers suspension_in_window the member keeps its cell and is flagged. A market not OPEN at s or at end_s is still caught, by no_view_at_start and no_view_at_end. Else M = ln(LTP at end_s / LTP at s) (movement.log_move): DRIFT when M >= +threshold, STEAM when M <= -threshold, else FLAT. Price up is DRIFT. fresh_s at entry_s is below entry_s - end_s, so the entry price changed after the end price. That does not make the two independent: in a still market trades jump between the two sides of the gap, and the files show changes only, so published prices take turns. So for each member k counts the changes after the end price's changed_pt, up to and including the entry's: 1, 2, or 3_or_more.",
+      "starts_s": [
+        -14400,
+        -3600
+      ],
+      "threshold": "0.05",
+      "undefined_reasons": [
+        "window_unknown",
+        "removal_in_window",
+        "no_view_at_start",
+        "no_start_price",
+        "start_price_stale",
+        "no_view_at_end",
+        "no_end_price",
+        "end_price_stale"
+      ]
+    }
+  },
+  "data": {
+    "duplicates": "A record of the BASIC tier is keyed by its market id alone; one id twice in that tier refuses the run (input:<archive sha256>:duplicate_market), so no market is counted twice. Keep the BASIC archives in a data root of their own. A record of another plan is coded plan_not_registered and never opened.",
+    "end_month": "2016-04",
+    "files": "The runner reads the split file beside the studies/ folder that holds this registration; in the repository that is research/. Its sha256 must equal the one named here. The name is a plain file name, never a path. No rule file is read: nothing is ordered.",
+    "halves": {
+      "H1": {
+        "first": "2015-05-01",
+        "last": "2015-10-31"
+      },
+      "H2": {
+        "first": "2015-11-01",
+        "last": "2016-04-30"
+      },
+      "rule": "The parser asks for two halves that cover the test label's dates exactly; these are the split file's own half-years of 2015-05-01 to 2016-04-30. No figure by half-year is printed by either pass, and nothing reads them."
+    },
+    "month": "the UTC month of the first-published marketTime",
+    "partitions": {
+      "explore": "PRO-D",
+      "rule": "Every record gets the label of its race date from the split file (partition.Split.label). The race date is the Europe/London calendar date of the first-published off. A label belongs to a race date, not to a file: PRO-D and PRO-V are the split file's labels for race dates of 2015-05-01 to 2016-04-30, and a BASIC file of such a date carries the label a PRO file of it carries. PRO-D is the explore label. PRO-V is the locked label; its key is named test because the parser fixes the key, and nothing is tested. A record whose label is not one of the two named here is coded partition_not_registered and its file is never opened. Every tally is keyed by label. The blind look reads both labels. The explore pass reads PRO-D only: there a record of PRO-V is treated as a label not named here: it is coded partition_not_registered at every time where none of the first thirteen codes of population.codes applies (the history gates and the field), so its file is never opened, and the pass's ledger line names PRO-D alone. Every pass parses every index line, and every index line holds BSP and results, so the split is kept by code paths and tests, not by separate files.",
+      "test": "PRO-V"
+    },
+    "prices": {
+      "key": "ltp",
+      "rule": "BASIC holds each runner's last traded price (rc.ltp), sent only when it changes; it holds no quotes, sizes or volume. How often it is sent in the 2015-16 files is not known: about once a minute was seen on 2023 and 2024, and the blind look shows the ages (B5). replay.PriceFold keeps each runner's ltp as a timeline of [pt, raw value] entries: an entry is added when the value differs from the last one in type or value, and an image that leaves a runner's price out adds a null. So an entry is not always a change of price; timing.change_rule says what is."
+    },
+    "provider": "betfair_historical_data",
+    "source": "every archive ingested and indexed under one data root (archive.py, market_index.py), each market from its index record's primary member, folded with the index's own reader and fold and replay.PriceFold, checked against the record at every time (replay.view_from_fold), and read to the latest registered time that reached the view, at most 10 minutes before the off; nothing later is applied, and no other source stands in",
+    "split": {
+      "name": "partitions-v3.json",
+      "sha256": "fd35425aab3717099f0be2ce497505ec57fc37549cd24d470e3d6961ff792b65"
+    },
+    "start_month": "2015-05",
+    "tiers": [
+      "BASIC"
+    ]
+  },
+  "decided_by": "lab-Claude proposed this check on 2026-11-14, after early-price-v1's registered pass and an independent review of its results note. Three things Yu said are relied on. (1) The standing word of 2026-11-12. lab-Claude put to Yu: \"If you'd like me to merge my own offline research PRs after an independent review, and run the night data passes without asking each time, say \"research is yours\". That covers no live code and no money.\" Yu answered: \"ho lah follow what you recc and suggest :)\". lab-Claude reads that as yes to the offer as worded; the reading is lab-Claude's, not Yu's words, and Yu can correct it at any time (docs/research-loop.md, Who merges and who starts a pass). It covers merging this pull request once a reviewer other than the builder has read it and the whole suite passes, and starting this study's two night passes under the operator steps. It does not cover live code, the order path, a money number, a policy page, the lab's rule file, another author's pull request, a daytime pass, or putting any result into Git. (2) Yu, 2026-11-14: \"yes lay is ok\". That was item 1 of a three-part message, in answer to lab-Claude's question of the same day: \"Is a LAY thinkable at all? If no, I drop the drift flag. If yes, I check it offline in small steps before asking for anything live.\" It covers this much: a LAY is thinkable, so lab-Claude may check a LAY idea offline in small steps. It does not cover a live LAY, any live rule, any stake, liability or other money number, a closing bet at the starting price, or the policy pages; each of those stays Yu's and stays as it was. Items 2 and 3 of that message answered other questions of lab-Claude's and are not relied on here. (3) The fields in Git. On 2026-11-16 lab-Claude asked Yu whether, for this check, its two cell names, the direction it tests, its five threshold numbers and the sentence that these were set after reading the earlier results may enter Git; Yu's reply of 2026-11-16 (18:43:51 UTC) ended \"yes to both on git.\" That this covers these fields is lab-Claude's reading; the record is in the lab's notes (research/2026-11-16-yu-answers/YU-ANSWERS-2026-11-16.md), outside the repository. Yu chose none of the numbers here; the cells, the passes and the line in verdicts.rule are lab-Claude's.",
+  "diagnostics": {
+    "no_ltp_kinds": [
+      "never_sent",
+      "reset_not_sent_again",
+      "not_a_usable_number"
+    ],
+    "rule": "Counts only, in both passes; they change no code, cell or statistic, and one that shows a rule wrong leads to a new registration and a new blind pass. no_ltp is counted by kind: no ltp entry at or before t; the last entry is an image's null; the last entry is not a finite number above 0. Also counted: members flagged suspension_in_window, k per move cell, the age of the LTP (B5), bspMarket with no value at t, and the bytes the replay read and drained."
+  },
+  "doc": "docs/research-loop.md",
+  "exposure": {
+    "blind_pass_releases": "Known residual releases. The blind look: the 12 SDs and SEs show which move cells are noisier; B6 shows how often prices move and by how much the two moved cells differ in size. It lists the two moved cells unnamed, but lab-Claude knows from early-price-v1's registered pass which of the two was the larger on 2023 and 2024, so the listing hides less here than it did there. The two passes together: a move cell's pooled SD (B7) beside its PRO-D mean and SD (E2) puts an upper limit on how far its PRO-V mean lies from its PRO-D mean, about 1.2 times the cell's SD with 65% of the dates on PRO-D; that shows a sign only if a mean were larger than the spread of single values.",
+    "cites": [
+      "p0",
+      "movement-v1",
+      "lp-v1",
+      "suite-counts",
+      "p0-basic-2023-25",
+      "close-v1",
+      "early-price-v1",
+      "p0-basic-2015-16"
+    ],
+    "fresh_on_test": "Nothing is tested, so nothing is fresh on a test label. Not worked out by any earlier study on any date of this year, as far as the repository's pages show: a last traded price against BSP from the BASIC files; any move since 4 hours before the off; runners priced 4.00 to under 10.00 as a group against BSP.",
+    "lines": {
+      "close-v1": "Resting GBP 2 BACK and LAY orders on the favourite at 10, 5 and 2 minutes before the off on 2015-16 PRO, both labels: fills under three fill models, scores against BSP, and the mid at the order time against BSP. Its results are on the lab and the designer knew them. Its favourites are priced 1.50 to 4.00, which is band A's range.",
+      "early-price-v1": "The same measurement on the BASIC files of 2023 and 2024, with one test on 2024. The two cells named here, and the numbers in verdicts.rule, were chosen after reading its results, which are on the lab. Another decade.",
+      "lp-v1": "Join-leg mark-outs at 10 minutes before the off and fill counts on 2015-16 PRO (docs/lp-study.md). It bears on gaps, which this study does not measure.",
+      "movement-v1": "Taker NCLV of the favourite by time on 2015-16 PRO, every date (docs/movement-study.md). The designer knew its costs at 30, 10, 5 and 2 minutes before the off, its late-move cells at 5 minutes before the off, its earlier-window control and its random-runner control. early-price-v1's registration listed only the costs at 30 and 10 minutes. Its favourites are priced 1.50 to 4.00, band A's range, so how band-A favourites that moved late sit against BSP on these dates was already seen, with other windows and another price.",
+      "p0": "The year counts as inspected from P0's first run (docs/movement-study.md). The split file's sentence says PRO year; P0's contract ran on the BASIC tier, so the files it read are the files this study reads (p0-basic-2015-16).",
+      "p0-basic-2015-16": "P0's run of 2026-10-17 decided two variants 5 minutes before the off on these same BASIC files, each a back at BSP, and the index build read every file whole, results included (docs/backtest-plan.md). Its outcome metrics stay on the lab. It scored no last traded price against BSP.",
+      "p0-basic-2023-25": "Other months. A 2023-25 BASIC record gets the code month_not_registered from the index alone, and its file is never opened by this study.",
+      "suite-counts": "Whole-year counts of in-play markets and of markets with a removal, 2015-16 PRO. Counts, not locations."
+    },
+    "not_fresh_on_test": "The 2015-16 year is not fresh on any date, PRO-V dates included. P0 read these BASIC files; movement-v1, lp-v1 and close-v1 read the PRO files of the same races. The idea is not fresh either: the two cells were named, and the numbers in verdicts.rule set, after early-price-v1's results on 2023 and 2024 were read. So this is a description with its closing line written first, not a test.",
+    "printed_with_every_label": "Explore dates of 2015-16 only. That year is not fresh: P0, movement-v1, lp-v1 and close-v1 read it before, and the two cells were named after early-price-v1's results on 2023 and 2024. Nothing here is tested."
+  },
+  "family": {
+    "alpha": "0.0",
+    "m": 2,
+    "method": "holm",
+    "rule": "Nothing is tested: no family, no p-value, no Holm step. alpha is 0.0 because this study spends none, and the ledger refuses a registered line that carries no alpha. m and method are kept because the parser asks for them (m must be the number of sides); nothing reads them. The runner refuses the registered pass for this study id."
+  },
+  "id": "early-price-2015-16-v1",
+  "lineage": "early-price",
+  "measurement": {
+    "bsp_ends": {
+      "limit": "If BSP in these files is rounded and not cut, the true BSP can lie up to 0.005 below the written value, outside both ends (0.3 points at 1.50).",
+      "names": [
+        "bsp_as_written",
+        "bsp_plus_step"
+      ],
+      "rule": "The stream appears to cut BSP to two decimals (docs/data-audit.md), so every figure is worked out against BSP as written and against BSP + step. A kill reads the end that favours the side (BACK: as written; LAY: plus step); a claim and the selection read the other (resting.deciding_end). The switch counts the scored values of the two level cells at entry_s, both labels together: if under whole_hundredths_share of their BSPs are whole hundredths, the written value decides alone.",
+      "step": "0.01",
+      "switch_rows": "level_cells_at_entry_both_labels",
+      "whole_hundredths_share": "0.99"
+    },
+    "bsp_valid_if": [
+      "the market's final status is CLOSED and its last bspReconciled is true",
+      "the runner is listed at the end with final status WINNER or LOSER",
+      "its final bsp is a finite number above 1 (the index keeps none below 1.01)"
+    ],
+    "classes": [
+      "outcome_unknown",
+      "void_own_runner_removed",
+      "post_decision_removal",
+      "result_revised_after_close",
+      "missing_bsp",
+      "scored"
+    ],
+    "classes_rule": "Per priced runner, one class from facts after t, the first that applies. movement.measure gives the first five for the runner and the runners ACTIVE and listed at t: outcome_unknown, void_own_runner_removed, post_decision_removal, result_revised_after_close, missing_bsp; its eligible is scored. BSP is valid as measurement.bsp_valid_if says; the final status is read only for this, and no table counts winners. Only scored values enter an outcome statistic; the others are counted. A class never enters a cell's membership.",
+    "commission_rate": "0.02",
+    "net_held": "For the labels only: a bet held to the result, with a free fill at the LTP. BACK: x - c (LTP - 1) / BSP; LAY: -x - c (1 - 1 / BSP); c = commission_rate (resting.score with net_held). Nobody gets that fill. The rate is the account's: Yu, 2026-11-11, \"the acc is on Basic 2%\".",
+    "not_a_price": "A last traded price is not a price anyone could have taken. The files have no quotes and no sizes. So this study can close an idea or flag one; it can never show an edge.",
+    "part_and_rest": "Applied in the explore pass. Nothing is selected and nothing is tested, so no figure is decided first. (1) A group under statistics.min_values values gives counts only. (2) Inside the level cell at entry_s, per band, its scored rows on PRO-D are the universe. The move cells of one start share no row and are one partition; the two starts are two partitions, the earlier start first, and inside a start DRIFT, FLAT, STEAM (early.given_move_cells with no primary). Inside one partition a group is given only if it, and what is left of the universe, hold min_values rows or none (resting.given_together). The explore pass prints the earlier start's cells only, and that start is checked first, so the rule across partitions withholds nothing that is printed. A group not given shows its counts and rest_not_given. (3) Nothing is pooled over the two labels in the explore pass, and of PRO-V it gives index counts only. (4) The level cell at entry_s is printed beside its band's move cells. With all three move cells given, the mean of the runners with an undefined move can be worked out; rule (2) lets that happen only when they number min_values or more.",
+    "removals": "Values in markets with a later removal are not scored. Any lean from that is unmeasured; the size of the class is printed. Removals are classed, never re-priced by a reduction factor.",
+    "sides": [
+      "BACK",
+      "LAY"
+    ],
+    "unit": "a fraction of the stake; tables print 100 x x as points of stake",
+    "x": "x = LTP / BSP - 1, exact, per value: the LTP at t against the runner's BSP (resting.score, BACK, gross). Above 0, a back at that price would have beaten BSP; below 0, a lay would. BACK reads x and LAY reads -x, so a positive figure is good for that side. If the LTP is a fair price, mean x is 0 in any cell built only from facts at or before t; if a market's BSPs add up to more than 100%, a fair LTP gives a mean above 0 by that much."
+  },
+  "not_measured": [
+    "the gap between the best back and the best lay: BASIC has no quotes",
+    "the size and side of any trade",
+    "whether any order would have filled at the LTP",
+    "which side of the gap a price printed on",
+    "removals: classed, never re-priced by a reduction factor",
+    "the number of trades behind a price",
+    "race results"
+  ],
+  "population": {
+    "betting_type": "ODDS",
+    "bsp_market": true,
+    "codes": [
+      "plan_not_registered",
+      "no_view",
+      "month_not_registered",
+      "anchor_not_known_by_decision",
+      "view_ended_before_decision",
+      "member_unreadable_before_decision",
+      "schedule_revised_before_decision",
+      "country_not_allowed",
+      "event_type_not_allowed",
+      "market_type_not_allowed",
+      "betting_type_not_odds",
+      "number_of_winners_not_1",
+      "too_few_active_runners",
+      "partition_not_registered",
+      "bsp_market_false",
+      "market_not_open",
+      "price_change_malformed"
+    ],
+    "codes_rule": "Per record and time, one market code, the first that applies, else viewed; the codes add up to the record count at each time. The first thirteen are movement.market_code's, read from the index record alone against this block: the history gates, then the country, event type, market type, betting type and number of winners as of t, then at least min_active_runners runners ACTIVE and listed at t. Then partition_not_registered when the race date's label is not one of data.partitions; bsp_market_false when bspMarket as of t is exactly false (a missing value passes and is counted); market_not_open when the status as of t is not OPEN or inPlay as of t is true. A record with one of these sixteen codes at every time is never opened. Last, price_change_malformed when the view at t counts an rc entry whose runner id does not parse; it is the only code that needs the file. Per runner ACTIVE and listed at a viewed time, one runner code, the first that applies, else priced: no_ltp when the LTP at t is missing (never sent; reset by an image and not sent again; or not a finite number above 0); ltp_out_of_bands when it lies in no band of cells.bands_h; ltp_never_changed when it has no change at or before t (timing.change_rule); ltp_before_last_removal when the view holds a removal (REMOVED or REMOVED_VACANT) published at or before t and changed_pt is not later than the last one, because a withdrawal re-bases every price; ltp_stale when its age is above fresh_s for t.",
+    "countries": [
+      "GB",
+      "IE"
+    ],
+    "event_type_id": "7",
+    "market_type": "WIN",
+    "min_active_runners": 5,
+    "number_of_winners": 1,
+    "runner_codes": [
+      "no_ltp",
+      "ltp_out_of_bands",
+      "ltp_never_changed",
+      "ltp_before_last_removal",
+      "ltp_stale"
+    ],
+    "source": "GB and IE horse-racing WIN markets with BSP and at least 5 active runners: the proposal's field gate, which close-v1 also uses; not a pilot contract"
+  },
+  "registered_on": "2026-11-17",
+  "registered_pass": {
+    "releases": [
+      "This study has no registered pass. The parser fixes this block's name; here it describes the explore pass.",
+      "B1 to B9 as the blind look gives them, with the move cells named, for what the explore pass reads: PRO-D only. Every PRO-V count is 0, because no PRO-V file is opened, except B1's index records by month and the same records under partition_not_registered in B2. B5's ages are PRO-D's alone. B7 and B8 give no spread and no detectable effect: every cell shows its counts and rest_not_given or counts_only. B9 counts PRO-D alone, and the switch it prints decides nothing: verdicts.rule reads the blind look's.",
+      "E1: the two level cells at entry_s on PRO-D: members, each class's size, n, race dates, mean x, SD and CR1 95% interval at both BSP ends; headed exploratory; c = 2 and sqrt(2 ln c)",
+      "E2: the six move cells from the earlier start (-14400) on PRO-D: the same figures, headed exploratory, c = 6 and sqrt(2 ln c), under measurement.part_and_rest",
+      "E3: quantiles of the sum of 1 / BSP over each PRO-D market with a scored value (lp.bsp_book)",
+      "Not given by the explore pass: any figure of the move cells from -3600 or of the level cells at other times but their counts; any mean, SD, range or interval of PRO-V; any test, p-value, bound, selection, label or half-year figure; any net"
+    ],
+    "rule": "The explore pass runs once, on a later night than the blind look, and only if no stop rule of blind_pass.rule holds. It opens no file of a PRO-V date. Its ledger line is of kind explore, names PRO-D alone and carries m 0 and alpha 0; it counts as one of PRO-D's explore passes for the lineage early-price. The runner refuses a second explore pass of this study; a repeat of the same run appends nothing and must give the same summary bytes. Every interval is descriptive, and nothing but verdicts.rule is read for an outcome. A group below statistics.min_values gives counts only. measurement.part_and_rest applies. Printed above E1: verdicts.printed_with, exposure.printed_with_every_label, measurement.bsp_ends.limit and measurement.removals. test_label_move_means keeps the one value the parser takes; there is no primary, so no PRO-V mean of any cell is given.",
+    "test_label_move_means": "primaries_only"
+  },
+  "schema": "betangel.study-registration/v1",
+  "selection": {
+    "bsp_end": "claim_end",
+    "inputs": [
+      "explore_rows",
+      "test_counts",
+      "bsp_switch"
+    ],
+    "max_detectable": "0.025",
+    "measure": "x",
+    "rank": "mean_over_cr1_se",
+    "rule": "Not used: nothing is selected. The two cells this study reads are named in verdicts.rule, before any pass. The other fields of this block are early-price-v1's, kept because the parser asks for them; nothing reads them.",
+    "tie": "first_registered_cell"
+  },
+  "statistics": {
+    "detectable_level": "0.99",
+    "min_tested_race_dates": 15,
+    "min_tested_values": 200,
+    "min_values": 100,
+    "power": "0.8",
+    "quantile_method": "nearest_rank",
+    "quantiles": [
+      "0.05",
+      "0.1",
+      "0.25",
+      "0.5",
+      "0.75",
+      "0.9",
+      "0.95"
+    ],
+    "rule": "A group with fewer than min_values values gives counts only, in either pass: no SD, quantile, range, mean or interval. A test, a bound or a selection needs min_tested_values values on min_tested_race_dates race dates. An interval needs uncertainty.min_clusters race dates. Quantiles are nearest rank. The one-sided p for a mean above 0 is 1 - student_t_cdf(mean / SE, G - 1). A detectable effect is (t(detectable_level; G - 1) + t(power; G - 1)) x a CR1 SE. Floats are given to 6 places and quantiles to 4. movement.cr1_mean's count is printed as values: nothing here is a bet."
+  },
+  "status": "registered",
+  "summary": "Registered offline check, not a backtest contract and not a test. It runs early-price-v1's measurement, cells and rules, unchanged, on the BASIC files of 2015-05 to 2016-04, which early-price-v1 never opened. The score is x = LTP / BSP - 1 per runner. It asks one thing: on the explore dates of that year (PRO-D), does the last traded price 10 minutes before the off of band-B runners that drifted since 4 hours before the off sit below BSP, as verdicts.rule defines it? Two cells are named before any pass: B from -14400: DRIFT, which the line in verdicts.rule reads, and A from -14400: DRIFT, which is exploratory. There are two passes: one blind look over both labels, which gives counts and pooled spreads only, and one explore pass over PRO-D only, which gives means for the two level cells at 10 minutes before the off and the six move cells from 4 hours before the off. There is no registered pass, no test, no p-value, no selection and no label. No alpha is spent, and the lineage's one test on PRO-V stays unspent. The explore pass opens no file of a PRO-V date. PRO-D and PRO-V are the split file's labels for race dates of 2015-05-01 to 2016-04-30; a label belongs to a race date, not to a file, so a BASIC file of such a date carries the label a PRO file of it carries. A last traded price is not a price anyone could have taken, the year is another decade, and it is not fresh. So this can weaken or support an idea; it cannot confirm one and it cannot show an edge. Race results are never used. Nothing here is ordered, and nothing here changes a live rule, a money number or a policy page. The blocks family, selection and verdicts, the field registered_pass.test_label_move_means and data.halves are kept because the parser takes one exact key set; each says in its rule that nothing reads it. The code is early.py and early_study.py: the parser now takes this second study id and the runner has an explore pass, so the engine certificate key moves again.",
+  "timing": {
+    "anchor": "first_published_scheduled_off",
+    "change_rule": "Walk the runner's ltp entries published at or before t, in file order. Skip nulls and values that are not a finite number above 0. A change is a usable entry whose exact value differs from the usable entry before it; the first usable entry is not a change. changed_pt is the pt of the last change at or before t. So none of these makes a price look new: the first sight of a price, a reset followed by the same price, 5 followed by 5.0. The age of the price at t is t - changed_pt in ms: the time since the price last moved to a new value. A later trade at the same price sends nothing, so the age is an upper limit on the time since the last trade.",
+    "fresh_s": [
+      3600,
+      3600,
+      1800,
+      900,
+      300
+    ],
+    "rule": "t = the first-published scheduled marketTime + the offset in seconds. The LTP at t is the value of the runner's last ltp entry published at or before t, the batch at t included, read as an exact number (movement.exact); it is usable only as a finite number above 0 (replay.usable_ltp). fresh_s is min(3600, half the time left to the off) for each time. A price counts at t only if its age is at most fresh_s, both ends included: it last changed in [T-300, T-240], [T-180, T-120], [T-90, T-60], [T-45, T-30] or [T-15, T-10] minutes. The five windows do not overlap, so no two times read the same change.",
+    "times_s": [
+      -14400,
+      -7200,
+      -3600,
+      -1800,
+      -600
+    ]
+  },
+  "uncertainty": {
+    "cluster": "race_date_europe_london",
+    "confidence_level": "0.95",
+    "method": "cr1_t_g_minus_1",
+    "min_clusters": 15,
+    "rule": "As movement-v1, lp-v1 and close-v1: m = sum(x) / N, SE^2 = G / (G - 1) x the sum over race dates g of (the sum over values i in g of (x_i - m))^2 / N^2, and the interval m +/- t x SE with t the (1 + confidence_level) / 2 quantile of Student's t with G - 1 degrees of freedom; fewer than min_clusters race dates give the mean without an interval. The race date is the Europe/London calendar date of the first-published off. Several runners of one race share a race date, so the clustering covers them."
+  },
+  "verdicts": {
+    "half_gap_allowance": {
+      "A": "0.010",
+      "B": "0.020"
+    },
+    "half_year_min_values": 100,
+    "kill_level": "0.975",
+    "lower_bound_level": "0.98",
+    "names": [
+      "kill_free_fill",
+      "underpowered",
+      "cost_clearing_candidate",
+      "signal_candidate",
+      "unresolved"
+    ],
+    "prediction": "Signed by lab-Claude on 2026-11-17, before the build and before any pass. (a) The blind look passes S1 to S3, with about three chances in four; the likeliest stop is the files not reaching back four hours. (b) The mean x of B from -14400: DRIFT on PRO-D at the BSP as written lies below -0.006, and more likely than not at or below -0.012. (c) Shows about one chance in two, absent about one in ten, unclear about two in five. (d) Band A most likely reads unclear (about six in ten), seen again about three in ten, not seen at that size about one in ten.",
+    "printed_with": "A last traded price is not a price anyone could have taken. The 2015-16 year is another decade and is not fresh. This can weaken or support an idea; it cannot confirm one and it cannot show an edge.",
+    "printed_with_label": {
+      "cost_clearing_candidate": "Not issued: this study gives no label.",
+      "kill_free_fill": "Not issued: this study gives no label.",
+      "signal_candidate": "Not issued: this study gives no label.",
+      "underpowered": "Not issued: this study gives no label.",
+      "unresolved": "Not issued: this study gives no label."
+    },
+    "rule": "No label of names is issued. Of this block only printed_with, prediction and this rule are read; the levels, the allowances, names and printed_with_label are early-price-v1's, kept because the parser asks for them. This study is read by one line, fixed here before any pass. THE CELL: B from -14400: DRIFT on PRO-D, as table E2 of the explore pass gives it. THE FIGURES: from the explore pass's summary.json, as fractions of the stake to 6 places, at each BSP end: the cell's mean, ci_low and ci_high of x, and the mean of x of B from -14400: FLAT. AT ONE END the cell shows when mean <= -0.012 and ci_high < 0; it is absent when mean >= -0.006 and ci_low > -0.018. THE OUTCOME is the first of these that applies. (1) Unclear: at either end the cell's mean or interval is not given (fewer than statistics.min_values values, fewer than uncertainty.min_clusters race dates, or rest_not_given). (2) The drift shows: at both ends the cell shows and its mean is at least 0.009 below FLAT's mean. (3) Unclear, a level and not a move: at both ends the cell shows, and at either end FLAT's mean is not given or the cell's mean is less than 0.009 below it. (4) The drift is absent: at both ends the cell is absent. (5) Unclear. If the blind look's B9 says the two BSP ends do not decide apart, the BSP as written is read alone wherever this rule says both ends. Nothing else enters the outcome: not STEAM, not the band's level, not band A, not a part of the year, not a count by k, and no figure worked out afterwards. WHAT AN OUTCOME LEADS TO. Shows: lab-Claude may register the next small step, a facts pass at 10 minutes before the off on the 2015-16 PRO files that uses no BSP and no result: how far the offered lay price sits above the last traded price, and on which side of the gap the last trade printed. Absent: no further work on the 2015-16 year for this cell. Unclear: reported as unclear, with its reason; lab-Claude starts no further step on that year for this cell. No outcome leads to a live rule, a money number, a change to a policy page, a test on PRO-V, a second explore pass, a changed line, or a reading of any 2024 cell that early-price-v1 gave as counts only. BESIDE THE CELL, described and deciding nothing: B from -14400: FLAT and STEAM, the level cell B@-600, and the mean of band B at entry_s without the cell, which lab-Claude works out from E1 and E2 as (N_L x m_L - N_C x m_C) / (N_L - N_C) with N the values and m the means; that figure is arithmetic on printed figures, has no interval and is no table of the pass. BAND A: A from -14400: DRIFT is reported in the same way, headed exploratory, in fixed words that are no outcome: seen again when, at both ends, mean <= -0.015 and ci_high < 0; not seen at that size when, at both ends, ci_low > -0.015; else unclear. Nothing is built on band A's words; they go to Yu with the report. The numbers in this rule were set by lab-Claude with early-price-v1's results in view; the arithmetic behind them is in a note on the lab and is not in this file.",
+    "underpowered_above": "0.025"
+  }
+}

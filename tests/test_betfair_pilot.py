@@ -1498,6 +1498,54 @@ class LedgerAdversarial(unittest.TestCase):
             rec = only(journal_.fold(now=now))
             self.assertEqual((rec.ledger["value_p"], rec.ledger["reason"]), (-200, "contradiction"))
 
+    def test_more_matched_seen_later_before_and_after_final(self):
+        """Note §14 measurement, "a later C read or L row showing more matched than the C read the ledger used, before
+        and after the record is final (ledger back to −£2.00, review stop, the final analytical record unchanged)"
+        (§10, §11). The place report shows £1 matched; the canonical C read (EXECUTION_COMPLETE, £1 matched, £1
+        cancelled) passes the capture check and the ledger counts -100 from it. Then a read showing £2 matched: an L
+        row before the record is final (it makes the record final, C and L disagreeing: measurement_unresolved); a C
+        read after the record is final through C and L agreeing; an L row after the record is final at the deadline
+        from C alone. Each moves the record to W at -200 with a ledger_contradiction review stop, the analytical
+        record stays as §11 has it, and a re-fold of the journal (a restart) gives the same."""
+        def l_before_final(j, p):
+            return None, j.l_row(p, size="2.00")
+
+        def c_after_final(j, p):
+            j.l_row(p, size="1.00")
+            return only(j.fold()), j.c_read(p, matched="2.00", cancelled="0.00", at=j.now + S)
+
+        def l_after_final(j, p):
+            before = only(j.fold(now=p.off + 7 * DAY_NS + 1))
+            return before, j.l_row(p, size="2.00", at=p.off + 8 * DAY_NS)
+
+        for label, later in (("L before final", l_before_final), ("C after final", c_after_final),
+                             ("L after final", l_after_final)):
+            with self.subTest(case=label):
+                journal_, p = self.one()
+                journal_.send(p, 100)
+                c1 = journal_.c_read(p, matched="1.00", cancelled="1.00")
+                journal_.closed(p)
+                rec = only(journal_.fold())
+                self.assertEqual((rec.ledger["part"], rec.ledger["value_p"], rec.ledger["reason"],
+                                  rec.execution["final"]), ("W", -100, "checked_current_read", False))   # C only
+                before, read = later(journal_, p)
+                if before is not None:
+                    self.assertEqual((before.execution["final"], before.execution["size"], before.ledger["value_p"],
+                                      before.measurement["class"]), (True, Decimal("1.00"), -100, "eligible"))
+                for state in (journal_.fold(), replayed(journal_)):
+                    rec = only(state)
+                    self.assertEqual((rec.ledger["part"], rec.ledger["value_p"], rec.ledger["reason"], state.equity_p),
+                                     ("W", -200, "contradiction", -200))
+                    self.assertEqual([(s["stop_id"], s["scope"]) for s in state.due_stops
+                                      if s["reason"] == "ledger_contradiction"],
+                                     [(f"ledger-contradiction-{p.seq}-{read}", "review")])
+                    if before is None:
+                        self.assertEqual((rec.execution["final"], rec.execution["size"], rec.execution["c_seq"],
+                                          rec.execution["l_seq"], rec.measurement["class"]),
+                                         (True, None, c1, read, "measurement_unresolved"))
+                    else:
+                        self.assertEqual((rec.execution, rec.measurement), (before.execution, before.measurement))
+
     def test_s_arithmetic(self):
         rows = [("1.37", "3.44", 334, 7, 327), ("2.00", "1.53", 106, 3, 103), ("2.00", "3.475", 495, 10, 485),
                 ("1.37", "3.449", 335, 7, 328), ("2.00", "3.444", 488, 10, 478), ("2.00", "1.01", 2, 1, 1)]

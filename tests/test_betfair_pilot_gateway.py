@@ -1792,6 +1792,79 @@ class OpenChecksTests(PilotCase):
         self.assertIn(killer.kill(reason="test")["status"], ("kill_complete", "kill_incomplete"))
         self.assertEqual(env.state.contract_reads, 0)            # cleanup never reads the contract
 
+    def test_cleanup_under_drifted_config(self):
+        """Note §14 commands, "cleanup under drifted config" (§7: cleanup commands keep today's checks, so drift never
+        blocks cleanup; §8: cancel, reconcile, own-scope kill and settle-market unchanged). Two pilot bets rest, then
+        the config is edited so its sha256 no longer matches the registration receipt: a pilot-place open refuses
+        pa3_config_differs, while on the edited config, each gateway built as the CLI builds these commands (no
+        PilotContext), the cancel cancels one bet, reconcile runs and leaves nothing unresolved, the kill sweeps the
+        other bet by the pilot ref and settle-market settles both markets."""
+        env = self.build()
+        markets = [self.market(), self.market(off_ns=OFF + 60 * S)]
+        bets = []
+        for market in markets:
+            placer = sp.new_gateway(env)
+            sp.set_time(env.clock, market.off_ns - 299 * S)
+            self.open(placer)
+            result = self.place(market, gateway=placer)
+            self.assertEqual((result["decision"], result["pilot"]["state"]), ("accepted", "EXECUTABLE"))
+            bets.append(result["pilot"]["bet_id"])
+            placer.close()
+
+        def exchange():
+            return [(env.exchange.orders[bet]["status"], env.exchange.orders[bet]["sizeCancelled"]) for bet in bets]
+
+        self.assertEqual(exchange(), [("EXECUTABLE", 0.0)] * 2)
+        receipt = pilot_gate.read_registration(env.paths, env.receipt_sha256)
+        self.assertEqual(receipt["config_sha256"], cfg.config_sha256(env.config))
+        drifted = gw.live_config(env.paths, support.deep_merge(sp.pilot_profile(), {"http": {"timeout_s": 12}}))
+        self.assertNotEqual(cfg.config_sha256(drifted), receipt["config_sha256"])
+        placer = sp.new_gateway(env, config=drifted)
+        self.addCleanup(placer.close)
+        report = placer.open(command="pilot-place", confirm_token=expected_token(drifted, env.clock.time_ns()))
+        self.assertEqual((report["armed"], report["failures"]), (False, ["pa3_config_differs"]))
+        placer.close()
+
+        def cleanup_gateway(**kw):
+            gateway = sp.new_gateway(env, config=drifted, pilot_context=False, **kw)
+            self.addCleanup(gateway.close)
+            return gateway
+
+        canceller = cleanup_gateway()
+        self.assertEqual(canceller.open(command="cancel")["failures"], [])
+        self.assertEqual(canceller.cancel(markets[0].market_id, [bets[0]], source="cli_manual")["decision"],
+                         "accepted")
+        canceller.close()
+        self.assertEqual(exchange(), [("EXECUTION_COMPLETE", 2.0), ("EXECUTABLE", 0.0)])
+        reconciler = cleanup_gateway()
+        self.assertEqual(reconciler.open(command="reconcile")["failures"], [])
+        reconciled = reconciler.reconcile()
+        reconciler.close()
+        self.assertEqual((reconciled["status"], reconciled["unresolved"]), ("reconciled", []))
+        killer = cleanup_gateway(clock=support.FakeClock(env.clock.utc_now()))
+        self.assertEqual(killer.open(command="kill")["failures"], [])
+        calls = len(env.exchange.calls)
+        self.assertEqual(killer.kill(reason="test")["status"], "kill_complete")
+        killer.close()
+        self.assertEqual(exchange(), [("EXECUTION_COMPLETE", 2.0)] * 2)
+        swept = {ref for name, kw in env.exchange.calls[calls:] if name == "listCurrentOrders"
+                 for ref in kw.get("customer_strategy_refs") or ()}
+        self.assertEqual(sorted(swept), ["bar-manual", "p1-fav-t5"])   # the drifted config's refs, the pilot's too
+        env.clock.advance(60)                                     # past the kill's own re-sweep clock
+        for market in markets:
+            market.status = "CLOSED"
+        env.exchange.hide_cancelled_unmatched = True
+        for market in markets:
+            settler = cleanup_gateway()
+            token = expected_token(drifted, env.clock.time_ns())
+            settler.preconfirm("settle-market", market_id=market.market_id)
+            self.assertEqual(settler.open(command="settle-market", confirm_token=token)["failures"], [])
+            self.assertEqual(settler.settle_market(market.market_id, confirm_token=token)["status"], "settled")
+            settler.close()
+        orders = env.journal.fold(now_ns=env.clock.time_ns())["orders"]
+        self.assertEqual(sorted(o["state"] for o in orders.values() if o["bet_id"] in bets), ["SETTLED"] * 2)
+        self.clean()
+
     def test_resume_on_an_ended_contract(self):
         env = self.build()
         sp.note(env, "ending", reason="yu_written", code="yu_ended_in_writing")

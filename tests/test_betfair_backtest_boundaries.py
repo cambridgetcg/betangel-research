@@ -1184,7 +1184,9 @@ class BacktestBoundaryTests(unittest.TestCase):
         # resting.py and resting_study.py (registered measurement close-v1: the fill models, the registration and
         # the walk, and the pass runner), plus early.py and early_study.py (registered measurement early-price-v1:
         # the registration, the price rules and the cells, and the pass runner). close-early-v1 added no module: #71,
-        # #73 and #74 changed resting.py and resting_study.py; the rest added tests, data files and docs.
+        # #73 and #74 changed resting.py and resting_study.py; the rest added tests, data files and docs. The drift
+        # check (early-price-2015-16-v1) added no module either: early.py and early_study.py now also carry its
+        # registration and its explore pass.
         self.assertEqual(len(descriptor["files"]), 33)
 
     def test_offline_syntax_floor_is_python_3_10(self):

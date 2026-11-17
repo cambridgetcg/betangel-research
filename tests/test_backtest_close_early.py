@@ -515,8 +515,8 @@ class NoOtherFrozenFile(unittest.TestCase):
     def test_the_registrations_and_split_files_are_the_reviewed_ones(self):
         # A stray registration (a fallback id's, say) or a fourth split file would otherwise pass every test.
         self.assertEqual(sorted(path.name for path in (RESEARCH / "studies").glob("*.json")),
-                         ["close-early-v1.json", "close-v1.json", "early-price-v1.json", "lp-v1.json",
-                          "movement-v1.json"])
+                         ["close-early-v1.json", "close-v1.json", "early-price-2015-16-v1.json",
+                          "early-price-v1.json", "lp-v1.json", "movement-v1.json"])
         self.assertEqual(sorted(path.name for path in RESEARCH.glob("partitions-*.json")),
                          ["partitions-v1.json", "partitions-v2.json", "partitions-v3.json"])
         for study in EARLY_IDS[1:]:                                  # the two fallback ids have no file

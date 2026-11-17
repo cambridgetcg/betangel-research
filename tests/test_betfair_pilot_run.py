@@ -1670,6 +1670,78 @@ class KillCaseTests(RunCase):
         self.assertIn("own-scope kill", err)
         self.assertIsNotNone(original)
 
+    def test_an_unreadable_journal_during_a_kill_hands_off(self):
+        """Note §14 commands, "an unreadable journal during a KILL (the handoff)" (§8 case 1). A partial fill, then a
+        KILL (the file, or another process's kill event with no outcome), then the executor's own journal read fails
+        for real: the journal's directory is made unsearchable, so SQLite cannot open the file (an fd it keeps for the
+        file would let a mode change on the file itself go unseen), on kill_case's first read or on its first case-4
+        poll, and searchable again once kill_case returns. The executor prints the handoff at once (on the terminal
+        before its remainder_left_executable stop is journaled, not only in the end path's block), journals that stop,
+        sends no cancel and makes no Betfair read."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root opens a directory whatever its mode")
+
+        def kill_file(env):
+            env.paths.kill_file.write_text("")
+
+        cases = {"KILL file, first read": (kill_file, False), "kill event, first read": (kill_event, False),
+                 "kill event, a case-4 poll": (kill_event, True)}
+        original, original_append = pilot_run.Run.kill_case, pilot_run.append_pilot
+        for label, (kill, at_poll) in cases.items():
+            with self.subTest(case=label):
+                env = self.one_market()
+                sr.fills(env, matched=1.0)
+                orders = env.paths.journal_path("live").parent
+                mode = orders.stat().st_mode & 0o777
+                self.addCleanup(orders.chmod, mode)
+                seen = {}
+
+                def engage(env=env, kill=kill, seen=seen):
+                    kill(env)
+                    seen.update(requests=len(env.transport.requests), engaged=env.clock.monotonic_ns())
+
+                def kill_case(run, submit_seq, env=env, at_poll=at_poll, orders=orders, mode=mode, seen=seen):
+                    sleep = env.clock.sleep
+
+                    def poll(seconds):
+                        seen["sleeps"] = seen.get("sleeps", 0) + 1
+                        if at_poll:
+                            orders.chmod(0)
+                        return sleep(seconds)
+
+                    env.clock.sleep = poll                   # every wait inside kill_case is counted
+                    if not at_poll:
+                        orders.chmod(0)
+                    try:
+                        seen["case"] = original(run, submit_seq)
+                    finally:
+                        orders.chmod(mode)
+                        env.clock.sleep = sleep
+                    seen["returned"] = env.clock.monotonic_ns()
+                    return seen["case"]
+
+                def append_pilot(journal, payload, env=env, seen=seen, **columns):
+                    if (payload.get("pilot") or {}).get("reason") == "remainder_left_executable":
+                        seen.setdefault("terminal_at_stop", env.err.getvalue())
+                    return original_append(journal, payload, **columns)
+
+                with after_place_report(env, engage), patch.object(pilot_run.Run, "kill_case", kill_case), \
+                        patch.object(pilot_run, "append_pilot", append_pilot):
+                    code, out, err = sr.arm_run(env)
+                self.assertEqual(code, 5, err)
+                # At once: a failed first read hands off with no wait at all; a failed poll after one slice.
+                self.assertEqual((seen["case"], seen.get("sleeps", 0)), ("unreadable", 1 if at_poll else 0))
+                self.assertLess(seen["returned"] - seen["engaged"], pilot_run.CASE4_WAIT_NS)     # no 30 s wait
+                (bet,) = env.exchange.orders
+                self.assertEqual((env.exchange.orders[bet]["status"], env.exchange.orders[bet]["sizeRemaining"]),
+                                 ("EXECUTABLE", 1.0))
+                self.assertEqual((len(places(env)), cancels(env)), (1, []))
+                self.assertEqual(not_logout(env, seen["requests"]), [])                      # no Betfair read
+                handoff = pilot_run.handoff_text({"bet_id": bet, "selection_id": sp.FAV,
+                                                  "market_id": self.market.market_id})
+                self.assertIn(handoff, seen["terminal_at_stop"])                             # at once
+                self.assertIn("remainder_left_executable", [s["reason"] for s in sr.stops(env, "session")])
+
     def test_unknown_under_a_file_only_kill_hands_off(self):
         env = self.one_market()
 

@@ -47,7 +47,14 @@ RULES_DIR = REPO / "research" / "rules"
 # Each rule file's sha256 as reviewed: any change to a file must change its line here too (a new rule file).
 RULE_SHA256 = {"close-v1-back": "401a69f403a8651f919d43696fdcd367f203ec1babc9b36668935bfcbae9be24",
                "close-v1-lay": "fab9fbf5e99e38c3b14839526959608d8461cc3511b8a3fc2e06d429d963fb65",
-               "inplay-v1-lay": "7a5dea217c5d4fec164e67f151d14e1f3f2fa45fe16b81ad31166c982ac1e9b6"}
+               "inplay-v1-lay": "7a5dea217c5d4fec164e67f151d14e1f3f2fa45fe16b81ad31166c982ac1e9b6",
+               "close-early-v1-fav": "95684bd115997662782c8968363b52b51e76c382e12b2495d5e5d4567c46549b",
+               "close-early-v1-band": "0ef42617d1e8fa5465b23f46e69008058e58a7bc7de2af95f3e6b4f77944e7fb"}
+# Each rule file's exact parent: none for the first three; close-early-v1's favourite file was changed from
+# close-v1's LAY file, and its band file from the favourite file.
+PARENT_SHA256 = {"close-v1-back": None, "close-v1-lay": None, "inplay-v1-lay": None,
+                 "close-early-v1-fav": RULE_SHA256["close-v1-lay"],
+                 "close-early-v1-band": RULE_SHA256["close-early-v1-fav"]}
 RULES = {name: parse_rule((RULES_DIR / f"{name}.json").read_bytes()) for name in RULE_SHA256}
 
 
@@ -1158,7 +1165,7 @@ class RuleParse(unittest.TestCase):
         found = decide(view_of(horse(21), horse(22), at_s=-600), resting)
         self.assertEqual({(intent.pull_s, intent.persist) for intent in found.intents}, {(None, "lapse")})
         self.assertEqual(len(found.intents), 16)
-        for rule in RULES.values():                                         # the three merged files obey it
+        for rule in RULES.values():                                         # every merged file obeys it
             pulled = any(pull_s is not None for _, pull_s in rule.times)
             self.assertFalse(pulled and any(row.persist == "keep" for row in rule.intents), rule.id)
 
@@ -1404,7 +1411,8 @@ class RuleFilesFrozen(unittest.TestCase):
                 self.assertTrue(raw.endswith(b"}\n") and not raw.endswith(b"\n\n"))
                 value = json.loads(raw)
                 self.assertEqual((value["schema"], value["status"], value["id"], value["parent_sha256"]),
-                                 ("betangel.rule/v1", "frozen", name, None))
+                                 ("betangel.rule/v1", "frozen", name, PARENT_SHA256[name]))
+                self.assertEqual(RULES[name].parent_sha256, PARENT_SHA256[name])
                 self.assertEqual(sorted(value), sorted(rulefile.TOP_KEYS))
 
     def test_the_two_close_files_differ_only_by_side(self):
@@ -1461,7 +1469,7 @@ class RuleFilesFrozen(unittest.TestCase):
                 with self.subTest(rule=rule.id, text=text[:30]):
                     self.assertTrue(text.endswith(".") and text.count(". ") == 0 and 40 <= len(text) <= 200)
         self.assertEqual(sorted({rule.lineage for rule in RULES.values()}), ["close", "inplay"])
-        self.assertEqual(len({rule.claim for rule in RULES.values()} | {r.counter_claim for r in RULES.values()}), 6)
+        self.assertEqual(len({rule.claim for rule in RULES.values()} | {r.counter_claim for r in RULES.values()}), 10)
 
 
 class LaneBoundaries(unittest.TestCase):

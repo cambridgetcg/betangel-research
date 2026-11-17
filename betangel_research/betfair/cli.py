@@ -141,6 +141,14 @@ HELP = {
     "journal": "Offline view and hash-chain check of the order journal",
     "status": "Offline summary: kill file, HALT, unresolved orders, rates, exposure, token inputs, and the recording "
               "state (INHIBIT, ADMISSION, owner lock, armed session, recorder pid, live clean state) as codes",
+    "pilot-summary": "Offline and read-only: counts and codes of the registered pilot's live journal (PLACE records used "
+                     "and left, in all and today; each session's sends, fills, skips and stops by code); appends "
+                     "nothing, takes neither the gateway lock nor the owner lock, logs in nowhere, reads no Keychain "
+                     "item and needs no terminal; loading the config checks where the certificate and key sit, as "
+                     "status does; SQLite may create its own side files beside the journal and holds its own read "
+                     "locks while it reads; never an id, a price or a money figure (a count of pause stops shows how "
+                     "many pause levels were reached); ended_by_own_end_note does not show that recording was "
+                     "released",
     "kill": "Engage the global kill file and HALT, then cancel our own unmatched bets (live) without waiting for "
             "any lock, checking again for about 35 s; matched bets cannot be undone; exit 3 means cancel open bets on "
             "the Betfair website or in Bet Angel now; --scope account --confirm-account-wide also cancels Bet "
@@ -460,6 +468,7 @@ def build_parser():
     journal.add_argument("--state")
     journal.add_argument("--mode", choices=["paper", "live"], default="paper")
     add("status")
+    add("pilot-summary")
     release_cmd = add("recording-release")
     release_cmd.add_argument("--confirm-live", dest="confirm_live")
     kill = add("kill")
@@ -1114,6 +1123,23 @@ def cmd_status(args, ctx):
     out["journals"] = {mode: _journal_summary(paths.journal_path(mode), mode, ctx.clock) for mode in ("paper", "live")}
     out["recording"] = _recording_status(paths, ctx)
     ctx.print_json(out)
+    return 0
+
+
+def cmd_pilot_summary(args, ctx):
+    """pilot-summary (s1, step 1): counts and codes only, read only (pilot_summary.py). Paths and config as status
+    builds them, the pilot context as _pilot_env builds it; no confirmer, no paths.ensure, no journal writer, and no
+    file lock of this package (SQLite holds its own read locks while it reads)."""
+    from . import pilot_gate, pilot_summary
+    paths = _paths(args, ctx)
+    config = _config(args, paths)
+    pilot_context = ctx.deps.get("pilot_context") or pilot_gate.PilotContext(repo_root=pilot_gate.MODULE_ROOT)
+    try:
+        summary = pilot_summary.summarize(paths.journal_path("live"), clock=ctx.clock, config=config,
+                                          read_contract=pilot_context.read_contract)
+    except pilot_summary.SummaryRefused as exc:
+        raise _Done(2, f"Betfair input error: {exc.code}") from None
+    ctx.print_json(summary)
     return 0
 
 
@@ -2338,7 +2364,7 @@ COMMANDS = {
     "recordings": cmd_recordings, "verify-day": cmd_verify_day, "place": cmd_place,
     "cancel": cmd_cancel, "replace": cmd_replace, "live-probe": cmd_live_probe, "paper-step": cmd_paper_step,
     "paper-replay": cmd_paper_replay, "reconcile": cmd_reconcile, "settle-market": cmd_settle_market,
-    "journal": cmd_journal, "status": cmd_status, "kill": cmd_kill, "resume": cmd_resume,
+    "journal": cmd_journal, "status": cmd_status, "pilot-summary": cmd_pilot_summary, "kill": cmd_kill, "resume": cmd_resume,
     "recording-release": cmd_recording_release,
 }
 

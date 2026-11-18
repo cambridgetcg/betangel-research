@@ -26,6 +26,7 @@ from unittest import mock
 from betangel_research.betfair.backtest import movement, partition, rulefile, study_ledger
 from betangel_research.betfair.backtest.contract import canonical_json
 from betangel_research.betfair.backtest.partition import PartitionError, file_bytes, parse_split
+from betangel_research.betfair.backtest.resting import parse_registration
 from betangel_research.betfair.backtest.rulefile import (Decision, Intent, Market, Predicate, RuleError, RuleView,
                                                          RunnerView, Template, decide, parse_rule)
 from betangel_research.betfair.backtest.study_ledger import (ENTRY_KEYS, LEDGER_FILE, PassRequest, StudyLedger,
@@ -1470,6 +1471,115 @@ class RuleFilesFrozen(unittest.TestCase):
                     self.assertTrue(text.endswith(".") and text.count(". ") == 0 and 40 <= len(text) <= 200)
         self.assertEqual(sorted({rule.lineage for rule in RULES.values()}), ["close", "inplay"])
         self.assertEqual(len({rule.claim for rule in RULES.values()} | {r.counter_claim for r in RULES.values()}), 10)
+
+
+# What the parsers make of today's files, read by explicit lists of the v1 field names (betangel.rule/v2's PR A,
+# test only). A field added later (PR B's Rule.schema, Predicate.from_s and to_s; a new Plan field with a default)
+# is not read, so it does not move a pin; a change to the value of one of these fields does. Never "every field".
+RULE_V1_FIELDS = ("sha256", "id", "lineage", "parent_sha256", "claim", "counter_claim", "market", "times", "select",
+                  "when", "intents")
+MARKET_V1_FIELDS = ("countries", "event_type_id", "market_type", "betting_type", "number_of_winners", "bsp_market",
+                    "turn_in_play_enabled", "persistence_enabled")
+TEMPLATE_V1_FIELDS = ("side", "ref", "fixed", "stake", "persist")
+CELL_V1_FIELDS = ("rule_id", "at_s", "pull_s")
+PLAN_V1_FIELDS = ("sha256", "study", "lineage", "split", "rules", "cells", "explore_label", "test_label", "tiers",
+                  "ladders", "start_month", "end_month", "divisor", "after_the_hour_s", "within_s", "codes",
+                  "commission", "models", "queue_fractions", "family_m", "alpha", "null_seed", "max_spread_ticks",
+                  "null_fraction", "null_alpha", "select_explore_model", "select_test_model", "min_values",
+                  "min_tested_values", "min_tested_race_dates", "min_clusters", "confidence_level", "kill_level",
+                  "lower_bound_level", "pilot_floor", "half_year_min_fills", "bsp_step", "bsp_whole_share",
+                  "quantiles", "power", "detectable_level", "label_note", "exposure_note", "hour_rises_counted",
+                  "explore_only", "trd_counts")
+
+
+def plain(value):
+    """A JSON-ready form of a parsed value: a Fraction as str(), a tuple as a list, a dict by its keys' text. Anything
+    else refuses, so that no value is pinned by an accident of its repr."""
+    if isinstance(value, Fraction):
+        return str(value)
+    if isinstance(value, (tuple, list)):
+        return [plain(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): plain(item) for key, item in value.items()}
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    raise TypeError(f"pin:not_pinned:{type(value).__name__}")
+
+
+def rule_v1_form(rule):
+    """{name: value} of RULE_V1_FIELDS of one rulefile.Rule: market by MARKET_V1_FIELDS, each when row as [feature,
+    op, str(value), code], each intents row by TEMPLATE_V1_FIELDS."""
+    form = {}
+    for name in RULE_V1_FIELDS:
+        value = getattr(rule, name)
+        if name == "market":
+            value = {key: getattr(value, key) for key in MARKET_V1_FIELDS}
+        elif name == "when":
+            value = [[row.feature, row.op, str(row.value), row.code] for row in value]
+        elif name == "intents":
+            value = [{key: getattr(row, key) for key in TEMPLATE_V1_FIELDS} for row in value]
+        form[name] = plain(value)
+    return form
+
+
+def plan_v1_form(plan):
+    """{name: value} of PLAN_V1_FIELDS of one resting.Plan: split by its sha256, each rule by rule_v1_form, each cell
+    by CELL_V1_FIELDS."""
+    form = {}
+    for name in PLAN_V1_FIELDS:
+        value = getattr(plan, name)
+        if name == "split":
+            value = value.sha256
+        elif name == "rules":
+            value = [rule_v1_form(rule) for rule in value]
+        elif name == "cells":
+            value = [[getattr(cell, key) for key in CELL_V1_FIELDS] for cell in value]
+        form[name] = plain(value)
+    return form
+
+
+def v1_sha256(form):
+    """The sha256 of a form's canonical text: sorted keys, compact separators, ASCII."""
+    return sha(json.dumps(form, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False))
+
+
+def registered_plan(study):
+    """The resting.Plan of research/studies/<study>.json with the split file and the rule files it names, read
+    from the repository as the pass runner reads them."""
+    raw = (REPO / "research" / "studies" / f"{study}.json").read_bytes()
+    data = json.loads(raw)["data"]
+    return parse_registration(raw, (REPO / "research" / data["split"]["name"]).read_bytes(),
+                              {item["name"]: (RULES_DIR / item["name"]).read_bytes() for item in data["rules"]})
+
+
+class RuleFilesParseUnchanged(unittest.TestCase):
+    """The v1 fields that parse_rule gives each file in research/rules/, and that parse_registration gives close-v1's
+    and close-early-v1's registrations, as the sha256 of one canonical text each. Set on the untouched sources of
+    0a945b8 (betangel.rule/v2's PR A changes tests only): the same on two runs and under python3.13 and python3.15
+    when they were set."""
+
+    RULE_V1_SHA256 = {"close-v1-back": "8d203337ae71f361c6ff0caee40018c6c5d96e548d8297625fb72e043fca0961",
+                      "close-v1-lay": "1035b4c03242fe39ee0029df7701ae06b938c19749dcc6eeec500c44758085ad",
+                      "inplay-v1-lay": "ae01a867922fe1e34ce25533a015d735e5fc35aa2896c27472637ffced675fed",
+                      "close-early-v1-fav": "5d609ddbd99830772dd510742aff9700f46806a007babd31c9982d04d258ee35",
+                      "close-early-v1-band": "7babb2590168ece3b4ebd52f373199a575d1221148b874f61204193f1e1d02f5"}
+    PLAN_V1_SHA256 = {"close-v1": "6e02117ad2b43e2396354cd15893c3419e566acaa18f1cf7b0e740535ac9de8d",
+                      "close-early-v1": "61699d2e467442fdb2b752e57057c232e77c0b7271a903540f12e1f5614dfb1b"}
+
+    def test_every_rule_file_parses_to_the_same_v1_fields(self):
+        self.assertEqual(sorted(path.name for path in RULES_DIR.glob("*.json")),
+                         sorted(f"{name}.json" for name in self.RULE_V1_SHA256))
+        for name, pinned in self.RULE_V1_SHA256.items():
+            with self.subTest(name=name):
+                self.assertEqual(v1_sha256(rule_v1_form(parse_rule((RULES_DIR / f"{name}.json").read_bytes()))),
+                                 pinned)
+
+    def test_the_close_registrations_parse_to_the_same_plan_fields(self):
+        for study, pinned in self.PLAN_V1_SHA256.items():
+            plan = registered_plan(study)
+            with self.subTest(study=study):
+                self.assertEqual((plan.study, [rule.lineage for rule in plan.rules]), (study, ["close", "close"]))
+                self.assertEqual(v1_sha256(plan_v1_form(plan)), pinned)
 
 
 class LaneBoundaries(unittest.TestCase):

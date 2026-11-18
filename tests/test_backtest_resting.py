@@ -5331,6 +5331,159 @@ class EarlyRun(RestingCase):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# close-early-v1's outputs, pinned before betangel.rule/v2 changes a source line (its PR A, test only).
+
+# A new id's row is pinned by the names of the fields it holds at 0a945b8: close-v1's thirteen (ROW_FIELDS) and the
+# three a new id's walk fills. A field added later with a default does not move a pin; a change to one of these does.
+EARLY_ROW_FIELDS = ROW_FIELDS + ("gap_ticks", "placed_in_the_hour", "fill_minute")
+
+
+def early_form(value):
+    """pinned_form, with an OrderRow by EARLY_ROW_FIELDS."""
+    if isinstance(value, OrderRow):
+        return {name: early_form(getattr(value, name)) for name in EARLY_ROW_FIELDS}
+    if isinstance(value, (tuple, list)) and not isinstance(value, Fill):
+        return [early_form(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): early_form(item) for key, item in value.items()}
+    return pinned_form(value)
+
+
+def early_walked_form(walked, plan):
+    """What resting.walk returned for one record under a new id's plan, by name and in the plan's cell order: each
+    cell's code, row or tuple of rows (early_form), the gated flags with no value at t of each cell that passed the
+    record's gates, B8's runner codes of each cell that has them (None for the others), and whether the member was
+    read."""
+    if set(walked.outcomes) != set(plan.cells) or not set(walked.flags_missing) <= set(plan.cells) \
+            or not set(walked.runner_codes) <= set(plan.cells):
+        raise AssertionError("pin:cells_not_the_plans")
+    return {"outcomes": [early_form(walked.outcomes[cell]) for cell in plan.cells],
+            "flags_missing": [early_form(walked.flags_missing.get(cell)) for cell in plan.cells],
+            "runner_codes": [early_form(walked.runner_codes.get(cell)) for cell in plan.cells],
+            "replayed": walked.replayed}
+
+
+def early_walk_sha256(walks, ids, plan):
+    """The sha256 of one canonical line per record, [market id, early_walked_form], in the order of ids."""
+    digest = hashlib.sha256()
+    for market_id in ids:
+        digest.update(canonical_json([market_id, early_walked_form(walks[market_id], plan)]) + b"\n")
+    return digest.hexdigest()
+
+
+class CloseEarlyV1IsUnchanged(RestingCase):
+    """close-early-v1's outputs on synthetic inputs, as sha256 constants, as CloseV1IsUnchanged pins close-v1's: the
+    rows the walk returns for every market of early_run()'s data root under the plan of its registration, and for
+    the seeded batch with its hour market on an explore date (seeded_walks) under EARLY_PLAN and EACH_PLAN; the
+    tables of the runner's tally of that batch under both plans; and the summaries (summary.json and summary.md) of
+    both passes of early_run(). Set on the untouched sources of 0a945b8 (betangel.rule/v2's PR A changes tests
+    only): the same on two runs and under python3.13 and python3.15 when they were set."""
+
+    WALK_SHA256 = {"early run": "41412436b1c4892b01cf3d1c9ab7666614ed3609b3abc41778a29756b430f333",
+                   "seeded batch, early": "4d133b4232efa27e724289865da013ecd874087a1706953e605273a9476bf946",
+                   "seeded batch, each": "82e7a1cc9e7c5e07ecaa4c3c9458d066a16db27cb1df61ac2d71b66ce7efb442"}
+    SUMMARY_SHA256 = {"blind": "af39f990a89b610a91e9c85e81c03f89ed688b0add34a54bf03d5bf1ad81d8e8",
+                      "explore": "921412c59ef0cc5ed168f2f4fbb2a16e525de0771c367bd2ebc4d2ecda01731a"}
+    SUMMARY_MD_SHA256 = {"blind": "5da5a9be2d5a10bf058e28ad54a6a5eadde16d36776ec7dfa3f9f0d9e6f05052",
+                         "explore": "0b25601cd720da82a24db30e5fe7456707c18e1c50500006690315a36148ae85"}
+    # The runner's own tally (decide_record) of the seeded batch with its hour market on an explore date, under
+    # EARLY_PLAN and EACH_PLAN, as the summary and its Markdown of each pass, as CloseV1IsUnchanged's
+    # SEEDED_TABLES_SHA256: the tables over rows that hold what the early run leaves at 0. Set the same way.
+    SEEDED_TABLES_SHA256 = {"early, blind": "30a6770a81eda2bf641bbc5aa2611eb30b2b2bfc83e2cf55b1562065928792ea",
+                            "early, explore": "2e9ea45c45ea5f4596a5777498863d2df4b6dfe8bcc35f20bf0d4d8586e53b91",
+                            "each, blind": "5fb6ed0047b2392722cdf431f968e382ccd2d5e4561ac0cd35236f54c556bddf",
+                            "each, explore": "9dc663e94dc16d3b4f47f1825ffad3f4fe079ad3cf259e5f224c05214893ae99"}
+
+    def test_the_walk_of_every_market_of_the_early_run(self):
+        given = early_run()
+        plan = parse_registration(*early_files(rules=band(), registration=lowered))
+        self.assertEqual((plan.sha256, plan.study, plan.labels_read), (given.sha, EARLY, (D,)))
+        found = sorted((given.root / "index").glob(f"*/{fx.market_index.MARKETS_FILE}"))
+        self.assertEqual(len(found), 1)
+        manifest, _ = fx.load_manifest(given.root, found[0].parent.name)
+        records = index_records(given.root)
+        walks = {}
+        for market_id in given.ids:
+            with member_stream(given.root, manifest, records[market_id]) as stream:
+                walks[market_id] = walk(stream, records[market_id], plan, DEFAULT_LIMITS)
+        with self.subTest(pin="early run"):
+            self.assertEqual(early_walk_sha256(walks, given.ids, plan), self.WALK_SHA256["early run"])
+        # What the walk holds, so that the digest stands for it: the 29 records, the 12 explore-date markets read,
+        # each with one row in each favourite cell and three in each each_active cell.
+        self.assertEqual((len(walks), sum(item.replayed for item in walks.values())), (29, 12))
+        rows = [row for item in walks.values() for outcome in item.outcomes.values() for row in orders_of(outcome)]
+        self.assertEqual(len(rows), 12 * (3 + 3 * 3))
+        self.assertEqual({row.label for row in rows}, {D})
+
+    def test_the_walk_of_the_seeded_batch_under_both_new_plans(self):
+        given = seeded_walks()
+        for name, plan in (("early", EARLY_PLAN), ("each", EACH_PLAN)):
+            with self.subTest(pin=f"seeded batch, {name}"):
+                self.assertEqual(early_walk_sha256(given.walks[name], given.ids, plan),
+                                 self.WALK_SHA256[f"seeded batch, {name}"])
+        # The hour market on an explore date is in it: under the new id its rise in the hour seconds fills neither
+        # LAY and is counted as left out (HourSwitch).
+        hour = given.walks["early"]["1.199999002"].outcomes
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual((kinds(hour[cell]), hour[cell].trd[LEFT_OUT]), (UNFILLED, 1))
+        # What the batch holds under both new plans, so that the digests stand for it: fills named by the second and
+        # by the third minute after a weekday whole hour, orders placed in and out of the after-the-hour seconds, more
+        # than one gap at t, rises left out, gated flags with no value at t, and B8's runner codes under EACH_PLAN.
+        for name in ("early", "each"):
+            walked = given.walks[name].values()
+            rows = [row for item in walked for outcome in item.outcomes.values() for row in orders_of(outcome)]
+            with self.subTest(holds=name):
+                self.assertEqual({minute for row in rows for minute in row.fill_minute.values()},
+                                 {None, resting.SECOND, resting.THIRD})
+                self.assertEqual({row.placed_in_the_hour for row in rows}, {False, True})
+                self.assertGreater(len({row.gap_ticks for row in rows}), 1)
+                self.assertTrue(any(row.trd[LEFT_OUT] for row in rows))
+                self.assertTrue(any(names for item in walked for names in item.flags_missing.values()))
+        self.assertTrue(any(item.runner_codes for item in given.walks["each"].values()))
+        self.assertFalse(any(item.runner_codes for item in given.walks["early"].values()))
+
+    def test_the_tables_of_the_seeded_batch_under_both_new_plans(self):
+        """The runner's own tally (decide_record) of the seeded batch with its hour market on an explore date, under
+        EARLY_PLAN and EACH_PLAN, as the summary and its Markdown of each pass: the tables over rows that hold what
+        the early run leaves at 0."""
+        members, ids = seeded_batch()
+        members.append((path("1.199999002", TUESDAY), hour_market("1.199999002", TUESDAY)))
+        ids.append("1.199999002")
+        root, manifest, records = self.build(members)
+        for name, plan in (("early", EARLY_PLAN), ("each", EACH_PLAN)):
+            tally = Tally(plan)
+            for market_id in ids:
+                decide_record(plan, records[market_id], record_facts(plan, records[market_id]), root, manifest, tally)
+            for pass_name in ("blind", "explore"):
+                value = summary(plan, tally, pass_name, "0" * 64)
+                with self.subTest(pin=f"{name}, {pass_name}"):
+                    self.assertEqual(sha(canonical_json(value) + b"\n" + resting_study.markdown(plan, value).encode()),
+                                     self.SEEDED_TABLES_SHA256[f"{name}, {pass_name}"])
+            # What these tables hold, so that the constants stand for it: B4's minute block with fills in the second
+            # and in the third minute, rises left out, and orders placed in the after-the-hour seconds.
+            cells = list(value["cells"].values())
+            counts = [item for tables in cells for models in tables["fills"].values() for item in models.values()]
+            with self.subTest(holds=name):
+                for minute in (str(resting.SECOND), str(resting.THIRD)):
+                    self.assertTrue(any(any(item["minutes_after_the_hour"][minute].values()) for item in counts),
+                                    minute)
+                self.assertTrue(any(tables["trd_changes"][LEFT_OUT] for tables in cells))
+                self.assertTrue(any(tables["orders_placed_in_the_hour_seconds"] for tables in cells))
+
+    def test_the_summaries_of_the_early_run(self):
+        given = early_run()
+        outputs = {name: outputs_of(given.base / name) for name in ("blind", "explore")}
+        self.assertEqual({name: json.loads(getattr(given, name)[1])["summary_sha256"] for name in outputs},
+                         {name: sha(outputs[name]["summary.json"]) for name in outputs})
+        self.assertEqual({name: sha(outputs[name]["summary.json"]) for name in outputs}, self.SUMMARY_SHA256)
+
+    def test_the_markdown_of_the_early_run(self):
+        given = early_run()
+        self.assertEqual({name: sha(outputs_of(given.base / name)["summary.md"]) for name in ("blind", "explore")},
+                         self.SUMMARY_MD_SHA256)
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # The kept top of book (resting.KEEP_TOPS): the walk keeps each resting runner's lp.top between batches and reads it
 # again only after a change that may move that runner's ladder (resting._stale). No output may move, so every walk
 # here is set against the walk that reads lp.top afresh at every batch (KEEP_TOPS false: the walk's line before).

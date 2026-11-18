@@ -61,6 +61,7 @@ from betangel_research.betfair.backtest.resting import STATISTICS
 from betangel_research.betfair.backtest.resting_study import (Tally, decide_record, main, record_facts,
                                                               run_study, summary)
 from betangel_research.betfair.backtest.rulefile import RuleView, RunnerView, decide, parse_rule
+from betangel_research.betfair.backtest.rulefile import RuleView2, RunnerView2, SCHEMA_V2, windows
 from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, PassRequest, StudyLedger, verify
 from betangel_research.betfair.backtest.trial_ledger import UnlockError
 from betangel_research.betfair.backtest import resting
@@ -1060,14 +1061,18 @@ class PopulationCodes(RestingCase):
         self.assertEqual((row.label, row.half, row.race_date), ("PRO-V", "H2", "2015-12-01"))
 
     def test_a_row_holds_no_market_or_selection_id(self):
+        # betangel.rule/v2's PR C added the last five row fields and the last three fill fields, each keyed by model,
+        # bucket or count name: none holds an id.
         self.assertEqual(OrderRow._fields, ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid",
                                             "fills", "null_mid", "null_reason", "trd", "no_status", "gap_ticks",
-                                            "placed_in_the_hour", "fill_minute"))
+                                            "placed_in_the_hour", "fill_minute", "minutes", "images",
+                                            "through_refused", "closable", "in_play_before_pull"))
         self.assertEqual(Fill._fields, ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn",
-                                        "ended"))
-        text = repr(sorted(self.rows(lp_market(trades=[(200, FAV, [[2.48, 1.0]])])).items()))
-        for token in (M, M.split(".")[1], fx.EVENT, *map(str, SIDS)):
-            self.assertNotIn(token, text)
+                                        "ended", "image", "through_below_stake", "crossed"))
+        for plan in (PLAN, replace(PLAN, views=resting.V2)):
+            text = repr(sorted(self.rows(lp_market(trades=[(200, FAV, [[2.48, 1.0]])]), plan=plan).items()))
+            for token in (M, M.split(".")[1], fx.EVENT, *map(str, SIDS)):
+                self.assertNotIn(token, text)
 
     def test_the_codes_of_the_record_alone_never_open_the_member(self):
         late, edge = datetime(2016, 6, 1, 14, 0, tzinfo=timezone.utc), datetime(2016, 4, 30, 23, 30,
@@ -5985,6 +5990,1188 @@ class KeptTops(RestingCase):
                                  | {(BACK_RULE, at_s): (P(2.52), int(at_s == -600)) for at_s in (-600, -300, -120)})
         self.assertEqual(named_form(found[True]), named_form(found[False]))
         self.assertEqual(found[True], found[False])
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# betangel.rule/v2, PR C: view_of2, the walk's captures and event ranks, the image switch and the level rule (dormant
+# by default), the new counts and row fields, and closable tracked to the pull (DESIGN-rule-v2 §1.3-§1.5, §1.10,
+# §2.2-§2.3, §4.2 PR C). No registration sets a v2 field yet (PR E): every plan here is a parsed Plan changed with
+# dataclasses.replace. Every market is synthetic; every threshold in the test rule is a test value.
+
+V2_LAY = "close-v2-test-lay"
+WHOLE, LATE = (-3000, None), (-3000, -600)          # the test rule's two windows, in the order of their first row
+V2_CELLS = tuple(Cell(V2_LAY, at_s, pull_s) for at_s, pull_s in TIMES)
+# The test rule: close-v1's LAY file on each runner from 1.50 to 10.00 at 1 or 2 ticks (EACH_PLAN's band: in the
+# standard book the favourite, R2 and R5 pass), with a row on every v2 feature. Each v2 row fails only on a missing
+# value, so its code names the value that is missing.
+V2_ROWS = (
+    {"code": "market_not_open", "feature": "market_open", "op": "==", "value": 1},
+    {"code": "too_few_active_runners", "feature": "active_runners", "op": ">=", "value": 5},
+    {"code": "no_back_book", "feature": "back_book_pct", "op": ">=", "value": "0.00"},
+    {"code": "no_lay_book", "feature": "lay_book_pct", "op": ">=", "value": "0.00"},
+    {"code": "best_back_out_of_range", "feature": "best_back", "op": ">=", "value": "1.50"},
+    {"code": "best_back_out_of_range", "feature": "best_back", "op": "<=", "value": "10.00"},
+    {"code": "depth_below_min", "feature": "best_back_size", "op": ">=", "value": "10.00"},
+    {"code": "no_lay_size", "feature": "best_lay_size", "op": ">=", "value": "0.00"},
+    {"code": "no_back_depth", "feature": "back_depth_3", "op": ">=", "value": "0.00"},
+    {"code": "no_lay_depth", "feature": "lay_depth_3", "op": ">=", "value": "0.00"},
+    {"code": "spread_not_1_or_2_ticks", "feature": "spread_ticks", "op": ">=", "value": 1},
+    {"code": "spread_not_1_or_2_ticks", "feature": "spread_ticks", "op": "<=", "value": 2},
+    {"code": "no_move", "feature": "mid_ratio", "from_s": -3000, "op": ">=", "to_s": None, "value": "0.00"},
+    {"code": "no_late_move", "feature": "mid_ratio", "from_s": -3000, "op": ">=", "to_s": -600, "value": "0.00"})
+VIEW_OF2 = resting.view_of2                          # the function itself, for a spy to call through
+T0 = ms(DAY_OFF)                                     # 14:00 UTC on Tuesday 2 June 2015, an explore date
+ZERO_MOVES = dict.fromkeys(resting.MOVE_COUNTS, 0)
+# What a v1 walk leaves at its defaults: the last five row fields and the last three fill fields.
+V2_ROW_FIELDS = ("minutes", "images", "through_refused", "closable", "in_play_before_pull")
+V2_FILL_FIELDS = ("image", "through_below_stake", "crossed")
+IMAGE_BATCHES, IMAGE_LEFT_OUT = resting.IMAGE_BATCHES, resting.IMAGE_LEFT_OUT
+
+
+def v2_rule(rule_id=V2_LAY, rows=V2_ROWS, times=None):
+    """A betangel.rule/v2 file built from close-v1's LAY file: each_active, rows, and close-v1's times or times
+    ((at_s, pull_s), ...)."""
+    value = json.loads(RULES_RAW[f"{LAY_RULE}.json"])
+    value.update(schema=SCHEMA_V2, id=rule_id, select="each_active", parent_sha256=sha(RULES_RAW[f"{LAY_RULE}.json"]),
+                 when=[dict(row) for row in rows])
+    if times is not None:
+        value["times"] = [{"at_s": at_s, "pull_s": pull_s} for at_s, pull_s in times]
+    return parse_rule(canonical(value))
+
+
+V2_RULE = v2_rule()
+
+
+def v2_plan(*rules, **changes):
+    """EACH_PLAN with rules (default the test rule) as a v2 plan: its cells, codes and windows, a move cap of 20
+    ticks, then changes."""
+    rules = rules or (V2_RULE,)
+    cells = tuple(Cell(rule.id, at_s, pull_s) for rule in rules for at_s, pull_s in rule.times)
+    fields = dict(rules=rules, cells=cells, codes=population_codes(rules), views=resting.V2,
+                  windows=resting.windows_of(rules), move_max_spread_ticks=20)
+    return replace(EACH_PLAN, **{**fields, **changes})
+
+
+def as_v2(plan, **changes):
+    """plan as a v2 walk, its switches as they are: the new row fields are filled."""
+    return replace(plan, views=resting.V2, **changes)
+
+
+def switched(plan):
+    """plan as a v2 walk with the image switch and the level rule on; its trade counts take the image count."""
+    return replace(plan, views=resting.V2, image_rises_counted=False, through_needs_lowered=True,
+                   trd_counts=plan.trd_counts + (resting.IMAGE_LEFT_OUT,))
+
+
+def rc_at(seconds, off, rc, market_id=M):
+    """One rc change of the market at `seconds` before off."""
+    return mcm(before(seconds, off), [{"id": market_id, "rc": rc}])
+
+
+def removed_at(seconds, off=DAY_OFF, sid=R6):
+    """A definition at `seconds` before off that removes sid."""
+    return md(M, before(seconds, off), definition(off, [runner(s, "REMOVED" if s == sid else "ACTIVE") for s in SIDS]))
+
+
+def image_at(seconds, off, fav=None, trd=None):
+    """An image with its definition at `seconds` before off: every runner's standard quote but the favourite's,
+    which is fav (atb points, atl points), by default 2.5 (50 shown) and 2.48 (30) to back and 2.52 (75) to lay;
+    trd, when given, is the favourite's trd as the image restates it."""
+    back, lay = fav or ([[2.5, 50.0], [2.48, 30.0]], [[2.52, 75.0]])
+    rc = [{"id": sid, "atb": [[b, 50.0]], "atl": [[l, 75.0]]} for sid, (b, l) in BOOK.items() if sid != FAV]
+    rc.insert(0, {"id": FAV, "atb": back, "atl": lay, **({"trd": trd} if trd else {})})
+    return md(M, before(seconds, off), definition(off, [runner(sid) for sid in SIDS]), img=True, rc=rc)
+
+
+def deep_fold(points):
+    """A PRO LadderFold holding points {sid: (atb [[price, size], ...], atl [[price, size], ...])}."""
+    ladders = LadderFold(LADDERS["PRO"])
+    ladders.change(1, {"rc": [{"id": sid, "atb": back, "atl": lay} for sid, (back, lay) in sorted(points.items())]})
+    return ladders
+
+
+def standard(quotes=None):
+    """The points of quotes {sid: (back or None, lay or None)} (default the standard book), one a side: 50 shown to
+    back and 75 to lay."""
+    return {sid: ([[back, 50.0]] if back else [], [[lay, 75.0]] if lay else [])
+            for sid, (back, lay) in (quotes or BOOK).items()}
+
+
+def moment_on(ladders, t=T0 - 300_000, active=None, **fields):
+    """The Moment of a fold at t (ms): its quotes, and a view whose ACTIVE runners are active (default every runner
+    the fold holds); fields as StandInView takes them."""
+    active = sorted(ladders.books) if active is None else active
+    view = StandInView([(sid, "ACTIVE" if sid in active else "REMOVED", True)
+                        for sid in sorted(set(ladders.books) | set(active))], **fields)
+    return Moment(offset_s=(t - T0) // 1000, t=t, view=view, reason=None, quotes=ladders.quotes(),
+                  ladder_malformed=False)
+
+
+def capture(t, quotes=None, opened=True, active=SIDS, reason=None):
+    """A resting.Capture at t of quotes (as standard() takes them), or with reason and no view."""
+    if reason is not None:
+        return resting.Capture(t, reason, (), False, ())
+    return resting.Capture(t, None, deep_fold(standard(quotes)).quotes(), opened, tuple(active))
+
+
+def moves(view):
+    """{selection id: {window: ratio or None}} of a v2 view."""
+    return {item.selection_id: dict(item.moves) for item in view.runners}
+
+
+def undefined(walked, cell, window):
+    """{count name: runners} of Walked.move_undefined for one cell and window, the counts above 0 only."""
+    return {name: count for name, count in walked.move_undefined[cell][window].items() if count}
+
+
+class V2Case(RestingCase):
+    def walked_v2(self, messages, plan=None, when=DAY_OFF, record=None):
+        """(Walked, {at_s: RuleView2 view_of2 built}) of one market under plan (default v2_plan()); record, when
+        given, changes the index record before the walk (record(value) returns the record walked)."""
+        views = []
+
+        def spy(*args):
+            views.append(VIEW_OF2(*args))
+            return views[-1]
+
+        root, manifest, records = self.build([(path(M, when), messages)])
+        walked_record = records[M] if record is None else record(records[M])
+        with mock.patch.object(resting, "view_of2", side_effect=spy), \
+                member_stream(root, manifest, records[M]) as stream:
+            walked = walk(stream, walked_record, plan or v2_plan(), DEFAULT_LIMITS)
+        return walked, {view.at_s: view for view in views}
+
+
+class ViewOf2(unittest.TestCase):
+    """view_of2 on hand-built Moments, folds and Captures: exact values, the moves by the rule's windows, and its
+    refusals."""
+
+    DEEP = {FAV: ([[2.5, 50.0], [2.48, 20.0], [2.46, 10.0], [2.44, 5.0]], [[2.52, 75.0], [2.54, 30.0]]),
+            R2: ([], [[4.1, 75.0]]), R3: ([[6.0, 50.0]], [])}
+
+    def test_the_v2_fields_are_exact_fractions(self):
+        ladders = deep_fold(self.DEEP)
+        moment = moment_on(ladders)
+        view = VIEW_OF2(moment, [FAV, R2, R3], False, ladders, {}, (), (), None)
+        self.assertIsInstance(view, RuleView2)
+        # Depth over the first three points (four shown), over fewer (two, one) and over an empty side (None); the
+        # size at the best lay; None for a side the book does not have.
+        self.assertEqual(view.runners, (RunnerView2(FAV, P(2.5), P(50.0), P(2.52), 1, P(75.0), P(80.0), P(105.0), ()),
+                                        RunnerView2(R2, None, None, P(4.1), None, P(75.0), None, P(75.0), ()),
+                                        RunnerView2(R3, P(6.0), P(50.0), None, None, None, P(50.0), None, ())))
+        self.assertEqual({type(value) for item in view.runners for value in item[5:8] if value is not None}, {Fraction})
+        # One runner with no best back, one with no best lay: the field has no book on either side.
+        self.assertEqual((view.back_book_pct, view.lay_book_pct), (None, None))
+        # view_of's fields, by view_of's own rules.
+        v1 = view_of(moment, [FAV, R2, R3])
+        self.assertEqual((view.at_s, view.market_open, view.active_runners, view.ladder_malformed),
+                         (v1.at_s, v1.market_open, v1.active_runners, v1.ladder_malformed))
+        self.assertEqual([RunnerView(*item[:5]) for item in view.runners], list(v1.runners))
+        # The field's book in percent over every runner ACTIVE and listed at t, exactly: 100 x (1/2.5 + 1/4 + 1/6
+        # + 1/8 + 1/10 + 1/15) = 665/6 to back.
+        full = deep_fold(standard())
+        view = VIEW_OF2(moment_on(full), SIDS, False, full, {}, (), (), None)
+        self.assertEqual(view.back_book_pct, Fraction(665, 6))
+        self.assertEqual(view.lay_book_pct, 100 * sum(1 / P(lay) for _, lay in BOOK.values()))
+        self.assertEqual({type(view.back_book_pct), type(view.lay_book_pct)}, {Fraction})
+        removed = VIEW_OF2(moment_on(full, active=SIDS[:5]), SIDS[:5], False, full, {}, (), (), None)
+        self.assertEqual(removed.back_book_pct, 100 * sum(1 / P(back) for sid, (back, _) in BOOK.items() if sid != R6))
+        # A market field is never recomputed from runners: a view of one runner keeps the field's book.
+        self.assertEqual(replace(view, runners=view.runners[:1]).back_book_pct, Fraction(665, 6))
+        empty = LadderFold(LADDERS["PRO"])
+        self.assertEqual(VIEW_OF2(moment_on(empty, active=[]), [], False, empty, {}, (), (), None),
+                         RuleView2(-300, 1, 0, False, (), None, None))
+
+    def test_the_moves_are_the_rules_windows_in_its_order(self):
+        self.assertEqual(windows(V2_RULE), (WHOLE, LATE))
+        start, late = capture(T0 - 3_000_000), capture(T0 - 600_000, book(FAV=(2.6, 2.62)))
+        ladders = deep_fold(standard(book(FAV=(2.7, 2.72))))
+        moment = moment_on(ladders)
+        captures = {WHOLE: (start, None), LATE: (start, late)}
+        view = VIEW_OF2(moment, SIDS, False, ladders, captures, windows(V2_RULE), (), 20)
+        for item in view.runners:                   # PR B's review N1: the keys are windows(rule), in its order
+            self.assertEqual(tuple(window for window, _ in item.moves), windows(V2_RULE))
+        found = moves(view)
+        self.assertEqual(found[FAV], {WHOLE: P(2.71) / P(2.51), LATE: P(2.61) / P(2.51)})
+        self.assertEqual({sid: found[sid] for sid in SIDS[1:]}, dict.fromkeys(SIDS[1:], {WHOLE: 1, LATE: 1}))
+        self.assertEqual({type(ratio) for item in found.values() for ratio in item.values()}, {Fraction})
+        self.assertEqual(decide(view, V2_RULE).code, None)
+        # Another order is another view, which decides alike; a window the rule does not have is never read.
+        swapped = VIEW_OF2(moment, SIDS, False, ladders, captures, (LATE, WHOLE), (), 20)
+        self.assertEqual([window for window, _ in swapped.runners[0].moves], [LATE, WHOLE])
+        self.assertNotEqual(swapped, view)
+        self.assertEqual(decide(swapped, V2_RULE), decide(view, V2_RULE))
+        extra = {**captures, (-4000, None): (capture(T0 - 4_000_000, book(FAV=(9.0, 9.2))), None)}
+        self.assertEqual(VIEW_OF2(moment, SIDS, False, ladders, extra, windows(V2_RULE), (), 20), view)
+
+    def test_a_window_that_was_not_computed_raises(self):
+        start = capture(T0 - 3_000_000)
+        ladders = deep_fold(standard())
+        moment = moment_on(ladders)
+        for given in ({}, {WHOLE: (start, None)}, {LATE: (start, capture(T0 - 600_000))}):
+            with self.subTest(given=list(given)), self.assertRaises(ValueError) as caught:
+                VIEW_OF2(moment, SIDS, False, ladders, given, windows(V2_RULE), (), 20)
+            self.assertEqual(str(caught.exception), "view:move_window_missing")
+        captures = {WHOLE: (start, None), LATE: (start, capture(T0 - 600_000))}
+        for cap in (None, 0, -1, 20.0, "20", True):
+            with self.subTest(cap=cap), self.assertRaises(ValueError) as caught:
+                VIEW_OF2(moment, SIDS, False, ladders, captures, windows(V2_RULE), (), cap)
+            self.assertEqual(str(caught.exception), "view:move_cap_not_set")
+        self.assertEqual(VIEW_OF2(moment, SIDS, False, ladders, captures, windows(V2_RULE), (), 1).runners[0].moves,
+                         ((WHOLE, 1), (LATE, 1)))
+
+    def test_a_value_that_is_not_exact_is_refused(self):
+        def deeper(ladders):                        # a deeper back size as a float
+            ladders.books[FAV][0][P(2.48)] = (P(2.48), 20.0)
+
+        def lay_size(ladders):                      # the best lay's size as a float: equal to the Moment's
+            ladders.books[FAV][1][P(2.52)] = (P(2.52), 75.0)
+
+        for change in (deeper, lay_size):
+            ladders = deep_fold(self.DEEP)
+            moment = moment_on(ladders)
+            change(ladders)
+            with self.subTest(change=change.__name__), self.assertRaises(ValueError) as caught:
+                VIEW_OF2(moment, [FAV, R2, R3], False, ladders, {}, (), (), None)
+            self.assertEqual(str(caught.exception), "view:not_exact")
+        # A mid_ratio from a capture whose price is a float.
+        ladders = deep_fold(standard())
+        start = capture(T0 - 3_000_000)
+        inexact = start._replace(quotes=((FAV, (2.5, P(50.0)), (P(2.52), P(75.0))),) + start.quotes[1:])
+        with self.assertRaises(ValueError) as caught:
+            VIEW_OF2(moment_on(ladders), SIDS, False, ladders, {WHOLE: (inexact, None)}, (WHOLE,), (), 20)
+        self.assertEqual(str(caught.exception), "view:not_exact")
+        # A price or size of the Moment that is not exact is view_of's own refusal, first.
+        moment = moment_on(ladders)
+        bad = Moment(offset_s=moment.offset_s, t=moment.t, view=moment.view, reason=None,
+                     quotes=((FAV, (P(2.5), 50.0), (P(2.52), P(75.0))),) + moment.quotes[1:], ladder_malformed=False)
+        with self.assertRaises(ValueError) as caught:
+            VIEW_OF2(bad, SIDS, False, ladders, {}, (), (), None)
+        self.assertEqual(str(caught.exception), "view:not_exact")
+
+    def test_the_books_must_be_the_moments(self):
+        ladders = deep_fold(self.DEEP)
+        moment = moment_on(ladders)
+        for points in ({**self.DEEP, FAV: ([[2.48, 20.0]], [[2.52, 75.0]])},
+                       {**self.DEEP, FAV: ([[2.5, 49.0]], [[2.52, 75.0]])},
+                       {**self.DEEP, R2: ([[4.0, 50.0]], [[4.1, 75.0]])}):
+            with self.subTest(points=points), self.assertRaises(ValueError) as caught:
+                VIEW_OF2(moment, [FAV, R2, R3], False, deep_fold(points), {}, (), (), None)
+            self.assertEqual(str(caught.exception), "view:ladders_not_the_moments")
+        with self.assertRaises(ValueError) as caught:
+            VIEW_OF2(moment, [FAV, R2, R3], False, LadderFold(LADDERS["ADVANCED"]), {}, (), (), None)
+        self.assertEqual(str(caught.exception), "view:ladders_not_keyed_by_price")
+        with self.assertRaises(ValueError) as caught:            # view_of's own refusals come first
+            VIEW_OF2(moment, [FAV, R2], False, ladders, {}, (), (), None)
+        self.assertEqual(str(caught.exception), "view:active_runners_differ")
+
+    def test_the_top_points_are_read_by_a_partial_sort(self):
+        ladders = deep_fold({FAV: ([[price, 1.0] for price in (2.3, 2.32, 2.34, 2.36, 2.38, 2.4, 2.42, 2.44, 2.46,
+                                                                 2.48, 2.5)], [[2.52, 75.0], [2.54, 2.0], [2.6, 3.0]])})
+        moment = moment_on(ladders)
+        with mock.patch.object(LadderFold, "ladders", side_effect=AssertionError("ladders sorts the whole book")), \
+                mock.patch.object(resting.heapq, "nlargest", wraps=resting.heapq.nlargest) as largest, \
+                mock.patch.object(resting.heapq, "nsmallest", wraps=resting.heapq.nsmallest) as smallest:
+            view = VIEW_OF2(moment, [FAV], False, ladders, {}, (), (), None)
+        self.assertEqual(view.runners[0][5:8], (P(75.0), P(3.0), P(80.0)))
+        self.assertEqual(([call.args[0] for call in largest.call_args_list],
+                          [call.args[0] for call in smallest.call_args_list]), ([3], [3]))
+
+    def test_why_a_move_has_no_value_the_first_reason_that_holds(self):
+        self.assertEqual(resting.MOVE_UNDEFINED, (
+            "anchor_not_known_at_start", "not_open_at_start", "not_open_at_end", "runner_not_active_at_start",
+            "removal_in_window", "not_two_sided_at_start", "not_two_sided_at_end", "spread_above_max_at_start",
+            "spread_above_max_at_end"))
+        self.assertEqual(resting.MOVE_COUNTS, resting.MOVE_UNDEFINED + ("suspension_in_window",))
+        moment = moment_on(deep_fold(standard()))
+        at, end_t, removal = T0 - 3_000_000, T0 - 600_000, T0 - 1_000_000
+        wide, one_sided = book(FAV=(2.5, 2.92)), book(FAV=(2.5, None))        # 21 ticks apart; no best lay
+
+        def move(start=None, end=None, removals=(), cap=20, sid=FAV):
+            start, end = start or capture(at), end or capture(end_t)
+            return resting.window_moves(moment, [sid], {LATE: (start, end)}, [LATE], removals, cap)[LATE][sid]
+
+        self.assertEqual(move(), (Fraction(1), None))
+        # Each case also holds every later reason, so that only the first is given.
+        cases = (
+            ("spread_above_max_at_end", dict(end=capture(end_t, wide))),
+            ("spread_above_max_at_start", dict(start=capture(at, wide), end=capture(end_t, wide))),
+            ("not_two_sided_at_end", dict(start=capture(at, wide), end=capture(end_t, one_sided))),
+            ("not_two_sided_at_start", dict(start=capture(at, one_sided), end=capture(end_t, one_sided))),
+            ("removal_in_window", dict(start=capture(at, one_sided), end=capture(end_t, one_sided),
+                                       removals=(removal,))),
+            ("runner_not_active_at_start", dict(start=capture(at, one_sided, active=SIDS[1:]),
+                                                end=capture(end_t, one_sided), removals=(removal,))),
+            ("not_open_at_end", dict(start=capture(at, one_sided, active=SIDS[1:]),
+                                     end=capture(end_t, one_sided, opened=False), removals=(removal,))),
+            ("not_open_at_start", dict(start=capture(at, one_sided, opened=False, active=SIDS[1:]),
+                                       end=capture(end_t, one_sided, opened=False), removals=(removal,))),
+            ("anchor_not_known_at_start", dict(start=capture(at, reason="anchor_not_known_by_decision"),
+                                               end=capture(end_t, one_sided, opened=False), removals=(removal,))))
+        for reason, given in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(move(**given), (None, reason))
+        self.assertEqual([reason for reason, _ in cases][::-1], list(resting.MOVE_UNDEFINED))
+        # A view problem at the start of any kind is the anchor's reason; 21 ticks apart is a market under a cap of 21.
+        for reason in ("no_view", "view_ended_before_decision", "member_unreadable_before_decision"):
+            self.assertEqual(move(start=capture(at, reason=reason)), (None, "anchor_not_known_at_start"))
+        self.assertEqual(move(end=capture(end_t, wide), cap=21), (P(2.71) / P(2.51), None))
+        self.assertEqual(move(end=capture(end_t, book(FAV=(2.52, 2.5)))), (None, "not_two_sided_at_end"))
+        # The window's removals run from its start to t, the Moment's time, not to its end; the start is out.
+        for pt, reason in ((at, None), (at + 1, "removal_in_window"), (end_t + 1, "removal_in_window"),
+                           (moment.t, "removal_in_window"), (moment.t + 1, None)):
+            with self.subTest(removal=pt - T0):
+                self.assertEqual(move(removals=(pt,))[1], reason)
+        # A window whose to_s is null ends at the Moment; an end with no view cannot be.
+        found = resting.window_moves(moment_on(deep_fold(standard(book(FAV=(2.6, 2.62))))), [FAV],
+                                     {WHOLE: (capture(at), None)}, [WHOLE], (), 20)
+        self.assertEqual(found, {WHOLE: {FAV: (P(2.61) / P(2.51), None)}})
+        with self.assertRaises(ValueError) as caught:
+            move(end=capture(end_t, reason="no_view"))
+        self.assertEqual(str(caught.exception), "view:no_view_at_the_window_end")
+
+    def test_the_counts_of_a_window(self):
+        moment = moment_on(deep_fold(standard()))
+        start, end = capture(T0 - 3_000_000), capture(T0 - 600_000, book(FAV=(2.5, None)))
+        captures = {WHOLE: (start, None), LATE: (start, end)}
+
+        def counts(statuses):
+            found = resting.move_counts(moment, SIDS, captures, (WHOLE, LATE), (), statuses, 20)
+            return {window: {name: count for name, count in item.items() if count} for window, item in found.items()}
+
+        opened = [[T0 - 7_200_000, "OPEN"]]
+        self.assertEqual(counts(opened), {WHOLE: {}, LATE: {"not_two_sided_at_end": 1}})
+        # A status other than OPEN inside a window is counted for each runner whose move has its value; a status
+        # at the window's start is not inside it, one at its end is.
+        for pt, whole, late in ((T0 - 3_000_000, 0, 0), (T0 - 2_999_999, 6, 5), (T0 - 600_000, 6, 5),
+                                (T0 - 599_999, 6, 0), (T0 - 300_000, 6, 0), (T0 - 299_999, 0, 0)):
+            with self.subTest(pt=pt - T0):
+                found = counts(opened + [[pt, "SUSPENDED"], [pt + 1, "OPEN"]])
+                self.assertEqual(found[WHOLE].get("suspension_in_window", 0), whole)
+                self.assertEqual(found[LATE].get("suspension_in_window", 0), late)
+                self.assertEqual(found[LATE].get("not_two_sided_at_end"), 1)
+        self.assertEqual(counts(opened + [[T0 - 2_000_000, None]])[WHOLE], {"suspension_in_window": 6})
+        self.assertEqual(set(resting.move_counts(moment, SIDS, captures, (WHOLE,), (), opened, 20)[WHOLE]),
+                         set(resting.MOVE_COUNTS))
+
+
+class MoveCaptures(V2Case):
+    """The walk's captures under v2_plan(), on synthetic PRO markets on an explore date (DAY_OFF, 14:00 UTC on a
+    Tuesday): the test rule at close-v1's times (600, 300 and 120 s before the off), whose windows run from 3000 s
+    before the off to t (WHOLE) and to 600 s before it (LATE)."""
+
+    STATUSES = {sid: "REMOVED" if sid == R6 else "WINNER" if sid == FAV else "LOSER" for sid in SIDS}
+
+    def test_a_drift_is_read_at_every_cell(self):
+        books = {3600: BOOK, 1000: book(FAV=(2.6, 2.62)), 400: book(FAV=(2.7, 2.72))}
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, books=books))
+        self.assertEqual(sorted(views), [-600, -300, -120])
+        expected = {-600: (P(2.61), P(2.6)), -300: (P(2.71), P(2.7)), -120: (P(2.71), P(2.7))}
+        for cell in V2_CELLS:
+            view, (centre, price) = views[cell.at_s], expected[cell.at_s]
+            with self.subTest(at_s=cell.at_s):
+                for item in view.runners:           # PR B's review N1: the keys are windows(rule), in its order
+                    self.assertEqual(tuple(window for window, _ in item.moves), windows(V2_RULE))
+                self.assertEqual(moves(view)[FAV], {WHOLE: centre / P(2.51), LATE: P(2.61) / P(2.51)})
+                self.assertEqual({sid: moves(view)[sid] for sid in SIDS[1:]},
+                                 dict.fromkeys(SIDS[1:], {WHOLE: 1, LATE: 1}))
+                self.assertEqual(view.back_book_pct, 100 * (1 / price + sum(1 / P(back) for back, _ in
+                                                                             list(BOOK.values())[1:])))
+                self.assertEqual(walked.move_undefined[cell], {WHOLE: ZERO_MOVES, LATE: ZERO_MOVES})
+                self.assertEqual([row.price for row in walked.outcomes[cell]], [price, P(4.0), P(10.0)])
+                self.assertEqual(walked.runner_codes[cell],
+                                 {"issued": 3, "spread_not_1_or_2_ticks": 2, "best_back_out_of_range": 1})
+
+    def test_a_batch_exactly_at_the_window_start_is_in_it(self):
+        for seconds, start in ((3000, P(2.61)), (3000.001, P(2.61)), (2999.999, P(2.51))):
+            with self.subTest(seconds=seconds):
+                walked, views = self.walked_v2(lp_market(off=DAY_OFF, books={3600: BOOK,
+                                                                             seconds: book(FAV=(2.6, 2.62))}))
+                self.assertEqual(moves(views[-600])[FAV], {WHOLE: P(2.61) / start, LATE: P(2.61) / start})
+
+    def test_a_window_that_starts_before_the_definition_is_published(self):
+        # The first definition 40 minutes before the off, after the windows' start: no move has a value.
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, opening_minutes=40, books={2000: BOOK}))
+        for cell in V2_CELLS:
+            with self.subTest(at_s=cell.at_s):
+                self.assertEqual(walked.outcomes[cell], "no_move")
+                self.assertEqual({ratio for item in moves(views[cell.at_s]).values() for ratio in item.values()},
+                                 {None})
+                for window in (WHOLE, LATE):
+                    self.assertEqual(undefined(walked, cell, window), {"anchor_not_known_at_start": 6})
+        # Published exactly at the start, with the book in the same batch: every move has its value.
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, opening_minutes=50, books={3000: BOOK}))
+        self.assertEqual(walked.move_undefined[V2_CELLS[0]], {WHOLE: ZERO_MOVES, LATE: ZERO_MOVES})
+        self.assertEqual(moves(views[-600])[FAV], {WHOLE: 1, LATE: 1})
+
+    def test_a_removal_in_the_window_runs_to_t(self):
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, extra=[removed_at(450)], statuses=self.STATUSES))
+        # At 600 s the removal (450 s) is after t: in neither window, and not in the view.
+        self.assertEqual(walked.move_undefined[V2_CELLS[0]], {WHOLE: ZERO_MOVES, LATE: ZERO_MOVES})
+        self.assertEqual(len(views[-600].runners), 6)
+        # At 300 s and 120 s it is in (start, t]: in LATE's too, although LATE ends at 600 s. Every price after a
+        # removal belongs to another field.
+        for cell in V2_CELLS[1:]:
+            with self.subTest(at_s=cell.at_s):
+                self.assertEqual(len(views[cell.at_s].runners), 5)
+                for window in (WHOLE, LATE):
+                    self.assertEqual(undefined(walked, cell, window), {"removal_in_window": 5})
+                self.assertEqual(walked.outcomes[cell], "no_move")
+
+    def test_the_removal_boundaries(self):
+        # A removal at the window's start is not in it; one at t is; one at t + 1 ms is not, nor in the view.
+        for seconds, found, field in ((3000, {}, 5), (600, {"removal_in_window": 5}, 5), (599.999, {}, 6)):
+            with self.subTest(seconds=seconds):
+                walked, views = self.walked_v2(lp_market(off=DAY_OFF, extra=[removed_at(seconds)],
+                                                         statuses=self.STATUSES))
+                for window in (WHOLE, LATE):
+                    self.assertEqual(undefined(walked, V2_CELLS[0], window), found)
+                self.assertEqual(len(views[-600].runners), field)
+
+    def test_a_market_not_open_at_an_end(self):
+        # Suspended across the start (3100 s to 2900 s), or in play there.
+        for extra in ([status_at(3100, "SUSPENDED", off=DAY_OFF), status_at(2900, off=DAY_OFF)],
+                      [status_at(3100, in_play=True, off=DAY_OFF), status_at(2900, off=DAY_OFF)],
+                      [status_at(3000, "SUSPENDED", off=DAY_OFF), status_at(2999.999, off=DAY_OFF)]):
+            walked, _ = self.walked_v2(lp_market(off=DAY_OFF, extra=extra))
+            for cell in V2_CELLS:
+                for window in (WHOLE, LATE):
+                    with self.subTest(extra=extra[0]["pt"], at_s=cell.at_s, window=window):
+                        self.assertEqual(undefined(walked, cell, window), {"not_open_at_start": 6})
+        # Suspended across LATE's end (700 s to 500 s): at 600 s the view itself is not open; later, LATE is not open
+        # at its end, and WHOLE keeps its value with the suspension inside it counted.
+        walked, _ = self.walked_v2(lp_market(off=DAY_OFF, extra=[status_at(700, "SUSPENDED", off=DAY_OFF),
+                                                                 status_at(500, off=DAY_OFF)]))
+        self.assertEqual(walked.outcomes[V2_CELLS[0]], "market_not_open")
+        for window in (WHOLE, LATE):
+            self.assertEqual(undefined(walked, V2_CELLS[0], window), {"not_open_at_end": 6})
+        for cell in V2_CELLS[1:]:
+            self.assertEqual(undefined(walked, cell, WHOLE), {"suspension_in_window": 6})
+            self.assertEqual(undefined(walked, cell, LATE), {"not_open_at_end": 6})
+
+    def test_a_runner_one_sided_at_an_end(self):
+        def gap(gone, back):                    # the favourite's best lay deleted at gone, back at back
+            return [rc_at(gone, DAY_OFF, [{"id": FAV, "atl": [[2.52, 0]]}]),
+                    rc_at(back, DAY_OFF, [{"id": FAV, "atl": [[2.52, 75.0]]}])]
+
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, extra=gap(3100, 2900)))
+        for cell in V2_CELLS:
+            for window in (WHOLE, LATE):
+                self.assertEqual(undefined(walked, cell, window), {"not_two_sided_at_start": 1})
+            self.assertEqual(moves(views[cell.at_s])[FAV], {WHOLE: None, LATE: None})
+            self.assertEqual(moves(views[cell.at_s])[R2], {WHOLE: 1, LATE: 1})
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, extra=gap(700, 500)))
+        for window in (WHOLE, LATE):
+            self.assertEqual(undefined(walked, V2_CELLS[0], window), {"not_two_sided_at_end": 1})
+        for cell in V2_CELLS[1:]:
+            self.assertEqual(undefined(walked, cell, WHOLE), {})
+            self.assertEqual(undefined(walked, cell, LATE), {"not_two_sided_at_end": 1})
+            self.assertEqual(moves(views[cell.at_s])[FAV], {WHOLE: 1, LATE: None})
+
+    def test_a_suspension_inside_the_window_is_counted_and_undefines_nothing(self):
+        books = {3600: BOOK, 1000: book(FAV=(2.6, 2.62))}
+        base, base_views = self.walked_v2(lp_market(off=DAY_OFF, books=books))
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, books=books, extra=[
+            status_at(2000, "SUSPENDED", off=DAY_OFF), status_at(1900, off=DAY_OFF)]))
+        self.assertEqual(views, base_views)
+        for cell in V2_CELLS:
+            for window in (WHOLE, LATE):
+                self.assertEqual(undefined(walked, cell, window), {"suspension_in_window": 6})
+            self.assertEqual(walked.outcomes[cell], base.outcomes[cell])
+
+    def test_the_spread_cap_at_either_end(self):
+        # The favourite 21 ticks wide (2.5 / 2.92) from 3100 s to 2900 s, across the start.
+        books = {3600: BOOK, 3100: book(FAV=(2.5, 2.92)), 2900: BOOK}
+        walked, _ = self.walked_v2(lp_market(off=DAY_OFF, books=books))
+        for cell in V2_CELLS:
+            for window in (WHOLE, LATE):
+                self.assertEqual(undefined(walked, cell, window), {"spread_above_max_at_start": 1})
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, books=books), plan=v2_plan(move_max_spread_ticks=21))
+        self.assertEqual(walked.move_undefined[V2_CELLS[0]], {WHOLE: ZERO_MOVES, LATE: ZERO_MOVES})
+        self.assertEqual(moves(views[-600])[FAV], {WHOLE: P(2.51) / P(2.71), LATE: P(2.51) / P(2.71)})
+        # Across LATE's end (700 s to 500 s).
+        books = {3600: BOOK, 700: book(FAV=(2.5, 2.92)), 500: BOOK}
+        walked, _ = self.walked_v2(lp_market(off=DAY_OFF, books=books))
+        for cell in V2_CELLS[1:]:
+            self.assertEqual(undefined(walked, cell, WHOLE), {})
+            self.assertEqual(undefined(walked, cell, LATE), {"spread_above_max_at_end": 1})
+
+    def test_a_capture_never_reads_a_message_after_its_time(self):
+        # A batch exactly at the start (3000 s) and one a millisecond after it.
+        messages = lp_market(off=DAY_OFF, books={3600: BOOK, 3000: book(FAV=(2.6, 2.62)),
+                                                 2999.999: book(FAV=(2.7, 2.72))})
+        root, manifest, records = self.build([(path(M, DAY_OFF), messages)])
+        calls, real = [], resting._moment
+
+        def spy(record, market, prices, ladders, offset, t):
+            calls.append((offset, t, market.last_pt, json.loads(recording.lines[-1])["pt"]))
+            return real(record, market, prices, ladders, offset, t)
+
+        # A plan window whose times lie after every decision (110 and 50 s before the off) is never captured.
+        plan = v2_plan(windows=(WHOLE, LATE, (-110, -50)))
+        with member_stream(root, manifest, records[M]) as stream, \
+                mock.patch.object(resting, "_moment", side_effect=spy):
+            recording = Recording(stream)
+            walk(recording, records[M], plan, DEFAULT_LIMITS)
+        # Two captures (3000 s and 600 s, LATE's end), then the three decisions; each reads the batch at its own
+        # time, and the walk has read exactly one message past it: the one that fired it.
+        self.assertEqual([offset for offset, *_ in calls], [-3000, -600, -600, -300, -120])
+        for offset, t, last, read in calls:
+            with self.subTest(offset=offset):
+                self.assertEqual(t, T0 + offset * 1000)
+                self.assertLessEqual(last, t)
+                self.assertGreater(read, t)
+        self.assertEqual(calls[0][2:], (T0 - 3_000_000, T0 - 2_999_999))
+
+
+class EventOrder(V2Case):
+    """At one ms a capture fires first, then a decision, then a null (M5); a window the walk did not compute is a
+    wiring error, never a None."""
+
+    def test_a_window_to_t_reads_what_a_window_to_null_reads_there(self):
+        # LATE ends at 600 s, the first cell's own t; the favourite's book moves in the batch at that ms.
+        books = {3600: BOOK, 600: book(FAV=(2.6, 2.62)), 400: book(FAV=(2.7, 2.72))}
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, books=books))
+        first = moves(views[-600])
+        self.assertEqual(first[FAV], {WHOLE: P(2.61) / P(2.51), LATE: P(2.61) / P(2.51)})
+        self.assertEqual({sid: first[sid][WHOLE] for sid in SIDS}, {sid: first[sid][LATE] for sid in SIDS})
+        self.assertEqual(moves(views[-300])[FAV], {WHOLE: P(2.71) / P(2.51), LATE: P(2.61) / P(2.51)})
+        # The market suspended in the batch at 600 s: both windows end there not open.
+        walked, _ = self.walked_v2(lp_market(off=DAY_OFF, extra=[status_at(600, "SUSPENDED", off=DAY_OFF)]))
+        self.assertEqual(walked.move_undefined[V2_CELLS[0]][WHOLE], walked.move_undefined[V2_CELLS[0]][LATE])
+        self.assertEqual(undefined(walked, V2_CELLS[0], LATE), {"not_open_at_end": 6})
+
+    def test_a_capture_a_decision_and_a_null_at_one_ms_run_in_rank_order(self):
+        self.assertEqual(resting.EVENTS, (resting.CAPTURE, resting.DECIDE, resting.NULL))
+        # The first rule decides at 600 s; its nulls are drawn at 300 s exactly (a stand-in draw), the time of the
+        # second rule's decision and of its window's end.
+        first = v2_rule("close-v2-test-first", rows=V2_ROWS[:12], times=((-600, -120),))
+        late = {"code": "no_move", "feature": "mid_ratio", "from_s": -3000, "op": ">=", "to_s": -300, "value": "0.00"}
+        second = v2_rule("close-v2-test-second", rows=V2_ROWS[:12] + (late,), times=((-300, -120),))
+        plan = v2_plan(first, second)
+        self.assertEqual(plan.windows, ((-3000, -300),))
+        root, manifest, records = self.build([(path(M, DAY_OFF), lp_market(off=DAY_OFF))])
+        draws = mock.Mock()
+        draws.return_value.below.side_effect = lambda below: min(299_999, below - 1)
+        popped, real = [], resting.heapq.heappop
+
+        def spy(heap):
+            popped.append(real(heap))
+            return popped[-1]
+
+        with member_stream(root, manifest, records[M]) as stream, mock.patch.object(resting, "HashStream", draws), \
+                mock.patch.object(resting.heapq, "heappop", side_effect=spy):
+            walked = walk(stream, records[M], plan, DEFAULT_LIMITS)
+        at = T0 - 300_000
+        self.assertEqual([(rank, kind) for time, rank, _, kind, _ in popped if time == at],
+                         [(0, resting.CAPTURE), (1, resting.DECIDE)] + [(2, resting.NULL)] * 3)
+        self.assertEqual([len(walked.outcomes[cell]) for cell in plan.cells], [3, 3])
+        self.assertEqual([row.null_mid for row in walked.outcomes[plan.cells[0]]], [P(2.51), P(4.05), P(10.25)])
+
+    def test_a_window_the_walk_did_not_compute_raises(self):
+        for given in ((), (WHOLE,), (LATE,)):
+            with self.subTest(windows=given), self.assertRaises(ValueError) as caught:
+                self.walked_v2(lp_market(off=DAY_OFF), plan=v2_plan(windows=given))
+            self.assertEqual(str(caught.exception), "view:move_window_missing")
+        # The plan's order of its windows is not the view's: that is the rule's.
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF), plan=v2_plan(windows=(LATE, WHOLE)))
+        self.assertEqual([window for window, _ in views[-600].runners[0].moves], [WHOLE, LATE])
+
+    def test_a_plan_whose_v2_fields_do_not_fit_together_is_refused(self):
+        cases = (("walk:views_not_supported", replace(PLAN, views="v3")),
+                 ("walk:windows_without_v2_views", replace(PLAN, windows=(WHOLE,), move_max_spread_ticks=20)),
+                 ("walk:move_max_spread_ticks_not_set", v2_plan(move_max_spread_ticks=None)),
+                 ("walk:move_max_spread_ticks_not_set", v2_plan(move_max_spread_ticks=0)),
+                 ("walk:move_max_spread_ticks_not_set", v2_plan(move_max_spread_ticks=20.0)),
+                 ("walk:trd_counts_without_the_image_count", replace(EARLY_PLAN, image_rises_counted=False)),
+                 # Either switch on a v1 walk: its refusals and image counts would have no row field to go to.
+                 ("walk:fill_switch_without_v2_views", replace(EARLY_PLAN, through_needs_lowered=True)),
+                 ("walk:fill_switch_without_v2_views", replace(EARLY_PLAN, image_rises_counted=False,
+                                                              trd_counts=IMAGE_COUNTS)))
+        for reason, plan in cases:
+            with self.subTest(reason=reason), self.assertRaises(ValueError) as caught:
+                walk(None, None, plan, DEFAULT_LIMITS)              # before anything is read
+            self.assertEqual(str(caught.exception), reason)
+
+
+class FuturePerturbation(V2Case):
+    """M6: pairs of synthetic markets that are byte-identical through a decision's t and differ after it. Every
+    cell decided before the difference has the same code, view, moves, move counts, runner codes, flags and queues
+    at t in both."""
+
+    BOOKS = {3600: BOOK, 1000: book(FAV=(2.6, 2.62)), 400: book(FAV=(2.7, 2.72))}
+
+    def decided(self, walked, views, upto):
+        """What a walk decided at each cell whose t is before upto (ms): the code, or per row its side, price, mid
+        at t, gap and queue per model; the RuleView2; the move counts; B8's runner codes; the flags with no value."""
+        found = {}
+        for cell in V2_CELLS:
+            if T0 + cell.at_s * 1000 >= upto:
+                continue
+            outcome = walked.outcomes[cell]
+            rows = outcome if isinstance(outcome, str) else [
+                (row.side, row.price, row.mid, row.gap_ticks, {model: fill.queue for model, fill in row.fills.items()})
+                for row in orders_of(outcome)]
+            found[cell] = (rows, views.get(cell.at_s), walked.move_undefined.get(cell), walked.runner_codes.get(cell),
+                           walked.flags_missing.get(cell))
+        return found
+
+    def test_nothing_published_after_t_reaches_a_decision(self):
+        trades = [(800, FAV, [[2.58, 5.0]])]
+        base = self.walked_v2(lp_market(off=DAY_OFF, books=self.BOOKS, trades=trades))
+        removed = {sid: "REMOVED" if sid == R6 else "WINNER" if sid == FAV else "LOSER" for sid in SIDS}
+
+        def variants(seconds):                  # each differs from the base from `seconds` before the off on
+            when = before(seconds, DAY_OFF)
+            return {
+                "removal": dict(extra=[removed_at(seconds)], statuses=removed),
+                "suspension": dict(extra=[status_at(seconds, "SUSPENDED", off=DAY_OFF),
+                                          status_at(seconds - 1, off=DAY_OFF)]),
+                "ladder wipe": dict(extra=[rc_at(seconds, DAY_OFF, [{"id": sid, "atb": [], "atl": []}
+                                                                    for sid in SIDS])]),
+                "image": dict(extra=[image_at(seconds, DAY_OFF, fav=([[3.0, 9.0], [2.98, 9.0]], [[3.05, 9.0]]),
+                                              trd=[[2.98, 50.0], [3.0, 60.0]])]),
+                "trade spike": dict(extra=[rc_at(seconds, DAY_OFF, [{"id": FAV, "atb": [[2.6, 0], [2.7, 0]],
+                                                                     "trd": [[2.58, 700.0], [2.6, 900.0],
+                                                                             [2.7, 800.0]]}])]),
+                "outcome-bearing definition": dict(extra=[md(M, when, definition(
+                    DAY_OFF, [runner(sid, bsp=BSPS[sid]) for sid in SIDS], bspReconciled=True))]),
+            }
+
+        moved = set()
+        for at_s in (-600, -300, -120):
+            seconds = -at_s - 0.001             # one millisecond after the cell's t
+            for name, changes in variants(seconds).items():
+                with self.subTest(variant=name, after=at_s):
+                    walked, views = self.walked_v2(lp_market(off=DAY_OFF, books=self.BOOKS, trades=trades, **changes))
+                    upto = before(seconds, DAY_OFF)
+                    self.assertEqual(self.decided(walked, views, upto), self.decided(*base, upto))
+                    self.assertEqual(len(self.decided(walked, views, upto)), {-600: 1, -300: 2, -120: 3}[at_s])
+                    if walked != base[0]:
+                        moved.add(name)
+        # Each variant moves something after its time (a later cell, a fill, a count), so the pairs differ.
+        self.assertEqual(moved, set(variants(1)))
+        # A different final BSP and winner, and a removal after the off: no cell moves but for its class and BSP.
+        walked, views = self.walked_v2(lp_market(off=DAY_OFF, books=self.BOOKS, trades=trades,
+                                                 bsps={**BSPS, FAV: 3.3, R2: 3.1},
+                                                 statuses={**removed, FAV: "LOSER", R2: "WINNER"}))
+        self.assertEqual(self.decided(walked, views, T0), self.decided(*base, T0))
+        self.assertNotEqual(walked, base[0])
+
+
+class OutcomeScrub(V2Case):
+    """M6: the record's evaluator_only_outcome replaced by another market's, structurally valid, with other BSPs, a
+    winner and a removal after the cutoff, keeping read_complete. Every decision, view, move count, queue and fill
+    stays; only the class and the BSP may move."""
+
+    def test_another_outcome_block_moves_only_the_class_and_the_bsp(self):
+        books = {3600: BOOK, 1000: book(FAV=(2.6, 2.62))}
+        trades = [(500, FAV, [[2.58, 5.0]]), (250, R2, [[3.9, 4.0]])]       # through the LAYs at 2.6 and 4.0
+        mine = lp_market(off=DAY_OFF, books=books, trades=trades)
+        statuses = {**{sid: "LOSER" for sid in SIDS}, R2: "WINNER", R6: "REMOVED"}
+        other = lp_market(off=DAY_OFF, books=books, trades=trades, statuses=statuses,
+                          bsps={**BSPS, FAV: 3.3, R2: 3.1})
+        self.assertEqual(fx.cut(mine, T0), fx.cut(other, T0))             # the same through the off
+        _, _, records = self.build([(path(M, DAY_OFF), other)])
+        block = records[M]["evaluator_only_outcome"]
+
+        def scrubbed(record):
+            value = json.loads(json.dumps(record))
+            self.assertNotEqual(value["evaluator_only_outcome"], block)
+            value["evaluator_only_outcome"] = dict(json.loads(json.dumps(block)),
+                                                   read_complete=record["evaluator_only_outcome"]["read_complete"])
+            self.assertEqual(value["evaluator_only_outcome"]["read_complete"], True)
+            self.assertNotEqual(value["evaluator_only_outcome"]["final_runners"],
+                                record["evaluator_only_outcome"]["final_runners"])
+            self.assertEqual(value["decision_time"], record["decision_time"])
+            return value
+
+        before_, views = self.walked_v2(mine)
+        after, scrubbed_views = self.walked_v2(mine, record=scrubbed)
+        self.assertEqual(scrubbed_views, views)
+        self.assertEqual((after.move_undefined, after.runner_codes, after.flags_missing, after.replayed),
+                         (before_.move_undefined, before_.runner_codes, before_.flags_missing, before_.replayed))
+        rows = {cell: (orders_of(before_.outcomes[cell]), orders_of(after.outcomes[cell])) for cell in V2_CELLS}
+        self.assertEqual(sum(len(ours) for ours, _ in rows.values()), 9)
+        for ours, theirs in rows.values():
+            self.assertEqual([row._replace(klass=None, bsp=None) for row in theirs],
+                             [row._replace(klass=None, bsp=None) for row in ours])
+        fills = {fill.kind for ours, _ in rows.values() for row in ours for fill in row.fills.values()}
+        self.assertEqual(fills, {THROUGH, None})
+        self.assertEqual({row.klass for ours, _ in rows.values() for row in ours}, {SCORED})
+        self.assertEqual({row.klass for _, theirs in rows.values() for row in theirs}, {"post_decision_removal"})
+
+
+def buckets(**counts):
+    """{bucket: count} over every MINUTE_BUCKETS name, as a v2 row holds one; counts by name ("1": b1=...)."""
+    named = dict(zip(("b0", "b1", "b2", "b3", "b4", "b5", "rest", "weekend"), resting.MINUTE_BUCKETS))
+    return {**dict.fromkeys(resting.MINUTE_BUCKETS, 0), **{named[name]: count for name, count in counts.items()}}
+
+
+def fav_at(seconds, off, **sides):
+    """One rc change of the favourite at `seconds` before off: atb, atl and trd as given."""
+    return rc_at(seconds, off, [{"id": FAV, **sides}])
+
+
+IMAGE_COUNTS = EARLY_TRD_COUNTS + (resting.IMAGE_LEFT_OUT,)
+
+
+class FillSwitch(RestingCase):
+    """§2.2a (a): the image switch and the level rule, dormant by default, reached here through switched(EARLY_PLAN)
+    (close-v1's files under a new id, the hour switch on); as_v2(EARLY_PLAN) is the same walk with both off. The
+    favourite's LAYs rest at 2.5 from 600 and 300 s before the off, to 120 s before it."""
+
+    def test_a_rise_in_an_image_batch_fills_by_trade_through_only_without_the_switch(self):
+        # 14:01:30 on a Tuesday (210 s before a 14:05 off), outside the hour seconds: an image restates every runner,
+        # the favourite with a back level at 2.48, and a trd rise there, below the resting LAYs.
+        messages = lp_market(off=TUESDAY, extra=[image_at(210, TUESDAY, trd=[[2.48, 1.0]])])
+        old = self.rows(messages, plan=EARLY_PLAN, when=TUESDAY)
+        default = self.rows(messages, plan=as_v2(EARLY_PLAN), when=TUESDAY)
+        new = self.rows(messages, plan=switched(EARLY_PLAN), when=TUESDAY)
+        for cell, seconds in zip(LAY_CELLS[:2], (390.0, 90.0)):
+            with self.subTest(at_s=cell.at_s):
+                # Today's behaviour, pinned: the rise fills both LAYs by trade_through.
+                self.assertEqual([(fill.kind, fill.seconds, fill.after_the_hour) for fill in old[cell].fills.values()],
+                                 [(THROUGH, seconds, False)] * 3)
+                self.assertEqual(old[cell].trd, dict(zip(EARLY_TRD_COUNTS, (1, 0, 0, 0))))
+                # A v2 walk with both switches off fills alike, and says so in its own fields.
+                self.assertEqual(default[cell]._replace(fills=None, **dict.fromkeys(V2_ROW_FIELDS)),
+                                 old[cell]._replace(fills=None))
+                self.assertEqual({(fill.kind, fill.seconds, fill.image, fill.through_below_stake, fill.crossed)
+                                  for fill in default[cell].fills.values()}, {(THROUGH, seconds, True, True, False)})
+                self.assertEqual(default[cell].minutes, dict.fromkeys(MODELS, "1"))
+                self.assertEqual(default[cell].images, {IMAGE_BATCHES: buckets(b1=1), IMAGE_LEFT_OUT: buckets()})
+                # The switch: the rise fills nothing and is counted as left out in an image batch.
+                self.assertEqual(kinds(new[cell]), UNFILLED)
+                self.assertEqual(new[cell].trd, dict(zip(IMAGE_COUNTS, (0, 0, 0, 0, 1))))
+                self.assertEqual(new[cell].images, {IMAGE_BATCHES: buckets(b1=1), IMAGE_LEFT_OUT: buckets(b1=1)})
+                self.assertEqual(new[cell].minutes, dict.fromkeys(MODELS))
+                self.assertEqual(new[cell].through_refused, dict.fromkeys(MODELS, buckets()))
+        # The volume through the price is the rise over the divisor (2), set against the stake (2).
+        for traded, below in ((3.0, True), (3.99, True), (4.0, False), (10.0, False)):
+            default = self.rows(lp_market(off=TUESDAY, extra=[image_at(210, TUESDAY, trd=[[2.48, traded]])]),
+                                plan=as_v2(EARLY_PLAN), when=TUESDAY)
+            self.assertEqual({(fill.kind, fill.through_below_stake) for fill in default[LAY_CELLS[0]].fills.values()},
+                             {(THROUGH, below)})
+
+    def test_a_trade_through_needs_its_level_lowered_or_deleted(self):
+        # The favourite shows 30 to back at 2.48 from 500 s before the off; at 200 s (13:56:40) a rise there comes
+        # with an entry at 2.48 that raises, restates, lowers or deletes it.
+        level = fav_at(500, DAY_OFF, atb=[[2.48, 30.0]])
+        for size, kind in ((40.0, None), (30.0, None), (10.0, THROUGH), (0, THROUGH)):
+            messages = lp_market(off=DAY_OFF, extra=[level, fav_at(200, DAY_OFF, atb=[[2.48, size]],
+                                                                   trd=[[2.48, 1.0]])])
+            default = self.rows(messages, plan=as_v2(EARLY_PLAN), when=DAY_OFF)
+            new = self.rows(messages, plan=switched(EARLY_PLAN), when=DAY_OFF)
+            for cell in LAY_CELLS[:2]:
+                with self.subTest(size=size, at_s=cell.at_s):
+                    self.assertEqual(kinds(default[cell]), dict.fromkeys(MODELS, THROUGH))
+                    self.assertEqual(default[cell].through_refused, dict.fromkeys(MODELS, buckets()))
+                    self.assertEqual(kinds(new[cell]), dict.fromkeys(MODELS, kind))
+                    self.assertEqual(new[cell].through_refused,
+                                     dict.fromkeys(MODELS, buckets(rest=1) if kind is None else buckets()))
+                    self.assertEqual(new[cell].trd, {**default[cell].trd, IMAGE_LEFT_OUT: 0})  # counted either way
+        # A level that showed nothing just before: created by the trade's entry, or deleted while empty.
+        for size in (5.0, 0):
+            messages = lp_market(off=DAY_OFF, extra=[fav_at(200, DAY_OFF, atb=[[2.48, size]], trd=[[2.48, 1.0]])])
+            new = self.rows(messages, plan=switched(EARLY_PLAN), when=DAY_OFF)
+            with self.subTest(size=size):
+                self.assertEqual(kinds(new[LAY_CELLS[0]]), UNFILLED)
+                self.assertEqual(new[LAY_CELLS[0]].through_refused, dict.fromkeys(MODELS, buckets(rest=1)))
+
+    def test_quote_cross_on_an_image_is_judged_alike_either_way(self):
+        # An image whose favourite offers 5 to lay at 2.5: locked (2.5 shown to back too), or not (2.48 the best back).
+        for back, crossed in (([[2.5, 50.0], [2.48, 30.0]], True), ([[2.48, 30.0]], False)):
+            messages = lp_market(off=TUESDAY, extra=[image_at(210, TUESDAY, fav=(back, [[2.5, 5.0], [2.52, 75.0]]))])
+            found = {name: self.rows(messages, plan=plan, when=TUESDAY)
+                     for name, plan in (("default", as_v2(EARLY_PLAN)), ("switched", switched(EARLY_PLAN)))}
+            for name, rows in found.items():
+                for cell, seconds in zip(LAY_CELLS[:2], (390.0, 90.0)):
+                    with self.subTest(crossed=crossed, plan=name, at_s=cell.at_s):
+                        self.assertEqual({(fill.kind, fill.seconds, fill.image, fill.crossed)
+                                          for fill in rows[cell].fills.values()}, {(CROSS, seconds, True, crossed)})
+            for cell in PLAN.cells:                 # alike but for the image count, which the switch adds (0 here)
+                ours, theirs = found["default"][cell], found["switched"][cell]
+                if isinstance(ours, str):           # a code: the locked book at 120 s is 0 ticks wide
+                    self.assertEqual(theirs, ours)
+                    continue
+                self.assertEqual(theirs._replace(trd=None), ours._replace(trd=None))
+                self.assertEqual(theirs.trd, {**ours.trd, IMAGE_LEFT_OUT: 0})
+
+    def test_a_later_delta_after_an_image_is_measured_from_the_images_values(self):
+        # The image restates 3 traded at 2.5 (counted without the switch, left out with it); a trade at 14:02:30 then
+        # takes 2.5 to 4 or to 7. The front model needs divisor x (0 + 2) = 4 counted at 2.5 since t.
+        for later, front in ((4.0, None), (7.0, VOLUME)):
+            messages = lp_market(off=TUESDAY, extra=[image_at(210, TUESDAY, trd=[[2.5, 3.0]])],
+                                 trades=[(150, FAV, [[2.5, later]])])
+            default = self.rows(messages, plan=as_v2(EARLY_PLAN), when=TUESDAY)
+            new = self.rows(messages, plan=switched(EARLY_PLAN), when=TUESDAY)
+            for cell, seconds in zip(LAY_CELLS[:2], (450.0, 150.0)):
+                with self.subTest(later=later, at_s=cell.at_s):
+                    self.assertEqual(kinds(default[cell]), {OPTIMISTIC: VOLUME, CENTRAL: None, PESSIMISTIC: None})
+                    self.assertEqual(default[cell].fills[OPTIMISTIC].seconds, seconds)
+                    self.assertEqual(default[cell].minutes, {OPTIMISTIC: "2", CENTRAL: None, PESSIMISTIC: None})
+                    self.assertEqual(kinds(new[cell]), {OPTIMISTIC: front, CENTRAL: None, PESSIMISTIC: None})
+                    self.assertEqual(new[cell].trd, dict(zip(IMAGE_COUNTS, (1, 0, 0, 0, 1))))
+                    self.assertEqual(default[cell].trd, dict(zip(EARLY_TRD_COUNTS, (2, 0, 0, 0))))
+
+    def test_the_minute_buckets_on_the_row(self):
+        # A 14:05 off. The favourite shows 30 at 2.48 from 13:56:40. Images at 14:00:30 (in the hour seconds) and at
+        # 14:01:10, each with a rise at 2.48; at 14:02:00 a rise there whose entry raises the level (refused by the
+        # level rule); at 14:02:30 one whose entry lowers it; at 14:02:40, after every fill and before the 14:03
+        # pull, an image with no trd.
+        def market(off):
+            return lp_market(off=off, extra=[
+                fav_at(500, off, atb=[[2.48, 30.0]]), image_at(270, off, trd=[[2.48, 1.0]]),
+                image_at(230, off, trd=[[2.48, 2.0]]), fav_at(180, off, atb=[[2.48, 40.0]], trd=[[2.48, 3.0]]),
+                fav_at(150, off, atb=[[2.48, 10.0]], trd=[[2.48, 4.0]]), image_at(140, off)])
+
+        weekday, saturday = market(TUESDAY), market(SATURDAY)
+        default = self.rows(weekday, plan=as_v2(EARLY_PLAN), when=TUESDAY)
+        new = self.rows(weekday, plan=switched(EARLY_PLAN), when=TUESDAY)
+        for cell in LAY_CELLS[:2]:
+            with self.subTest(at_s=cell.at_s):
+                # Without the switch the image at 14:01:10 fills (minute 1); the one in the hour seconds is left out
+                # by the hour switch, which counts first. The image after the fill is met all the same (build note
+                # 8: every image batch in (t, pull], whatever the fills).
+                self.assertEqual(default[cell].minutes, dict.fromkeys(MODELS, "1"))
+                self.assertEqual(default[cell].images, {IMAGE_BATCHES: buckets(b0=1, b1=1, b2=1),
+                                                        IMAGE_LEFT_OUT: buckets()})
+                self.assertEqual(default[cell].trd[LEFT_OUT], 1)
+                # With it, the refused rise and the fill are in minute 2.
+                self.assertEqual(new[cell].minutes, dict.fromkeys(MODELS, "2"))
+                self.assertEqual({fill.kind for fill in new[cell].fills.values()}, {THROUGH})
+                self.assertEqual(new[cell].images, {IMAGE_BATCHES: buckets(b0=1, b1=1, b2=1),
+                                                    IMAGE_LEFT_OUT: buckets(b1=1)})
+                self.assertEqual(new[cell].through_refused, dict.fromkeys(MODELS, buckets(b2=1)))
+                self.assertEqual(new[cell].trd, dict(zip(IMAGE_COUNTS, (2, 0, 0, 1, 1))))
+        # An unfilled order names no minute: the BACKs, and the LAY placed at 14:03.
+        for cell in BACK_CELLS + LAY_CELLS[2:]:
+            self.assertEqual(new[cell].minutes, dict.fromkeys(MODELS))
+        # On a Saturday every bucket is the weekend's, and no rise is in the hour seconds.
+        new = self.rows(saturday, plan=switched(EARLY_PLAN), when=SATURDAY)
+        self.assertEqual(new[LAY_CELLS[0]].minutes, dict.fromkeys(MODELS, "weekend"))
+        self.assertEqual(new[LAY_CELLS[0]].images, {IMAGE_BATCHES: buckets(weekend=3),
+                                                    IMAGE_LEFT_OUT: buckets(weekend=2)})
+        self.assertEqual(new[LAY_CELLS[0]].through_refused, dict.fromkeys(MODELS, buckets(weekend=1)))
+        self.assertEqual(new[LAY_CELLS[0]].trd, dict(zip(IMAGE_COUNTS, (2, 0, 0, 0, 2))))
+        # A fill at 14:17:00 on a weekday is in the rest of the hour.
+        off = TUESDAY + timedelta(minutes=15)
+        rows = self.rows(lp_market(off=off, extra=[fav_at(500, off, atb=[[2.48, 30.0]]),
+                                                   fav_at(180, off, atb=[[2.48, 10.0]], trd=[[2.48, 1.0]])]),
+                         plan=switched(EARLY_PLAN), when=off)
+        self.assertEqual(rows[LAY_CELLS[0]].minutes, dict.fromkeys(MODELS, "6-59"))
+        # The buckets' edges.
+        hour = ms(TUESDAY) - 300_000                                     # 14:00:00 on a Tuesday
+        for step, bucket in ((-1, "6-59"), (0, "0"), (59_999, "0"), (60_000, "1"), (359_999, "5"), (360_000, "6-59"),
+                             (3_599_999, "6-59")):
+            self.assertEqual(resting.minute_bucket(hour + step), bucket)
+        self.assertEqual({resting.minute_bucket(ms(SATURDAY) + step) for step in (-300_000, 0, 3_000_000)},
+                         {"weekend"})
+
+    def test_one_refusal(self):
+        # As above: 30 shown at 2.48 from 500 s; at 200 s a rise there whose entry raises the level.
+        level = fav_at(500, DAY_OFF, atb=[[2.48, 30.0]])
+        refused = fav_at(200, DAY_OFF, atb=[[2.48, 40.0]], trd=[[2.48, 1.0]])
+        plan = switched(EARLY_PLAN)
+        # Refused once and never filled: counted among the orders unfilled after a refusal.
+        rows = self.rows(lp_market(off=DAY_OFF, extra=[level, refused]), plan=plan, when=DAY_OFF)
+        lays = [rows[cell] for cell in LAY_CELLS]
+        self.assertEqual([kinds(row) for row in lays], [UNFILLED] * 3)
+        self.assertEqual([sum(row.through_refused[PESSIMISTIC].values()) for row in lays], [1, 1, 0])
+        self.assertEqual({model: resting.orders_unfilled_after_through_refused(lays, model) for model in MODELS},
+                         dict.fromkeys(MODELS, 2))
+        # Refused, then filled by quote_cross at 150 s: not counted.
+        crossing = fav_at(150, DAY_OFF, atl=[[2.5, 5.0]])
+        rows = self.rows(lp_market(off=DAY_OFF, extra=[level, refused, crossing]), plan=plan, when=DAY_OFF)
+        lays = [rows[cell] for cell in LAY_CELLS[:2]]
+        self.assertEqual([kinds(row) for row in lays], [dict.fromkeys(MODELS, CROSS)] * 2)
+        self.assertEqual([row.through_refused for row in lays], [dict.fromkeys(MODELS, buckets(rest=1))] * 2)
+        self.assertEqual({resting.orders_unfilled_after_through_refused(lays, model) for model in MODELS}, {0})
+        # The same batch fills by quote_cross: a change of kind, not a refusal.
+        both = fav_at(200, DAY_OFF, atb=[[2.48, 40.0]], atl=[[2.5, 5.0]], trd=[[2.48, 1.0]])
+        default = self.rows(lp_market(off=DAY_OFF, extra=[level, both]), plan=as_v2(EARLY_PLAN), when=DAY_OFF)
+        rows = self.rows(lp_market(off=DAY_OFF, extra=[level, both]), plan=plan, when=DAY_OFF)
+        for cell in LAY_CELLS[:2]:
+            self.assertEqual(kinds(default[cell]), dict.fromkeys(MODELS, THROUGH))
+            self.assertEqual(kinds(rows[cell]), dict.fromkeys(MODELS, CROSS))
+            self.assertEqual(rows[cell].fills[CENTRAL].seconds, default[cell].fills[CENTRAL].seconds)
+            self.assertEqual(rows[cell].through_refused, dict.fromkeys(MODELS, buckets()))
+
+
+class Closable(RestingCase):
+    """C4: a fill is closable when its batch left the market OPEN and not in play, or a later batch at or before the
+    pull did; read from the state after each batch. The favourite's LAYs from 600 and 300 s fill by trade_through at
+    200 s; they are pulled at 120 s."""
+
+    def test_closable_is_tracked_from_the_fill_to_the_pull(self):
+        through = fav_at(200, DAY_OFF, atb=[[2.48, 0]], trd=[[2.48, 1.0]])
+        suspended = status_at(200, "SUSPENDED", off=DAY_OFF)               # in the fill's own batch
+        cases = (("open", [through], True, (False, False), False),
+                 ("suspended, open again before the pull", [through, suspended, status_at(150, off=DAY_OFF)], True,
+                  (True, False), False),
+                 ("suspended, open again at the pull", [through, suspended, status_at(120, off=DAY_OFF)], True,
+                  (True, False), False),
+                 ("suspended to the pull", [through, suspended, status_at(119.999, off=DAY_OFF)], False,
+                  (True, False), False),
+                 ("the batch turned the market in play", [through, status_at(200, in_play=True, off=DAY_OFF)], False,
+                  (False, True), True),
+                 # A later batch while the market stays in play: it was in play before that batch too, so the
+                 # second part of the fill's own marks (turned in play) is false there; after says not closable.
+                 ("in play, then another batch in play", [through, status_at(200, in_play=True, off=DAY_OFF),
+                                                          fav_at(150, DAY_OFF, atb=[[2.44, 5.0]])], False,
+                  (False, True), True),
+                 ("in play after the fill", [through, status_at(150, in_play=True, off=DAY_OFF)], True,
+                  (False, False), True),
+                 # In play first in the pull's own batch: by the pull (build note 7), the pull included.
+                 ("in play at the pull", [through, status_at(120, in_play=True, off=DAY_OFF)], True,
+                  (False, False), True))
+        for name, extra, closable, marks, in_play in cases:
+            rows = self.rows(lp_market(off=DAY_OFF, extra=extra), plan=as_v2(EARLY_PLAN), when=DAY_OFF)
+            for cell in LAY_CELLS[:2]:
+                with self.subTest(case=name, at_s=cell.at_s):
+                    row = rows[cell]
+                    self.assertEqual(kinds(row), dict.fromkeys(MODELS, THROUGH))
+                    self.assertEqual(row.closable, dict.fromkeys(MODELS, closable))
+                    self.assertEqual({(fill.transition, fill.turn) for fill in row.fills.values()}, {marks})
+                    self.assertEqual(row.in_play_before_pull, in_play)
+            self.assertEqual(rows[BACK_CELLS[0]].closable, dict.fromkeys(MODELS))      # unfilled: no close to make
+        # A v1 walk tracks none of it.
+        rows = self.rows(lp_market(off=DAY_OFF, extra=[through]), plan=EARLY_PLAN, when=DAY_OFF)
+        self.assertEqual((rows[LAY_CELLS[0]].closable, rows[LAY_CELLS[0]].in_play_before_pull), (None, None))
+
+
+class BuildNoteChoices(RestingCase):
+    """The choices of PR C's build notes (section 5, items 7-9) that the machinery tables of §2.2a (b) print. Two
+    more are pinned where their fields are: in_play_before_pull by the pull, the pull's own batch included (item 7),
+    in Closable ("in play at the pull"); an image batch after every model filled is still met (item 8), in
+    FillSwitch.test_the_minute_buckets_on_the_row."""
+
+    def test_the_volume_through_counts_only_the_admitted_prices(self):
+        # Build note 9. At 200 s, 2.48 is lowered (1 traded) and 2.46 raised (9 traded): 0.5 through the LAYs' 2.5
+        # under the level rule, 5 without it, against a stake of 2.
+        level = fav_at(500, DAY_OFF, atb=[[2.48, 30.0], [2.46, 20.0]])
+        both = fav_at(200, DAY_OFF, atb=[[2.48, 10.0], [2.46, 25.0]], trd=[[2.48, 1.0], [2.46, 9.0]])
+        messages = lp_market(off=DAY_OFF, extra=[level, both])
+        for plan, below in ((as_v2(EARLY_PLAN), False), (switched(EARLY_PLAN), True)):
+            rows = self.rows(messages, plan=plan, when=DAY_OFF)
+            for cell in LAY_CELLS[:2]:
+                with self.subTest(switched=below, at_s=cell.at_s):
+                    self.assertEqual({(fill.kind, fill.through_below_stake) for fill in rows[cell].fills.values()},
+                                     {(THROUGH, below)})
+
+    def test_an_image_batch_while_the_market_is_suspended_is_met(self):
+        # Build note 8. Suspended from 170 s, an image at 160 s (no trd, no cross), OPEN again at 150 s: nothing
+        # fills, and the image batch is met in the rest of the hour.
+        suspended = [status_at(170, "SUSPENDED", off=DAY_OFF), image_at(160, DAY_OFF), status_at(150, off=DAY_OFF)]
+        rows = self.rows(lp_market(off=DAY_OFF, extra=suspended), plan=as_v2(EARLY_PLAN), when=DAY_OFF)
+        for cell in LAY_CELLS[:2]:
+            with self.subTest(at_s=cell.at_s):
+                self.assertEqual(kinds(rows[cell]), UNFILLED)
+                self.assertEqual(rows[cell].images, {IMAGE_BATCHES: buckets(rest=1), IMAGE_LEFT_OUT: buckets()})
+
+
+class OldIdsKeepTheirDefaults(unittest.TestCase):
+    """The new Plan fields default to a walk as before; old ids leave every new Fill, OrderRow and Walked field at
+    its default (recheck §3.3: the pins name their fields, so they cannot see new ones)."""
+
+    def test_the_plans_of_the_old_ids(self):
+        for plan in (PLAN, EARLY_PLAN, EACH_PLAN, *(early_plan(study=study) for study in EARLY_IDS)):
+            self.assertEqual((plan.views, plan.windows, plan.move_max_spread_ticks, plan.image_rises_counted,
+                              plan.through_needs_lowered), (resting.V1, (), None, True, False))
+        self.assertEqual(resting.VIEWS, ("v1", "v2"))
+
+    def test_the_seeded_batch_under_each_old_plan(self):
+        given = seeded_walks()
+        rows = 0
+        for name, walks in given.walks.items():
+            for walked in walks.values():
+                with self.subTest(plan=name):
+                    self.assertEqual(walked.move_undefined, {})
+                for outcome in walked.outcomes.values():
+                    for row in orders_of(outcome):
+                        rows += 1
+                        self.assertEqual({getattr(row, field) for field in V2_ROW_FIELDS}, {None})
+                        self.assertEqual({getattr(fill, field) for fill in row.fills.values()
+                                          for field in V2_FILL_FIELDS}, {None})
+        self.assertGreater(rows, 1000)
+
+
+class PopulationCodesByTheRulesSchema(unittest.TestCase):
+    def test_a_v1_rule_file_splits_as_before(self):
+        def before_v2(rules):                   # population_codes as it was: v1's tuples
+            flags = tuple(code for name, _, code in resting.FLAG_GATES
+                          if any(getattr(rule.market, name) is True for rule in rules))
+            decided = []
+            for rule in rules:
+                for code in ([row.code for row in rule.when if row.feature in resting.rulefile.MARKET_FEATURES]
+                             + list(resting.SELECTOR_CODES.get(rule.select, ()))
+                             + [row.code for row in rule.when if row.feature in resting.rulefile.RUNNER_FEATURES]):
+                    if code not in decided:
+                        decided.append(code)
+            return resting.RECORD_CODES + flags + ("ladder_malformed",) + tuple(decided) + ("no_reference_price",
+                                                                                            "price_off_ladder")
+
+        rules = [parse_rule(raw.read_bytes()) for raw in sorted((REPO / "research" / "rules").glob("*.json"))]
+        self.assertEqual(len(rules), 5)
+        for group in [[rule] for rule in rules] + [PLAN.rules, EACH_PLAN.rules, rules]:
+            self.assertEqual(population_codes(group), before_v2(group))
+
+    def test_a_v2_rule_file_splits_by_its_own_sets(self):
+        codes = population_codes((V2_RULE,))
+        self.assertEqual(codes[codes.index("ladder_malformed") + 1:], (
+            "market_not_open", "too_few_active_runners", "no_back_book", "no_lay_book", "no_active_runner",
+            "best_back_out_of_range", "depth_below_min", "no_lay_size", "no_back_depth", "no_lay_depth",
+            "spread_not_1_or_2_ticks", "no_move", "no_late_move", "no_reference_price", "price_off_ladder"))
+        other = v2_rule("close-v2-test-other", rows=V2_ROWS[:12] + (
+            {"code": "no_early_move", "feature": "mid_ratio", "from_s": -5000, "op": ">=", "to_s": None,
+             "value": "0.00"}, V2_ROWS[13], V2_ROWS[12]))
+        self.assertEqual(windows(other), ((-5000, None), LATE, WHOLE))
+        self.assertEqual(resting.windows_of((V2_RULE, other)), (WHOLE, LATE, (-5000, None)))
+        self.assertEqual(resting.windows_of(PLAN.rules), ())
+
+
+IMAGED_SEED, IMAGED_MARKETS = 20261118, 40
+
+
+def imaged_market(rng, index):
+    """(member path, messages) of one seeded market on an explore date whose favourite shows more back levels (2.48
+    and 2.46 under 2.5) and whose windows hold, at random times (some in the minutes after a weekday whole hour):
+    images with their definition that restate every runner and the favourite's trd so far and more; trades on the
+    favourite at 2.44 to 2.5 whose entry lowers, raises, restates or deletes the level; offers that cross its LAY."""
+    market_id = f"1.16{index:04d}001"
+    day = date(2015, 5, 1) + timedelta(days=rng.randrange(330))
+    while PLAN.split.label(day.isoformat()) != D:
+        day += timedelta(days=1)
+    off = datetime(day.year, day.month, day.day, rng.choice((13, 14, 19)), rng.choice((0, 2, 5, 9)),
+                   tzinfo=timezone.utc)
+    extra, traded = [rc_at(3500, off, [{"id": FAV, "atb": [[2.48, 30.0], [2.46, 20.0]]}], market_id)], {}
+    for _ in range(rng.choice((2, 3, 4, 6, 8))):
+        seconds = rng.randrange(15_000, 650_000) / 1000
+        if off.minute and rng.random() < 0.4:   # in minutes 0 to 5 after the hour, when that is before the pull
+            seconds = max(off.minute * 60 - rng.randrange(360_000) / 1000, rng.randrange(15_000, 30_000) / 1000)
+        price = rng.choice((2.44, 2.46, 2.48, 2.5))
+        traded[price] = round(traded.get(price, 0) + rng.choice((0.5, 1.0, 4.0, 30.0)), 2)
+        draw = rng.random()
+        if draw < 0.4:
+            rc = [{"id": sid, "atb": [[b, 50.0]], "atl": [[l, 75.0]]} for sid, (b, l) in BOOK.items() if sid != FAV]
+            rc.insert(0, {"id": FAV, "atb": [[2.5, 50.0], [2.48, float(rng.randrange(5, 40))], [2.46, 20.0]],
+                          "atl": [[2.52, 75.0]], "trd": [[p, v] for p, v in sorted(traded.items())]})
+            extra.append(md(market_id, before(seconds, off), definition(off, [runner(sid) for sid in SIDS]), img=True,
+                            rc=rc))
+        elif draw < 0.85:
+            extra.append(rc_at(seconds, off, [{"id": FAV, "atb": [[price, rng.choice((0, 5.0, 25.0, 30.0, 45.0))]],
+                                               "trd": [[price, traded[price]]]}], market_id))
+        else:
+            extra.append(rc_at(seconds, off, [{"id": FAV, "atl": [[2.5, rng.choice((1.0, 5.0))]]}], market_id))
+    return path(market_id, off), lp_market(market_id, off, extra=extra)
+
+
+_IMAGED = {}
+
+
+def imaged_set():
+    """IMAGED_MARKETS markets of imaged_market seeded by IMAGED_SEED, archived once for this module: a namespace of
+    root, manifest, records and ids."""
+    if not _IMAGED:
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        rng = random.Random(IMAGED_SEED)
+        members = [imaged_market(rng, index) for index in range(IMAGED_MARKETS)]
+        root = base / "data"
+        root.mkdir()
+        tar = fx.make_tar(base / "data.tar", [(member, bz2.compress(fx.lines(messages)))
+                                              for member, messages in members])
+        ingested = ingest_archive(tar, root)
+        if ingested["status"] != "ingested" or index_archives(root)["status"] != "indexed":
+            raise AssertionError("the imaged archive was not ingested and indexed")
+        digest = ingested["archive_sha256"]
+        manifest, _ = fx.load_manifest(root, digest)
+        data = (root / "index" / digest / fx.market_index.MARKETS_FILE).read_bytes()
+        _IMAGED["value"] = SimpleNamespace(root=root, manifest=manifest,
+                                           ids=[name.rsplit("/", 1)[1][:-4] for name, _ in members],
+                                           records={record["market_id"]: record
+                                                    for record in map(json.loads, data.splitlines())})
+    return _IMAGED["value"]
+
+
+class SwitchOnlyRemovesFills(RestingCase):
+    """R7: under the image switch and the level rule, the filled pairs of order and model are a subset of the
+    default's; a fill kept comes in the same batch or later, never earlier, and in the same batch by a kind the
+    default also had. Shown on pull request 1's seeded batch with the hour market and the deep set (kept_walks), and
+    on imaged_set(), whose images carry trd, under close-v1's plan, EARLY_PLAN and EACH_PLAN."""
+
+    def compare(self, default, new, counts):
+        self.assertEqual(set(new.outcomes), set(default.outcomes))
+        for cell, outcome in default.outcomes.items():
+            if isinstance(outcome, str):
+                self.assertEqual(new.outcomes[cell], outcome)       # nothing decided moves
+                continue
+            ours, theirs = orders_of(outcome), orders_of(new.outcomes[cell])
+            self.assertEqual(len(theirs), len(ours))
+            for before_, after in zip(ours, theirs):
+                self.assertEqual(after._replace(fills=None, trd=None, fill_minute=None, **dict.fromkeys(V2_ROW_FIELDS)),
+                                 before_._replace(fills=None, trd=None, fill_minute=None))
+                # Rises are only moved from counted to left out in an image batch.
+                self.assertEqual(after.trd[TRD_COUNTS[0]] + after.trd[IMAGE_LEFT_OUT], before_.trd[TRD_COUNTS[0]])
+                self.assertEqual({name: count for name, count in after.trd.items()
+                                  if name not in (TRD_COUNTS[0], IMAGE_LEFT_OUT)},
+                                 {name: count for name, count in before_.trd.items() if name != TRD_COUNTS[0]})
+                for model in MODELS:
+                    was, now = before_.fills[model], after.fills[model]
+                    self.assertEqual(now.queue, was.queue)
+                    if now.kind is None:
+                        counts["removed" if was.kind is not None else "unfilled"] += 1
+                        continue
+                    self.assertIsNotNone(was.kind)
+                    self.assertGreaterEqual(now.seconds, was.seconds)
+                    if now.seconds > was.seconds:
+                        counts["moved to a later batch"] += 1
+                    else:
+                        self.assertGreaterEqual(FILL_KINDS.index(now.kind), FILL_KINDS.index(was.kind))
+                        counts["kept" if now.kind == was.kind else "kind changed"] += 1
+
+    def test_the_switch_only_removes_fills(self):
+        totals = {}
+        seeded, imaged = kept_walks(), imaged_set()
+        for where, given, ids in (("seeded", seeded, seeded.ids + seeded.deep_ids), ("imaged", imaged, imaged.ids)):
+            counts = dict.fromkeys(("kept", "kind changed", "moved to a later batch", "removed", "unfilled"), 0)
+            for name, plan in PLANS:
+                for market_id in ids:
+                    record = given.records[market_id]
+                    walks = {}
+                    for kind, used in (("default", plan), ("switched", switched(plan))):
+                        if where == "seeded" and kind == "default":
+                            walks[kind] = given.walks[name, True, market_id]
+                            continue
+                        with member_stream(given.root, given.manifest, record) as stream:
+                            walks[kind] = walk(stream, record, used, DEFAULT_LIMITS)
+                    with self.subTest(where=where, plan=name, market=market_id):
+                        self.compare(walks["default"], walks["switched"], counts)
+            totals[where] = counts
+        # What the sets hold, so that the property stands for something: fills removed in both, fills that moved
+        # to a later batch, and fills kept.
+        self.assertTrue(all(totals[where]["removed"] and totals[where]["kept"] for where in totals), totals)
+        self.assertTrue(totals["seeded"]["moved to a later batch"] + totals["imaged"]["moved to a later batch"],
+                        totals)
+
+
+class KeptTopsUnderV2(RestingCase):
+    def test_the_kept_tops_change_nothing_under_a_v2_walk(self):
+        """KEEP_TOPS is unaffected by the v2 walk: the deep set and imaged_set() under switched(EACH_PLAN) and under
+        v2_plan() give the same Walked with the kept tops as without them."""
+        seeded, imaged = kept_walks(), imaged_set()
+        for given, ids in ((seeded, seeded.deep_ids), (imaged, imaged.ids)):
+            for plan in (switched(EACH_PLAN), v2_plan()):
+                for market_id in ids:
+                    found = {}
+                    for keep in (True, False):
+                        with mock.patch.object(resting, "KEEP_TOPS", keep), \
+                                member_stream(given.root, given.manifest, given.records[market_id]) as stream:
+                            found[keep] = walk(stream, given.records[market_id], plan, DEFAULT_LIMITS)
+                    with self.subTest(market=market_id, views=plan.views, windows=plan.windows):
+                        self.assertEqual(named_form(found[True]), named_form(found[False]))
 
 
 class RestingBoundaries(unittest.TestCase):

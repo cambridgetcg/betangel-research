@@ -105,11 +105,17 @@ an order's reaches fills.judge only when the batch lowered or deleted the level 
 (lp._Batch.levels, called before the ladder fold); a batch in which only that keeps a judged leg from filling by any
 kind is one refusal. A v2 walk's rows also hold, per model, the fill's MINUTE_BUCKETS name (minutes), the refusals
 by bucket (through_refused) and whether a close was possible (closable: the state after the fill's batch, or after
-some later batch up to the pull, was OPEN and not in play; None unfilled); per order, the image batches met in (t,
-pull time] and the image rises left out, by bucket (images), and whether inPlay was true by the pull
-(in_play_before_pull); and its Fills say whether the fill came in an image batch, was a trade_through whose volume
-through the price in its batch was below the stake, or a quote_cross in a batch that left the book crossed or
-locked. A v1 walk leaves every one of these at its default, None. A plan with either switch on must build v2 views
+some later batch up to the pull, was OPEN and not in play while the market had not been in play before that batch
+since t, since no close comes before the off once it has been in play, whatever a later inPlay says; None
+unfilled); per order, the image batches met in (t, pull time] and the image rises left out, by bucket (images), and
+whether inPlay was true by the pull (in_play_before_pull); and its Fills say whether the fill came in an image
+batch, was a trade_through whose volume through the price in its batch was below the stake, or a quote_cross in a
+batch that left the book crossed or locked. A scored v2 row also holds the race's result, for the realised
+diagnostic alone: won (its runner's final status is WINNER) and dead_heat (the index's
+evaluator_only_outcome.dead_heat, None when it is not a bool, or when the result names no single WINNER:
+winners_observed and the declared number of winners not both 1, as in a race voided with every runner LOSER); read
+after the walk from the record, like the class and the BSP, they reach no view, decision, queue or fill. A v1 walk
+leaves every one of these at its default, None. A plan with either switch on must build v2 views
 (walk:fill_switch_without_v2_views), so that every refusal is counted on its row.
 
 Classes (CLASSES), from facts that do not depend on a fill, the first that applies: movement.measure's five
@@ -123,6 +129,32 @@ The metric (score, series): per GBP 1 of backer's stake, exact. g is a BACK's pr
 two decimals, so every figure exists at two BSP ends (BSP_ENDS): as written and plus the step. The kill end is the
 one that favours the order, the claim end the other (deciding_end); they decide apart only when the registered
 share of scored BSPs are whole hundredths (ends_apart), else the as-written figure decides alone.
+
+betangel.rule/v2's scoring (Plan.value_measure). Under the default, NET_HELD, figures values a fill as before.
+Under NET_CLOSABLE, which only a plan that builds v2 views may set, a fill is valued by net_closable: net_closed
+when a close at BSP could follow it before the off (OrderRow.closable under its model), else net_held
+(closable_measure); value_per_placed is net_closable when filled and 0 when not; and each model also gives hit_rate
+(the share of filled orders with g above 0), clv_ticks_figure (the entry against BSP in CLASSIC ticks, filled and
+unfilled), by_price_band (net_closable by the CLASSIC increment band of the price) and closable_counts.
+Each new figure goes through part and rest, and under filled_is_all_placed every outcome figure of that model gives
+counts only (M4), never a stand-in. Within a model, net_closed and net_held beside net_closable over the same fills
+would give the sum of net_closed - net_held over the fills a close could (or could not) follow, so each is given
+only when those fills number 0 or min_values (figures). Across the models a row filled under two of them can be closable
+under one and held under the other; the difference of their net_closable (or realised) means then rests on those
+rows too. That residual is named, not withheld: closable_differs counts those rows for a pair of models, a count
+only. Beside them, deciding nothing, realised_figure gives the realised diagnostic (realised), which reads won: per
+order the result of its fill, closed or held, with commission charged once per market on its positive net in pounds
+at the stake, rounded to the nearest penny with a half penny up (lp.penny; Yu's O11), and shared among the market's
+orders in proportion to their positive results (COMMISSION_SHARE); a market whose dead_heat is not False is left
+out and counted. It takes the cell's rows grouped by market as the walk gives them, since commission nets within a
+market, and goes through part and rest across the models over the orders it values, which a left-out market can
+make differ from the filled ones. With its commission unrounded and every fill of a market closable, its
+expectation over the outcomes weighted p = 1 / BSP is net_closed per order; in a market with a held fill beside
+another, per-market commission is at or below the per-order charge that net_closable makes (C2), so net_closable
+leans conservative there. Rounded at a GBP 2 stake, commission is 0 on a market win under 12.5p, so the figure is
+usually kinder than unrounded, but any one market can be up to half a penny less kind, and the rounding alone can
+move a mean near 0 across it: realised_figure also gives the same figure unrounded (rounded=False), to be read
+beside the rounded one.
 
 Part and rest (filled_part): a model's "filled" figures are taken over its filled scored orders only when the
 unfilled ones number statistics.min_values; else over every scored order, flagged filled_is_all_placed. A size
@@ -142,9 +174,9 @@ Selection (select_primaries) sees the explore label's rows and the test label's 
 (null_gate) can block a claim and never kills. Labels (verdicts): the first of VERDICTS that applies, per primary.
 
 What this does not do: it reads nothing after the last pull time, models no latency, partial fill, re-pricing
-or closing order, builds no table and writes nothing. Standard library only; it imports fills, rulefile,
-partition, lp, movement, market_index, replay and metrics and, through them, the modules they import. Nothing
-here is evidence of profitability.
+or closing order (a close at BSP is valued, never simulated), builds no table and writes nothing. Standard library
+only; it imports fills, rulefile, partition, lp, movement, market_index, replay and metrics and, through them, the
+modules they import. Nothing here is evidence of profitability.
 """
 
 from collections import namedtuple
@@ -157,15 +189,16 @@ import re
 
 from . import fills, rulefile
 from .lp import (BACK, CROSS, DAY_MS, FILL_KINDS, HOUR_MS, LAY, THROUGH, TIERS, TRADED_BASIS, TRADED_DIVISOR,
-                 TRADED_KEY, TradedFold, _Batch, _rules, _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top,
-                 wide)
+                 TRADED_KEY, TradedFold, _Batch, _rules, _seconds, Leg, after_the_hour, facing, mid, penny,
+                 spread_ticks, top, wide)
 from .market_index import _as_of, _checked_changes, _last, _Market, _messages, _runner_id, _Unreadable, loads_strict
 from .metrics import HashStream
-from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LADDER_NAMES, LADDERS, MARKET_CODES,
-                       MAX_REGISTRATION_BYTES, MONTH_RE, QUANTILE_METHOD, SCHEMA, UNCERTAINTY_METHOD, LadderFold,
-                       _codes, _fail, _int, _moment, _object, _rate, _text, _texts, active_ids, cr1_contrast,
-                       cr1_mean, decision_time, holm, market_code, measure, nclv, nearest_rank, race_date,
-                       registration_sha256, sample_sd, student_t_cdf, student_t_quantile, tick_index)
+from .movement import (ANCHOR, CLASSIC_BANDS_H, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LADDER_NAMES, LADDERS,
+                       MARKET_CODES, MAX_REGISTRATION_BYTES, MONTH_RE, QUANTILE_METHOD, SCHEMA, UNCERTAINTY_METHOD,
+                       LadderFold, _codes, _fail, _int, _moment, _object, _rate, _text, _texts, active_ids,
+                       cr1_contrast, cr1_mean, decision_time, final_runners, holm, hundredths, market_code, measure,
+                       nclv, nearest_rank, race_date, registration_sha256, sample_sd, student_t_cdf,
+                       student_t_quantile, tick_index, tick_position)
 from .partition import EXPLORE, HALVES, HOLDOUT, PartitionError, file_bytes, parse_split
 from .replay import PriceFold, ReplayProblem
 from .rulefile import (EACH_ACTIVE, FAVOURITE, LAPSE, RuleError, RuleView, RuleView2, RunnerView, RunnerView2,
@@ -242,6 +275,26 @@ BSP_STEP = Fraction(1, 100)
 AS_WRITTEN, PLUS_STEP = BSP_ENDS = ("bsp_as_written", "bsp_plus_step")
 KILL_END, CLAIM_END = "kill_end", SELECT_END
 G, NET_CLOSED, NET_HELD = MEASURES = ("g", "net_closed", SELECT_MEASURE)
+# What a plan values a filled order by (Plan.value_measure): net_held (every old id), or net_closable, net_closed for
+# a fill a close at BSP could follow before the off and net_held for one it could not (OrderRow.closable).
+NET_CLOSABLE = "net_closable"
+VALUE_MEASURES = (NET_HELD, NET_CLOSABLE)
+# The figures only a net_closable plan's figures() gives per model, beside the four old ones; and the counts of its
+# filled orders that a close could and could not follow (closable_counts).
+HIT_RATE, CLV_TICKS, PRICE_BANDS, CLOSABLE_FILLS = "hit_rate", "clv_ticks", "price_bands", "closable_fills"
+CLOSABLE, NOT_CLOSABLE = "closable", "not_closable"
+# Why the realised diagnostic leaves an order out (realised_figure): its market's dead_heat is true, or not known.
+DEAD_HEAT, DEAD_HEAT_UNKNOWN = "dead_heat", "dead_heat_unknown"
+BSP_OFF_THE_LADDER = "bsp_off_the_ladder"       # a BSP end beyond the CLASSIC ladder: no CLV in ticks (clv_ticks)
+# The realised diagnostic's commission, named once (realised): Basic c on the market's positive net result over its
+# valued orders, in pounds at the order's stake, rounded to the nearest penny with a half penny up (lp.penny, the
+# Exchange General Rules; Yu's O11), and shared among those orders in proportion to their positive results.
+COMMISSION_BASIS, COMMISSION_ROUNDING = "market_net", "per_market_half_up_penny"
+COMMISSION_SHARE = "pro_rata_to_positive_result"
+# The CLASSIC increment bands of an order's price (by_price_band), in ladder order, each "low-high" from
+# movement.CLASSIC_BANDS_H (from inclusive, to exclusive; 1000.00, the ladder's last price, is in the last band).
+PRICE_BAND_NAMES = tuple(f"{low // 100}.{low % 100:02d}-{high // 100}.{high % 100:02d}"
+                         for low, high, _ in CLASSIC_BANDS_H)
 # Why the null blocks a claim: it or the main mean over the same orders has no test; or it is too large.
 NULL_BLOCKS = ("not_computed", "at_least_the_fraction_of_main")
 COUNTS_ONLY, UNDERPOWERED = "counts_only", "underpowered"
@@ -277,11 +330,13 @@ Selection = namedtuple("Selection", ("eligible", "primaries"))
 Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn", "ended",
                            "image", "through_below_stake", "crossed"), defaults=(None, None, None))
 # The fields from gap_ticks on have defaults, so a row can still be built from the thirteen older fields alone; the
-# last five are a v2 walk's and stay None from a v1 walk (module docstring).
+# last seven are a v2 walk's and stay None from a v1 walk (module docstring). won and dead_heat are the race's result,
+# for the realised diagnostic alone (realised): no view, decision, queue or fill reads them.
 OrderRow = namedtuple("OrderRow", ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid", "fills",
                                    "null_mid", "null_reason", "trd", "no_status", "gap_ticks", "placed_in_the_hour",
                                    "fill_minute", "minutes", "images", "through_refused", "closable",
-                                   "in_play_before_pull"), defaults=(None, False, None, None, None, None, None, None))
+                                   "in_play_before_pull", "won", "dead_heat"),
+                      defaults=(None, False, None, None, None, None, None, None, None, None))
 # What a v2 walk keeps of one time before a decision (capture_of): t in ms, view_problem's code then (None with a
 # view), the Moment's quotes, whether the market was OPEN and not in play, and the runners ACTIVE and listed then.
 # Values only: never a reference into the folds, which keep changing.
@@ -308,7 +363,10 @@ class Plan:
     move_max_spread_ticks None, a move's spread cap in CLASSIC ticks, an int from 1 that a plan with windows must
     set; image_rises_counted True (False: the image switch); through_needs_lowered False (True: the level rule). A
     plan with either switch on must build v2 views (walk:fill_switch_without_v2_views), so that every refusal is
-    counted on its row. No registration sets them yet: parse_registration leaves them at their defaults."""
+    counted on its row. The last field is the scoring's: value_measure NET_HELD, what figures() values a fill by as
+    before (NET_CLOSABLE: net_closable and the new figures, module docstring), which only a plan that builds v2 views
+    may set (walk:value_measure_without_v2_views), since only a v2 row says whether a close was possible. No
+    registration sets them yet: parse_registration leaves them at their defaults."""
 
     sha256: str
     study: str
@@ -361,6 +419,7 @@ class Plan:
     move_max_spread_ticks: object = None    # an int from 1 when windows is not empty
     image_rises_counted: bool = True        # False: no rise of an image batch counts (the image switch)
     through_needs_lowered: bool = False     # True: a trade_through needs its level lowered (the level rule)
+    value_measure: str = NET_HELD           # NET_CLOSABLE: figures() values fills by net_closable (v2 views only)
 
     @property
     def labels(self):
@@ -931,12 +990,13 @@ class _Order:
     a v2 plan also per model whether a close was possible (closable), the v2 Fill fields (fill), the level rule's
     refusals by bucket (refused), and the image batches and image rises left out by bucket (images)."""
 
-    __slots__ = ("cell", "intent", "t", "end", "legs", "active", "mid", "lapsed", "transition", "null", "trd",
-                 "no_status", "gap", "closable", "fill", "refused", "images")
+    __slots__ = ("cell", "intent", "t", "end", "legs", "active", "mid", "lapsed", "played", "transition", "null",
+                 "trd", "no_status", "gap", "closable", "fill", "refused", "images")
 
     def __init__(self, cell, intent, t, end, legs, active, centre, names, gap, v2=False):
         self.cell, self.intent, self.t, self.end, self.legs, self.active = cell, intent, t, end, legs, active
         self.mid, self.lapsed, self.transition, self.null = centre, False, {}, None
+        self.played = False                     # the market was in play before some batch since t (closable)
         self.trd, self.no_status, self.gap = dict.fromkeys(names, 0), False, gap
         self.closable, self.fill = {}, {}
         self.refused = {model: dict.fromkeys(MINUTE_BUCKETS, 0) for model in legs} if v2 else None
@@ -1046,6 +1106,15 @@ def _row(plan, record, placed, dated, malformed, in_play):
                               for model, leg in placed.legs.items()},
                     in_play_before_pull=_as_of(in_play, t) is True or any(t < pt <= end and _as_of(in_play, pt) is True
                                                                           for pt, _ in in_play))
+        if klass == SCORED:                     # the result, read for the realised diagnostic alone, after the walk
+            # A scored order's runner is listed at the end, WINNER or LOSER (movement.valid_bsp), and valid_bsp also
+            # accepts a market whose runners are all LOSER; the index's dead_heat is False there (0 is not more than
+            # 1 declared). realised assumes one WINNER, so a result that names no single WINNER is not known.
+            outcome = record["evaluator_only_outcome"]
+            dead_heat = outcome["dead_heat"] if type(outcome["dead_heat"]) is bool else None
+            if dead_heat is False and not outcome["winners_observed"] == outcome["declared_number_of_winners"] == 1:
+                dead_heat = None
+            more.update(won=final_runners(record)[intent.selection_id]["status"] == "WINNER", dead_heat=dead_heat)
     return OrderRow(side=intent.side, price=intent.price, label=label, half=half, race_date=day, klass=klass,
                     bsp=bsp if klass == SCORED else None, mid=placed.mid, fills=found, null_mid=null_mid,
                     null_reason=null_reason, trd=dict(placed.trd), no_status=placed.no_status, gap_ticks=placed.gap,
@@ -1080,6 +1149,10 @@ def walk(stream, record, plan, limits):
         raise ValueError("walk:trd_counts_without_the_image_count")
     if plan.views != V2 and (not plan.image_rises_counted or plan.through_needs_lowered):
         raise ValueError("walk:fill_switch_without_v2_views")   # a refusal or an image is counted on v2 rows only
+    if plan.value_measure not in VALUE_MEASURES:
+        raise ValueError("walk:value_measure_not_supported")
+    if plan.value_measure == NET_CLOSABLE and plan.views != V2:
+        raise ValueError("walk:value_measure_without_v2_views")  # closable, won and dead_heat are on v2 rows only
     v2 = plan.views == V2
     market_id = record["market_id"]
     outcomes, missing = {}, {}
@@ -1222,13 +1295,17 @@ def walk(stream, record, plan, limits):
                 elif not hour and any(quote is not None and quote[0] == price for quote in prior[sid]):
                     placed.trd[TRD_COUNTS[1]] += 1
             placed.lapsed = placed.lapsed or (was_in_play and intent.persist == LAPSE)
+            # Once the market has been in play since t the off has passed: no batch after that is before the off,
+            # whatever its inPlay says, so none makes a close possible (a LAPSE order has lapsed by then).
+            placed.played = placed.played or was_in_play
+            could = closable and not placed.played
             shown = None
             if (batch.image or sid in batch.changed) and any(leg.live(pt) for leg in placed.legs.values()):
                 shown = facing(ladders, placed.legs[plan.models[0]])     # one side and price for every model
             at_price = traded.counted.get(sid, {}).get(intent.price, 0)
             for model, leg in placed.legs.items():
                 if v2 and leg.fill_pt is not None and leg.fill_pt < pt:    # a later batch up to the pull time
-                    placed.closable[model] = placed.closable[model] or closable
+                    placed.closable[model] = placed.closable[model] or could
                 if not fills.judged(leg, pt, was_open, placed.lapsed, intent.persist):
                     continue
                 kinds = now
@@ -1244,7 +1321,7 @@ def walk(stream, record, plan, limits):
                             / plan.divisor < intent.stake
                         back, lay = top(ladders, sid)
                         crossed = kind == CROSS and back is not None and lay is not None and back[0] >= lay[0]
-                        placed.closable[model], placed.fill[model] = closable, (batch.image, below, crossed)
+                        placed.closable[model], placed.fill[model] = could, (batch.image, below, crossed)
 
     # A batch no order's window holds is folded but not kept: fills and the counts read counted volume only as its
     # rise since t, and only in (t, pull time].
@@ -1369,11 +1446,23 @@ def scored(rows, label=None, half=None):
     return [row for row in rows if row.klass == SCORED and label in (None, row.label) and half in (None, row.half)]
 
 
-def series(plan, rows, what, end, at="price"):
+def closable_measure(row, model):
+    """What net_closable values a row's fill under model by (S8): NET_CLOSED when a close at BSP could follow it
+    before the off (OrderRow.closable), NET_HELD when none could. ValueError (score:closable_not_known) for a row
+    with no fill under model, or from a v1 walk, which tracks no closable."""
+    closable = None if row.closable is None else row.closable.get(model)
+    if closable is None:
+        raise ValueError("score:closable_not_known")
+    return NET_CLOSED if closable else NET_HELD
+
+
+def series(plan, rows, what, end, at="price", model=None):
     """[(race date, float)] of one figure of scored rows at one BSP end; the float is the exact figure, rounded
-    once. at names the row's price that is valued: its own, or "mid" or "null_mid" (rows with none are left out)."""
+    once. at names the row's price that is valued: its own, or "mid" or "null_mid" (rows with none are left out).
+    what may also be NET_CLOSABLE, which reads each row's fill under model (closable_measure)."""
     step = {AS_WRITTEN: 0, PLUS_STEP: plan.bsp_step}[end]
-    return [(row.race_date, float(score(plan, row.side, getattr(row, at), row.bsp + step, what)))
+    return [(row.race_date, float(score(plan, row.side, getattr(row, at), row.bsp + step,
+                                        closable_measure(row, model) if what == NET_CLOSABLE else what)))
             for row in rows if getattr(row, at) is not None]
 
 
@@ -1591,20 +1680,44 @@ def figures(plan, rows, end):
     the mid at t valued the same way; and per model: fills and their race dates, the flag, filled {g, net_closed,
     net_held} over the filled part, value_per_placed (net_held when filled, 0 when not; given only when the
     filled figures are), and the gap. A model that given_figures does not give keeps its counts and flag, and
-    its three figures are withheld()."""
+    its three figures are withheld().
+    Under Plan.value_measure NET_CLOSABLE (a v2 walk's rows): filled also holds net_closable, value_per_placed is
+    net_closable when filled and 0 when not, and each model also gives hit_rate, clv_ticks (clv_ticks_figure),
+    price_bands (by_price_band) and closable_fills (closable_counts). A model flagged filled_is_all_placed then
+    gives counts only for every outcome figure, with that reason (M4): its filled block and value_per_placed are
+    never computed (no stand-in), the gap keeps its own reason, and the new figures say so themselves. Beside
+    net_closable over the same fills, filled net_closed would give the sum of net_closed - net_held over the fills
+    a close could not follow, and net_held the same sum over those it could follow: each is withheld (n and race
+    dates only, rest_not_given) when those fills number from 1 to min_values - 1. Across the models, a row filled
+    under two of them whose closable differs is a residual this does not withhold (closable_differs counts it)."""
+    if plan.value_measure not in VALUE_MEASURES:
+        raise ValueError("figures:value_measure_not_supported")
+    closable = plan.value_measure == NET_CLOSABLE
     out = {"placed": described(plan, series(plan, rows, G, end)),
            "mid": described(plan, series(plan, rows, G, end, "mid")), "models": {}}
-    held, given = series(plan, rows, NET_HELD, end), given_figures(plan, rows)
+    given = given_figures(plan, rows)
+    if closable:
+        bands = _bands_given(plan, rows)
+    else:
+        held = series(plan, rows, NET_HELD, end)
     for model in plan.models:
         part = filled_part(plan, rows, model)
-        per_placed = [(day, value if part.all_placed or row.fills[model].kind is not None else 0.0)
-                      for row, (day, value) in zip(rows, held)]
-        found = {"filled": {what: described(plan, series(plan, part.rows, what, end)) for what in MEASURES},
-                 "value_per_placed": described(plan, per_placed, len(part.rows) >= plan.min_values),
-                 "gap": gap(plan, rows, model, end)}
+        if closable:
+            found = _closable_figures(plan, rows, model, end, part)
+        else:
+            per_placed = [(day, value if part.all_placed or row.fills[model].kind is not None else 0.0)
+                          for row, (day, value) in zip(rows, held)]
+            found = {"filled": {what: described(plan, series(plan, part.rows, what, end)) for what in MEASURES},
+                     "value_per_placed": described(plan, per_placed, len(part.rows) >= plan.min_values),
+                     "gap": gap(plan, rows, model, end)}
         if (FILLED, model) not in given:
             found = {"filled": {what: withheld(item) for what, item in found["filled"].items()},
                      "value_per_placed": withheld(found["value_per_placed"]), "gap": withheld(found["gap"])}
+        if closable:
+            found.update({HIT_RATE: hit_rate(plan, rows, model, end, given),
+                          CLV_TICKS: clv_ticks_figure(plan, rows, model, end, given),
+                          PRICE_BANDS: by_price_band(plan, rows, model, end, bands),
+                          CLOSABLE_FILLS: closable_counts(rows, model)})
         out["models"][model] = {"fills": part.fills, "fill_race_dates": part.fill_dates,
                                 FILLED_IS_ALL_PLACED: part.all_placed, **found}
     return out
@@ -1616,6 +1729,286 @@ def without_first_fills(plan, rows, model):
     min_values of those fall outside, they all stand (stands is True)."""
     later, stands = _later(plan, rows, model)
     return [row for place, row in enumerate(rows) if place in later], stands
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# The figures of a net_closable plan. Each takes scored rows of one group, as figures() does, gives counts only
+# under filled_is_all_placed (M4) and goes through part and rest (S14); none is computed for a model it does not
+# give.
+
+def _counts(rows, reason):
+    """described()'s keys for rows, with their count and race dates only and every statistic None: what a new
+    figure gives when it is not given. Nothing is computed."""
+    return {"bets": len(rows), "race_dates": _dates(rows), "mean": None, "se": None, "df": None, "t_critical": None,
+            "ci_low": None, "ci_high": None, "reason": reason, "sd": None}
+
+
+def _withholds(plan, part, model, given):
+    """Why a new figure of a model's filled part is not given, the first that applies, else None:
+    filled_is_all_placed (M4: never a stand-in), counts_only below min_values orders, rest_not_given when part and
+    rest holds the model's filled figures back (given: given_figures' names)."""
+    if part.all_placed:
+        return FILLED_IS_ALL_PLACED
+    if len(part.rows) < plan.min_values:
+        return COUNTS_ONLY
+    if (FILLED, model) not in given:
+        return REST_NOT_GIVEN
+    return None
+
+
+def _closable_figures(plan, rows, model, end, part):
+    """figures()' filled block, value_per_placed and gap of one model under NET_CLOSABLE (before part and rest)."""
+    if part.all_placed:                         # M4: counts only, never computed
+        return {"filled": {what: _counts(part.rows, FILLED_IS_ALL_PLACED) for what in MEASURES + (NET_CLOSABLE,)},
+                "value_per_placed": _counts(rows, FILLED_IS_ALL_PLACED), "gap": gap(plan, rows, model, end)}
+    counts = closable_counts(part.rows, model)
+    # Beside net_closable over the same rows, net_closed gives the sum of net_closed - net_held over the fills no
+    # close could follow, and net_held the same sum over those one could: each is given only when those fills
+    # number 0 or min_values (part and rest within the model; below the floor every figure is counts only anyway).
+    beside = {NET_CLOSED: counts[NOT_CLOSABLE], NET_HELD: counts[CLOSABLE]}
+    small = len(part.rows) >= plan.min_values and {what for what, n in beside.items() if 0 < n < plan.min_values}
+    filled = {what: _counts(part.rows, REST_NOT_GIVEN) if small and what in small
+              else described(plan, series(plan, part.rows, what, end)) for what in MEASURES}
+    closed = series(plan, part.rows, NET_CLOSABLE, end, model=model)
+    filled[NET_CLOSABLE] = described(plan, closed)
+    values = iter(closed)                       # part.rows: the model's filled rows, in rows' order
+    per_placed = [next(values) if row.fills[model].kind is not None else (row.race_date, 0.0) for row in rows]
+    return {"filled": filled, "value_per_placed": described(plan, per_placed, len(part.rows) >= plan.min_values),
+            "gap": gap(plan, rows, model, end)}
+
+
+def closable_counts(rows, model):
+    """{closable: n, not_closable: n} of a model's filled rows: those a close at BSP could follow before the off,
+    valued net_closed by net_closable, and those none could, valued net_held (closable_measure; S8). Counts only."""
+    found = dict.fromkeys((CLOSABLE, NOT_CLOSABLE), 0)
+    for row in rows:
+        if row.fills[model].kind is not None:
+            found[CLOSABLE if closable_measure(row, model) == NET_CLOSED else NOT_CLOSABLE] += 1
+    return found
+
+
+def closable_differs(rows, model, other):
+    """How many rows filled under both models a close at BSP could follow under one and not the other: the rows on
+    which two models' net_closable (and realised) values of one order differ though both filled it. Part and rest
+    does not withhold on them; this count is printed beside each pair of given models instead (a count only)."""
+    return sum(1 for row in rows if row.fills[model].kind is not None and row.fills[other].kind is not None
+               and closable_measure(row, model) != closable_measure(row, other))
+
+
+def hit_rate(plan, rows, model, end, given=None):
+    """The share of a model's filled scored rows with g above 0 at one BSP end (for a LAY, BSP above its price), as
+    described() of 1.0 for such a row and 0.0 for another: so the hit count is never a field of its own, and a hit
+    rate not given keeps n and race dates only (_counts), as every statistic-keyed scrub expects. Given as the
+    model's filled figures are (_withholds; given: given_figures' names, computed when None)."""
+    part = filled_part(plan, rows, model)
+    reason = _withholds(plan, part, model, given_figures(plan, rows) if given is None else given)
+    if reason is not None:
+        return _counts(part.rows, reason)
+    step = {AS_WRITTEN: 0, PLUS_STEP: plan.bsp_step}[end]
+    return described(plan, [(row.race_date, 1.0 if score(plan, row.side, row.price, row.bsp + step) > 0 else 0.0)
+                            for row in part.rows])
+
+
+def clv_ticks(plan, row, end):
+    """The CLV of a scored row's entry against BSP in CLASSIC ticks at one BSP end, exact: tick_position(B) -
+    tick_index(price) for a LAY, its negative for a BACK, so above 0 is good for the order. B between two ladder
+    prices is placed linearly between them (movement.tick_position). None when B lies beyond the ladder (only
+    1000.00 plus the step can)."""
+    position = tick_position(row.bsp + {AS_WRITTEN: 0, PLUS_STEP: plan.bsp_step}[end])
+    if position is None:
+        return None
+    ticks = position - tick_index(row.price)
+    return ticks if row.side == LAY else -ticks
+
+
+def clv_ticks_figure(plan, rows, model, end, given=None):
+    """{filled, unfilled, bsp_off_the_ladder} of a model at one BSP end: described() of clv_ticks over its filled
+    part and over its unfilled rows, and the rows of both left out for a BSP beyond the ladder. Given as the model's
+    filled figures are (_withholds), so the unfilled figure only when the unfilled rows number min_values, as gap;
+    otherwise both are _counts and the third None."""
+    part = filled_part(plan, rows, model)
+    unfilled = [row for row in rows if row.fills[model].kind is None]
+    reason = _withholds(plan, part, model, given_figures(plan, rows) if given is None else given)
+    if reason is not None:
+        return {FILLED: _counts(part.rows, reason), "unfilled": _counts(unfilled, reason), BSP_OFF_THE_LADDER: None}
+    found, off = {}, 0
+    for name, group in ((FILLED, part.rows), ("unfilled", unfilled)):
+        values = []
+        for row in group:
+            ticks = clv_ticks(plan, row, end)
+            if ticks is None:
+                off += 1
+            else:
+                values.append((row.race_date, float(ticks)))
+        found[name] = described(plan, values)
+    return dict(found, **{BSP_OFF_THE_LADDER: off})
+
+
+def price_band(price):
+    """The PRICE_BAND_NAMES name of a CLASSIC ladder price's increment band; ValueError off the ladder."""
+    if tick_index(price) is None:
+        raise ValueError("band:price_off_the_ladder")
+    scaled = hundredths(price)
+    for (low, high, _), name in zip(CLASSIC_BANDS_H, PRICE_BAND_NAMES):
+        if low <= scaled < high:
+            return name
+    return PRICE_BAND_NAMES[-1]                 # 1000.00, the ladder's last price
+
+
+def _bands_given(plan, rows):
+    """given_together over given_figures' groups and then, model by model in GIVEN_FIRST's order and band by band
+    in ladder order, each band of the model's filled rows (a model flagged filled_is_all_placed has none): the names
+    given, (FILLED, model) and (LATER, model) as given_figures gives them, then (model, band name)."""
+    groups = [((FILLED, model), _standing(plan, rows, model)) for model in GIVEN_FIRST]
+    groups += [((LATER, model), _later(plan, rows, model)[0]) for model in GIVEN_FIRST]
+    for model in GIVEN_FIRST:
+        if filled_part(plan, rows, model).all_placed:
+            continue
+        members = {}
+        for place in _standing(plan, rows, model):
+            members.setdefault(price_band(rows[place].price), set()).add(place)
+        groups += [((model, name), members[name]) for name in PRICE_BAND_NAMES if name in members]
+    return given_together(plan, len(rows), groups)
+
+
+def by_price_band(plan, rows, model, end, given=None):
+    """{band name: described() of net_closable} over a model's filled part, by the CLASSIC increment band of each
+    order's price, every band of PRICE_BAND_NAMES in ladder order (S2), so that every group's dict has one shape
+    (resting_study._together merges half-years key by key): a band that holds no order is counts only, n 0. Each
+    band is a group under part and rest (_bands_given; given: its names, computed when None): counts_only below
+    min_values, rest_not_given when not given; every band counts only with reason filled_is_all_placed under that
+    flag (M4)."""
+    part = filled_part(plan, rows, model)
+    bands = {name: [] for name in PRICE_BAND_NAMES}
+    for row in part.rows:
+        bands[price_band(row.price)].append(row)
+    if part.all_placed:
+        return {name: _counts(group, FILLED_IS_ALL_PLACED) for name, group in bands.items()}
+    given = _bands_given(plan, rows) if given is None else given
+    found = {}
+    for name in PRICE_BAND_NAMES:
+        group = bands[name]
+        if len(group) < plan.min_values:
+            found[name] = _counts(group, COUNTS_ONLY)
+        elif (model, name) not in given:
+            found[name] = _counts(group, REST_NOT_GIVEN)
+        else:
+            found[name] = described(plan, series(plan, group, NET_CLOSABLE, end, model=model))
+    return found
+
+
+def _orders(market):
+    """The OrderRows of one market's group: an OrderRow (a favourite cell) or an each_active cell's tuple."""
+    return (market,) if isinstance(market, OrderRow) else tuple(market)
+
+
+def realised(plan, market, model, end, stake, rounded=True):
+    """The realised diagnostic of one market's orders of one cell, per order in the market's order: the result per
+    GBP 1 of backer's stake of its fill under model at one BSP end, exact; None for an order not scored or not
+    filled under model, and for every order of a market whose dead_heat is not False (a dead heat, or not known,
+    which includes a result that names no single WINNER; A12). market: what the walk gave one cell for one record
+    (an OrderRow, or an each_active cell's tuple). stake: the cell's GBP stake, an exact Fraction above 0.
+    A valued order's result before commission reads won: a fill a close at BSP could follow (closable) is the order
+    and an equal-stakes opposite order at B, the BSP at that end: B - L for a LAY (L - B for a BACK) if its runner
+    won, else 0; a fill none could follow is held: -(L - 1) for a LAY (L - 1 for a BACK) if its runner won, else +1
+    (-1). Commission is charged once, on the market (COMMISSION_BASIS): c x the sum of the market's results when
+    that is above 0, in pounds at stake, rounded to the nearest penny with a half penny up (lp.penny,
+    COMMISSION_ROUNDING), or exact when rounded is false. It is shared among the valued orders in proportion to their
+    results above 0 (COMMISSION_SHARE): an order whose result is 0 or below bears none. The CR1 mean and interval of
+    these values do not depend on that share, since a market's orders share a race date and both read per-date
+    sums; the SD does. With every valued fill closable, a single-winner market has at most one result that is not 0,
+    so each order bears exactly c x max(its result, 0), the per-order charge, and over outcomes weighted p = 1/B the
+    unrounded value is net_closed; a held fill beside another can make the market's charge smaller than the orders'
+    (C2). ValueError for a scored filled row with no result (a v1 walk's) or a stake not above 0."""
+    if not stake > 0:
+        raise ValueError("realised:stake_not_above_0")
+    rows = _orders(market)
+    step = {AS_WRITTEN: 0, PLUS_STEP: plan.bsp_step}[end]
+    results = {}
+    for place, row in enumerate(rows):
+        if row.klass != SCORED or row.fills[model].kind is None:
+            continue
+        if row.won is None:
+            raise ValueError("realised:result_not_on_the_row")
+        if row.dead_heat is not False:
+            return [None] * len(rows)
+        sign = 1 if row.side == LAY else -1
+        if closable_measure(row, model) == NET_CLOSED:
+            results[place] = sign * (row.bsp + step - row.price) if row.won else Fraction(0)
+        else:
+            results[place] = -sign * (row.price - 1) if row.won else Fraction(sign)
+    positive = sum((max(result, 0) for result in results.values()), Fraction(0))
+    charge = plan.commission * max(sum(results.values(), Fraction(0)), 0) * stake
+    if rounded:
+        charge = penny(charge)
+    found = [None] * len(rows)
+    for place, result in results.items():
+        found[place] = result - (charge * max(result, 0) / positive / stake if positive else 0)
+    return found
+
+
+def _valued(markets, model):
+    """The positions, among the scored rows of markets in their order (realised_figure's rows), of the orders
+    realised values under model: filled under it, in a market none of whose scored orders filled under it has a
+    dead_heat that is not False."""
+    found, place = set(), 0
+    for market in markets:
+        orders = [row for row in _orders(market) if row.klass == SCORED]
+        filled = [row.fills[model].kind is not None for row in orders]
+        heat = any(row.dead_heat is not False for row, yes in zip(orders, filled) if yes)
+        found.update(place + index for index, yes in enumerate(filled) if yes and not heat)
+        place += len(orders)
+    return found
+
+
+def _realised_given(plan, markets, rows, given):
+    """The models whose realised figure part and rest across the models gives, in GIVEN_FIRST's order:
+    given_together over each model's valued orders (_valued), for the models whose figure nothing else holds back
+    (_withholds; min_values valued orders). A market left out (a dead heat, or not known) can make two models'
+    valued orders differ by fewer than min_values though their filled ones do not; realised is one measure, so
+    only its own groups can be differenced."""
+    groups = []
+    for model in GIVEN_FIRST:
+        members = _valued(markets, model)
+        if _withholds(plan, filled_part(plan, rows, model), model, given) is None \
+                and len(members) >= plan.min_values:
+            groups.append((model, members))
+    return given_together(plan, len(rows), groups)
+
+
+def realised_figure(plan, markets, model, end, stake, given=None, rounded=True):
+    """The realised diagnostic of a model at one BSP end beside the deciding figure, deciding nothing (S2, S3):
+    described() of realised over the valued orders of markets, rounded per market (O11; rounded=False: the same
+    figure with its commission exact, to be read beside it, since the rounding alone can move a mean near 0 across
+    it), and left_out, the model's filled scored orders left out because their market's dead_heat is true
+    (dead_heat) or not known (dead_heat_unknown, which includes a result naming no single WINNER). markets: every
+    market's group of one group of rows (one cell on a label, or a half-year of it), whose scored rows are the rows
+    figures() takes. Given as the model's filled figures are (_withholds over those rows; given: given_figures'
+    names, computed when None), counts_only below min_values valued orders, and rest_not_given when part and rest
+    across the models' valued orders holds it back (_realised_given). When not given it holds the count and race
+    dates of the model's filled part alone, with left_out None: nothing read from won or dead_heat."""
+    rows = [row for market in markets for row in _orders(market) if row.klass == SCORED]
+    part = filled_part(plan, rows, model)
+    given = given_figures(plan, rows) if given is None else given
+    reason = _withholds(plan, part, model, given)
+    if reason is None:
+        values, left = [], dict.fromkeys((DEAD_HEAT, DEAD_HEAT_UNKNOWN), 0)
+        for market in markets:
+            orders = _orders(market)
+            for row, value in zip(orders, realised(plan, orders, model, end, stake, rounded)):
+                if row.klass != SCORED or row.fills[model].kind is None:
+                    continue
+                if value is None:
+                    left[DEAD_HEAT if row.dead_heat else DEAD_HEAT_UNKNOWN] += 1
+                else:
+                    values.append((row.race_date, float(value)))
+        if len(values) < plan.min_values:
+            reason = COUNTS_ONLY
+        elif model not in _realised_given(plan, markets, rows, given):
+            reason = REST_NOT_GIVEN
+        else:
+            return dict(described(plan, values), left_out=left)
+    return dict(_counts(part.rows, reason), left_out=None)
 
 
 # ---------------------------------------------------------------------------------------------------------------

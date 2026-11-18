@@ -19,7 +19,8 @@ domain, the file in its one byte form (sorted keys, indent 2, ASCII, one final n
 classes, models, fill kinds, reasons and labels equal to this module's own, in order. It is given the raw bytes
 of the split file and of each rule file, checks each sha256 against the one the registration names, and refuses:
 rule files whose lineages differ; a partition label the split refuses (unknown, sealed, never, no budget) or of
-the wrong role; a rule file whose when row uses one of this module's own codes (HARNESS_CODES) or a code the
+the wrong role; a rule file of any schema but betangel.rule/v1 (rule_schema_not_for_this_study: every study here
+walks v1 views); a rule file whose when row uses one of this module's own codes (HARNESS_CODES) or a code the
 registration's population.codes does not hold; a fixed price off the CLASSIC ladder. Its id is close-v1 or one of
 EARLY_IDS (any other: id:not_supported), and Plan.study is the file's id. A new id's registration also holds
 data.traded_volume.hour_rises, "not_counted", and data.partitions.read, "explore_only", and lists four trade
@@ -412,6 +413,8 @@ def _rule_files(named, raws, codes, selectors=(FAVOURITE,)):
             rule = parse_rule(raw)
         except RuleError as error:
             _fail(place, str(error))
+        if rule.schema != rulefile.SCHEMA:
+            _fail(place, "rule_schema_not_for_this_study")      # every study here walks v1 views (RuleView)
         if name != f"{rule.id}.json":
             _fail(place, "name_not_the_rule_id")
         if rule.select not in selectors:

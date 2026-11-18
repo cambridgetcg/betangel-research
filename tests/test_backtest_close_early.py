@@ -166,19 +166,24 @@ class RuleFiles(unittest.TestCase):
         self.assertEqual(RULE_FAV.times, tuple((at_s, PULL) for at_s in TIMES))
         self.assertEqual(RULE_FAV.market, Market(("GB", "IE"), "7", "WIN", "ODDS", 1, True, None, None))
         self.assertEqual(RULE_FAV.intents, (Template("LAY", "best_back", None, Fraction(2), "lapse"),))
-        self.assertEqual([tuple(row) for row in RULE_FAV.when], self.MARKET_ROWS + [
+        self.assertEqual([(row.feature, row.op, row.value, row.code) for row in RULE_FAV.when], self.MARKET_ROWS + [
             ("best_back", ">=", Fraction("1.50"), "best_back_out_of_range"),
             ("best_back", "<=", Fraction("4.00"), "best_back_out_of_range")] + self.LATER_ROWS)
+        # A v1 file: no row is a move row (betangel.rule/v2's Predicate.from_s and to_s keep their defaults).
+        self.assertEqual((RULE_FAV.schema, {(row.from_s, row.to_s) for row in RULE_FAV.when}),
+                         (rulefile.SCHEMA, {(None, None)}))
 
     def test_the_band_file(self):
         self.assertEqual((RULE_BAND.id, RULE_BAND.lineage, RULE_BAND.select, RULE_BAND.parent_sha256),
                          (BAND_RULE, "close", "each_active", FAV_SHA256))
         self.assertEqual((RULE_BAND.times, RULE_BAND.market, RULE_BAND.intents),
                          (RULE_FAV.times, RULE_FAV.market, RULE_FAV.intents))
-        self.assertEqual([tuple(row) for row in RULE_BAND.when], self.MARKET_ROWS + [
+        self.assertEqual([(row.feature, row.op, row.value, row.code) for row in RULE_BAND.when], self.MARKET_ROWS + [
             ("best_back", ">=", Fraction("1.01"), "no_best_back"),
             ("best_back", ">=", Fraction("4.00"), "best_back_out_of_range"),
             ("best_back", "<=", Fraction("10.00"), "best_back_out_of_range")] + self.LATER_ROWS)
+        self.assertEqual((RULE_BAND.schema, {(row.from_s, row.to_s) for row in RULE_BAND.when}),
+                         (rulefile.SCHEMA, {(None, None)}))
 
     def test_the_favourite_file_is_close_v1s_lay_file_with_its_times_rows_and_sentences_changed(self):
         fav, lay = json.loads(RULES_RAW[f"{FAV_RULE}.json"]), json.loads(LAY_RAW)

@@ -65,7 +65,7 @@ from betangel_research.betfair.backtest.rulefile import RuleView2, RunnerView2, 
 from betangel_research.betfair.backtest.study_ledger import LEDGER_FILE, PassRequest, StudyLedger, verify
 from betangel_research.betfair.backtest.trial_ledger import UnlockError
 from betangel_research.betfair.backtest import resting
-from betangel_research.betfair.backtest.lp import tick_step, top as lp_top
+from betangel_research.betfair.backtest.lp import tick_step, top as lp_top, valued as lp_valued
 from betangel_research.betfair.backtest.market_index import _runner_id
 from betangel_research.betfair.backtest.movement import LADDERS, LadderFold
 
@@ -1061,12 +1061,12 @@ class PopulationCodes(RestingCase):
         self.assertEqual((row.label, row.half, row.race_date), ("PRO-V", "H2", "2015-12-01"))
 
     def test_a_row_holds_no_market_or_selection_id(self):
-        # betangel.rule/v2's PR C added the last five row fields and the last three fill fields, each keyed by model,
-        # bucket or count name: none holds an id.
+        # betangel.rule/v2's PR C added five row fields and the last three fill fields, each keyed by model, bucket or
+        # count name; PR D added won and dead_heat, two bools: none holds an id.
         self.assertEqual(OrderRow._fields, ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid",
                                             "fills", "null_mid", "null_reason", "trd", "no_status", "gap_ticks",
                                             "placed_in_the_hour", "fill_minute", "minutes", "images",
-                                            "through_refused", "closable", "in_play_before_pull"))
+                                            "through_refused", "closable", "in_play_before_pull", "won", "dead_heat"))
         self.assertEqual(Fill._fields, ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn",
                                         "ended", "image", "through_below_stake", "crossed"))
         for plan in (PLAN, replace(PLAN, views=resting.V2)):
@@ -6022,8 +6022,9 @@ V2_ROWS = (
 VIEW_OF2 = resting.view_of2                          # the function itself, for a spy to call through
 T0 = ms(DAY_OFF)                                     # 14:00 UTC on Tuesday 2 June 2015, an explore date
 ZERO_MOVES = dict.fromkeys(resting.MOVE_COUNTS, 0)
-# What a v1 walk leaves at its defaults: the last five row fields and the last three fill fields.
-V2_ROW_FIELDS = ("minutes", "images", "through_refused", "closable", "in_play_before_pull")
+# What a v1 walk leaves at its defaults: the last seven row fields (PR D added won and dead_heat) and the last three
+# fill fields.
+V2_ROW_FIELDS = ("minutes", "images", "through_refused", "closable", "in_play_before_pull", "won", "dead_heat")
 V2_FILL_FIELDS = ("image", "through_below_stake", "crossed")
 IMAGE_BATCHES, IMAGE_LEFT_OUT = resting.IMAGE_BATCHES, resting.IMAGE_LEFT_OUT
 
@@ -6662,7 +6663,8 @@ class FuturePerturbation(V2Case):
 class OutcomeScrub(V2Case):
     """M6: the record's evaluator_only_outcome replaced by another market's, structurally valid, with other BSPs, a
     winner and a removal after the cutoff, keeping read_complete. Every decision, view, move count, queue and fill
-    stays; only the class and the BSP may move."""
+    stays; only the class, the BSP, won and dead_heat may move (PR D's two are None here: no row of the other
+    block is scored)."""
 
     def test_another_outcome_block_moves_only_the_class_and_the_bsp(self):
         books = {3600: BOOK, 1000: book(FAV=(2.6, 2.62))}
@@ -6694,12 +6696,16 @@ class OutcomeScrub(V2Case):
         rows = {cell: (orders_of(before_.outcomes[cell]), orders_of(after.outcomes[cell])) for cell in V2_CELLS}
         self.assertEqual(sum(len(ours) for ours, _ in rows.values()), 9)
         for ours, theirs in rows.values():
-            self.assertEqual([row._replace(klass=None, bsp=None) for row in theirs],
-                             [row._replace(klass=None, bsp=None) for row in ours])
+            self.assertEqual([row._replace(klass=None, bsp=None, won=None, dead_heat=None) for row in theirs],
+                             [row._replace(klass=None, bsp=None, won=None, dead_heat=None) for row in ours])
         fills = {fill.kind for ours, _ in rows.values() for row in ours for fill in row.fills.values()}
         self.assertEqual(fills, {THROUGH, None})
         self.assertEqual({row.klass for ours, _ in rows.values() for row in ours}, {SCORED})
         self.assertEqual({row.klass for _, theirs in rows.values() for row in theirs}, {"post_decision_removal"})
+        # The result is on a scored row only: FAV won here; no row of the other block is scored.
+        self.assertEqual({(row.price == P(2.6), row.won, row.dead_heat) for ours, _ in rows.values() for row in ours},
+                         {(True, True, False), (False, False, False)})
+        self.assertEqual({(row.won, row.dead_heat) for _, theirs in rows.values() for row in theirs}, {(None, None)})
 
 
 def buckets(**counts):
@@ -6901,8 +6907,9 @@ class FillSwitch(RestingCase):
 
 class Closable(RestingCase):
     """C4: a fill is closable when its batch left the market OPEN and not in play, or a later batch at or before the
-    pull did; read from the state after each batch. The favourite's LAYs from 600 and 300 s fill by trade_through at
-    200 s; they are pulled at 120 s."""
+    pull did, while the market had not been in play before that batch since t (once in play, the off has passed);
+    read from the state after each batch. The favourite's LAYs from 600 and 300 s fill by trade_through at 200 s;
+    they are pulled at 120 s."""
 
     def test_closable_is_tracked_from_the_fill_to_the_pull(self):
         through = fav_at(200, DAY_OFF, atb=[[2.48, 0]], trd=[[2.48, 1.0]])
@@ -6921,6 +6928,11 @@ class Closable(RestingCase):
                  ("in play, then another batch in play", [through, status_at(200, in_play=True, off=DAY_OFF),
                                                           fav_at(150, DAY_OFF, atb=[[2.44, 5.0]])], False,
                   (False, True), True),
+                 # The in-play flag reverts before the pull, the BSP already reconciled: OPEN and not in play again,
+                 # but after the off, so still no close (PR D's adversarial review, S2).
+                 ("in play, then not in play again before the pull",
+                  [through, status_at(200, in_play=True, off=DAY_OFF, bspReconciled=True),
+                   status_at(150, off=DAY_OFF, bspReconciled=True)], False, (False, True), True),
                  ("in play after the fill", [through, status_at(150, in_play=True, off=DAY_OFF)], True,
                   (False, False), True),
                  # In play first in the pull's own batch: by the pull (build note 7), the pull included.
@@ -6978,7 +6990,8 @@ class OldIdsKeepTheirDefaults(unittest.TestCase):
     def test_the_plans_of_the_old_ids(self):
         for plan in (PLAN, EARLY_PLAN, EACH_PLAN, *(early_plan(study=study) for study in EARLY_IDS)):
             self.assertEqual((plan.views, plan.windows, plan.move_max_spread_ticks, plan.image_rises_counted,
-                              plan.through_needs_lowered), (resting.V1, (), None, True, False))
+                              plan.through_needs_lowered, plan.value_measure),
+                             (resting.V1, (), None, True, False, NET_HELD))
         self.assertEqual(resting.VIEWS, ("v1", "v2"))
 
     def test_the_seeded_batch_under_each_old_plan(self):
@@ -7172,6 +7185,834 @@ class KeptTopsUnderV2(RestingCase):
                             found[keep] = walk(stream, given.records[market_id], plan, DEFAULT_LIMITS)
                     with self.subTest(market=market_id, views=plan.views, windows=plan.windows):
                         self.assertEqual(named_form(found[True]), named_form(found[False]))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# betangel.rule/v2, PR D: the scoring (DESIGN-rule-v2 §2.3-§2.6, §4.2 PR D): Plan.value_measure and net_closable;
+# the realised diagnostic with its per-market commission, rounded half up per market (Yu's O11) and shared by
+# COMMISSION_SHARE; hit_rate, clv_ticks and by_price_band; won and dead_heat on a v2 walk's rows; counts only under
+# filled_is_all_placed (M4). No registration sets value_measure yet (PR E): every plan here is a parsed Plan changed
+# with dataclasses.replace. Rows are built by hand unless a walk is named, and every price is a test value.
+
+NET_CLOSABLE, HIT_RATE, CLV_TICKS = resting.NET_CLOSABLE, resting.HIT_RATE, resting.CLV_TICKS
+PRICE_BANDS, CLOSABLE_FILLS = resting.PRICE_BANDS, resting.CLOSABLE_FILLS
+CLOSING = replace(PLAN, views=resting.V2, value_measure=NET_CLOSABLE)
+C, TWO = PLAN.commission, Fraction(2)                   # Basic 2%, and the rule files' stake of GBP 2
+# A field whose BSPs' 1 / B sum to exactly 1 (C2): the outcome "runner i wins" has weight 1 / B_i, so a held order's
+# "loses" weight is 1 - 1 / B_i.
+FIELD = (2.0, 4.0, 4.0)
+
+
+def closing(row, closable=True, won=False, dead_heat=False):
+    """A hand-built row as a scored v2 row: closable (a bool, or {model: bool}) under each model it filled under,
+    None under the others, and its result."""
+    marks = closable if isinstance(closable, dict) else dict.fromkeys(MODELS, closable)
+    return row._replace(closable={model: None if row.fills[model].kind is None else marks[model] for model in MODELS},
+                        won=won, dead_heat=dead_heat)
+
+
+def v2_order(bsp, closable=True, won=False, dead_heat=False, **kwargs):
+    """order() as a scored v2 row (closing)."""
+    return closing(order(bsp, **kwargs), closable, won, dead_heat)
+
+
+def closing_block(count, days, bsps, closable=True, won=False, dead_heat=False, **kwargs):
+    """block() as scored v2 rows (closing)."""
+    return [closing(row, closable, won, dead_heat) for row in block(count, days, bsps, **kwargs)]
+
+
+def statistics_of(figure):
+    """The values of a figure's statistic keys (resting.STATISTICS) that it holds."""
+    return {figure[key] for key in STATISTICS if key in figure}
+
+
+class ClosableScore(unittest.TestCase):
+    """net_closable and the net it reads, against hand-computed Fractions and lp-v1's valuation as an oracle."""
+
+    def test_net_closed_with_bsp_above_at_and_below_the_price(self):
+        # A LAY at 2.5: BSP 2.6 gains 1/26 and keeps 98% of it; 2.5 is 0; 2.4 loses 1/24 and pays nothing.
+        self.assertEqual([score(CLOSING, LAY, P(2.5), P(bsp), NET_CLOSED) for bsp in (2.6, 2.5, 2.4)],
+                         [Fraction(49, 1300), 0, Fraction(-1, 24)])
+        # A BACK at 2.52: BSP 2.4 gains 1/20; 2.52 is 0; 2.8 loses 1/10.
+        self.assertEqual([score(CLOSING, BACK, P(2.52), P(bsp), NET_CLOSED) for bsp in (2.4, 2.52, 2.8)],
+                         [Fraction(49, 1000), 0, Fraction(-1, 10)])
+
+    def test_net_closable_reads_each_rows_close(self):
+        rows = [v2_order(2.6), v2_order(2.6, closable=False),
+                v2_order(2.4, closable={OPTIMISTIC: True, CENTRAL: False, PESSIMISTIC: False})]
+        for model in MODELS:
+            read = [NET_CLOSED, NET_HELD, NET_CLOSED if model == OPTIMISTIC else NET_HELD]
+            for end in BSP_ENDS:
+                with self.subTest(model=model, end=end):
+                    self.assertEqual(series(CLOSING, rows, NET_CLOSABLE, end, model=model),
+                                     [series(CLOSING, [row], what, end)[0] for row, what in zip(rows, read)])
+        self.assertEqual([resting.closable_counts(rows, model) for model in MODELS],
+                         [{"closable": 2, "not_closable": 1}] + [{"closable": 1, "not_closable": 2}] * 2)
+        # A row with no fill under the model, or a v1 walk's, has no close to read.
+        for row in (v2_order(2.6, filled=(OPTIMISTIC,)), order(2.6)):
+            with self.assertRaises(ValueError) as caught:
+                series(CLOSING, [row], NET_CLOSABLE, AS_WRITTEN, model=PESSIMISTIC)
+            self.assertEqual(str(caught.exception), "score:closable_not_known")
+        # For a LAY held is below closed at every BSP, so a fill no close could follow leans conservative (S8).
+        for bsp in (1.5, 2.4, 2.5, 2.6, 3.0, 7.4):
+            self.assertLess(score(CLOSING, LAY, P(2.5), P(bsp), NET_HELD),
+                            score(CLOSING, LAY, P(2.5), P(bsp), NET_CLOSED))
+
+    def test_net_closed_is_lp_valueds_unrounded_net(self):
+        # lp-v1's valuation (lp.valued) of a LAY at L and a BACK at B, or of a BACK at L and a LAY at B, valued at BSP
+        # B with p = 1 / B: an oracle that shares no code with score().
+        one = SimpleNamespace(stake=Fraction(1), commission=C)
+        for price in (1.9, 2.5, 3.0, 4.2):
+            for bsp in (1.85, 2.0, 2.5, 2.57, 3.05, 4.0, 7.4):
+                with self.subTest(price=price, bsp=bsp):
+                    self.assertEqual(lp_valued(one, P(price), P(bsp), P(bsp))[1],
+                                     score(CLOSING, LAY, P(price), P(bsp), NET_CLOSED))
+                    self.assertEqual(lp_valued(one, P(bsp), P(price), P(bsp))[1],
+                                     score(CLOSING, BACK, P(price), P(bsp), NET_CLOSED))
+
+    def test_the_realised_rounding_is_lp_valueds(self):
+        # At GBP 2, realised's expectation over win and lose (p = 1 / B) is lp.valued's net with its commission
+        # rounded half up (lp.penny), per GBP 1.
+        two = SimpleNamespace(stake=TWO, commission=C)
+        for price, bsp in ((2.5, 2.6), (2.5, 2.4), (1.9, 2.0), (2.5, 2.5), (3.0, 3.6), (2.5, 3.55)):
+            with self.subTest(price=price, bsp=bsp):
+                row = v2_order(bsp, price=price)
+                found = sum(weight * resting.realised(CLOSING, row._replace(won=won), PESSIMISTIC, AS_WRITTEN, TWO)[0]
+                            for won, weight in ((True, 1 / P(bsp)), (False, 1 - 1 / P(bsp))))
+                self.assertEqual(found, lp_valued(two, P(price), P(bsp), P(bsp))[0] / 2)
+
+
+class Realised(unittest.TestCase):
+    """The realised diagnostic: per order the result of its fill, closed or held, commission charged once a market."""
+
+    @staticmethod
+    def one(row, end=AS_WRITTEN, rounded=True, stake=TWO, model=PESSIMISTIC):
+        return resting.realised(CLOSING, row, model, end, stake, rounded)[0]
+
+    def test_a_winner_and_a_loser(self):
+        # A LAY at 2.5 closed at BSP 3.0: B - L = 1/2 if its runner won (2% of GBP 1 is 2p), else 0.
+        closed = v2_order(3.0)
+        self.assertEqual([self.one(closed._replace(won=won)) for won in (True, False)], [Fraction(49, 100), 0])
+        self.assertEqual(self.one(closed._replace(won=True), PLUS_STEP), Fraction(1, 2))   # 2% of GBP 1.02 is 2p
+        # Closed at BSP 2.4: a loss of 1/10 if it won, which pays nothing.
+        self.assertEqual(self.one(v2_order(2.4, won=True)), Fraction(-1, 10))
+        # Held: -(L - 1) if it won, at either end; +1 less 2% if it lost (4p at GBP 2, exact).
+        held = v2_order(3.0, closable=False)
+        self.assertEqual([self.one(held._replace(won=won), end) for won in (True, False) for end in BSP_ENDS],
+                         [Fraction(-3, 2)] * 2 + [Fraction(49, 50)] * 2)
+        # A BACK at 2.52 closed at BSP 2.4: L - B = 3/25 if it won (2% of 24p rounds to 0p; unrounded, 98% of it);
+        # held, L - 1 less 6p of GBP 3.04 (6.08p) a pound, or -1.
+        back = v2_order(2.4, side=BACK, price=2.52, won=True)
+        self.assertEqual([self.one(back), self.one(back, rounded=False), self.one(back._replace(won=False))],
+                         [Fraction(3, 25), Fraction(3, 25) * Fraction(49, 50), 0])
+        held_back = closing(back, closable=False, won=True)
+        self.assertEqual([self.one(held_back), self.one(held_back._replace(won=False))], [Fraction(149, 100), -1])
+        # Each model's own close: closable at the front of the queue, held behind it.
+        mixed = v2_order(3.0, closable={OPTIMISTIC: True, CENTRAL: False, PESSIMISTIC: False}, won=True)
+        self.assertEqual([self.one(mixed, model=model) for model in MODELS],
+                         [Fraction(49, 100)] + [Fraction(-3, 2)] * 2)
+        # Not filled under the model, or not scored: no value.
+        partial = v2_order(3.0, filled=(OPTIMISTIC,), won=True)
+        self.assertEqual([self.one(partial), self.one(partial, model=OPTIMISTIC)], [None, Fraction(49, 100)])
+        unscored = closed._replace(klass="missing_bsp", bsp=None, won=None, dead_heat=None)
+        self.assertEqual(resting.realised(CLOSING, (unscored, closed._replace(won=True)), PESSIMISTIC, AS_WRITTEN, TWO),
+                         [None, Fraction(49, 100)])
+        # A v1 walk's row holds no result; a stake must be above 0.
+        for row, stake, reason in ((order(3.0), TWO, "realised:result_not_on_the_row"),
+                                   (closed, Fraction(0), "realised:stake_not_above_0")):
+            with self.subTest(reason=reason), self.assertRaises(ValueError) as caught:
+                resting.realised(CLOSING, row, PESSIMISTIC, AS_WRITTEN, stake)
+            self.assertEqual(str(caught.exception), reason)
+
+    def test_penny_rounding_half_up_at_the_boundary(self):
+        # O11: a market's commission to the nearest penny, a half penny up (lp.penny). At GBP 2.50 a LAY at 2.5
+        # closed at 2.6 wins 25p, whose 2% is 0.5p: it rounds up to 1p. At 2.59, 0.45p rounds to 0; at 2.61, 0.55p
+        # rounds to 1p. At the plus-step end 2.59 is valued at 2.60.
+        stake = Fraction(5, 2)
+        cases = ((2.6, AS_WRITTEN, Fraction(1, 10) - Fraction(1, 100) / stake),
+                 (2.59, AS_WRITTEN, Fraction(9, 100)),
+                 (2.61, AS_WRITTEN, Fraction(11, 100) - Fraction(1, 100) / stake),
+                 (2.59, PLUS_STEP, Fraction(1, 10) - Fraction(1, 100) / stake))
+        for bsp, end, value in cases:
+            with self.subTest(bsp=bsp, end=end):
+                self.assertEqual(self.one(v2_order(bsp, won=True), end, stake=stake), value)
+        self.assertEqual(resting.COMMISSION_ROUNDING, "per_market_half_up_penny")
+        # N8: at GBP 2 the 0.4p on a 20p win rounds to 0, so the realised figure is kinder than the unrounded one.
+        win = v2_order(2.6, won=True)
+        self.assertEqual([self.one(win), self.one(win, rounded=False)], [Fraction(1, 10), Fraction(49, 500)])
+        # But not always: a 32p win at GBP 2 (closed at 2.66) pays 0.64p, which rounds up to 1p.
+        win = v2_order(2.66, won=True)
+        self.assertEqual([self.one(win), self.one(win, rounded=False)],
+                         [Fraction(16, 100) - Fraction(1, 200), Fraction(16, 100) * Fraction(49, 50)])
+
+    def test_the_unrounded_figure_beside_the_rounded_one(self):
+        # The rounding alone can move a mean near 0 across it (PR D's adversarial review, S4): 101 closed LAYs at
+        # 2.5 whose runner won at BSP 2.6 (20p at GBP 2, commission 0.4p, rounded to 0) beside 100 closed at 2.4
+        # whose runner won (a loss of 1/10). Rounded the mean is above 0; with commission exact (rounded=False),
+        # below. The unrounded figure is the same figure otherwise: the same orders, counts and left_out.
+        wins = [(v2_order(2.6, won=True, day=V_DAYS[index % 16]),) for index in range(101)]
+        losses = [(v2_order(2.4, won=True, day=V_DAYS[index % 16]),) for index in range(100)]
+        unfilled = [(row,) for row in closing_block(100, V_DAYS, [2.4], filled=NONE)]
+        markets = wins + losses + unfilled
+        found = {rounded: resting.realised_figure(CLOSING, markets, PESSIMISTIC, AS_WRITTEN, TWO, rounded=rounded)
+                 for rounded in (True, False)}
+        self.assertGreater(found[True]["mean"], 0)
+        self.assertLess(found[False]["mean"], 0)
+        exact = [(rows[0].race_date, float(resting.realised(CLOSING, rows, PESSIMISTIC, AS_WRITTEN, TWO, False)[0]))
+                 for rows in wins + losses]
+        self.assertEqual(found[False],
+                         dict(described(CLOSING, exact), left_out={"dead_heat": 0, "dead_heat_unknown": 0}))
+        self.assertEqual(found[True], resting.realised_figure(CLOSING, markets, PESSIMISTIC, AS_WRITTEN, TWO))
+        self.assertEqual({key: value for key, value in found[True].items() if key not in STATISTICS},
+                         {key: value for key, value in found[False].items() if key not in STATISTICS})
+
+    def test_a_dead_heat_market_is_left_out_and_counted(self):
+        def market(day, dead_heat=False, second=MODELS):
+            """A LAY at 1.9 closed at 2.0 whose runner won, beside a held LAY at 3.5 (BSP 4.0) filled under second;
+            in a dead heat (or one not known) both runners won."""
+            heat = dead_heat is not False
+            return (v2_order(2.0, price=1.9, won=True, dead_heat=dead_heat, day=day),
+                    v2_order(4.0, price=3.5, closable=False, won=heat, dead_heat=dead_heat, day=day, filled=second))
+
+        normal = [market(V_DAYS[index % 16]) for index in range(120)]
+        # Three dead heats, one not known, and a dead heat whose second order did not fill.
+        heats = [market(V_DAYS[index], True) for index in range(3)] + [market(V_DAYS[3], None)] \
+            + [market(V_DAYS[4], True, NONE)]
+        unfilled = [(row,) for row in closing_block(100, V_DAYS, [2.4], filled=NONE)]
+        self.assertEqual(resting.realised(CLOSING, heats[0], PESSIMISTIC, AS_WRITTEN, TWO), [None, None])
+        self.assertEqual(resting.realised(CLOSING, heats[3], PESSIMISTIC, AS_WRITTEN, TWO), [None, None])
+        # The other markets: 2% of GBP 2.20 is 4.4p, so 4p, shared 1 : 10 (as CommissionIdentity's share test).
+        values = [(day, float(value)) for day in (rows[0].race_date for rows in normal)
+                  for value in (Fraction(1, 10) - Fraction(1, 550), 1 - Fraction(1, 55))]
+        for model in MODELS:
+            with self.subTest(model=model):
+                found = resting.realised_figure(CLOSING, normal + heats + unfilled, model, AS_WRITTEN, TWO)
+                self.assertEqual(found, dict(described(CLOSING, values),
+                                             left_out={"dead_heat": 7, "dead_heat_unknown": 2}))
+                self.assertEqual(found["bets"], 240)
+        self.assertEqual((resting.DEAD_HEAT, resting.DEAD_HEAT_UNKNOWN), ("dead_heat", "dead_heat_unknown"))
+        # Below min_values valued orders the figure gives the model's filled part's count alone: 92 valued and 8
+        # left out give 100, and nothing says how many were left out.
+        found = resting.realised_figure(CLOSING, normal[:46] + heats[:4] + unfilled, PESSIMISTIC, AS_WRITTEN, TWO)
+        self.assertEqual((found["bets"], found["race_dates"], found["reason"], found["left_out"]),
+                         (100, 16, COUNTS_ONLY, None))
+        self.assertEqual(statistics_of(found), {None})
+
+    def test_missing_bsp_is_not_scored(self):
+        # A market whose second order has no valid BSP: never valued, never counted, and out of the market's net.
+        missing = v2_order(4.0, price=3.5, closable=False)._replace(klass="missing_bsp", bsp=None, won=None,
+                                                                     dead_heat=None)
+        first = v2_order(2.0, price=1.9, won=True)
+        self.assertEqual(resting.realised(CLOSING, (first, missing), PESSIMISTIC, AS_WRITTEN, TWO, False),
+                         [Fraction(1, 10) * Fraction(49, 50), None])
+        markets = [(first._replace(race_date=V_DAYS[index % 16]), missing) for index in range(150)] \
+            + [(row,) for row in closing_block(100, V_DAYS, [2.4], filled=NONE)]
+        found = resting.realised_figure(CLOSING, markets, PESSIMISTIC, AS_WRITTEN, TWO)
+        self.assertEqual((found["bets"], found["left_out"]), (150, {"dead_heat": 0, "dead_heat_unknown": 0}))
+        self.assertAlmostEqual(found["mean"], 0.1, places=15)       # 2% of 20p is 0.4p, which rounds to 0
+
+    def test_the_share_moves_neither_the_mean_nor_the_interval(self):
+        # Mixed markets on 16 race dates: the realised figure as given, against the same values with each market's
+        # sum on its first order and 0 on its second. The mean and the CR1 interval read per-race-date sums only,
+        # and a market's orders share a race date: they are the same. The SD is not.
+        markets = []
+        for index in range(160):
+            day, winner = V_DAYS[index % 16], index % 3
+            markets.append((v2_order(2.0, price=1.9 if index % 2 else 2.2, won=winner == 0, day=day),
+                            v2_order(4.0, price=3.5, closable=False, won=winner == 1, day=day)))
+        unfilled = [(row,) for row in closing_block(100, V_DAYS, [2.4], filled=NONE)]
+        found = resting.realised_figure(CLOSING, markets + unfilled, PESSIMISTIC, AS_WRITTEN, TWO)
+        moved = []
+        for rows in markets:
+            total = sum(resting.realised(CLOSING, rows, PESSIMISTIC, AS_WRITTEN, TWO))
+            moved += [(rows[0].race_date, float(total)), (rows[0].race_date, 0.0)]
+        other = described(CLOSING, moved)
+        self.assertEqual((found["bets"], found["race_dates"], other["bets"]), (320, 16, 320))
+        for key in ("mean", "se", "ci_low", "ci_high"):
+            self.assertAlmostEqual(found[key], other[key], places=12)
+        self.assertNotAlmostEqual(found["sd"], other["sd"], places=4)
+        # Some markets did offset a held gain against a closed loss, so the share rule had something to share.
+        self.assertTrue(any(rows[0].price == P(2.2) and rows[0].won for rows in markets))
+        self.assertEqual(resting.COMMISSION_SHARE, "pro_rata_to_positive_result")
+
+
+class CommissionIdentity(unittest.TestCase):
+    """§2.4 and C2 over FIELD's enumerated outcomes (BSPs 2.00, 4.00 and 4.00, whose 1 / B sum to exactly 1), with
+    the realised commission unrounded: a market's LAYs sit on runners of FIELD, outcome i is runner i winning,
+    weighted 1 / B_i."""
+
+    @staticmethod
+    def market(*orders):
+        """{FIELD place: row} of LAYs (place, price, closable) on FIELD's runners."""
+        return {place: v2_order(FIELD[place], price=price, closable=closable) for place, price, closable in orders}
+
+    @staticmethod
+    def outcome(market, winner, rounded=False):
+        """{place: realised} of a market when FIELD's runner `winner` wins (which may hold no order)."""
+        rows = tuple(row._replace(won=place == winner) for place, row in market.items())
+        return dict(zip(market, resting.realised(CLOSING, rows, PESSIMISTIC, AS_WRITTEN, TWO, rounded)))
+
+    def expected(self, market):
+        """{place: the expectation of its realised value over FIELD's outcomes}, exact."""
+        found = dict.fromkeys(market, Fraction(0))
+        for winner, bsp in enumerate(FIELD):
+            for place, value in self.outcome(market, winner).items():
+                found[place] += value / P(bsp)
+        return found
+
+    @staticmethod
+    def gross(row, won):
+        """An order's result before commission, by hand (§2.6's table): closed, B - L if it won and else 0; held,
+        -(L - 1) if it won and else +1."""
+        if row.closable[PESSIMISTIC]:
+            return row.bsp - row.price if won else Fraction(0)
+        return 1 - row.price if won else Fraction(1)
+
+    def test_the_field_is_a_distribution(self):
+        self.assertEqual(sum(1 / P(bsp) for bsp in FIELD), 1)
+
+    def test_one_fill_closed_or_held(self):
+        # One closed fill: its expectation is net_closed at either BSP end, whatever the book (a closed loser is 0).
+        for price in (1.9, 2.0, 2.2):
+            row = v2_order(2.0, price=price)
+            for end in BSP_ENDS:
+                bsp = P(2.0) + (CLOSING.bsp_step if end == PLUS_STEP else 0)
+                found = sum(weight * resting.realised(CLOSING, row._replace(won=won), PESSIMISTIC, end, TWO, False)[0]
+                            for won, weight in ((True, 1 / bsp), (False, 1 - 1 / bsp)))
+                with self.subTest(price=price, end=end):
+                    self.assertEqual(found, score(CLOSING, LAY, P(price), bsp, NET_CLOSED))
+        # One held fill in FIELD: over the field's outcomes its expectation is net_held.
+        for place, price in ((0, 2.2), (1, 3.5), (2, 4.4)):
+            with self.subTest(held=place):
+                self.assertEqual(self.expected(self.market((place, price, False)))[place],
+                                 score(CLOSING, LAY, P(price), P(FIELD[place]), NET_HELD))
+
+    def test_every_fill_closable_the_market_charge_is_the_orders_in_every_outcome(self):
+        # A gain on runner 0 (1.9 against 2.00) beside a loss on runner 1 (4.2 against 4.00); and a third fill.
+        for market in (self.market((0, 1.9, True), (1, 4.2, True)),
+                       self.market((0, 2.2, True), (1, 3.8, True), (2, 4.2, True))):
+            for winner in range(len(FIELD)):
+                gross = {place: self.gross(row, place == winner) for place, row in market.items()}
+                found = self.outcome(market, winner)
+                with self.subTest(orders=len(market), winner=winner):
+                    self.assertLessEqual(sum(1 for value in gross.values() if value), 1)  # one winner at most
+                    self.assertEqual(found, {place: value - C * max(value, 0) for place, value in gross.items()})
+                    self.assertEqual(sum(gross.values()) - sum(found.values()), C * max(sum(gross.values()), 0))
+            self.assertEqual(self.expected(market), {place: score(CLOSING, LAY, row.price, row.bsp, NET_CLOSED)
+                                                     for place, row in market.items()})
+        self.assertEqual(sum(self.expected(self.market((0, 1.9, True), (1, 4.2, True))).values()), Fraction(-1, 1000))
+
+    def test_a_held_fill_beside_a_closed_one_leans_net_closable_conservative(self):
+        # Runner 0 LAYed at 2.2 and closable (BSP 2.00: a loss if it wins), runner 1 LAYed at 3.5 and held.
+        market = self.market((0, 2.2, True), (1, 3.5, False))
+        deciding = sum(score(CLOSING, LAY, row.price, row.bsp, resting.closable_measure(row, PESSIMISTIC))
+                       for row in market.values())
+        found = sum(self.expected(market).values())
+        self.assertEqual((deciding, found), (Fraction(1, 100), Fraction(3, 250)))
+        self.assertLessEqual(deciding, found)
+        # Strict where runner 0 wins: its pair loses 1/5 and the held loser gains 1. The market pays 2% of 4/5, all
+        # on the held order (COMMISSION_SHARE: the order at or below 0 bears none); per order it would pay 2% of 1.
+        self.assertEqual(self.outcome(market, 0), {0: Fraction(-1, 5), 1: 1 - C * Fraction(4, 5)})
+        self.assertEqual(found - deciding, Fraction(1, 2) * C * Fraction(1, 5))
+        # Where runner 1 wins (a held loss, nothing to charge) or runner 2 (the held gain alone), the two agree.
+        for winner in (1, 2):
+            gross = {place: self.gross(row, place == winner) for place, row in market.items()}
+            self.assertEqual(self.outcome(market, winner), {place: value - C * max(value, 0)
+                                                            for place, value in gross.items()})
+        # Charged per order instead, the same outcomes give the deciding figure exactly.
+        per_order = sum((value - C * max(value, 0)) / P(bsp) for winner, bsp in enumerate(FIELD)
+                        for value in (self.gross(row, place == winner) for place, row in market.items()))
+        self.assertEqual(per_order, deciding)
+
+    def test_the_share_of_a_markets_commission(self):
+        # COMMISSION_SHARE: in proportion to each order's result above 0. Runner 0 LAYed at 1.9 and closable gains
+        # 1/10 when it wins, beside the held loser's 1. Unrounded, 2% of 11/10 shared 1 : 10 is each order's own 2%.
+        market = self.market((0, 1.9, True), (1, 3.5, False))
+        self.assertEqual(self.outcome(market, 0), {0: Fraction(49, 500), 1: Fraction(49, 50)})
+        # Rounded at GBP 2 the market pays 4p (2% of GBP 2.20 is 4.4p): 4/11p on runner 0's order, 40/11p on the
+        # held one.
+        self.assertEqual(self.outcome(market, 0, rounded=True),
+                         {0: Fraction(1, 10) - Fraction(1, 550), 1: 1 - Fraction(1, 55)})
+        self.assertEqual((Fraction(1, 550) + Fraction(1, 55)) * TWO, Fraction(4, 100))
+        # A closed loss beside the held gain bears none, rounded too: 2% of GBP 1.60 is 3.2p, so 3p on the held one.
+        self.assertEqual(self.outcome(self.market((0, 2.2, True), (1, 3.5, False)), 0, rounded=True),
+                         {0: Fraction(-1, 5), 1: 1 - Fraction(3, 200)})
+
+
+class ClosableFigures(unittest.TestCase):
+    """figures() under NET_CLOSABLE, its new figures, and counts only under filled_is_all_placed (M4)."""
+
+    def test_old_ids_read_net_held_and_their_figures_do_not_move(self):
+        rows = block(200, V_DAYS, [2.7, 2.8]) + block(100, V_DAYS, [2.4], filled=NONE)
+        for plan in (PLAN, EARLY_PLAN, EACH_PLAN):
+            self.assertEqual(plan.value_measure, NET_HELD)
+        model = figures(PLAN, rows, AS_WRITTEN)["models"][PESSIMISTIC]
+        self.assertEqual(set(model), {"fills", "fill_race_dates", FILLED_IS_ALL_PLACED, "filled", "value_per_placed",
+                                      "gap"})
+        self.assertEqual(tuple(model["filled"]), resting.MEASURES)
+        # The same rows as v2 rows, still under NET_HELD: the same figures. value_measure alone moves them.
+        for end in BSP_ENDS:
+            self.assertEqual(figures(replace(PLAN, views=resting.V2), [closing(row) for row in rows], end),
+                             figures(PLAN, rows, end))
+
+    def test_value_per_placed_and_the_filled_figure(self):
+        # LAYs at 2.5: 100 closable fills at BSP 2.7 or 2.8, 100 held at 2.6 and 100 unfilled at 2.4.
+        closed, held = closing_block(100, V_DAYS, [2.7, 2.8]), closing_block(100, V_DAYS, [2.6], closable=False)
+        unfilled = closing_block(100, V_DAYS, [2.4], filled=NONE)
+        rows = closed + held + unfilled
+        for end in BSP_ENDS:
+            values = series(CLOSING, closed, NET_CLOSED, end) + series(CLOSING, held, NET_HELD, end)
+            found = figures(CLOSING, rows, end)
+            for model in MODELS:
+                item = found["models"][model]
+                with self.subTest(end=end, model=model):
+                    self.assertEqual(item["filled"][NET_CLOSABLE], described(CLOSING, values))
+                    self.assertEqual(item["value_per_placed"],
+                                     described(CLOSING, values + [(row.race_date, 0.0) for row in unfilled]))
+                    self.assertAlmostEqual(item["value_per_placed"]["mean"], mean_of(values) * 200 / 300, places=15)
+                    self.assertEqual(item[CLOSABLE_FILLS], {"closable": 100, "not_closable": 100})
+                    # The three old filled figures, the gap and the placed figures are as under NET_HELD.
+                    old = figures(PLAN, rows, end)
+                    self.assertEqual({what: item["filled"][what] for what in resting.MEASURES},
+                                     old["models"][model]["filled"])
+                    self.assertEqual((item["gap"], found["placed"]), (old["models"][model]["gap"], old["placed"]))
+                    self.assertEqual(set(item) - set(old["models"][model]),
+                                     {HIT_RATE, CLV_TICKS, PRICE_BANDS, CLOSABLE_FILLS})
+
+    def test_filled_is_all_placed_gives_counts_only_for_every_outcome_figure(self):
+        # M4: 99 unfilled orders, under the floor, so every model's "filled" part is every scored order.
+        rows = closing_block(200, V_DAYS, [2.7, 2.8]) + closing_block(99, V_DAYS, [2.4], filled=NONE)
+        markets = [(row,) for row in rows]
+        for end in BSP_ENDS:
+            found = figures(CLOSING, rows, end)["models"]
+            for model in MODELS:
+                item = found[model]
+                realised = resting.realised_figure(CLOSING, markets, model, end, TWO)
+                with self.subTest(end=end, model=model):
+                    self.assertTrue(item[FILLED_IS_ALL_PLACED])
+                    figures_ = [*item["filled"].values(), item["value_per_placed"], item[HIT_RATE],
+                                item[CLV_TICKS][FILLED], item[CLV_TICKS]["unfilled"], *item[PRICE_BANDS].values(),
+                                realised]
+                    for figure in figures_:
+                        self.assertEqual((figure["reason"], statistics_of(figure)), (FILLED_IS_ALL_PLACED, {None}))
+                    self.assertEqual(set(item["filled"]), set(resting.MEASURES) | {NET_CLOSABLE})
+                    # Every band is listed, an empty one with n 0 (one shape for every group).
+                    self.assertEqual([figure["bets"] for figure in figures_],
+                                     [299] * 4 + [299, 299, 299, 99] + [0, 299] + [0] * 8 + [299])
+                    self.assertEqual((list(item[PRICE_BANDS]), realised["left_out"],
+                                      item[CLV_TICKS]["bsp_off_the_ladder"]),
+                                     (list(resting.PRICE_BAND_NAMES), None, None))
+                    self.assertEqual((item["gap"]["estimate"], item["gap"]["reason"]), (None, FILLED_IS_ALL_PLACED))
+                    # Nothing of an outcome is computed for the model: no float in its block.
+                    self.assertEqual(list(walk_floats(item)), [])
+        # Under NET_HELD the same rows keep today's all-placed means: old ids' bytes do not move.
+        self.assertIsNotNone(figures(PLAN, rows, AS_WRITTEN)["models"][PESSIMISTIC]["filled"][G]["mean"])
+
+    def test_an_unfilled_part_just_under_the_floor_gives_no_hit_rate_and_no_unfilled_clv(self):
+        for unfilled, given in ((99, False), (100, True)):
+            rows = closing_block(200, V_DAYS, [2.7, 2.8]) + closing_block(unfilled, V_DAYS, [2.4], filled=NONE)
+            item = figures(CLOSING, rows, AS_WRITTEN)["models"][PESSIMISTIC]
+            with self.subTest(unfilled=unfilled):
+                self.assertEqual(item[HIT_RATE]["mean"] is not None, given)
+                self.assertEqual(item[CLV_TICKS]["unfilled"]["mean"] is not None, given)
+                self.assertEqual(item[CLV_TICKS]["unfilled"]["bets"], unfilled)
+        self.assertEqual((item[HIT_RATE]["mean"], item[CLV_TICKS]["unfilled"]["mean"]), (1.0, -5.0))
+
+    def test_the_new_figures_go_through_part_and_rest_across_the_models(self):
+        # 300 LAYs at 2.5 and 199 at 1.9 filled under every model, one more at 2.5 under the optimistic model
+        # alone, and 300 unfilled: the optimistic model's filled group holds one order more than the others'.
+        rows = (closing_block(300, V_DAYS, [2.7, 2.8]) + closing_block(199, V_DAYS, [2.0], price=1.9)
+                + closing_block(1, V_DAYS, [2.6], filled=(OPTIMISTIC,))
+                + closing_block(300, V_DAYS, [2.4], filled=NONE))
+        markets = [(row,) for row in rows]
+        found = figures(CLOSING, rows, AS_WRITTEN)["models"]
+        front = found[OPTIMISTIC]
+        realised = resting.realised_figure(CLOSING, markets, OPTIMISTIC, AS_WRITTEN, TWO)
+        for figure, bets in ((front[HIT_RATE], 500), (front[CLV_TICKS][FILLED], 500),
+                             (front[CLV_TICKS]["unfilled"], 300), (realised, 500)):
+            # n and race dates only: no hit count, no count read from won or dead_heat.
+            self.assertEqual((figure["bets"], figure["race_dates"], figure["reason"], statistics_of(figure)),
+                             (bets, 16, REST_NOT_GIVEN, {None}))
+            self.assertEqual(set(figure) - {"left_out"}, set(described(CLOSING, [])))
+        self.assertEqual((realised["left_out"], front[CLV_TICKS]["bsp_off_the_ladder"]), (None, None))
+        # Its band at 2.00-3.00 holds that order more and is withheld; its band at 1.01-2.00 is the others'.
+        self.assertEqual((front[PRICE_BANDS]["2.00-3.00"]["bets"], front[PRICE_BANDS]["2.00-3.00"]["reason"]),
+                         (301, REST_NOT_GIVEN))
+        self.assertEqual(front[PRICE_BANDS]["1.01-2.00"], found[PESSIMISTIC][PRICE_BANDS]["1.01-2.00"])
+        held = ("1.01-2.00", "2.00-3.00")                   # the bands that hold an order
+        for model in (PESSIMISTIC, CENTRAL):
+            item = found[model]
+            given = [item[HIT_RATE], item[CLV_TICKS][FILLED], item[CLV_TICKS]["unfilled"],
+                     *(item[PRICE_BANDS][name] for name in held),
+                     resting.realised_figure(CLOSING, markets, model, AS_WRITTEN, TWO)]
+            with self.subTest(model=model):          # (a group of equal values gives a mean and se_undefined)
+                self.assertTrue(all(figure["mean"] is not None
+                                    and figure["reason"] not in (REST_NOT_GIVEN, COUNTS_ONLY, FILLED_IS_ALL_PLACED)
+                                    for figure in given))
+                self.assertEqual(list(item[PRICE_BANDS]), list(resting.PRICE_BAND_NAMES))
+                self.assertEqual({(figure["bets"], figure["reason"]) for name, figure in item[PRICE_BANDS].items()
+                                  if name not in held}, {(0, COUNTS_ONLY)})
+
+    def test_a_later_group_given_does_not_give_the_new_figures(self):
+        # (LATER, optimistic) is given while (FILLED, optimistic) is not: one optimistic-only fill, in the first
+        # second. The new figures read (FILLED, model), so the optimistic model's hit rate over 401 orders never
+        # stands beside the pessimistic model's over 400 (PR D's correctness review, S2).
+        rows = (closing_block(250, V_DAYS, [2.7, 2.8]) + closing_block(150, V_DAYS, [2.6], first_second=True)
+                + closing_block(1, V_DAYS, [2.4], filled=(OPTIMISTIC,), first_second=True)
+                + closing_block(150, V_DAYS, [2.4], filled=NONE))
+        given = given_figures(CLOSING, rows)
+        self.assertIn((LATER, OPTIMISTIC), given)
+        self.assertNotIn((FILLED, OPTIMISTIC), given)
+        item = figures(CLOSING, rows, AS_WRITTEN)["models"][OPTIMISTIC]
+        realised = resting.realised_figure(CLOSING, [(row,) for row in rows], OPTIMISTIC, AS_WRITTEN, TWO)
+        for figure in (item[HIT_RATE], item[CLV_TICKS][FILLED], item[CLV_TICKS]["unfilled"], realised):
+            self.assertEqual((figure["reason"], statistics_of(figure)), (REST_NOT_GIVEN, {None}))
+
+    def test_net_closed_and_net_held_beside_net_closable_go_through_part_and_rest(self):
+        # Beside net_closable over the same fills, net_closed gives the sum of net_closed - net_held over the fills
+        # no close could follow: with one such fill, its BSP to one of two values. Each of the two is given only when
+        # the fills it would differ on number 0 or min_values (PR D's correctness review, S1).
+        unfilled = closing_block(100, V_DAYS, [2.4], filled=NONE)
+        closed, held = closing_block(300, V_DAYS, [2.7, 2.8]), closing_block(100, V_DAYS, [3.37], closable=False)
+        cases = ((closed + held[:1], {NET_CLOSED}), (closed[:1] + held * 3, {NET_HELD}), (closed + held, set()),
+                 (closed, set()), (held, set()))
+        for filled, withheld_ in cases:
+            rows = filled + unfilled
+            for end in BSP_ENDS:
+                item = figures(CLOSING, rows, end)["models"][PESSIMISTIC]
+                with self.subTest(fills=len(filled), withheld=withheld_, end=end):
+                    for what in resting.MEASURES + (NET_CLOSABLE,):
+                        figure = item["filled"][what]
+                        if what in withheld_:
+                            self.assertEqual((figure["bets"], figure["race_dates"], figure["reason"],
+                                              statistics_of(figure)), (len(filled), 16, REST_NOT_GIVEN, {None}))
+                        else:
+                            self.assertEqual(figure, described(CLOSING, series(CLOSING, filled, what, end,
+                                                                               model=PESSIMISTIC)))
+                    self.assertIsNotNone(item["value_per_placed"]["mean"])         # the deciding figure stays
+        # Below the floor every figure is counts only, with that reason.
+        item = figures(CLOSING, closed[:50] + held[:1] + unfilled, AS_WRITTEN)["models"][PESSIMISTIC]
+        self.assertEqual({figure["reason"] for figure in item["filled"].values()}, {COUNTS_ONLY})
+
+    def test_closable_differs_counts_the_rows_two_models_value_apart(self):
+        # A row filled under two models, closable under one and held under the other: the difference of their
+        # net_closable means rests on it. That residual is counted for each pair, not withheld (S1 (a)).
+        rows = [v2_order(2.6), v2_order(2.6, closable=False),
+                v2_order(2.4, closable={OPTIMISTIC: True, CENTRAL: False, PESSIMISTIC: False}),
+                v2_order(2.4, closable={OPTIMISTIC: True, CENTRAL: True, PESSIMISTIC: False}),
+                v2_order(2.4, filled=(OPTIMISTIC,)), v2_order(2.4, filled=NONE)]
+        self.assertEqual([resting.closable_differs(rows, PESSIMISTIC, other) for other in (OPTIMISTIC, CENTRAL)],
+                         [2, 1])
+        self.assertEqual([resting.closable_differs(rows, OPTIMISTIC, CENTRAL),
+                          resting.closable_differs(rows, CENTRAL, OPTIMISTIC)], [1, 1])
+
+    def test_realised_goes_through_part_and_rest_across_the_models(self):
+        # 200 LAYs filled under every model, 100 more under the optimistic model alone (5 of them in dead-heat
+        # markets), 100 unfilled. given_figures gives every model (classes 200, 100 and 100), but realised values
+        # 295 orders under the optimistic model and 200 under the others: given both, the 95 orders' realised mean
+        # could be worked out. So the optimistic figure is withheld (PR D's adversarial review, S1).
+        common = [closing(row, won=index % 3 == 0) for index, row in enumerate(block(200, V_DAYS, [2.7, 2.8]))]
+        extra = [closing(row, closable=index % 2 == 0, won=index % 4 == 0, dead_heat=index < 5)
+                 for index, row in enumerate(block(100, V_DAYS, [2.6], filled=(OPTIMISTIC,)))]
+        unfilled = closing_block(100, V_DAYS, [2.4], filled=NONE)
+        for heats, given in ((5, False), (0, True)):
+            rows = common + [row._replace(dead_heat=False) if index >= heats else row
+                             for index, row in enumerate(extra)] + unfilled
+            markets = [(row,) for row in rows]
+            self.assertTrue({(FILLED, model) for model in MODELS} <= set(given_figures(CLOSING, rows)))
+            front = resting.realised_figure(CLOSING, markets, OPTIMISTIC, AS_WRITTEN, TWO)
+            back = resting.realised_figure(CLOSING, markets, PESSIMISTIC, AS_WRITTEN, TWO)
+            with self.subTest(dead_heats=heats):
+                self.assertEqual((back["bets"], back["left_out"]), (200, {"dead_heat": 0, "dead_heat_unknown": 0}))
+                if given:
+                    self.assertEqual((front["bets"], front["left_out"]),
+                                     (300, {"dead_heat": 0, "dead_heat_unknown": 0}))
+                else:
+                    self.assertEqual((front["bets"], front["race_dates"], front["reason"], front["left_out"],
+                                      statistics_of(front)), (300, 16, REST_NOT_GIVEN, None, {None}))
+
+    def test_the_bands_of_two_half_years_merge_band_by_band(self):
+        # resting_study._together merges the half-years' figures key by key. Every band is listed in each, so a band
+        # only one half holds (here a losing one, LAY 3.5 at BSP 3.0) is withheld in both, never dropped, and the
+        # merge raises in neither order (PR D's adversarial review, S3).
+        small = replace(CLOSING, min_values=5)
+        first, second = tuple(V_DAYS[:8]), tuple(V_DAYS[8:])
+        plain = {days: closing_block(10, days, [2.7]) + closing_block(10, days, [2.4], filled=NONE)
+                 for days in (first, second)}
+        loser = {days: closing_block(10, days, [3.0], price=3.5) for days in (first, second)}
+        for name, halves in (("H2 alone", {"H1": plain[first], "H2": plain[second] + loser[second]}),
+                             ("H1 alone", {"H1": plain[first] + loser[first], "H2": plain[second]})):
+            found = {half: figures(small, rows, AS_WRITTEN) for half, rows in halves.items()}
+            alone = "H2" if name == "H2 alone" else "H1"
+            self.assertLess(found[alone]["models"][PESSIMISTIC][PRICE_BANDS]["3.00-4.00"]["mean"], 0)
+            merged = resting_study._together(found)
+            with self.subTest(case=name):
+                for half in ("H1", "H2"):
+                    bands = merged[half]["models"][PESSIMISTIC][PRICE_BANDS]
+                    self.assertEqual(list(bands), list(resting.PRICE_BAND_NAMES))
+                    self.assertEqual((bands["3.00-4.00"]["bets"], bands["3.00-4.00"]["mean"]),
+                                     (10 if half == alone else 0, None))
+                    self.assertIsNotNone(bands["2.00-3.00"]["mean"])
+
+    def test_hit_rate_and_clv_ticks_on_known_prices(self):
+        lay = v2_order(2.6)
+        self.assertEqual([resting.clv_ticks(CLOSING, lay, end) for end in BSP_ENDS], [5, Fraction(11, 2)])
+        # A BSP off the ladder is placed linearly between its two ladder prices: 2.57 is half way from 2.56 to 2.58.
+        self.assertEqual([resting.clv_ticks(CLOSING, v2_order(2.57), end) for end in BSP_ENDS], [Fraction(7, 2), 4])
+        self.assertEqual([resting.clv_ticks(CLOSING, v2_order(bsp), AS_WRITTEN) for bsp in (2.4, 2.5)], [-5, 0])
+        # Signed for the order: a BACK at 2.52 against BSP 2.4 is 6 ticks the better.
+        self.assertEqual(resting.clv_ticks(CLOSING, v2_order(2.4, side=BACK, price=2.52), AS_WRITTEN), 6)
+        # BSP 1000 against a LAY at 990 is one tick; plus the step it lies beyond the ladder.
+        self.assertEqual([resting.clv_ticks(CLOSING, v2_order(1000, price=990), end) for end in BSP_ENDS], [1, None])
+        # 120 fills at BSP 2.6 (hits, 5 ticks), 40 at 2.5 (no hit, 0 ticks), 100 unfilled at 2.4 (-5 ticks).
+        rows = closing_block(120, V_DAYS, [2.6]) + closing_block(40, V_DAYS, [2.5]) + \
+            closing_block(100, V_DAYS, [2.4], filled=NONE)
+        found = {end: figures(CLOSING, rows, end)["models"][PESSIMISTIC] for end in BSP_ENDS}
+        item = found[AS_WRITTEN]
+        self.assertEqual((item[HIT_RATE]["mean"], item[HIT_RATE]["bets"], item[HIT_RATE]["race_dates"]),
+                         (0.75, 160, 16))
+        self.assertEqual(set(item[HIT_RATE]), set(described(CLOSING, [])))        # no hit count of its own
+        self.assertEqual((item[CLV_TICKS][FILLED]["mean"], item[CLV_TICKS]["unfilled"]["mean"],
+                          item[CLV_TICKS]["bsp_off_the_ladder"]), (3.75, -5.0, 0))
+        # At the plus-step end 2.51 is above 2.5, so every fill is a hit; ticks move by a half.
+        item = found[PLUS_STEP]
+        self.assertEqual((item[HIT_RATE]["mean"], item[CLV_TICKS][FILLED]["mean"], item[CLV_TICKS]["unfilled"]["mean"]),
+                         (1.0, 4.25, -4.5))
+        # Rows whose BSP plus the step is beyond the ladder are left out of that end's ticks, and counted.
+        rows = closing_block(150, V_DAYS, [2.6]) + closing_block(3, V_DAYS, [1000], price=990) + \
+            closing_block(100, V_DAYS, [2.4], filled=NONE)
+        for end, bets, off in ((AS_WRITTEN, 153, 0), (PLUS_STEP, 150, 3)):
+            figure = resting.clv_ticks_figure(CLOSING, rows, PESSIMISTIC, end)
+            self.assertEqual((figure[FILLED]["bets"], figure["bsp_off_the_ladder"]), (bets, off))
+
+    def test_by_price_band(self):
+        prices = (1.01, 1.99, 2.0, 2.98, 3.0, 3.95, 4.0, 5.9, 6.0, 9.8, 10.0, 19.5, 20.0, 29.0, 30.0, 48.0, 50.0, 95.0,
+                  100.0, 990.0, 1000.0)
+        self.assertEqual([resting.price_band(P(price)) for price in prices],
+                         [name for name in resting.PRICE_BAND_NAMES for _ in range(2)] + ["100.00-1000.00"])
+        with self.assertRaises(ValueError):
+            resting.price_band(P(2.01))                 # off the ladder: it steps by 0.02 from 2.00
+        # LAYs at 1.9 closed at 2.0; at 2.5, half closable and half held at 2.6; at 3.5 closed at 3.6; 100 unfilled.
+        low = closing_block(150, V_DAYS, [2.0], price=1.9)
+        middle = closing_block(75, V_DAYS, [2.6]) + closing_block(75, V_DAYS, [2.6], closable=False)
+        unfilled = closing_block(100, V_DAYS, [2.4], filled=NONE)
+        for high, given in ((110, True), (60, False)):
+            top_ = closing_block(high, V_DAYS, [3.6], price=3.5)
+            rows = low + middle + top_ + unfilled
+            bands = resting.by_price_band(CLOSING, rows, PESSIMISTIC, AS_WRITTEN)
+            with self.subTest(high=high):
+                # Every band in ladder order; those that hold no order are counts only, n 0.
+                self.assertEqual(list(bands), list(resting.PRICE_BAND_NAMES))
+                self.assertEqual({(bands[name]["bets"], bands[name]["race_dates"], bands[name]["reason"])
+                                  for name in resting.PRICE_BAND_NAMES[3:]}, {(0, 0, COUNTS_ONLY)})
+                for name, group in (("1.01-2.00", low), ("2.00-3.00", middle), ("3.00-4.00", top_)):
+                    if given or name == "1.01-2.00":
+                        values = series(CLOSING, group, NET_CLOSABLE, AS_WRITTEN, model=PESSIMISTIC)
+                        self.assertEqual(bands[name], described(CLOSING, values))
+                self.assertAlmostEqual(bands["1.01-2.00"]["mean"],
+                                       float(score(CLOSING, LAY, P(1.9), P(2.0), NET_CLOSED)), places=15)
+                self.assertEqual(figures(CLOSING, rows, AS_WRITTEN)["models"][PESSIMISTIC][PRICE_BANDS], bands)
+        # With 60 at 3.5 the band is under the floor, and the band at 2.5 is withheld: with it and the filled
+        # mean given, the 60 orders' mean could be worked out (part and rest, S2).
+        self.assertEqual([(bands[name]["bets"], bands[name]["reason"]) for name in ("2.00-3.00", "3.00-4.00")],
+                         [(150, REST_NOT_GIVEN), (60, COUNTS_ONLY)])
+        self.assertEqual(statistics_of(bands["2.00-3.00"]), {None})
+
+
+class ClosableScoring(V2Case):
+    """PR D on walked rows: won and dead_heat on a v2 walk's scored rows; fills no close could follow, held inside
+    the deciding mean; and the outcome scrub and a difference after the last pull carried through the scoring."""
+
+    BOOKS = {3600: BOOK, 1000: book(FAV=(2.6, 2.62))}
+    TRADES = [(500, FAV, [[2.58, 5.0]]), (250, R2, [[3.9, 4.0]])]      # through the LAYs at 2.6 and at 4.0
+
+    def test_won_and_dead_heat_are_on_a_v2_walks_scored_rows(self):
+        plan, cell = as_v2(EACH_PLAN), LAY_CELLS[0]
+
+        def results(rows):
+            return {row.price: (row.klass, row.won, row.dead_heat) for row in orders_of(rows[cell])}
+
+        rows = self.rows(lp_market(off=DAY_OFF), plan=plan, when=DAY_OFF)
+        self.assertEqual(results(rows), {P(2.5): (SCORED, True, False), P(4.0): (SCORED, False, False),
+                                         P(10.0): (SCORED, False, False)})
+        # Two WINNERs where one is declared: a dead heat, on every scored row.
+        heat = {sid: "WINNER" if sid in (FAV, R2) else "LOSER" for sid in SIDS}
+        rows = self.rows(lp_market(off=DAY_OFF, statuses=heat), plan=plan, when=DAY_OFF)
+        self.assertEqual(results(rows), {P(2.5): (SCORED, True, True), P(4.0): (SCORED, True, True),
+                                         P(10.0): (SCORED, False, True)})
+        # No valid BSP: not scored, and no result on the row.
+        rows = self.rows(lp_market(off=DAY_OFF, bsps={**BSPS, FAV: None}), plan=plan, when=DAY_OFF)
+        self.assertEqual(results(rows)[P(2.5)], ("missing_bsp", None, None))
+        # A dead heat the index could not judge (null) is None on the row.
+        def unjudged(record):
+            value = json.loads(json.dumps(record))
+            value["evaluator_only_outcome"]["dead_heat"] = None
+            return value
+
+        walked, _ = self.walked_v2(lp_market(off=DAY_OFF), plan=plan, record=unjudged)
+        self.assertEqual({row.dead_heat for row in orders_of(walked.outcomes[cell])}, {None})
+        # A v1 walk leaves both at None.
+        rows = self.rows(lp_market(off=DAY_OFF), plan=EACH_PLAN, when=DAY_OFF)
+        self.assertEqual({(row.won, row.dead_heat) for row in orders_of(rows[cell])}, {(None, None)})
+
+    def test_a_result_that_names_no_single_winner_is_not_known(self):
+        # Every runner LOSER at the end (a race voided, say), the market CLOSED and the BSP reconciled: the index
+        # judges dead_heat False (0 WINNER is not more than 1 declared), and every BSP is valid. Read as False, the
+        # realised diagnostic would pay each held LAY +1 less 2% in a race nobody won. The row says not known, so
+        # the market is left out and counted as dead_heat_unknown (PR D's reviews: correctness S3, adversarial M1).
+        losers = {sid: "LOSER" for sid in SIDS}
+        through = fav_at(200, DAY_OFF, atb=[[2.48, 0]], trd=[[2.48, 1.0]])
+        turned = status_at(200, in_play=True, off=DAY_OFF)              # the fill's batch turns it in play: held
+        plan = as_v2(EARLY_PLAN, value_measure=NET_CLOSABLE)
+        messages = lp_market(off=DAY_OFF, statuses=losers, extra=[through, turned])
+        _, _, records = self.build([(path(M, DAY_OFF), messages)])
+        block = records[M]["evaluator_only_outcome"]
+        self.assertEqual((block["winners_observed"], block["declared_number_of_winners"], block["dead_heat"]),
+                         (0, 1, False))
+        rows = self.rows(messages, plan=plan, when=DAY_OFF)
+        for cell in LAY_CELLS[:2]:
+            row = rows[cell]
+            with self.subTest(at_s=cell.at_s):
+                self.assertEqual((row.klass, row.won, row.dead_heat, row.closable),
+                                 (SCORED, False, None, dict.fromkeys(MODELS, False)))
+                self.assertEqual(resting.realised(plan, row, PESSIMISTIC, AS_WRITTEN, TWO), [None])
+        # The same market with one WINNER is valued; an each_active cell's rows say not known on every scored row.
+        rows = self.rows(lp_market(off=DAY_OFF, extra=[through, turned]), plan=plan, when=DAY_OFF)
+        self.assertEqual((rows[LAY_CELLS[0]].won, rows[LAY_CELLS[0]].dead_heat), (True, False))
+        each = self.rows(lp_market(off=DAY_OFF, statuses=losers), plan=as_v2(EACH_PLAN), when=DAY_OFF)
+        found = {(row.klass, row.won, row.dead_heat) for row in orders_of(each[LAY_CELLS[0]])}
+        self.assertEqual(found, {(SCORED, False, None)})
+        # Such markets in a figure: left out and counted, never valued.
+        markets = [(v2_order(2.6, closable=False, dead_heat=None, day=V_DAYS[index % 16]),) for index in range(150)]
+        markets += [(v2_order(2.6, closable=False, day=V_DAYS[index % 16]),) for index in range(100)]
+        markets += [(row,) for row in closing_block(100, V_DAYS, [2.4], filled=NONE)]
+        found = resting.realised_figure(CLOSING, markets, PESSIMISTIC, AS_WRITTEN, TWO)
+        self.assertEqual((found["bets"], found["left_out"]), (100, {"dead_heat": 0, "dead_heat_unknown": 150}))
+
+    def test_a_fill_no_close_could_follow_is_held_inside_the_deciding_mean(self):
+        # Closable's fixtures: the favourite's LAYs at 2.5 from 600 and 300 s fill by trade_through at 200 s, and
+        # its BSP is 2.6. A fill in the batch that turned the market in play, and one in a batch that left it
+        # SUSPENDED with no OPEN batch up to the pull, are scored, and valued held.
+        through = fav_at(200, DAY_OFF, atb=[[2.48, 0]], trd=[[2.48, 1.0]])
+        cases = (("open", [through], NET_CLOSED),
+                 ("the batch turned the market in play", [through, status_at(200, in_play=True, off=DAY_OFF)],
+                  NET_HELD),
+                 ("suspended to the pull", [through, status_at(200, "SUSPENDED", off=DAY_OFF),
+                                            status_at(119.999, off=DAY_OFF)], NET_HELD))
+        plan = as_v2(EARLY_PLAN, value_measure=NET_CLOSABLE)
+        filled, unfilled = [], []
+        for name, extra, what in cases:
+            rows = self.rows(lp_market(off=DAY_OFF, extra=extra), plan=plan, when=DAY_OFF)
+            for cell in LAY_CELLS[:2]:
+                row = rows[cell]
+                with self.subTest(case=name, at_s=cell.at_s):
+                    self.assertEqual((row.klass, kinds(row)), (SCORED, dict.fromkeys(MODELS, THROUGH)))
+                    for model in MODELS:
+                        self.assertEqual(series(plan, [row], NET_CLOSABLE, AS_WRITTEN, model=model),
+                                         [(row.race_date, float(score(plan, LAY, P(2.5), P(2.6), what)))])
+                filled.append(row)
+            unfilled += [rows[cell] for cell in BACK_CELLS[:2]]         # the BACKs at 2.52 do not fill
+        self.assertEqual({row.klass for row in unfilled} | {kind for row in unfilled for kind in kinds(row).values()},
+                         {SCORED, None})
+        # In one group (a floor of 2 here) all six stand in the deciding mean, two closed and four held, and are
+        # counted so.
+        small = replace(plan, min_values=2)
+        values = [float(score(plan, LAY, P(2.5), P(2.6), what)) for what in (NET_CLOSED,) * 2 + (NET_HELD,) * 4]
+        for model in MODELS:
+            item = figures(small, filled + unfilled, AS_WRITTEN)["models"][model]
+            self.assertEqual((item["filled"][NET_CLOSABLE]["bets"], item["filled"][NET_CLOSABLE]["mean"]),
+                             (6, math.fsum(values) / 6))
+            self.assertEqual(item[CLOSABLE_FILLS], {"closable": 2, "not_closable": 4})
+
+    def scored_figures(self, walked, plan):
+        """{(cell, model, end): what the deciding figure and its neighbours read of each scored filled row}: its
+        net_closable value, its CLV in ticks and whether it is a hit."""
+        found = {}
+        for cell in plan.cells:
+            for model in MODELS:
+                rows = [row for row in orders_of(walked.outcomes[cell])
+                        if row.klass == SCORED and row.fills[model].kind is not None]
+                for end in BSP_ENDS:
+                    step = plan.bsp_step if end == PLUS_STEP else 0
+                    found[cell, model, end] = (series(plan, rows, NET_CLOSABLE, end, model=model),
+                                               [resting.clv_ticks(plan, row, end) for row in rows],
+                                               [score(plan, row.side, row.price, row.bsp + step) > 0 for row in rows])
+        return found
+
+    def test_the_outcome_scrub_moves_only_the_result_and_the_realised_figure(self):
+        # M6 end to end: the index record's evaluator_only_outcome replaced by the same market's with another winner,
+        # or with a dead heat, keeping read_complete. Rows differ in won and dead_heat alone, so every figure the
+        # deciding mean reads is the same; only the realised figure moves.
+        plan = as_v2(EACH_PLAN, value_measure=NET_CLOSABLE)
+        mine = lp_market(off=DAY_OFF, books=self.BOOKS, trades=self.TRADES)              # the favourite wins
+
+        def scrubbed(statuses):
+            _, _, records = self.build([(path(M, DAY_OFF), lp_market(off=DAY_OFF, books=self.BOOKS,
+                                                                     trades=self.TRADES, statuses=statuses))])
+            block = records[M]["evaluator_only_outcome"]
+
+            def change(record):
+                value = json.loads(json.dumps(record))
+                self.assertNotEqual(value["evaluator_only_outcome"], block)
+                value["evaluator_only_outcome"] = dict(json.loads(json.dumps(block)),
+                                                       read_complete=record["evaluator_only_outcome"]["read_complete"])
+                return value
+            return change
+
+        base, views = self.walked_v2(mine, plan=plan)
+        valued = 0
+        for name, winners in (("another winner", (R2,)), ("a dead heat", (FAV, R2))):
+            statuses = {sid: "WINNER" if sid in winners else "LOSER" for sid in SIDS}
+            walked, scrubbed_views = self.walked_v2(mine, plan=plan, record=scrubbed(statuses))
+            with self.subTest(case=name):
+                self.assertEqual(scrubbed_views, views)
+                for cell in plan.cells:
+                    ours, theirs = orders_of(base.outcomes[cell]), orders_of(walked.outcomes[cell])
+                    self.assertEqual([row._replace(won=None, dead_heat=None) for row in theirs],
+                                     [row._replace(won=None, dead_heat=None) for row in ours])
+                    self.assertEqual({row.dead_heat for row in theirs if row.klass == SCORED},
+                                     {len(winners) > 1} if theirs else set())
+                self.assertEqual(self.scored_figures(walked, plan), self.scored_figures(base, plan))
+                for cell in plan.cells:
+                    ours, theirs = orders_of(base.outcomes[cell]), orders_of(walked.outcomes[cell])
+                    if not ours:
+                        continue
+                    before_ = resting.realised(plan, tuple(ours), PESSIMISTIC, AS_WRITTEN, TWO)
+                    after_ = resting.realised(plan, tuple(theirs), PESSIMISTIC, AS_WRITTEN, TWO)
+                    if any(value is not None for value in before_):
+                        valued += 1
+                        self.assertNotEqual(after_, before_)
+                        if len(winners) > 1:
+                            self.assertEqual(after_, [None] * len(theirs))
+        self.assertGreater(valued, 0)
+
+    def test_a_difference_after_the_last_pull_moves_no_score(self):
+        # A pair that differs from 1 s after the off (a trade through every order and a suspension): nothing after
+        # the last pull is read, so every row and every figure is the same.
+        plan = as_v2(EACH_PLAN, value_measure=NET_CLOSABLE)
+        later = [rc_at(-1, DAY_OFF, [{"id": sid, "atb": [[1.01, 0]], "trd": [[1.01, 900.0]]} for sid in SIDS]),
+                 status_at(-2, "SUSPENDED", off=DAY_OFF)]
+        base, _ = self.walked_v2(lp_market(off=DAY_OFF, books=self.BOOKS, trades=self.TRADES), plan=plan)
+        walked, _ = self.walked_v2(lp_market(off=DAY_OFF, books=self.BOOKS, trades=self.TRADES, extra=later),
+                                   plan=plan)
+        self.assertEqual(walked.outcomes, base.outcomes)
+        rows = [row for cell in plan.cells for row in orders_of(walked.outcomes[cell]) if row.klass == SCORED]
+        self.assertTrue(any(row.fills[PESSIMISTIC].kind for row in rows))
+
+    def test_a_plan_whose_value_measure_does_not_fit_is_refused(self):
+        cases = (("walk:value_measure_not_supported", replace(PLAN, value_measure="net")),
+                 ("walk:value_measure_without_v2_views", replace(EARLY_PLAN, value_measure=NET_CLOSABLE)))
+        for reason, plan in cases:
+            with self.subTest(reason=reason), self.assertRaises(ValueError) as caught:
+                walk(None, None, plan, DEFAULT_LIMITS)              # before anything is read
+            self.assertEqual(str(caught.exception), reason)
+        with self.assertRaises(ValueError) as caught:
+            figures(replace(PLAN, value_measure="net"), [], AS_WRITTEN)
+        self.assertEqual(str(caught.exception), "figures:value_measure_not_supported")
+        # v1 rows under NET_CLOSABLE: no close to read.
+        with self.assertRaises(ValueError) as caught:
+            figures(CLOSING, block(200, V_DAYS, [2.7]) + block(100, V_DAYS, [2.4], filled=NONE), AS_WRITTEN)
+        self.assertEqual(str(caught.exception), "score:closable_not_known")
 
 
 class RestingBoundaries(unittest.TestCase):

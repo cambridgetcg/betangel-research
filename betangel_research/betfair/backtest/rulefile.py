@@ -1,9 +1,9 @@
-"""Rule files of the research lane: the parser, the view a rule may read, and decide(view, rule).
+"""Rule files of the research lane: the parser, the views a rule may read, and decide(view, rule).
 
-A rule file (schema betangel.rule/v1, research/rules/) is a small frozen JSON file. It says, for one kind of
-market at fixed times before the off: which runner to pick, which conditions must hold, and what to order. One
-fixed function, decide, reads it, so no code is written per idea. An "order" here is a simulated intent, a plain
-value handed back to the caller. Nothing in this module can reach an exchange.
+A rule file (schema betangel.rule/v1 or betangel.rule/v2, research/rules/) is a small frozen JSON file. It says,
+for one kind of market at fixed times before the off: which runner to pick, which conditions must hold, and what
+to order. One fixed function, decide, reads it, so no code is written per idea. An "order" here is a simulated
+intent, a plain value handed back to the caller. Nothing in this module can reach an exchange.
 
 The file. Exactly these keys: schema; id; lineage (the idea the file belongs to); status (must be "frozen");
 parent_sha256 (the sha256 of the rule file this one was changed from, or null); claim and counter_claim (one
@@ -17,10 +17,11 @@ read as exact Fractions; counts are JSON integers; a float is refused.
   taken back before the off.
 - select: "favourite" (the only runner with the lowest best back among priced runners) or "each_active" (every
   runner in the view).
-- when: {feature, op, value, code} rows; all must hold (a plain AND). feature is one of FEATURES, op one of
-  >=, <=, ==, value one constant, code the text decide gives when the row fails. A code may not be one of
-  decide's own (EVALUATOR_CODES); nothing here knows the codes a caller adds, so a caller must refuse a clash
-  with its own. Rows on a market feature (market_open, active_runners) come before rows on a runner feature.
+- when: {feature, op, value, code} rows; all must hold (a plain AND). feature is one of the schema's features
+  (FEATURES for v1), op one of >=, <=, ==, value one constant, code the text decide gives when the row fails. A
+  code may not be one of decide's own (EVALUATOR_CODES); nothing here knows the codes a caller adds, so a caller
+  must refuse a clash with its own. Rows on a market feature (market_open, active_runners) come before rows on a
+  runner feature.
 - intents: {side, price, stake, persist} rows. side is BACK or LAY; price is {"ref": "best_back"},
   {"ref": "best_lay"} or {"ref": "fixed", "value": "1.01"}; stake is GBP of backer's stake; persist is "lapse"
   or "keep" (keep is for simulation only). decide hands pull_s and persist back unchanged; they are for the
@@ -29,18 +30,54 @@ read as exact Fractions; counts are JSON integers; a float is refused.
   with a null pull_s is an order that rests until the market turns in play. "keep" in a rule where any time has
   a pull_s could never matter and is refused (keep_with_a_pull_time).
 
-The view. RuleView holds what a rule may read at one time t: at_s, market_open (1 or 0), active_runners,
+Version 2 (betangel.rule/v2). The same keys, grammar, operators, selectors, intents, limits and byte form as v1,
+and six more features, each taking decimal text (COUNT_FEATURES is v1's; FEATURES_V2 is v1's six and these six).
+Two are market features (added in MARKET_FEATURES_V2): back_book_pct and lay_book_pct, the field's book in
+percent, 100 times the sum over the runners ACTIVE and listed at t (the whole field) of 1 / best back, or of
+1 / best lay. Four are runner features (added in RUNNER_FEATURES_V2): best_lay_size, the size at the best lay;
+back_depth_3 and lay_depth_3, the summed sizes at the first three price points shown on that side, best first, or
+at fewer when fewer are shown; and mid_ratio, the runner's mid at the end of a window over its mid at the
+start. Sizes are GBP of backer's stake. Whoever builds the view computes these values; this module only reads
+them. A row on mid_ratio (MOVE_FEATURES) is a move row, with exactly the keys MOVE_KEYS:
+{code, feature, from_s, op, to_s, value}. from_s is whole seconds before the first-published off (-86,400 to -1);
+to_s is such an offset later than from_s (else to_not_after_from), or null for the cell's decision time t. The
+parser reads a dict row's feature first and then wants that feature's exact keys, so a plain row on mid_ratio, or
+a move row on any other feature, is keys_not_the_expected_set. Market rows come before runner rows by v2's own
+sets, so a book row after a move row is market_feature_after_a_runner_feature. No declared window may end after a
+decision: every integer to_s is at or before the file's first at_s (else move_ends_after_a_decision) and every
+from_s is before it (else move_starts_at_or_after_a_decision), so each window lies at or before every t of the
+file whatever the rows' order. These checks bound the declared windows only; that a view keeps to them is its
+builder's job. A v1 file that names a v2 feature in a four-key row is feature_not_supported, as before; a v1 row
+that carries from_s and to_s is keys_not_the_expected_set, because v1 checks a row's keys first.
+
+The views. RuleView holds what a v1 rule may read at one time t: at_s, market_open (1 or 0), active_runners,
 ladder_malformed, and one RunnerView per runner ACTIVE and listed at t (selection_id, best_back,
-best_back_size, best_lay, spread_ticks; None for a value the book does not have). Whoever builds the view fills
-every field from messages published at or before t. The view has no field for BSP, a result, the last traded
-price, traded volume or anything after t.
+best_back_size, best_lay, spread_ticks; None for a value the book does not have). RuleView2 and RunnerView2 are
+v2's: RuleView2 is RuleView's fields then back_book_pct and lay_book_pct, and holds RunnerView2s, which are
+RunnerView's fields then best_lay_size, back_depth_3, lay_depth_3 and moves. moves is ((window, ratio or None),
+...) with window = (from_s, to_s): one item per distinct window of the rule, in the order of its first row in the
+file (windows(rule)), never sorted. A book percent is a market field, computed once over the whole field: it is
+never recomputed from runners. Whoever builds a view fills every field from messages published at or before t.
+No view has a field for BSP, a result, the last traded price, traded volume or anything after t.
 
 decide(view, rule) gives Decision(intents, code): one or more Intents and no code, or no Intent and one code.
 In this order: time_not_in_rule (at_s is not one of the rule's times); ladder_malformed; the code of the first
 failing market row of when; the selector's code (no_priced_active_runner or favourite_tie for favourite,
 no_active_runner for each_active); then, per selected runner, the code of its first failing runner row, or
 no_reference_price when an intent's price ref has no value. A feature with no value fails its row. Under
-each_active a runner that fails gets no intent; when every runner fails, the code is the first runner's.
+each_active a runner that fails gets no intent; when every runner fails, the code is the first runner's. Which
+rows are market rows and which are runner rows is the rule's schema's (market_features(rule),
+runner_features(rule)). A move row reads its runner's moves by the exact key (from_s, to_s); a move computed
+with no value is None and fails its row. Before anything else, decide raises
+ValueError("decide:rule_not_its_schemas") unless the rule's schema is one of SCHEMAS and every row's feature is
+one of that schema's features: a row in neither set would never be read, so a hand-built Rule (Rule.schema
+defaults to SCHEMA) could otherwise pass with rows skipped. Then, for a v2 rule, it raises
+ValueError("decide:view_not_v2") unless the view is a RuleView2 whose runners are RunnerView2s,
+ValueError("decide:move_twice_in_view") when a runner's moves holds a window of the rule more than once, and
+ValueError("decide:move_not_in_view") unless every runner's moves holds every window of the rule: a window that
+was not computed is a wiring error, never read as None, and a window held twice would be read by whichever copy
+came first. A window the rule does not have is never read. A v1 rule reads v1's fields only, so it decides alike
+on a RuleView and on a RuleView2 with the same v1 values.
 
 parse_rule takes the file's raw bytes and refuses any that are not exactly file_bytes(value) (sorted keys,
 indent 2, ASCII, one final newline; so no duplicate key survives). That comparison comes last, when every value
@@ -62,11 +99,21 @@ import operator
 import re
 
 SCHEMA = "betangel.rule/v1"
+SCHEMA_V2 = "betangel.rule/v2"
+SCHEMAS = (SCHEMA, SCHEMA_V2)
 FROZEN = "frozen"
 FAVOURITE, EACH_ACTIVE = SELECTORS = ("favourite", "each_active")
 MARKET_FEATURES = ("market_open", "active_runners")
 RUNNER_FEATURES = ("best_back", "best_back_size", "best_lay", "spread_ticks")
 FEATURES = MARKET_FEATURES + RUNNER_FEATURES
+# betangel.rule/v2 reads v1's six features and six more (module docstring). Per-schema sets are tuples, and
+# market_features(rule) / runner_features(rule) pick them: no module-level dict but OPERATORS.
+MARKET_FEATURES_V2 = MARKET_FEATURES + ("back_book_pct", "lay_book_pct")
+RUNNER_FEATURES_V2 = RUNNER_FEATURES + ("best_lay_size", "back_depth_3", "lay_depth_3", "mid_ratio")
+FEATURES_V2 = MARKET_FEATURES_V2 + RUNNER_FEATURES_V2
+# A row on one of these is a move row: it carries its own window and has exactly MOVE_KEYS.
+MOVE_FEATURES = ("mid_ratio",)
+MOVE_KEYS = ("code", "feature", "from_s", "op", "to_s", "value")
 # A row on one of these takes a JSON integer; a row on any other feature takes decimal text.
 COUNT_FEATURES = ("market_open", "active_runners", "spread_ticks")
 OPERATORS = {">=": operator.ge, "<=": operator.le, "==": operator.eq}
@@ -104,17 +151,24 @@ class RuleError(ValueError):
 
 Market = namedtuple("Market", ("countries", "event_type_id", "market_type", "betting_type", "number_of_winners",
                                "bsp_market", "turn_in_play_enabled", "persistence_enabled"))
-Predicate = namedtuple("Predicate", ("feature", "op", "value", "code"))
+# One when row: from_s and to_s are a move row's window (to_s None = the decision time t), None on a plain row.
+Predicate = namedtuple("Predicate", ("feature", "op", "value", "code", "from_s", "to_s"), defaults=(None, None))
 # One intents row: fixed is the exact price of a "fixed" ref, else None.
 Template = namedtuple("Template", ("side", "ref", "fixed", "stake", "persist"))
 # One runner in a view; a value the book does not have is None.
 RunnerView = namedtuple("RunnerView", ("selection_id", "best_back", "best_back_size", "best_lay", "spread_ticks"))
+# One runner in a v2 view: RunnerView's fields, then v2's. moves is ((window, ratio or None), ...), one item per
+# window of windows(rule), in that order; window is (from_s, to_s).
+RunnerView2 = namedtuple("RunnerView2", ("selection_id", "best_back", "best_back_size", "best_lay", "spread_ticks",
+                                         "best_lay_size", "back_depth_3", "lay_depth_3", "moves"))
 
 
 @dataclass(frozen=True)
 class Rule:
     """The values of one rule file (parse_rule); sha256 is the sha256 of the file's raw bytes. times is
-    ((at_s, pull_s or None), ...), when is Predicates and intents is Templates, all in file order."""
+    ((at_s, pull_s or None), ...), when is Predicates and intents is Templates, all in file order. schema is the
+    file's schema, SCHEMA or SCHEMA_V2; its default SCHEMA is for a v1 Rule built by hand, and decide refuses a
+    Rule whose rows its schema does not name."""
 
     sha256: str
     id: str
@@ -127,6 +181,7 @@ class Rule:
     select: str
     when: tuple
     intents: tuple
+    schema: str = SCHEMA
 
 
 @dataclass(frozen=True)
@@ -139,6 +194,21 @@ class RuleView:
     active_runners: int
     ladder_malformed: bool
     runners: tuple
+
+
+@dataclass(frozen=True)
+class RuleView2:
+    """What a v2 rule may read at one time t (module docstring): RuleView's fields, then the field's book in
+    percent on each side, computed over the whole field (None when some runner has no best price on that side, or
+    no runner is ACTIVE and listed). runners holds one RunnerView2 per runner ACTIVE and listed at t."""
+
+    at_s: int
+    market_open: int
+    active_runners: int
+    ladder_malformed: bool
+    runners: tuple
+    back_book_pct: object
+    lay_book_pct: object
 
 
 @dataclass(frozen=True)
@@ -248,21 +318,66 @@ def _times(value):
     return tuple(times)
 
 
-def _when(value):
+def _feature_sets(schema):
+    """(market features, runner features) of a schema; ValueError rule:schema_not_supported for a schema this
+    module does not read, never v1's sets by default."""
+    if schema == SCHEMA:
+        return MARKET_FEATURES, RUNNER_FEATURES
+    if schema == SCHEMA_V2:
+        return MARKET_FEATURES_V2, RUNNER_FEATURES_V2
+    raise ValueError("rule:schema_not_supported")
+
+
+def market_features(rule):
+    """The market features of the rule's schema: MARKET_FEATURES for v1, MARKET_FEATURES_V2 for v2, else
+    ValueError."""
+    return _feature_sets(rule.schema)[0]
+
+
+def runner_features(rule):
+    """The runner features of the rule's schema: RUNNER_FEATURES for v1, RUNNER_FEATURES_V2 for v2, else
+    ValueError."""
+    return _feature_sets(rule.schema)[1]
+
+
+def windows(rule):
+    """The rule's distinct move windows ((from_s, to_s), ...), in the order of their first row in the file: the keys
+    of every RunnerView2.moves for this rule, in this order. Never sorted: (from_s, None) and (from_s, -1800) cannot
+    be compared. () for a rule with no move row."""
+    found = []
+    for row in rule.when:
+        if row.feature in MOVE_FEATURES and (row.from_s, row.to_s) not in found:
+            found.append((row.from_s, row.to_s))
+    return tuple(found)
+
+
+def _window(item, place):
+    """(from_s, to_s) of a move row: from_s a JSON int from -86,400 to -1; to_s one in the same range later than
+    from_s, or null (the decision time t of the cell)."""
+    from_s, to_s = _int(item["from_s"], place, -MAX_OFFSET_S, -1), item["to_s"]
+    if to_s is not None and _int(to_s, place, -MAX_OFFSET_S, -1) <= from_s:
+        _fail(place, "to_not_after_from")
+    return from_s, to_s
+
+
+def _when(value, schema):
+    market, runner = _feature_sets(schema)
     rows = []
     for index, row in enumerate(_rows(value, "when", least=0)):
         place = f"when[{index}]"
-        item = _object(row, place, ("code", "feature", "op", "value"))
-        feature = _one_of(item["feature"], place, FEATURES, "feature_not_supported")
+        # v2 reads a dict row's feature first, then wants that feature's exact keys (a v1 row is never a move row).
+        move = schema == SCHEMA_V2 and isinstance(row, dict) and row.get("feature") in MOVE_FEATURES
+        item = _object(row, place, MOVE_KEYS if move else ("code", "feature", "op", "value"))
+        feature = _one_of(item["feature"], place, market + runner, "feature_not_supported")
         op = _one_of(item["op"], place, OPERATORS, "operator_not_supported")
         code = _match(item["code"], place, CODE_RE, "code_malformed")
         if code in EVALUATOR_CODES:
             _fail(place, "code_reserved")
-        if feature in MARKET_FEATURES and rows and rows[-1].feature in RUNNER_FEATURES:
+        if feature in market and rows and rows[-1].feature in runner:
             _fail(place, "market_feature_after_a_runner_feature")
         constant = (_int(item["value"], place, 0, 10 ** 6) if feature in COUNT_FEATURES
                     else _decimal(item["value"], place))
-        rows.append(Predicate(feature, op, constant, code))
+        rows.append(Predicate(feature, op, constant, code, *(_window(item, place) if move else ())))
     return tuple(rows)
 
 
@@ -297,7 +412,8 @@ def parse_rule(raw):
     except (ValueError, RecursionError):
         _fail("file", "not_strict_json")
     top = _object(value, "top", TOP_KEYS)
-    if top["schema"] != SCHEMA:
+    schema = top["schema"]
+    if schema not in SCHEMAS:
         _fail("schema", "not_supported")
     if top["status"] != FROZEN:
         _fail("status", "not_frozen")
@@ -309,22 +425,41 @@ def parse_rule(raw):
                 counter_claim=_sentence(top["counter_claim"], "counter_claim"), market=_market(top["market"]),
                 times=_times(top["times"]),
                 select=_one_of(top["select"], "select", SELECTORS, "selector_not_supported"),
-                when=_when(top["when"]), intents=_intents(top["intents"]))
+                when=_when(top["when"], schema), intents=_intents(top["intents"]), schema=schema)
     if any(pull_s is not None for _, pull_s in rule.times):
         for index, row in enumerate(rule.intents):
             if row.persist == KEEP:
                 _fail(f"intents[{index}]", "keep_with_a_pull_time")
+    # No look-ahead: every declared window lies at or before the first decision, so at or before every t of the
+    # file, whatever the rows' order. Only a v2 file has move rows.
+    first_at_s = rule.times[0][0]
+    for index, row in enumerate(rule.when):
+        if row.feature in MOVE_FEATURES:
+            if row.to_s is not None and row.to_s > first_at_s:
+                _fail(f"when[{index}]", "move_ends_after_a_decision")
+            if row.from_s >= first_at_s:
+                _fail(f"when[{index}]", "move_starts_at_or_after_a_decision")
     if file_bytes(value) != raw:                # last: every value is now known to be small (module docstring)
         _fail("file", "not_canonical")
     return rule
 
 
+def _move(runner, window):
+    """The move runner.moves holds at exactly window, (from_s, to_s): a ratio, or None for a move computed with no
+    value. ValueError decide:move_not_in_view when runner.moves has no such window: never read as None."""
+    for key, ratio in runner.moves:
+        if key == window:
+            return ratio
+    raise ValueError("decide:move_not_in_view")
+
+
 def _failing(rule, features, source):
     """The code of the first when row on one of features that does not hold for source (a view or a runner), else
-    None. A feature with no value fails its row."""
+    None. A feature with no value fails its row. A move row reads source.moves by its window."""
     for row in rule.when:
         if row.feature in features:
-            value = getattr(source, row.feature)
+            value = (_move(source, (row.from_s, row.to_s)) if row.feature in MOVE_FEATURES
+                     else getattr(source, row.feature))
             if value is None or not OPERATORS[row.op](value, row.value):
                 return row.code
     return None
@@ -332,7 +467,7 @@ def _failing(rule, features, source):
 
 def _for_runner(runner, rule, pull_s):
     """(intents, None) for a runner that passes every runner row and has every price asked for, else ((), code)."""
-    code = _failing(rule, RUNNER_FEATURES, runner)
+    code = _failing(rule, runner_features(rule), runner)
     if code is not None:
         return (), code
     intents = []
@@ -346,13 +481,31 @@ def _for_runner(runner, rule, pull_s):
 
 def decide(view, rule):
     """What the rule orders for this view: Decision(intents, None), or Decision((), code) (module docstring).
-    Pure: the answer depends on the two arguments alone, and neither is changed."""
+    Pure: the answer depends on the two arguments alone, and neither is changed. ValueError
+    decide:rule_not_its_schemas first when the rule's schema is not one of SCHEMAS or names not every row's feature;
+    then, for a v2 rule, decide:view_not_v2, decide:move_twice_in_view or decide:move_not_in_view when the view is
+    not one built for it."""
+    if rule.schema not in SCHEMAS:
+        raise ValueError("decide:rule_not_its_schemas")
+    market = market_features(rule)
+    known = market + runner_features(rule)
+    if any(row.feature not in known for row in rule.when):
+        raise ValueError("decide:rule_not_its_schemas")         # _failing would skip that row, never read it
+    if rule.schema == SCHEMA_V2:
+        if not isinstance(view, RuleView2) or not all(isinstance(item, RunnerView2) for item in view.runners):
+            raise ValueError("decide:view_not_v2")
+        wanted = windows(rule)
+        for item in view.runners:
+            for window in wanted:
+                if sum(key == window for key, _ in item.moves) > 1:
+                    raise ValueError("decide:move_twice_in_view")
+                _move(item, window)
     pulls = dict(rule.times)
     if view.at_s not in pulls:
         return Decision((), TIME_NOT_IN_RULE)
     if view.ladder_malformed:
         return Decision((), LADDER_MALFORMED)
-    code = _failing(rule, MARKET_FEATURES, view)
+    code = _failing(rule, market, view)
     if code is not None:
         return Decision((), code)
     chosen = view.runners

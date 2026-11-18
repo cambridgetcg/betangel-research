@@ -4017,6 +4017,29 @@ class EarlyRegistration(unittest.TestCase):
             with self.subTest(reason=reason):
                 self.assertRefused(reason.strip(), given)
 
+    def test_no_study_here_takes_a_v2_rule_file(self):
+        """close-v1 and every new id walk v1 views (RuleView), so a betangel.rule/v2 file is refused by its schema,
+        before its rows are read: one that names only v1's features, and one with a move row of its own code."""
+        def v2(rule):
+            rule["schema"] = "betangel.rule/v2"
+
+        def v2_moved(rule):
+            v2(rule)
+            rule["when"].append({"code": "not_drifting", "feature": "mid_ratio", "from_s": -3600, "op": ">=",
+                                 "to_s": None, "value": "1.10"})
+
+        for change in (v2, v2_moved):
+            with self.subTest(change=change.__name__):
+                self.assertRefused("data.rules[0]:rule_schema_not_for_this_study", files(rules={BACK_RULE: change}))
+                self.assertRefused("data.rules[1]:rule_schema_not_for_this_study", files(rules={LAY_RULE: change}))
+            for study in EARLY_IDS:
+                with self.subTest(change=change.__name__, study=study):
+                    self.assertRefused("data.rules[1]:rule_schema_not_for_this_study",
+                                       early_files(rules={LAY_RULE: change}, study=study))
+        # A schema rulefile does not read is still the rule file's own refusal.
+        self.assertRefused("data.rules[0]:rule:schema:not_supported",
+                           files(rules={BACK_RULE: lambda rule: rule.update(schema="betangel.rule/v3")}))
+
     def test_another_id_is_refused(self):
         for study in ("close-v2", "close-early-v2", "close-early", "early-price-v1", "lp-v1", "CLOSE-V1"):
             with self.subTest(study=study):

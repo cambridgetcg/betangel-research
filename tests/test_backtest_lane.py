@@ -4,9 +4,10 @@ study_ledger and rulefile).
 Everything here is synthetic: race dates are calendar text, ledger entries carry made-up hashes, every ledger lives
 in a temporary directory that the test removes, and every view a rule reads is built by hand. No data root is read.
 These tests show the split rule, the split file's checks, the ledger's chain, its head check and its budgets, the
-rule file's checks and what decide answers for a given view. They do not show durability across a power loss
-(nothing is synced), that an operator keeps one ledger file (a new directory starts every budget from zero), or
-that a view built from real messages is right: no code here builds one, and decide trusts the view it is given.
+rule file's checks under both schemas (betangel.rule/v1 and v2) and what decide answers for a given view. They do
+not show durability across a power loss (nothing is synced), that an operator keeps one ledger file (a new directory
+starts every budget from zero), or that a view built from real messages is right: no code here builds one, and
+decide trusts the view it is given.
 """
 
 from dataclasses import FrozenInstanceError, fields, replace
@@ -28,7 +29,8 @@ from betangel_research.betfair.backtest.contract import canonical_json
 from betangel_research.betfair.backtest.partition import PartitionError, file_bytes, parse_split
 from betangel_research.betfair.backtest.resting import parse_registration
 from betangel_research.betfair.backtest.rulefile import (Decision, Intent, Market, Predicate, RuleError, RuleView,
-                                                         RunnerView, Template, decide, parse_rule)
+                                                         RuleView2, RunnerView, RunnerView2, Template, decide,
+                                                         parse_rule)
 from betangel_research.betfair.backtest.study_ledger import (ENTRY_KEYS, LEDGER_FILE, PassRequest, StudyLedger,
                                                              head_text, identity, parse_head, verify)
 from betangel_research.betfair.backtest.trial_ledger import (GENESIS, LOCK_FILE, LedgerError, UnlockError,
@@ -981,7 +983,7 @@ class RuleParse(unittest.TestCase):
     def test_status_schema_names_and_parent(self):
         cases = (("status:not_frozen", lambda v: v.update(status="draft")),
                  ("status:not_frozen", lambda v: v.update(status=None)),
-                 ("schema:not_supported", lambda v: v.update(schema="betangel.rule/v2")),
+                 ("schema:not_supported", lambda v: v.update(schema="betangel.rule/v3")),
                  ("id:name_malformed", lambda v: v.update(id="Close V1")),
                  ("id:name_malformed", lambda v: v.update(id="")),
                  ("lineage:name_malformed", lambda v: v.update(lineage=None)),
@@ -1365,6 +1367,463 @@ class RuleDecide(unittest.TestCase):
                           and not name.startswith("__")], ["OPERATORS"])
 
 
+# betangel.rule/v2 (PR B). A good v2 file for the tests: close-early-v1-band's value with v2's schema, its own times
+# and rows on every v2 feature. Every threshold here is a test value, chosen for no study.
+V2_ROWS = [
+    {"code": "market_not_open", "feature": "market_open", "op": "==", "value": 1},
+    {"code": "too_few_active_runners", "feature": "active_runners", "op": ">=", "value": 5},
+    {"code": "no_back_book", "feature": "back_book_pct", "op": ">=", "value": "0.00"},
+    {"code": "back_book_above_cap", "feature": "back_book_pct", "op": "<=", "value": "110.00"},
+    {"code": "lay_book_below_floor", "feature": "lay_book_pct", "op": ">=", "value": "95.00"},
+    {"code": "no_best_back", "feature": "best_back", "op": ">=", "value": "1.01"},
+    {"code": "best_back_out_of_range", "feature": "best_back", "op": ">=", "value": "4.00"},
+    {"code": "best_back_out_of_range", "feature": "best_back", "op": "<=", "value": "10.00"},
+    {"code": "queue_above_cap", "feature": "best_back_size", "op": "<=", "value": "50.00"},
+    {"code": "depth_below_min", "feature": "best_back_size", "op": ">=", "value": "10.00"},
+    {"code": "no_best_lay", "feature": "best_lay", "op": ">=", "value": "1.01"},
+    {"code": "lay_size_below_min", "feature": "best_lay_size", "op": ">=", "value": "5.00"},
+    {"code": "back_depth_below_min", "feature": "back_depth_3", "op": ">=", "value": "20.00"},
+    {"code": "lay_depth_below_min", "feature": "lay_depth_3", "op": ">=", "value": "20.00"},
+    {"code": "gap_out_of_range", "feature": "spread_ticks", "op": ">=", "value": 1},
+    {"code": "gap_out_of_range", "feature": "spread_ticks", "op": "<=", "value": 20},
+    {"code": "no_move", "feature": "mid_ratio", "from_s": -14400, "op": ">=", "to_s": None, "value": "0.00"},
+    {"code": "not_drifting", "feature": "mid_ratio", "from_s": -14400, "op": ">=", "to_s": None, "value": "1.10"},
+    {"code": "drifted_late", "feature": "mid_ratio", "from_s": -14400, "op": "<=", "to_s": -3600, "value": "1.50"}]
+WHOLE, LATE = (-14400, None), (-14400, -3600)       # V2_ROWS' two windows, in the order of their first row
+
+
+def v2_bytes(change=None):
+    """The good v2 test file's value, changed, in the one byte form. Its first decision is at -3600."""
+    value = json.loads((RULES_DIR / "close-early-v1-band.json").read_bytes())
+    value.update(schema="betangel.rule/v2", id="close-v2-test-band", parent_sha256=RULE_SHA256["close-early-v1-band"],
+                 times=[{"at_s": -3600, "pull_s": -600}, {"at_s": -1800, "pull_s": -600}], when=copy.deepcopy(V2_ROWS))
+    if change is not None:
+        change(value)
+    return rulefile.file_bytes(value)
+
+
+def exact(text):
+    return None if text is None else Fraction(text)
+
+
+def runner2(selection_id, back=None, size=None, lay=None, ticks=None, lay_size=None, back_3=None, lay_3=None,
+            moves=()):
+    """One runner of a v2 view; prices, sizes and ratios are decimal text, read exactly. moves is ((window, ratio
+    text or None), ...), in the order given."""
+    return RunnerView2(selection_id, exact(back), exact(size), exact(lay), ticks, exact(lay_size), exact(back_3),
+                       exact(lay_3), tuple((window, exact(ratio)) for window, ratio in moves))
+
+
+def good2(selection_id=21, **changes):
+    """A runner that passes every row of the v2 test file, unless changed."""
+    values = dict(back="5.00", size="20.00", lay="5.10", ticks=1, lay_size="8.00", back_3="40.00", lay_3="30.00",
+                  moves=((WHOLE, "1.20"), (LATE, "1.30")))
+    return runner2(selection_id, **dict(values, **changes))
+
+
+def view2(*runners, at_s=-3600, market_open=1, active=8, malformed=False, back_book="105.00", lay_book="98.00"):
+    return RuleView2(at_s, market_open, active, malformed, tuple(runners), exact(back_book), exact(lay_book))
+
+
+def lay(selection_id, price, pull_s=-600):
+    return Intent(selection_id, "LAY", Fraction(price), Fraction(2), pull_s, "lapse")
+
+
+class RuleParseV2(unittest.TestCase):
+    """betangel.rule/v2's parse: a good file, and one refusal per check it adds (design §1.2, §4.2 PR B)."""
+
+    def assertRefused(self, code, change=None, raw=None):
+        with self.assertRaises(RuleError) as caught:
+            parse_rule(v2_bytes(change) if raw is None else raw)
+        self.assertEqual(str(caught.exception), f"rule:{code}")
+
+    def test_a_good_v2_file_parses(self):
+        raw = v2_bytes()
+        rule = parse_rule(raw)
+        self.assertEqual((rule.schema, rule.id, rule.lineage, rule.parent_sha256, rule.sha256, rule.select),
+                         (rulefile.SCHEMA_V2, "close-v2-test-band", "close", RULE_SHA256["close-early-v1-band"],
+                          hashlib.sha256(raw).hexdigest(), "each_active"))
+        self.assertEqual(rule.times, ((-3600, -600), (-1800, -600)))
+        self.assertEqual(rule.when[3], Predicate("back_book_pct", "<=", Fraction(110), "back_book_above_cap"))
+        self.assertEqual(rule.when[11], Predicate("best_lay_size", ">=", Fraction(5), "lay_size_below_min", None, None))
+        self.assertEqual(rule.when[16:], (Predicate("mid_ratio", ">=", Fraction(0), "no_move", *WHOLE),
+                                          Predicate("mid_ratio", ">=", Fraction("1.10"), "not_drifting", *WHOLE),
+                                          Predicate("mid_ratio", "<=", Fraction("1.50"), "drifted_late", *LATE)))
+        self.assertEqual([type(row.value) for row in rule.when],
+                         [int] * 2 + [Fraction] * 12 + [int] * 2 + [Fraction] * 3)
+        self.assertEqual([(row.from_s, row.to_s) for row in rule.when[:16]], [(None, None)] * 16)
+        self.assertEqual((rulefile.market_features(rule), rulefile.runner_features(rule), rulefile.windows(rule)),
+                         (rulefile.MARKET_FEATURES_V2, rulefile.RUNNER_FEATURES_V2, (WHOLE, LATE)))
+        band = RULES["close-early-v1-band"]
+        self.assertEqual((rulefile.market_features(band), rulefile.runner_features(band), rulefile.windows(band)),
+                         (rulefile.MARKET_FEATURES, rulefile.RUNNER_FEATURES, ()))
+        self.assertEqual(parse_rule(raw), rule)
+        with self.assertRaises(FrozenInstanceError):
+            rule.schema = rulefile.SCHEMA
+        # A v1 file with only its schema changed parses to the same rows: only the schema and the hash move.
+        as_v2 = parse_rule(rule_bytes("close-early-v1-band", lambda v: v.update(schema="betangel.rule/v2")))
+        self.assertEqual(replace(as_v2, sha256=band.sha256, schema=rulefile.SCHEMA), band)
+        self.assertNotEqual(as_v2.sha256, band.sha256)
+        # The per-schema sets are tuples, picked by functions: never a module-level dict (N3; RuleDecide pins it).
+        for name in ("SCHEMAS", "MARKET_FEATURES_V2", "RUNNER_FEATURES_V2", "FEATURES_V2", "MOVE_FEATURES",
+                     "MOVE_KEYS"):
+            with self.subTest(name=name):
+                self.assertIsInstance(getattr(rulefile, name), tuple)
+
+    def test_a_v1_file_names_no_v2_feature(self):
+        for feature in ("back_book_pct", "lay_book_pct", "best_lay_size", "back_depth_3", "lay_depth_3", "mid_ratio"):
+            with self.subTest(feature=feature), self.assertRaises(RuleError) as caught:
+                parse_rule(rule_bytes("close-early-v1-band", lambda v: v["when"][5].update(feature=feature)))
+            self.assertEqual(str(caught.exception), "rule:when[5]:feature_not_supported")
+        # A v1 row is never a move row: one with a window has the wrong keys.
+        with self.assertRaises(RuleError) as caught:
+            parse_rule(rule_bytes("close-early-v1-band", lambda v: v["when"].append(dict(V2_ROWS[17]))))
+        self.assertEqual(str(caught.exception), "rule:when[9]:keys_not_the_expected_set")
+
+    def test_the_refusal_table(self):
+        def row(index, **changes):
+            return lambda v: v["when"][index].update(changes)
+
+        def drop(index, *keys):
+            return lambda v: [v["when"][index].pop(key) for key in keys]
+
+        def rows(*items):
+            return lambda v: v.update(when=[dict(item) for item in items])
+
+        book, move, plain = V2_ROWS[2], V2_ROWS[17], V2_ROWS[5]
+        cases = (
+            # The key set follows the feature, read first (N2).
+            ("when[16]:keys_not_the_expected_set", drop(16, "from_s")),
+            ("when[16]:keys_not_the_expected_set", drop(16, "to_s")),
+            ("when[16]:keys_not_the_expected_set", drop(16, "from_s", "to_s")),     # a plain row naming mid_ratio
+            ("when[16]:keys_not_the_expected_set", row(16, feature="best_lay_size")),  # a move row, plain feature
+            ("when[16]:keys_not_the_expected_set", row(16, feature="mid_ratios")),
+            ("when[16]:keys_not_the_expected_set", row(16, note="x")),
+            ("when[5]:keys_not_the_expected_set", row(5, from_s=-14400, to_s=None)),
+            ("when[11]:keys_not_the_expected_set", row(11, from_s=-14400)),
+            ("when[2]:keys_not_the_expected_set", row(2, to_s=None)),
+            ("when[16]:not_an_object", lambda v: v["when"].__setitem__(16, ["mid_ratio", -14400, None])),
+            # The window: from_s before to_s.
+            ("when[18]:to_not_after_from", row(18, from_s=-3600)),
+            ("when[18]:to_not_after_from", row(18, from_s=-3000)),
+            ("when[18]:to_not_after_from", row(18, from_s=-2000, to_s=-3000)),
+            # Offsets out of range, or not a JSON int.
+            ("when[16]:not_an_int_in_range", row(16, from_s=0)),
+            ("when[16]:not_an_int_in_range", row(16, from_s=-86401)),
+            ("when[16]:not_an_int_in_range", row(16, from_s="-14400")),
+            ("when[16]:not_an_int_in_range", row(16, from_s=True)),
+            ("when[16]:not_an_int_in_range", row(16, from_s=None)),
+            ("when[18]:not_an_int_in_range", row(18, to_s=0)),
+            ("when[18]:not_an_int_in_range", row(18, to_s=-86401)),
+            ("when[18]:not_an_int_in_range", row(18, to_s="-3600")),
+            ("when[18]:not_an_int_in_range", row(18, to_s=False)),
+            # No look-ahead: an integer to_s after the first at_s, and a from_s at or after it with a null to_s.
+            ("when[18]:move_ends_after_a_decision", row(18, to_s=-3599)),
+            ("when[18]:move_ends_after_a_decision", row(18, to_s=-1800)),      # the second decision's own time
+            ("when[18]:move_ends_after_a_decision", row(18, to_s=-1)),
+            ("when[16]:move_starts_at_or_after_a_decision", row(16, from_s=-3600)),
+            ("when[16]:move_starts_at_or_after_a_decision", row(16, from_s=-1800)),
+            ("when[16]:move_starts_at_or_after_a_decision", row(16, from_s=-2)),
+            ("when[18]:move_ends_after_a_decision", row(18, from_s=-3000, to_s=-2000)),  # both after: to_s first
+            # A book row after a runner row (C6): after a plain runner row, and after a mid_ratio move row.
+            ("when[6]:market_feature_after_a_runner_feature", lambda v: v["when"].insert(6, dict(book))),
+            ("when[19]:market_feature_after_a_runner_feature", lambda v: v["when"].append(dict(V2_ROWS[4]))),
+            ("when[2]:market_feature_after_a_runner_feature", rows(V2_ROWS[0], move, book)),
+            ("when[1]:market_feature_after_a_runner_feature", rows(move, V2_ROWS[4])),
+            ("when[1]:market_feature_after_a_runner_feature", rows(plain, book)),
+            ("when[2]:market_feature_after_a_runner_feature", rows(V2_ROWS[0], move, V2_ROWS[1])),
+            # Values: decimal text for every v2 feature, and never a float anywhere.
+            ("when[2]:not_decimal_text", row(2, value=0)),
+            ("when[11]:not_decimal_text", row(11, value="5")),
+            ("when[12]:not_decimal_text", row(12, value="20.000")),
+            ("when[17]:not_decimal_text", row(17, value=1)),
+            ("when[17]:not_decimal_text", row(17, value="-1.10")),
+            ("file:not_strict_json", row(17, value=1.1)),
+            ("file:not_strict_json", row(3, value=110.0)),
+            ("file:not_strict_json", row(16, from_s=-14400.0)),
+            ("file:not_strict_json", row(18, to_s=-3600.0)),
+            # The rest of a row is checked as in v1.
+            ("when[17]:operator_not_supported", row(17, op=">")),
+            ("when[17]:code_malformed", row(17, code="Not Drifting")),
+            ("when[17]:code_reserved", row(17, code="no_reference_price")),
+            ("when[2]:feature_not_supported", row(2, feature="back_book")),
+            ("when[2]:feature_not_supported", row(2, feature="bsp")),
+            ("when[2]:feature_not_supported", row(2, feature="ltp")),
+            ("schema:not_supported", lambda v: v.update(schema="betangel.rule/v3")),
+            ("schema:not_supported", lambda v: v.update(schema=["betangel.rule/v2"])))
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.assertRefused(code, change)
+
+    def test_no_declared_window_ends_after_a_decision(self):
+        """The two checks hold at their bounds, whatever the rows' order, and to_s null is the cell's own t."""
+        self.assertEqual(parse_rule(v2_bytes()).when[18][4:], (-14400, -3600))             # to_s is the first at_s
+        self.assertEqual(parse_rule(v2_bytes(lambda v: v["when"][16].update(from_s=-3601))).when[16][4:],
+                         (-3601, None))
+        self.assertEqual(parse_rule(v2_bytes(lambda v: v["when"][18].update(from_s=-86400, to_s=-86399)))
+                         .when[18][4:], (-86400, -86399))
+        late = dict(V2_ROWS[18], to_s=-1800)
+        for when in ([V2_ROWS[0], late] + V2_ROWS[5:], V2_ROWS + [late], [late]):
+            with self.subTest(place=when.index(late)):
+                self.assertRefused(f"when[{when.index(late)}]:move_ends_after_a_decision",
+                                   lambda v, rows=when: v.update(when=copy.deepcopy(rows)))
+        # One decision only: its own time bounds the window.
+        once = [{"at_s": -1800, "pull_s": -600}]
+        self.assertEqual(rulefile.windows(parse_rule(v2_bytes(lambda v: (v.update(times=once),
+                                                                         v["when"][18].update(to_s=-1800))))),
+                         (WHOLE, (-14400, -1800)))
+        self.assertRefused("when[18]:move_ends_after_a_decision",
+                           lambda v: (v.update(times=once), v["when"][18].update(to_s=-1799)))
+        self.assertRefused("when[16]:move_starts_at_or_after_a_decision",
+                           lambda v: (v.update(times=once), v["when"][16].update(from_s=-1800)))
+        # The canonical-bytes check stays last: bytes that are not the one form, with a look-ahead row, are refused
+        # for the look-ahead.
+        self.assertRefused("when[18]:move_ends_after_a_decision",
+                           raw=v2_bytes(lambda v: v["when"][18].update(to_s=-1800))[:-1])
+        # The times are checked first: a later decision written first is refused before any window.
+        self.assertRefused("times[1]:not_after_the_one_before", lambda v: v["times"].reverse())
+
+    def test_the_order_of_the_moves_is_the_files(self):
+        """windows(rule) is the order of RunnerView2.moves: the file's, never sorted (N1)."""
+        rule = parse_rule(v2_bytes())
+        swapped = parse_rule(v2_bytes(lambda v: v["when"].insert(16, v["when"].pop(18))))
+        again = parse_rule(v2_bytes(lambda v: v["when"].append(dict(V2_ROWS[17], code="again"))))
+        self.assertEqual([rulefile.windows(item) for item in (rule, swapped, again)],
+                         [(WHOLE, LATE), (LATE, WHOLE), (WHOLE, LATE)])
+        with self.assertRaises(TypeError):
+            sorted(rulefile.windows(rule))                  # a null and an integer to_s on one from_s: no order
+        # Two views built in that order are equal; the same moves in another order are another view, and decide,
+        # which reads by key, answers alike for both.
+        other = good2(moves=((LATE, "1.30"), (WHOLE, "1.20")))
+        self.assertEqual(view2(good2()), view2(good2()))
+        self.assertNotEqual(view2(good2()), view2(other))
+        self.assertEqual(decide(view2(other), rule), decide(view2(good2()), rule))
+
+    def test_only_the_one_byte_form_is_taken(self):
+        raw = v2_bytes()
+        value = json.loads(raw)
+        self.assertIn(b'"to_s": null', raw)                                 # null has one byte form
+        moved = copy.deepcopy(value)
+        moved["when"][16] = dict(reversed(list(moved["when"][16].items())))    # one move row's keys out of order
+        for data in (canonical_json(value), raw + b"\n", raw[:-1],
+                     json.dumps(dict(reversed(list(value.items()))), indent=2).encode("ascii") + b"\n",
+                     json.dumps(moved, indent=2).encode("ascii") + b"\n"):
+            with self.subTest(size=len(data)):
+                self.assertEqual(json.loads(data), value)
+                self.assertRefused("file:not_canonical", raw=data)
+
+    def test_deep_nesting_in_a_move_row_is_refused_by_its_field(self):
+        cases = (("when[16]:not_an_int_in_range", lambda v: v["when"][16].update(from_s="DEEP")),
+                 ("when[18]:not_an_int_in_range", lambda v: v["when"][18].update(to_s="DEEP")),
+                 ("when[16]:keys_not_the_expected_set", lambda v: v["when"][16].update(feature="DEEP")),
+                 ("when[17]:not_decimal_text", lambda v: v["when"][17].update(value="DEEP")))
+        for code, change in cases:
+            raw = nested(v2_bytes(change))
+            with self.subTest(code=code), mock.patch.object(rulefile, "file_bytes", side_effect=AssertionError):
+                self.assertRefused(code, raw=raw)
+
+
+class RuleDecideV2(unittest.TestCase):
+    """decide on hand-built RuleView2 values (design §4.2 PR B). Nothing here builds a view from messages."""
+
+    V2 = parse_rule(v2_bytes())
+
+    def test_a_runner_that_passes_every_row_gets_its_lay(self):
+        self.assertEqual(decide(view2(good2()), self.V2), Decision((lay(21, "5.00"),), None))
+        self.assertEqual(decide(view2(good2(), at_s=-1800), self.V2), Decision((lay(21, "5.00"),), None))
+        self.assertEqual(decide(view2(good2(), at_s=-300), self.V2), Decision((), "time_not_in_rule"))
+
+    def test_each_feature_passing_failing_and_none(self):
+        def market(**changes):
+            return decide(view2(good2(), **changes), self.V2).code
+
+        def runner(**changes):
+            return decide(view2(good2(**changes)), self.V2).code
+
+        def moved(whole, late):
+            return runner(moves=((WHOLE, whole), (LATE, late)))
+
+        cases = ((market(back_book="0.00"), None), (market(back_book="110.00"), None),
+                 (market(back_book="110.01"), "back_book_above_cap"), (market(back_book=None), "no_back_book"),
+                 (market(lay_book="95.00"), None), (market(lay_book="94.99"), "lay_book_below_floor"),
+                 (market(lay_book=None), "lay_book_below_floor"),
+                 (runner(lay_size="5.00"), None), (runner(lay_size="4.99"), "lay_size_below_min"),
+                 (runner(lay_size=None), "lay_size_below_min"),
+                 (runner(back_3="20.00"), None), (runner(back_3="19.99"), "back_depth_below_min"),
+                 (runner(back_3=None), "back_depth_below_min"),
+                 (runner(lay_3="20.00"), None), (runner(lay_3="19.99"), "lay_depth_below_min"),
+                 (runner(lay_3=None), "lay_depth_below_min"),
+                 (moved("1.10", "1.30"), None), (moved("1.09", "1.30"), "not_drifting"),
+                 (moved("0.00", "1.30"), "not_drifting"), (moved(None, "1.30"), "no_move"),
+                 (moved("1.20", "1.50"), None), (moved("1.20", "1.51"), "drifted_late"),
+                 (moved("1.20", None), "drifted_late"), (moved(None, None), "no_move"),
+                 # v1's features, read as in v1, under a v2 rule
+                 (market(market_open=0), "market_not_open"), (market(active=4), "too_few_active_runners"),
+                 (runner(back=None), "no_best_back"), (runner(back="3.99"), "best_back_out_of_range"),
+                 (runner(back="10.01"), "best_back_out_of_range"), (runner(size="50.01"), "queue_above_cap"),
+                 (runner(size="9.99"), "depth_below_min"), (runner(lay=None), "no_best_lay"),
+                 (runner(ticks=None), "gap_out_of_range"), (runner(ticks=21), "gap_out_of_range"),
+                 # rows in file order: the first failing row's code
+                 (runner(back_3=None, moves=((WHOLE, None), (LATE, None))), "back_depth_below_min"),
+                 (market(back_book=None, lay_book=None, market_open=0), "market_not_open"))
+        for index, (found, expected) in enumerate(cases):
+            with self.subTest(index=index, expected=expected):
+                self.assertEqual(found, expected)
+
+    def test_a_move_is_read_by_its_window(self):
+        def code(*moves):
+            return decide(view2(good2(moves=moves)), self.V2).code
+
+        # Two windows on one runner, each read by its own key: the same two ratios swapped give another answer.
+        self.assertIsNone(code((WHOLE, "1.60"), (LATE, "1.20")))
+        self.assertEqual(code((WHOLE, "1.20"), (LATE, "1.60")), "drifted_late")
+        # The key is read, not the place: the windows in the other order, or beside a window the rule does not have.
+        self.assertIsNone(code((LATE, "1.20"), (WHOLE, "1.60")))
+        self.assertIsNone(code(((-7200, None), "0.50"), (WHOLE, "1.60"), ((-14400, -7200), "9.00"), (LATE, "1.20")))
+        self.assertEqual(code(((-7200, None), "1.60"), (WHOLE, "1.00"), (LATE, "1.20")), "not_drifting")
+
+    def test_each_active_with_mixed_runners(self):
+        good, other = good2(21), good2(26, back="6.00", lay="6.20")
+        short, still = good2(22, back="3.00", lay="3.05"), good2(23, moves=((WHOLE, "1.00"), (LATE, "1.00")))
+        thin, unmoved = good2(24, lay_size="1.00"), good2(25, moves=((WHOLE, None), (LATE, None)))
+        found = decide(view2(short, good, still, thin, unmoved, other), self.V2)
+        self.assertEqual(found, Decision((lay(21, "5.00"), lay(26, "6.00")), None))
+        self.assertEqual(decide(view2(still, short, thin, unmoved), self.V2), Decision((), "not_drifting"))
+        self.assertEqual(decide(view2(unmoved, still), self.V2), Decision((), "no_move"))
+        self.assertEqual(decide(view2(thin, unmoved), self.V2), Decision((), "lay_size_below_min"))
+        self.assertEqual(decide(view2(), self.V2), Decision((), "no_active_runner"))
+        # A book row reads the view's own field, never its runners: a view that keeps one runner keeps the book.
+        one = replace(view2(good, short, back_book="120.00"), runners=(good,))
+        self.assertEqual(decide(one, self.V2), Decision((), "back_book_above_cap"))
+        self.assertEqual(decide(replace(one, back_book_pct=Fraction(100)), self.V2), Decision((lay(21, "5.00"),), None))
+
+    def test_a_v2_rule_on_a_v1_view_raises(self):
+        plain = parse_rule(rule_bytes("close-early-v1-band", lambda v: v.update(schema="betangel.rule/v2")))
+        v1_runner = horse(21, "5.00", "20.00", "5.10", 1)
+        views = (field(), view_of(at_s=-3600), view_of(v1_runner, at_s=-3600, active=8),
+                 view_of(v1_runner, at_s=-999, active=8, malformed=True),
+                 RuleView2(-3600, 1, 8, False, (v1_runner,), Fraction(105), Fraction(98)),
+                 RuleView2(-3600, 1, 8, False, (good2(), v1_runner), Fraction(105), Fraction(98)))
+        for rule in (self.V2, plain):                   # the schema decides, not the features a row reads
+            for index, view in enumerate(views):
+                with self.subTest(rule=rule.id, view=index), self.assertRaises(ValueError) as caught:
+                    decide(view, rule)
+                self.assertEqual(str(caught.exception), "decide:view_not_v2")
+        # A v2 rule with no move row needs no moves.
+        self.assertEqual(decide(view2(good2(moves=()), at_s=-3600), plain), Decision((lay(21, "5.00"),), None))
+
+    def test_a_window_the_view_does_not_hold_raises(self):
+        """M5: a window that was not computed is a wiring error, never read as None, and decide raises before it
+        reads anything else, so neither the view's other values nor the order of the rows can hide it."""
+        missing = (good2(moves=((WHOLE, "1.20"),)), good2(moves=((LATE, "1.30"),)), good2(moves=()),
+                   good2(moves=((WHOLE, "1.20"), ((-14400, -3599), "1.30"))),
+                   good2(moves=((WHOLE, "1.20"), ((-14401, -3600), "1.30"))),
+                   good2(back="3.00", moves=((WHOLE, "1.20"),)))
+        for index, runner in enumerate(missing):
+            for place, view in enumerate((view2(runner), view2(good2(), runner), view2(runner, at_s=-999),
+                                          view2(runner, malformed=True), view2(runner, market_open=0),
+                                          view2(runner, back_book=None))):
+                with self.subTest(runner=index, view=place), self.assertRaises(ValueError) as caught:
+                    decide(view, self.V2)
+                self.assertEqual(str(caught.exception), "decide:move_not_in_view")
+        # Computed with no value is not missing: it fails its row and raises nothing.
+        self.assertEqual(decide(view2(good2(moves=((WHOLE, None), (LATE, None)))), self.V2), Decision((), "no_move"))
+
+    def test_a_window_held_twice_raises(self):
+        """A runner's moves holds each window of the rule once: with two copies the answer would hang on their
+        order, so decide raises whatever the order, before it reads anything else. A window the rule does not have
+        is never read, so it may be held twice."""
+        twice = (((WHOLE, "1.20"), (WHOLE, "0.50"), (LATE, "1.30")), ((WHOLE, "0.50"), (WHOLE, "1.20"), (LATE, "1.30")),
+                 ((WHOLE, "1.20"), (LATE, "1.30"), (LATE, "1.30")))             # an equal copy too
+        for index, moves in enumerate(twice):
+            runner = good2(22, moves=moves)
+            for place, view in enumerate((view2(runner), view2(good2(), runner), view2(runner, at_s=-999),
+                                          view2(runner, malformed=True), view2(runner, market_open=0))):
+                with self.subTest(moves=index, view=place), self.assertRaises(ValueError) as caught:
+                    decide(view, self.V2)
+                self.assertEqual(str(caught.exception), "decide:move_twice_in_view")
+        extra = ((-7200, None), "1.00")
+        self.assertEqual(decide(view2(good2(moves=(extra, extra, (WHOLE, "1.20"), (LATE, "1.30")))), self.V2),
+                         Decision((lay(21, "5.00"),), None))
+
+    def test_a_rule_whose_rows_its_schema_does_not_name_raises(self):
+        """decide reads a row only through its rule's schema's sets, so a row in neither set would be skipped and
+        the runner pass. Only parse_rule makes Rules today, but a Rule built by hand or by replace keeps
+        Rule.schema's default or a changed schema: decide raises before it reads anything. Build v2 rules by
+        parse_rule of v2 bytes, never by replace on a v1 rule."""
+        failing = view2(good2(lay_size=None, moves=((WHOLE, None), (LATE, None))), back_book="150.00")
+        self.assertEqual(decide(failing, self.V2), Decision((), "back_book_above_cap"))
+        by_hand = rulefile.Rule(**{item.name: getattr(self.V2, item.name) for item in fields(rulefile.Rule)
+                                   if item.name != "schema"})
+        self.assertEqual(by_hand.schema, rulefile.SCHEMA)
+        band = RULES["close-early-v1-band"]
+        moved = Predicate("mid_ratio", ">=", Fraction("1.10"), "not_drifting", *WHOLE)
+        v1_view = view_of(horse(21, "5.00", "20.00", "5.10", 1), at_s=-3600, active=8)
+        cases = ((replace(self.V2, schema=rulefile.SCHEMA), failing), (by_hand, failing), (by_hand, v1_view),
+                 (replace(self.V2, schema="betangel.rule/v3"), failing), (replace(self.V2, schema=None), failing),
+                 (replace(band, schema="betangel.rule/v3"), field()), (replace(band, schema="x"), v1_view),
+                 (replace(band, when=band.when + (moved,)), field()),
+                 (replace(band, when=band.when + (Predicate("bsp", ">=", Fraction(1), "x"),)), field()))
+        for index, (rule, view) in enumerate(cases):
+            with self.subTest(case=index, schema=rule.schema), self.assertRaises(ValueError) as caught:
+                decide(view, rule)
+            self.assertEqual(str(caught.exception), "decide:rule_not_its_schemas")
+        # The per-schema sets are never v1's by default either.
+        for name in ("market_features", "runner_features"):
+            for schema in ("betangel.rule/v3", "x", None):
+                with self.subTest(name=name, schema=schema), self.assertRaises(ValueError) as caught:
+                    getattr(rulefile, name)(replace(band, schema=schema))
+                self.assertEqual(str(caught.exception), "rule:schema_not_supported")
+
+    def test_a_v1_rule_decides_alike_on_a_v1_and_the_matching_v2_view(self):
+        """§1.7 item 5: a v1 rule reads v1's fields only, whatever v2's fields hold."""
+        def as_v2(view, extra, books):
+            return RuleView2(view.at_s, view.market_open, view.active_runners, view.ladder_malformed,
+                             tuple(RunnerView2(*runner, *extra) for runner in view.runners), *books)
+
+        views = [field(), field(at_s=-600), field(at_s=-120), field(market_open=0), field(malformed=True), view_of(),
+                 field(horse(11, "1.20", "50.00", "1.21", 1)), field(horse(11, "2.50", "5.00", "2.52", 1)),
+                 view_of(horse(1, "2.00", "20.00", "2.02", 1), horse(2, "2.00"), at_s=-600),
+                 view_of(horse(1, "5.00", "20.00", "5.10", 1), horse(2, "4.00", "20.00", "4.10", 2),
+                         horse(3, "12.00", "20.00", "13.00", 9), at_s=-14400, active=6),
+                 view_of(horse(1, "5.00", "20.00", "5.10", 1), at_s=-1800, active=6)]
+        extras = ((None, None, None, ()), (Fraction(1), Fraction(2), Fraction(3), ((WHOLE, Fraction(2)),)))
+        books = ((None, None), (Fraction(105), Fraction(98)))
+        seen = set()
+        for rule in RULES.values():
+            for index, view in enumerate(views):
+                found = decide(view, rule)
+                seen.add(found.code)
+                for extra in extras:
+                    for book in books:
+                        with self.subTest(rule=rule.id, view=index, extra=extra[0], book=book[0]):
+                            self.assertEqual(decide(as_v2(view, extra, book), rule), found)
+        self.assertTrue({None, "time_not_in_rule", "market_not_open", "ladder_malformed"} <= seen)
+
+    def test_intents_or_one_code_never_both_and_never_neither(self):
+        views = [view2(good2()), view2(), view2(good2(), market_open=0), view2(good2(), at_s=-1800),
+                 view2(good2(), at_s=-999), view2(good2(), malformed=True), view2(good2(lay=None, lay_size=None)),
+                 view2(good2(moves=((WHOLE, None), (LATE, None)))), view2(good2(), back_book=None)]
+        for index, view in enumerate(views):
+            with self.subTest(view=index):
+                found = decide(view, self.V2)
+                self.assertEqual(bool(found.intents), found.code is None)
+                self.assertIsInstance(found.intents, tuple)
+
+    def test_decide_is_pure_on_a_v2_view(self):
+        view, rule = view2(good2(), good2(22, back="3.00")), self.V2
+        before = (copy.deepcopy(view), copy.deepcopy(rule))
+        first = decide(view, rule)
+        self.assertEqual([decide(view, rule) for _ in range(3)], [first] * 3)
+        self.assertEqual(decide(copy.deepcopy(view), parse_rule(v2_bytes())), first)
+        self.assertEqual((view, rule), before)
+        self.assertEqual(hash(view), hash(before[0]))
+        with self.assertRaises(FrozenInstanceError):
+            view.back_book_pct = None
+        with self.assertRaises(AttributeError):
+            view.runners[0].moves = ()
+
+
 class RuleViewHoldsNoOutcome(unittest.TestCase):
     def test_the_fields_are_exactly_the_listed_ones(self):
         self.assertEqual([item.name for item in fields(RuleView)],
@@ -1396,6 +1855,55 @@ class RuleViewHoldsNoOutcome(unittest.TestCase):
         with self.assertRaises(TypeError):
             RunnerView(11, None, None, None, None, bsp=None)
         self.assertFalse(hasattr(field().runners[0], "__dict__"))               # a plain tuple: no room for more
+
+    # betangel.rule/v2 (PR B): its own view types; v1's above keep their shapes.
+    V2_MARKET, V2_RUNNER = ("back_book_pct", "lay_book_pct"), ("best_lay_size", "back_depth_3", "lay_depth_3")
+
+    def test_the_v2_fields_are_exactly_the_listed_ones(self):
+        self.assertEqual([item.name for item in fields(RuleView2)],
+                         ["at_s", "market_open", "active_runners", "ladder_malformed", "runners", "back_book_pct",
+                          "lay_book_pct"])
+        self.assertEqual(RunnerView2._fields, ("selection_id", "best_back", "best_back_size", "best_lay",
+                                               "spread_ticks", "best_lay_size", "back_depth_3", "lay_depth_3",
+                                               "moves"))
+        # Each is the v1 type's fields, in order, then v2's.
+        self.assertEqual([item.name for item in fields(RuleView2)][:5], [item.name for item in fields(RuleView)])
+        self.assertEqual(RunnerView2._fields[:5], RunnerView._fields)
+        self.assertFalse(issubclass(RuleView2, RuleView) or issubclass(RuleView, RuleView2))
+        self.assertEqual(Predicate._fields, ("feature", "op", "value", "code", "from_s", "to_s"))
+        self.assertEqual(Predicate._field_defaults, {"from_s": None, "to_s": None})
+        self.assertEqual([(item.name, item.default) for item in fields(rulefile.Rule)][-1], ("schema", rulefile.SCHEMA))
+
+    def test_every_v2_feature_is_a_field_and_none_is_an_outcome_or_a_later_fact(self):
+        self.assertEqual((rulefile.SCHEMA, rulefile.SCHEMA_V2, rulefile.SCHEMAS),
+                         ("betangel.rule/v1", "betangel.rule/v2", ("betangel.rule/v1", "betangel.rule/v2")))
+        self.assertEqual(rulefile.MARKET_FEATURES_V2, rulefile.MARKET_FEATURES + self.V2_MARKET)
+        self.assertEqual(rulefile.RUNNER_FEATURES_V2, rulefile.RUNNER_FEATURES + self.V2_RUNNER + ("mid_ratio",))
+        self.assertEqual(rulefile.FEATURES_V2, rulefile.MARKET_FEATURES_V2 + rulefile.RUNNER_FEATURES_V2)
+        self.assertEqual((rulefile.MOVE_FEATURES, rulefile.MOVE_KEYS),
+                         (("mid_ratio",), ("code", "feature", "from_s", "op", "to_s", "value")))
+        self.assertEqual(rulefile.COUNT_FEATURES, ("market_open", "active_runners", "spread_ticks"))  # v2 adds none
+        self.assertEqual(len(set(rulefile.FEATURES_V2)), 12)
+        # A market feature is a RuleView2 field; a runner feature a RunnerView2 field, but a move, read from moves.
+        self.assertTrue(set(rulefile.MARKET_FEATURES_V2) <= {item.name for item in fields(RuleView2)})
+        self.assertEqual(set(rulefile.RUNNER_FEATURES_V2) - set(RunnerView2._fields), set(rulefile.MOVE_FEATURES))
+        names = ([item.name for item in fields(RuleView2)] + list(RunnerView2._fields) + list(rulefile.FEATURES_V2)
+                 + list(rulefile.MOVE_KEYS))
+        for word in ("bsp", "sp_", "ltp", "last", "traded", "volume", "tv", "result", "status", "winner", "settled",
+                     "in_play", "after", "final", "outcome", "removal"):
+            with self.subTest(word=word):
+                self.assertEqual([name for name in names if word in name], [])
+
+    def test_a_v2_view_takes_nothing_else(self):
+        with self.assertRaises(TypeError):
+            RuleView2(-300, 1, 5, False, (), None, None, bsp=Fraction(3))
+        with self.assertRaises(TypeError):
+            RuleView2(-300, 1, 5, False, ())                                   # no default stands in for a field
+        with self.assertRaises(TypeError):
+            RunnerView2(11, None, None, None, None, None, None, None, (), None)
+        with self.assertRaises(TypeError):
+            RunnerView2(11, None, None, None, None, None, None, None)
+        self.assertFalse(hasattr(RunnerView2(11, None, None, None, None, None, None, None, ()), "__dict__"))
 
 
 class RuleFilesFrozen(unittest.TestCase):
@@ -1573,6 +2081,14 @@ class RuleFilesParseUnchanged(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(v1_sha256(rule_v1_form(parse_rule((RULES_DIR / f"{name}.json").read_bytes()))),
                                  pinned)
+                # betangel.rule/v2's PR B: the fields it added keep their defaults for every v1 file (S11), and a
+                # count stays an int and a decimal a Fraction, which str(value) above cannot tell apart.
+                rule = parse_rule((RULES_DIR / f"{name}.json").read_bytes())
+                self.assertEqual(rule.schema, rulefile.SCHEMA)
+                self.assertEqual([(row.from_s, row.to_s) for row in rule.when], [(None, None)] * len(rule.when))
+                self.assertEqual([type(row.value) for row in rule.when],
+                                 [int if row.feature in rulefile.COUNT_FEATURES else Fraction for row in rule.when])
+                self.assertEqual(rulefile.windows(rule), ())
 
     def test_the_close_registrations_parse_to_the_same_plan_fields(self):
         for study, pinned in self.PLAN_V1_SHA256.items():
@@ -1580,6 +2096,8 @@ class RuleFilesParseUnchanged(unittest.TestCase):
             with self.subTest(study=study):
                 self.assertEqual((plan.study, [rule.lineage for rule in plan.rules]), (study, ["close", "close"]))
                 self.assertEqual(v1_sha256(plan_v1_form(plan)), pinned)
+                self.assertEqual([(rule.schema, {(row.from_s, row.to_s) for row in rule.when}) for rule in plan.rules],
+                                 [(rulefile.SCHEMA, {(None, None)})] * 2)
 
 
 class LaneBoundaries(unittest.TestCase):

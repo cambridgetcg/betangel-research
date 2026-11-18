@@ -4636,7 +4636,8 @@ class EarlyRun(RestingCase):
     def test_each_study_runs_its_own_passes_only(self):
         self.assertEqual(resting_study.PASSES, ("blind", "registered"))
         self.assertEqual(resting_study.STUDY_PASSES, {STUDY: ("blind", "registered"),
-                                                      **dict.fromkeys(EARLY_IDS, ("blind", "explore"))})
+                                                      **dict.fromkeys(EARLY_IDS, ("blind", "explore")),
+                                                      **dict.fromkeys(resting.FAST_IDS, ("explore",))})
         out = self.tmp / "out"
         # Refused before anything is read: no file is parsed and none of these paths exists.
         nowhere = dict(registration_path=self.tmp / "none.json", root=self.tmp / "none", ledger=self.tmp / "none")
@@ -8015,6 +8016,1362 @@ class ClosableScoring(V2Case):
         self.assertEqual(str(caught.exception), "score:closable_not_known")
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# betangel.rule/v2, PR E: the fast id close-v2-explore, its registration branch and its runner kind (DESIGN-rule-v2
+# §2.2a, §2.5, §3.2a-§3.4, §4.2 PR E). No fast registration exists in Git (Yu chose the store, O3): each one here is
+# close-early-v1's registration with a fast id's keys added (fast_files), naming two betangel.rule/v2 files built
+# from close-v1's LAY file. Every value in them that FAST_FIXED does not fix is a test value. A pass runs over a
+# synthetic data root, its registration in a synthetic store under a temporary folder, its ledger in another.
+
+FAST = resting.FAST_IDS[0]
+EARLY_REGISTRATION = REPO / "research" / "studies" / "close-early-v1.json"
+V3_RAW = (REPO / "research" / "partitions-v3.json").read_bytes()
+BAND_RAW = (REPO / "research" / "rules" / "close-early-v1-band.json").read_bytes()
+FAST_TIMES = ((-600, -120), (-300, -120))
+FAST_FAV, FAST_LAY = "close-v2-0001-fav", "close-v2-0001-lay"
+FAST_TEXT = "Test text: a test value, not chosen."
+
+
+def fast_rule(rule_id=FAST_LAY, select="each_active", **changes):
+    """The bytes of a fast rule file: close-v1's LAY file as betangel.rule/v2 (V2_ROWS, FAST_TIMES, select), lineage
+    close, its parent close-early-v1-band.json in Git; then changes to its top keys."""
+    value = json.loads(RULES_RAW[f"{LAY_RULE}.json"])
+    value.update(schema=SCHEMA_V2, id=rule_id, select=select, parent_sha256=sha(BAND_RAW),
+                 when=[dict(row) for row in V2_ROWS],
+                 times=[{"at_s": at_s, "pull_s": pull_s} for at_s, pull_s in FAST_TIMES])
+    value.update(changes)
+    return canonical(value)
+
+
+FAST_RULES = {f"{FAST_FAV}.json": fast_rule(FAST_FAV, select="favourite"), f"{FAST_LAY}.json": fast_rule()}
+
+
+def fast_value(raws, split_raw=V3_RAW):
+    """close-early-v1's registration as a fast id's, naming the rule files raws {name: bytes} and the split file."""
+    value = json.loads(EARLY_REGISTRATION.read_bytes())
+    value["id"] = FAST
+    value["reading"] = {"claim_end": "claim_end", "excludes": ["filled_is_all_placed", "machinery_check_failed"],
+                        "kill_end": "kill_end", "measure": "net_closable", "model": "pessimistic", "rule": FAST_TEXT}
+    value["data"]["traded_volume"].update(image_rises="not_counted", through="level_lowered")
+    value["data"]["split"]["sha256"] = sha(split_raw)
+    value["data"]["rules"] = [{"name": name, "sha256": sha(raw)} for name, raw in raws.items()]
+    value["measurement"].update(close=FAST_TEXT, close_lead_s=60, realised=FAST_TEXT, move_max_spread_ticks=20)
+    value["diagnostics"].update(move_undefined=list(resting.MOVE_UNDEFINED), trd_counts=list(resting.FAST_TRD_COUNTS))
+    parsed = [parse_rule(raw) for raw in raws.values()]
+    value["population"]["codes"] = list(population_codes(parsed, fast=True))
+    value["grid"]["cells"] = sum(len(rule.times) for rule in parsed)
+    value["family"]["m"] = len(parsed)
+    return value
+
+
+def fast_files(rules=None, registration=None, split=None):
+    """(registration bytes, split bytes, {rule file name: bytes}) of a fast registration: rules {name: bytes}
+    (default FAST_RULES), split the split file's bytes (default v3's); then registration(value)."""
+    raws = dict(FAST_RULES if rules is None else rules)
+    split_raw = V3_RAW if split is None else split
+    value = fast_value(raws, split_raw)
+    if registration is not None:
+        registration(value)
+    return canonical(value), split_raw, raws
+
+
+FAST_PLAN = parse_registration(*fast_files())
+FAST_CELLS = FAST_PLAN.cells
+# Gates low enough for hand-built rows (as lowered() for a registration): a Plan changed by hand, never parsed.
+FAST_LOW = replace(FAST_PLAN, min_values=2, min_tested_values=2, min_tested_race_dates=2, min_clusters=2,
+                   half_year_min_fills=2)
+
+
+def write_fast(store, rules=None, registration=None, split=None, folder=None):
+    """(path, sha256) of a fast registration written into the store as the runner reads it:
+    <store>/<folder, default its sha256>/studies/close-v2-explore.json, the split file beside studies/, the rule files
+    in rules/; the store root, when new, of mode 0700, and every file of mode 0400 (S9)."""
+    raw, split_raw, raws = fast_files(rules, registration, split)
+    if not store.exists():
+        store.mkdir(mode=0o700, parents=True)
+        store.chmod(0o700)
+    home = store / (folder or sha(raw))
+    (home / "studies").mkdir(parents=True)
+    (home / "rules").mkdir()
+    written = [(home / "studies" / f"{FAST}.json", raw), (home / "partitions-v3.json", split_raw)]
+    written += [(home / "rules" / name, data) for name, data in raws.items()]
+    for place, data in written:
+        place.write_bytes(data)
+        place.chmod(0o400)
+    return home / "studies" / f"{FAST}.json", sha(raw)
+
+
+def store_of(registration):
+    """The store root of a registration written by write_fast: <store>/<sha256>/studies/<id>.json."""
+    return Path(registration).parents[2]
+
+
+class FastRegistration(unittest.TestCase):
+    """The fast branch of parse_registration and _rule_files: the keys, the fixed values and bounds, the pins."""
+
+    def assertRefused(self, reason, given):
+        with self.assertRaises(RegistrationError) as caught:
+            parse_registration(*given)
+        self.assertEqual(str(caught.exception), f"registration:{reason}")
+
+    def test_the_fast_registration_parses_into_a_fast_plan(self):
+        plan = FAST_PLAN
+        self.assertEqual((resting.FAST_IDS, resting.FAST_LINEAGES), (("close-v2-explore",),
+                                                                     {"close-v2-explore": "close"}))
+        self.assertEqual((plan.study, plan.lineage, plan.fast, plan.is_new, plan.labels_read),
+                         (FAST, "close", True, True, (D,)))
+        self.assertEqual((plan.hour_rises_counted, plan.image_rises_counted, plan.through_needs_lowered,
+                          plan.explore_only, plan.trd_counts, plan.views, plan.value_measure),
+                         (False, False, True, True, resting.FAST_TRD_COUNTS, resting.V2, NET_CLOSABLE))
+        self.assertEqual(resting.FAST_TRD_COUNTS, EARLY_TRD_COUNTS + (resting.IMAGE_LEFT_OUT,))
+        self.assertEqual((plan.windows, plan.move_max_spread_ticks, plan.close_lead_s), ((WHOLE, LATE), 20, 60))
+        self.assertEqual(plan.cells, tuple(Cell(rule, at_s, pull_s) for rule in (FAST_FAV, FAST_LAY)
+                                           for at_s, pull_s in FAST_TIMES))
+        # bsp_market_unknown comes after the flag codes, and no rule file may use it.
+        self.assertEqual(plan.codes[12:16], ("partition_not_registered", "bsp_market_false", "bsp_market_unknown",
+                                             "ladder_malformed"))
+        self.assertIn("bsp_market_unknown", HARNESS_CODES)
+        # An early plan keeps its four counts, close-v1's its three; only a fast plan sets the v2 fields.
+        self.assertEqual((EARLY_PLAN.trd_counts, EARLY_PLAN.is_new, EARLY_PLAN.fast), (EARLY_TRD_COUNTS, True, False))
+        self.assertEqual((PLAN.trd_counts, PLAN.is_new, PLAN.fast), (TRD_COUNTS, False, False))
+        for old in (PLAN, EARLY_PLAN, EACH_PLAN):
+            self.assertEqual((old.views, old.windows, old.image_rises_counted, old.through_needs_lowered,
+                              old.value_measure, old.close_lead_s), (resting.V1, (), True, False, NET_HELD, None))
+        # Every other field is close-early-v1's own registration's.
+        early = parse_registration(EARLY_REGISTRATION.read_bytes(), V3_RAW,
+                                   {name: (REPO / "research" / "rules" / name).read_bytes()
+                                    for name in ("close-early-v1-fav.json", "close-early-v1-band.json")})
+        fast_only = {"sha256", "study", "rules", "cells", "codes", "trd_counts", "views", "windows",
+                     "move_max_spread_ticks", "image_rises_counted", "through_needs_lowered", "value_measure",
+                     "close_lead_s", "fast"}
+        self.assertEqual({key: item for key, item in vars(plan).items() if key not in fast_only},
+                         {key: item for key, item in vars(early).items() if key not in fast_only})
+
+    def test_fast_fixed_holds_close_early_v1s_values(self):
+        value = json.loads(EARLY_REGISTRATION.read_bytes())
+        for key, fixed in resting.FAST_FIXED.items():
+            with self.subTest(key=key):
+                self.assertEqual(json.dumps(resting._at(value, key)), json.dumps(fixed))
+        # Every number the parser reads is fixed or bounded, but the counts the rule files give and the two bounds.
+        self.assertEqual(len(resting.FAST_FIXED), 26)
+        self.assertEqual(resting.FAST_BOUNDS, (("measurement.close_lead_s", 60, 86400),
+                                               ("measurement.move_max_spread_ticks", 1, 20)))
+        self.assertEqual(resting.FAST_SPLIT_SHA256, sha(V3_RAW))
+        self.assertEqual(resting.FAST_SPLIT_SHA256, "fd35425aab3717099f0be2ce497505ec57fc37549cd24d470e3d6961ff792b65")
+
+    def test_one_refusal_per_fixed_key(self):
+        def other(fixed):
+            """Another value of the same type: text with a digit added, an int plus one, a shorter list, a dict
+            with another central fraction."""
+            if isinstance(fixed, str):
+                return fixed + "1"
+            if isinstance(fixed, int):
+                return fixed + 1
+            if isinstance(fixed, list):
+                return fixed[:-1]
+            return {**fixed, "central": [1, 3]}
+
+        for key, fixed in resting.FAST_FIXED.items():
+            *path, last = key.split(".")
+            for name, change in (("other", lambda value: at(value, path).update({last: other(fixed)})),
+                                 ("removed", lambda value: at(value, path).pop(last))):
+                # A key of data itself is missed by data's exact key set first.
+                reason = "data:keys_not_the_registered_set" if (name, len(path)) == ("removed", 1) and \
+                    path[0] == "data" else f"fast:value_not_fixed:{key}"
+                with self.subTest(key=key, change=name):
+                    self.assertRefused(reason, fast_files(registration=change))
+        # The changes the design names (R1): a pessimistic queue fraction of 0, a lower interval level, smaller size
+        # floors, another commission, other hour seconds and other months, and an equal fraction written otherwise.
+        named = {"fill_models.queue_fraction": lambda value: value["fill_models"]["queue_fraction"].update(
+                     pessimistic=[0, 1]),
+                 "fill_models.queue_fraction ": lambda value: value["fill_models"]["queue_fraction"].update(
+                     pessimistic=[2, 2]),
+                 "uncertainty.confidence_level": lambda value: value["uncertainty"].update(confidence_level="0.90"),
+                 "statistics.min_values": lambda value: value["statistics"].update(min_values=99),
+                 "statistics.min_tested_values": lambda value: value["statistics"].update(min_tested_values=100),
+                 "verdicts.half_year_min_fills": lambda value: value["verdicts"].update(half_year_min_fills=50),
+                 "measurement.commission_rate": lambda value: value["measurement"].update(commission_rate="0.05"),
+                 "data.traded_volume.after_the_hour_s": lambda value: value["data"]["traded_volume"].update(
+                     after_the_hour_s=30),
+                 "data.start_month": lambda value: value["data"].update(start_month="2015-06"),
+                 "data.end_month": lambda value: value["data"].update(end_month="2016-03"),
+                 "uncertainty.min_clusters": lambda value: value["uncertainty"].update(min_clusters=True),
+                 "fill_models.queue_fraction  ": lambda value: value["fill_models"]["queue_fraction"].update(
+                     optimistic=[False, True])}
+        for key, change in named.items():
+            with self.subTest(key=key):
+                self.assertRefused(f"fast:value_not_fixed:{key.strip()}", fast_files(registration=change))
+
+    def test_the_two_bounds(self):
+        def lead(item):
+            return lambda value: value["measurement"].update(close_lead_s=item)
+
+        def cap(item):
+            return lambda value: value["measurement"].update(move_max_spread_ticks=item)
+
+        for item in (59, 86401, -60, "60", True, None):
+            with self.subTest(close_lead_s=item):
+                self.assertRefused("fast:value_out_of_range:measurement.close_lead_s",
+                                   fast_files(registration=lead(item)))
+        for item in (0, 21, "20", True):
+            with self.subTest(move_max_spread_ticks=item):
+                self.assertRefused("fast:value_out_of_range:measurement.move_max_spread_ticks",
+                                   fast_files(registration=cap(item)))
+        self.assertEqual(parse_registration(*fast_files(registration=lead(120))).close_lead_s, 120)
+        for item in (1, 20):
+            self.assertEqual(parse_registration(*fast_files(registration=cap(item))).move_max_spread_ticks, item)
+        # A pull later than close_lead_s before the off is refused (§2.3): the files pull at -120.
+        self.assertRefused("data.rules[0]:pull_after_the_close_lead", fast_files(registration=lead(121)))
+        late = {**FAST_RULES, f"{FAST_LAY}.json": fast_rule(times=[{"at_s": -600, "pull_s": -59}])}
+        self.assertRefused("data.rules[1]:pull_after_the_close_lead", fast_files(rules=late))
+        self.assertRefused("data.rules[1]:pull_after_the_close_lead",
+                           fast_files(rules={**FAST_RULES, f"{FAST_LAY}.json": fast_rule(
+                               times=[{"at_s": -600, "pull_s": -10}])}))
+
+    def test_the_exact_key_sets(self):
+        cases = {
+            "top:keys_not_the_registered_set": lambda value: value.pop("reading"),
+            "reading:keys_not_the_registered_set": lambda value: value["reading"].pop("rule"),
+            "reading.model:not_supported": lambda value: value["reading"].update(model="central"),
+            "reading.measure:not_supported": lambda value: value["reading"].update(measure="net_held"),
+            "reading.claim_end:not_supported": lambda value: value["reading"].update(claim_end="kill_end"),
+            "reading.kill_end:not_supported": lambda value: value["reading"].update(kill_end="claim_end"),
+            "reading.excludes:not_the_implemented_list": lambda value: value["reading"]["excludes"].reverse(),
+            "reading.excludes:not_the_implemented_list ": lambda value: value["reading"]["excludes"].pop(),
+            "reading.rule:not_text": lambda value: value["reading"].update(rule=" "),
+            "data.traded_volume:keys_not_the_registered_set":
+                lambda value: value["data"]["traded_volume"].pop("image_rises"),
+            "data.traded_volume:keys_not_the_registered_set ":
+                lambda value: value["data"]["traded_volume"].pop("through"),
+            "data.traded_volume.image_rises:not_supported":
+                lambda value: value["data"]["traded_volume"].update(image_rises="counted"),
+            "data.traded_volume.through:not_supported":
+                lambda value: value["data"]["traded_volume"].update(through="any_trade"),
+            "data.traded_volume.hour_rises:not_supported":
+                lambda value: value["data"]["traded_volume"].update(hour_rises="counted"),
+            "data.partitions.read:not_supported": lambda value: value["data"]["partitions"].update(read="both"),
+            "measurement:keys_not_the_registered_set": lambda value: value["measurement"].pop("realised"),
+            "measurement.close:not_text": lambda value: value["measurement"].update(close=""),
+            "diagnostics:keys_not_the_registered_set": lambda value: value["diagnostics"].pop("move_undefined"),
+            "diagnostics.move_undefined:not_the_implemented_list":
+                lambda value: value["diagnostics"]["move_undefined"].pop(),
+            "diagnostics.trd_counts:not_the_implemented_list":
+                lambda value: value["diagnostics"].update(trd_counts=list(EARLY_TRD_COUNTS)),
+            "population.codes:not_the_implemented_list":
+                lambda value: value["population"]["codes"].remove("bsp_market_unknown"),
+        }
+        for reason, change in cases.items():
+            with self.subTest(reason=reason):
+                self.assertRefused(reason.strip(), fast_files(registration=change))
+        # close-early-v1's file takes none of a fast id's keys, and a fast id's file under close-early-v1's id is
+        # refused by its top keys.
+        early = (REPO / "research" / "rules")
+        raws = {name: (early / name).read_bytes() for name in ("close-early-v1-fav.json", "close-early-v1-band.json")}
+        value = json.loads(EARLY_REGISTRATION.read_bytes())
+        value["data"]["traded_volume"]["image_rises"] = "not_counted"
+        self.assertRefused("data.traded_volume:keys_not_the_registered_set", (canonical(value), V3_RAW, raws))
+        value = json.loads(EARLY_REGISTRATION.read_bytes())
+        value["reading"] = {}
+        self.assertRefused("top:keys_not_the_registered_set", (canonical(value), V3_RAW, raws))
+        self.assertRefused("top:keys_not_the_registered_set",
+                           fast_files(registration=lambda value: value.update(id=EARLY_IDS[0])))
+
+    def test_the_split_pin(self):
+        """M1: a fast id takes the merged v3 split alone, by its sha256, before the split is parsed: a re-salted copy
+        (V dates relabelled PRO-D) and a copy with a larger budget are both refused."""
+        def resalted(split):
+            split["ranges"][0]["salt"] = "betangel-research/partitions-v9/PRO-2015-05..2016-04"
+
+        def larger(split):
+            split["labels"]["PRO-D"]["explore_budget"] = 40
+
+        for change in (resalted, larger):
+            with self.subTest(change=change.__name__):
+                parsed = json.loads(V3_RAW)
+                change(parsed)
+                self.assertRefused("data.split:not_the_merged_split", fast_files(split=canonical(parsed)))
+
+    def test_the_lineage_pin_and_the_parent(self):
+        """M2 and C4: a fast id's rule files name its lineage and a parent, gate bspMarket true, and hold one LAY of
+        at least GBP 1.00; a betangel.rule/v1 file is not a fast id's."""
+        market = json.loads(RULES_RAW[f"{LAY_RULE}.json"])["market"]
+        cases = {
+            "lineage_not_the_fast_ids": fast_rule(lineage="close-early"),
+            "parent_missing_for_a_fast_id": fast_rule(parent_sha256=None),
+            "bsp_market_not_gated": fast_rule(market={**market, "bsp_market": None}),
+            "side_not_lay": fast_rule(intents=[{"persist": "lapse", "price": {"ref": "best_lay"}, "side": "BACK",
+                                                "stake": "2.00"}]),
+            "stake_below_the_bet_minimum": fast_rule(intents=[{"persist": "lapse", "price": {"ref": "best_back"},
+                                                               "side": "LAY", "stake": "0.99"}]),
+            "rule_schema_not_for_this_study": fast_rule(schema="betangel.rule/v1",
+                                                        when=json.loads(RULES_RAW[f"{LAY_RULE}.json"])["when"]),
+        }
+        for reason, raw in cases.items():
+            with self.subTest(reason=reason):
+                self.assertRefused(f"data.rules[1]:{reason.strip()}",
+                                   fast_files(rules={**FAST_RULES, f"{FAST_LAY}.json": raw}))
+        stake = fast_rule(intents=[{"persist": "lapse", "price": {"ref": "best_back"}, "side": "LAY",
+                                    "stake": "1.00"}])
+        self.assertEqual(parse_registration(*fast_files(rules={**FAST_RULES, f"{FAST_LAY}.json": stake})).rule(
+            FAST_LAY).intents[0].stake, 1)
+        # The old ids still refuse a v2 file.
+        self.assertRefused("data.rules[1]:rule_schema_not_for_this_study",
+                           early_files(rules={LAY_RULE: lambda rule: rule.update(schema=SCHEMA_V2)}))
+
+
+class FastWalk(RestingCase):
+    """A fast plan's walk takes every new-id switch from is_new (M3), and its record codes put the label first (S1)
+    and code an unknown bspMarket (S8)."""
+
+    def test_a_rise_in_the_hour_seconds_fills_nothing_under_a_fast_plan(self):
+        # HourSwitch's market on an explore date: at 14:00:20 a rise at 2.48 below the favourite's LAYs at 2.5.
+        rows = self.walked(hour_market(off=TUESDAY), plan=FAST_PLAN, when=TUESDAY).outcomes
+        counted = self.walked(hour_market(off=TUESDAY), plan=replace(FAST_PLAN, hour_rises_counted=True),
+                              when=TUESDAY).outcomes
+        for cell in FAST_CELLS:
+            fav = orders_of(rows[cell])[0]
+            with self.subTest(cell=cell):
+                self.assertEqual((fav.price, fav.label), (P(2.5), D))
+                self.assertEqual(kinds(fav), UNFILLED)
+                self.assertEqual(fav.trd, dict(zip(resting.FAST_TRD_COUNTS, (0, 0, 0, 1, 0))))
+                # Counted, the same rise reaches the level rule, which refuses it: the hour switch acted first.
+                other = orders_of(counted[cell])[0]
+                self.assertEqual(other.trd, dict(zip(resting.FAST_TRD_COUNTS, (1, 0, 0, 0, 0))))
+                self.assertEqual(kinds(other), UNFILLED)
+                self.assertEqual({model: sum(found.values()) for model, found in other.through_refused.items()},
+                                 dict.fromkeys(MODELS, 1))
+                self.assertEqual(sum(sum(found.values()) for found in fav.through_refused.values()), 0)
+                # Every row is a v2 row under the switches and net_closable's fields.
+                self.assertEqual(set(fav.closable.values()), {None})
+                self.assertIs(fav.in_play_before_pull, False)
+
+    def test_an_unknown_bsp_market_is_its_own_code_for_a_fast_plan(self):
+        root, manifest, records = self.build([(path(M, DAY_OFF), lp_market(off=DAY_OFF, bspMarket=fx.DROP))])
+        record = records[M]
+        self.assertEqual({record_code(FAST_PLAN, record, cell) for cell in FAST_CELLS},
+                         {("bsp_market_unknown", ())})
+        self.assertFalse(walk(Unread(), record, FAST_PLAN, DEFAULT_LIMITS).replayed)
+        # An early plan passes the cell and reports the flag; a false flag stays bsp_market_false for both.
+        self.assertEqual({record_code(EARLY_PLAN, record, cell) for cell in EARLY_PLAN.cells},
+                         {(None, ("bsp_market",))})
+        root, manifest, records = self.build([(path(M, DAY_OFF), lp_market(off=DAY_OFF, bspMarket=False))])
+        for plan in (FAST_PLAN, EARLY_PLAN):
+            self.assertEqual({record_code(plan, records[M], cell)[0] for cell in plan.cells}, {"bsp_market_false"})
+        # The code reads bspMarket alone (correctness S1 (e)): under a rule file that also gates persistenceEnabled,
+        # a market with bspMarket true and no persistenceEnabled reaches the book and reports that flag.
+        market = json.loads(RULES_RAW[f"{LAY_RULE}.json"])["market"]
+        gated = {name: fast_rule(name[:-5], select="favourite" if name.startswith(FAST_FAV) else "each_active",
+                                 market={**market, "persistence_enabled": True}) for name in FAST_RULES}
+        plan = parse_registration(*fast_files(rules=gated))
+        root, manifest, records = self.build([(path(M, DAY_OFF), lp_market(off=DAY_OFF, persistenceEnabled=fx.DROP))])
+        self.assertEqual({record_code(plan, records[M], cell) for cell in plan.cells},
+                         {(None, ("persistence_enabled",))})
+
+    def test_a_label_not_read_comes_before_every_other_gate(self):
+        # A test-label record whose schedule was revised before the decisions: an early plan codes the revision
+        # where it applies; a fast plan codes the label at every cell, so no fact of the record is counted.
+        revised = md(M, before(700), definition(OFF + timedelta(minutes=5), [runner(s) for s in SIDS]))
+        root, manifest, records = self.build([(path(M), lp_market(extra=[revised]))])
+        record = records[M]
+        self.assertEqual(race_label(FAST_PLAN, record)[1], V)
+        self.assertEqual({record_code(EARLY_PLAN, record, cell)[0] for cell in EARLY_PLAN.cells},
+                         {"schedule_revised_before_decision"})
+        self.assertEqual({record_code(FAST_PLAN, record, cell) for cell in FAST_CELLS},
+                         {("partition_not_registered", ())})
+        self.assertEqual(record_facts(FAST_PLAN, record)[2], dict.fromkeys(FAST_CELLS, "partition_not_registered"))
+        # The same on a race date with no registered label (EDGE, 1 May in London), which every other history gate
+        # lets through (correctness S1 (b)).
+        revised = md(M, before(700, EDGE), definition(EDGE + timedelta(minutes=5), [runner(s) for s in SIDS]))
+        root, manifest, records = self.build([(path(M, EDGE), lp_market(off=EDGE, extra=[revised]))])
+        self.assertEqual(race_label(FAST_PLAN, records[M])[1], None)
+        self.assertEqual({record_code(EARLY_PLAN, records[M], cell)[0] for cell in EARLY_PLAN.cells},
+                         {"schedule_revised_before_decision"})
+        self.assertEqual({record_code(FAST_PLAN, records[M], cell) for cell in FAST_CELLS},
+                         {("partition_not_registered", ())})
+        # A record with no anchor keeps market_code's own code.
+        root, manifest, records = self.build([(path(M, DAY_OFF), [message for message in lp_market(off=DAY_OFF)
+                                                                  if not any("marketDefinition" in change
+                                                                             for change in message["mc"])])])
+        self.assertEqual({record_code(FAST_PLAN, records[M], cell)[0] for cell in FAST_CELLS}, {"no_view"})
+
+
+_FAST_RUN = {}
+
+
+def fast_run():
+    """One explore pass of the fast id through main(), run once for this module, over a data root of shared()'s
+    markets without its BASIC file (G12): its registration in a store under a temporary folder, a ledger of its own,
+    and _walk wrapped (opening). A namespace of the folder, that data root and its market ids, a data root of one
+    explore-date market (day), the store, the registration and its sha256, the ledger directory, the pass's (exit
+    code, stdout), and the labels of the records it opened."""
+    if not _FAST_RUN:
+        folder = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(folder.cleanup)
+        base = Path(folder.name).resolve()
+        members, ids = study_members()
+        kept = [(member, messages) for member, messages in members if not member.endswith("/1.181097001.bz2")]
+        root = build_root(base, kept, name="fast")
+        day = build_root(base, [(path(M, DAY_OFF), lp_market(off=DAY_OFF))], name="day")
+        # Four explore-date markets, two a half-year, where GBP 150 of backer's stake trades at the favourite's 2.5
+        # at off - 200 s: every model's LAY on it fills by volume_at_price.
+        offs = offs_of(D, OFF, 2) + offs_of(D, WINTER, 2)
+        filled = build_root(base, [(path(f"1.18200{index}001", off),
+                                    lp_market(f"1.18200{index}001", off, trades=[(200, FAV, [[2.5, 300.0]])]))
+                                   for index, off in enumerate(offs)], name="fills")
+        store = base / "store"
+        store.mkdir(mode=0o700)
+        registration, digest = write_fast(store)
+        ledger = base / "ledger"
+        ledger.mkdir(mode=0o700)
+        opened = []
+        with opening(opened):
+            explore = cli("--study", FAST, "--pass", "explore", "--registration-sha256", digest, "--registration",
+                          str(registration), "--store", str(store), "--archive-root", str(root), "--code-commit",
+                          COMMIT, "--ledger", str(ledger), "--ledger-head", "none", "--out", str(base / "explore"))
+        _FAST_RUN["value"] = SimpleNamespace(base=base, root=root, ids=[item for item in ids if item != "1.181097001"],
+                                             day=day, filled=filled, store=store, registration=registration,
+                                             sha=digest,
+                                             ledger=ledger, explore=explore, opened=opened)
+    return _FAST_RUN["value"]
+
+
+RECEIPT_KEYS = {"kind", "schema_version", "study", "pass", "status", "registration_sha256", "partitions_sha256",
+                "input_sha256", "input", "code_commit", "source_descriptor_sha256", "interpreter",
+                "blind_receipt_sha256", "ledger_head", "ledger_entry", "ledger_repeat", "ledger_counts",
+                "bytes_walked", "bytes_drained", "counts", "outputs", "started_at", "recorded_at"}
+FAST_RECEIPT_KEYS = {"explore_lines_on_label", "explore_budget", "parent_chains", "registration_folder", "store_root"}
+
+
+class FastRun(RestingCase):
+    """The runner under a fast id: explore passes alone, the guard G1-G7 and G10-G12, the store and the parent
+    chain, the receipt's count, the summary's other-label totals (§3.3, §3.4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.ledger = self.tmp / "ledger"
+        self.ledger.mkdir(mode=0o700)
+        self.given = fast_run()
+
+    def run_pass(self, out, head="none", **kwargs):
+        """run_study under the fast id; store, unless given, is a store registration's own root (store_of), and None
+        for one in a folder named research/studies."""
+        arguments = dict(registration_path=self.given.registration, clock=clock)
+        arguments.update(kwargs)
+        registration = Path(arguments["registration_path"])
+        arguments.setdefault("store", None if registration.parent.parent.name == "research" else
+                             store_of(registration))
+        return run_study(arguments.pop("study", FAST), arguments.pop("name", "explore"),
+                         arguments.pop("sha", self.given.sha), arguments.pop("root", self.given.root), out,
+                         arguments.pop("commit", COMMIT), arguments.pop("ledger", self.ledger), head, **arguments)
+
+    def assertRefused(self, result, problem, out=None):
+        self.assertEqual(result, {"status": "refused", "problems": [problem]})
+        self.assertFalse((self.ledger / LEDGER_FILE).exists())
+        if out is not None:
+            self.assertFalse(out.exists())
+
+    def assertCompleted(self, result):
+        self.assertEqual(result["status"], "completed", result)
+        return result
+
+    def test_one_explore_pass(self):
+        given = self.given
+        self.assertEqual(given.explore[0], 0, given.explore[1])
+        result, files_ = json.loads(given.explore[1]), outputs_of(given.base / "explore")
+        self.assertEqual((result["status"], result["study"], result["pass"], result["records"],
+                          result["replayed_markets"], result["ledger_repeat"], result["ledger_counts"]),
+                         ("completed", FAST, "explore", 28, 12, False, {"looks": 0, "registered": 0}))
+        # The ledger: one explore line naming the explore label alone, m 0 and alpha "0".
+        (entry,) = verify(given.ledger / LEDGER_FILE)
+        self.assertEqual((entry["kind"], entry["study"], entry["lineage"], entry["partitions"], entry["m"],
+                          entry["alpha"], entry["registration_sha256"], entry["partitions_sha256"],
+                          entry["tables_sha256"]),
+                         ("explore", FAST, "close", [D], 0, "0", given.sha, sha(V3_RAW), result["summary_sha256"]))
+        # The receipt: the lineage's lines on the label as the budget counts them, the budget, the parent chains and
+        # the store folder; no blind receipt.
+        receipt = json.loads(files_["receipt.json"])
+        self.assertEqual(set(receipt), RECEIPT_KEYS | FAST_RECEIPT_KEYS)
+        self.assertEqual((receipt["explore_lines_on_label"], receipt["explore_budget"], receipt["registration_folder"],
+                          receipt["store_root"], receipt["blind_receipt_sha256"], receipt["ledger_entry"]),
+                         (1, 20, f"{given.sha}/studies", str(given.store), None, result["ledger_head"]))
+        self.assertEqual(receipt["parent_chains"], {
+            rule: [{"path": "research/rules/close-early-v1-band.json", "sha256": sha(BAND_RAW)}]
+            for rule in (FAST_FAV, FAST_LAY)})
+        # Only explore-label members were opened, each read or drained whole: no PRO-V member.
+        self.assertEqual(set(given.opened), {D})
+        records = index_records(given.root)
+        dated = {market_id: race_label(FAST_PLAN, record) for market_id, record in records.items()}
+        explore = {market_id for market_id, found in dated.items() if found is not None and found[1] == D}
+        self.assertEqual(explore, set(given.ids[:12]))
+        size = sum(member.stat().st_size for member in raw_members(given.root) if member.name[:-4] in explore)
+        self.assertEqual(receipt["bytes_walked"] + receipt["bytes_drained"], size)
+
+    def test_the_summary_holds_one_total_of_the_labels_not_read(self):
+        """G6: B1 by month holds the explore label alone and one total of the records on labels not read; B2's
+        partition_not_registered is that total at every cell, and no other code counts such a record."""
+        given = self.given
+        value = json.loads(outputs_of(given.base / "explore")["summary.json"])
+        records = index_records(given.root)
+        dated = [race_label(FAST_PLAN, record) for record in records.values()]
+        not_read = sum(1 for found in dated if found is not None and found[1] != D)
+        no_anchor = sum(1 for found in dated if found is None)
+        self.assertEqual((not_read, no_anchor, len(records)), (15, 1, 28))
+        coverage = value["coverage"]
+        self.assertEqual(set(coverage), {"by_month", "records_without_an_anchor", "records_on_labels_not_read"})
+        self.assertEqual((coverage["records_on_labels_not_read"], coverage["records_without_an_anchor"]),
+                         (not_read, no_anchor))
+        self.assertEqual({month: (list(row["records"]), list(row["orders"]))
+                          for month, row in coverage["by_month"].items()},
+                         {month: ([D], [D]) for month in FAST_PLAN.months + ("outside_registered_months",)})
+        self.assertEqual(sum(row["records"][D] for row in coverage["by_month"].values()), 12)
+        for cell, tables in value["cells"].items():
+            with self.subTest(cell=cell):
+                codes = tables["codes"]
+                self.assertEqual(sum(codes.values()), 28)
+                self.assertEqual(codes["partition_not_registered"], not_read)
+                self.assertEqual(codes["no_view"], no_anchor)
+                self.assertEqual(sum(codes.values()) - not_read - no_anchor, 12)
+                self.assertEqual(list(tables["classes"]), [D])
+                self.assertNotIn("minutes_after_the_hour", tables["fills"][D][PESSIMISTIC])    # R5
+                self.assertEqual(set(tables["move_undefined"]), {"-3000..t", "-3000..-600"})
+        # No PRO-V key anywhere; its one text is the registration's test label.
+        self.assertNotIn(V, set(walk_keys(value)))
+        self.assertEqual([trail for trail, item in leaves(value)
+                          if item == V or (isinstance(item, list) and V in item)],
+                         [("partitions", "test_label")])
+        # Every check holds; E1 gives counts only under the registered size floors.
+        self.assertEqual({name: item["holds"] for name, item in value["machinery_checks"].items()},
+                         dict.fromkeys(("MC1", "MC2", "MC3", "MC4", "MC5", "MC6", "MC7"), True))
+        self.assertIsNone(value["withheld_by_the_checks"])
+        self.assertEqual({item["figures_given"] for found in value["figures"]["size_gate"].values()
+                          for item in found.values()}, {False})
+        text = outputs_of(given.base / "explore")["summary.md"].decode()
+        for heading in ("## M ", "## B1 ", "## B2 ", "## B4 ", "## B9 ", "## B10 ", "## B11 ", "## B12 ", "## B13 ",
+                        "## B14 ", "## E1 ", "## E2 ", "## E3 "):
+            self.assertIn(heading, text)
+        self.assertNotIn("minute 2 after the hour", text)
+
+    def test_blind_and_registered_are_refused_before_anything_is_read(self):
+        """G1: a fast id has the explore pass alone, whatever else is given."""
+        out = self.tmp / "out"
+        nowhere = dict(registration_path=self.tmp / "none.json", root=self.tmp / "none", ledger=self.tmp / "none")
+        with mock.patch.object(resting_study, "_plan", side_effect=AssertionError("a file was read")):
+            for name in ("blind", "registered", "look", None):
+                for receipt in (None, self.tmp / "receipt.json"):
+                    with self.subTest(name=name, receipt=receipt):
+                        self.assertRefused(self.run_pass(out, name=name, blind_receipt=receipt, **nowhere),
+                                           "pass:not_supported", out)
+            for name in ("blind", "registered"):
+                code, printed = cli("--study", FAST, "--pass", name, "--registration-sha256", "0" * 64,
+                                    "--archive-root", str(self.tmp / "none"), "--out", str(out), "--code-commit",
+                                    COMMIT, "--ledger", str(self.tmp / "none"), "--ledger-head", "none")
+                self.assertEqual((code, json.loads(printed)),
+                                 (2, {"status": "refused", "problems": ["pass:not_supported"]}))
+        self.assertEqual(resting_study.STUDY_PASSES[FAST], ("explore",))
+
+    def test_a_fast_pass_takes_no_blind_receipt(self):
+        """G5, then G4: the explore label alone in the request, of role explore."""
+        out = self.tmp / "out"
+        for receipt in (self.tmp / "none.json", early_run().base / "blind" / "receipt.json"):
+            with self.subTest(receipt=receipt.name):
+                self.assertRefused(self.run_pass(out, blind_receipt=receipt), "blind_receipt:not_for_a_fast_pass",
+                                   out)
+        real = resting_study._plan
+
+        def both_labels(*args):
+            plan, *rest = real(*args)
+            return (replace(plan, explore_only=False), *rest)
+
+        with mock.patch.object(resting_study, "_plan", both_labels):
+            self.assertRefused(self.run_pass(out, root=self.given.day), "fast:not_explore_only", out)
+
+    def test_the_ledger_refuses_a_request_naming_another_label(self):
+        """G4: a hand-built explore request naming PRO-V, BASIC-T or SEALED never gets a line."""
+        from betangel_research.betfair.backtest.trial_ledger import LedgerError
+        base = dict(study=FAST, lineage="close", kind="explore", partitions_sha256=sha(V3_RAW),
+                    registration_sha256="1" * 64, input_sha256="2" * 64, source_descriptor_sha256="3" * 64,
+                    code_commit=COMMIT)
+        cases = (((D, V), "explore_touches_another_role"), ((V,), "explore_touches_another_role"),
+                 ((D, "BASIC-T"), "partition_role_sealed"), (("SEALED",), "partition_role_never"))
+        for labels, reason in cases:
+            with self.subTest(labels=labels):
+                with self.assertRaises(LedgerError) as caught:
+                    StudyLedger.open(self.ledger, "none").check(PassRequest(partitions=labels, **base), V3_RAW)
+                self.assertEqual(str(caught.exception), f"ledger:entry:{reason}")
+        self.assertIsNone(StudyLedger.open(self.ledger, "none").check(PassRequest(partitions=(D,), **base), V3_RAW))
+
+    def test_a_root_with_another_tier_is_refused(self):
+        """G12 (S1): shared()'s data root holds a BASIC file; and a manifest whose plans is not a list of registered
+        tiers (a text, an object of registered tiers, none) is refused alike, before the ledger."""
+        out = self.tmp / "out"
+        self.assertRefused(self.run_pass(out, root=shared().root), "input:tier_not_registered", out)
+        real = resting_study._inputs
+        for plans in ("PRO", {"PRO": "PRO"}, None):
+            def changed(root, plans=plans):
+                archives, descriptor, digest = real(root)
+                return [dict(archives[0], manifest=dict(archives[0]["manifest"], plans=plans))] + archives[1:], \
+                    descriptor, digest
+
+            with self.subTest(plans=plans), mock.patch.object(resting_study, "_inputs", changed):
+                self.assertRefused(self.run_pass(out, root=self.given.day), "input:tier_not_registered", out)
+
+    def test_a_registration_outside_the_store_is_refused(self):
+        """S9, C1: the store's folder must be named by the registration's own sha256, or be research/studies/."""
+        out = self.tmp / "out"
+        for name, folder in (("not a sha256", "pass-one"), ("another sha256", "0" * 64), ("upper case", None)):
+            with self.subTest(folder=name):
+                store = self.tmp / f"store-{len(name)}"
+                registration, digest = write_fast(store, folder=folder or sha(fast_files()[0]).upper())
+                self.assertRefused(self.run_pass(out, registration_path=registration, sha=digest, root=self.given.day),
+                                   "registration:not_in_the_store", out)
+        # In the repository's research/studies/ (a copy, patched in), with its rule files in research/rules/: the
+        # parents are looked for there alone.
+        research = self.tmp / "repo" / "research"
+        raw, split_raw, raws = fast_files()
+        for name in ("studies", "rules"):
+            (research / name).mkdir(parents=True)
+        (research / "studies" / f"{FAST}.json").write_bytes(raw)
+        (research / "partitions-v3.json").write_bytes(split_raw)
+        for name, data in {**raws, "close-early-v1-band.json": BAND_RAW}.items():
+            (research / "rules" / name).write_bytes(data)
+        # The same copy unpatched is a research/studies/ that is not the repository's: not in the store.
+        self.assertRefused(self.run_pass(out, registration_path=research / "studies" / f"{FAST}.json", sha=sha(raw),
+                                         root=self.given.day), "registration:not_in_the_store", out)
+        with mock.patch.object(resting_study, "REGISTRATIONS", research / "studies"), \
+                mock.patch.object(resting_study, "RULES_IN_GIT", research / "rules"):
+            # A registration in Git takes no --store.
+            self.assertRefused(self.run_pass(out, registration_path=research / "studies" / f"{FAST}.json",
+                                             sha=sha(raw), root=self.given.day, store=self.given.store),
+                               "store:not_for_this_registration", out)
+            result = self.assertCompleted(self.run_pass(out, registration_path=research / "studies" / f"{FAST}.json",
+                                                        sha=sha(raw), root=self.given.day))
+        receipt = json.loads((out / "receipt.json").read_bytes())
+        self.assertEqual((receipt["registration_folder"], receipt["store_root"], result["registration_sha256"]),
+                         ("research/studies", None, sha(raw)))
+        self.assertEqual({chain[0]["path"] for chain in receipt["parent_chains"].values()},
+                         {"research/rules/close-early-v1-band.json"})
+
+    def test_the_store_root_and_its_files(self):
+        """S9 (adversarial S4): a store registration's pass names its store root (--store), which must be the
+        registration's own, a directory of mode 0700 outside every data tree, this repository and every Git worktree,
+        with the registration, its split file and its rule files each of mode 0400; no other id takes --store. Each is
+        refused before anything is recorded."""
+        out = self.tmp / "out"
+        registration, digest = write_fast(self.tmp / "store")
+        other = self.tmp / "other"
+        other.mkdir(mode=0o700)
+        cases = {"store:missing_path": dict(store=None), "registration:not_in_the_store": dict(store=other)}
+        for problem, given in cases.items():
+            with self.subTest(problem=problem):
+                self.assertRefused(self.run_pass(out, registration_path=registration, sha=digest, root=self.given.day,
+                                                 **given), problem, out)
+        (self.tmp / "store").chmod(0o755)
+        self.assertRefused(self.run_pass(out, registration_path=registration, sha=digest, root=self.given.day),
+                           "store:mode_not_0700", out)
+        (self.tmp / "store").chmod(0o700)
+        # Under a data tree's name, and inside a Git worktree.
+        for problem, store in (("store:under_a_data_tree", self.tmp / "betangel-data" / "lab-store"),
+                               ("store:inside_git_worktree", self.tmp / "clone" / "lab-store")):
+            with self.subTest(problem=problem):
+                placed, placed_sha = write_fast(store)
+                (self.tmp / "clone" / ".git").mkdir(parents=True, exist_ok=True)
+                self.assertRefused(self.run_pass(out, registration_path=placed, sha=placed_sha, root=self.given.day),
+                                   problem, out)
+        # A data tree's name in the resolved form alone (through a link to a store under one), or in the given form
+        # alone (through a link so named to a plain store).
+        (self.tmp / "to-data").symlink_to(self.tmp / "betangel-data", target_is_directory=True)
+        write_fast(self.tmp / "plain" / "lab-store")
+        (self.tmp / "soccer-data").symlink_to(self.tmp / "plain", target_is_directory=True)
+        for name, link in (("resolved", self.tmp / "to-data"), ("given", self.tmp / "soccer-data")):
+            (linked,) = (link / "lab-store").glob(f"*/studies/{FAST}.json")
+            with self.subTest(form=name):
+                self.assertRefused(self.run_pass(out, registration_path=linked, sha=linked.parents[1].name,
+                                                 root=self.given.day, store=link / "lab-store"),
+                                   "store:under_a_data_tree", out)
+        # Each file a pass reads is written once, mode 0400.
+        home = registration.parents[1]
+        for problem, place in (("registration:mode_not_0400", registration),
+                               ("split:mode_not_0400", home / "partitions-v3.json"),
+                               ("rule_file:mode_not_0400", home / "rules" / f"{FAST_LAY}.json")):
+            with self.subTest(problem=problem):
+                place.chmod(0o600)
+                self.assertRefused(self.run_pass(out, registration_path=registration, sha=digest,
+                                                 root=self.given.day), problem, out)
+                place.chmod(0o400)
+        # close-v1 and a new id take no --store.
+        for study, given in ((STUDY, shared()), (EARLY, early_run())):
+            with self.subTest(study=study):
+                self.assertRefused(self.run_pass(self.tmp / "old", study=study, name="blind", sha=given.sha,
+                                                 registration_path=given.registration, root=self.given.day,
+                                                 store=self.tmp / "store"), "store:not_for_this_study")
+        self.assertCompleted(self.run_pass(out, registration_path=registration, sha=digest, root=self.given.day))
+        self.assertEqual(json.loads((out / "receipt.json").read_bytes())["store_root"],
+                         str((self.tmp / "store").resolve()))
+
+    def test_two_chained_passes_in_the_store(self):
+        """C1, R11: pass 2's rule file descends from pass 1's, which lies in pass 1's own store folder and descends
+        from close-early-v1-band.json in research/rules/. Without pass 1's folder, or with a chain whose root lies in
+        the store, or a parent in a folder not named by a sha256, pass 2 is refused rule:parent_not_found; with pass
+        1's folder but no line of pass 1 in the ledger, rule:parent_pass_not_in_the_ledger, before the read."""
+        first_raw = fast_rule(FAST_LAY)
+        second_raw = fast_rule("close-v2-0002-lay", parent_sha256=sha(first_raw))
+        second = {"close-v2-0002-lay.json": second_raw}
+        out = self.tmp / "out"
+        # Pass 2 alone in its store.
+        alone, alone_sha = write_fast(self.tmp / "alone", rules=second)
+        self.assertRefused(self.run_pass(out, registration_path=alone, sha=alone_sha, root=self.given.day),
+                           "rule:parent_not_found", out)
+        # Pass 1's rule file in a folder of the store whose name is not a sha256.
+        named = self.tmp / "named"
+        write_fast(named, rules={f"{FAST_LAY}.json": first_raw}, folder="pass-1")
+        found, found_sha = write_fast(named, rules=second)
+        self.assertRefused(self.run_pass(out, registration_path=found, sha=found_sha, root=self.given.day),
+                           "rule:parent_not_found", out)
+        # A chain whose root is a store file with no parent.
+        orphan_raw = fast_rule("close-v2-orphan", parent_sha256=None)
+        rooted = self.tmp / "rooted"
+        rooted.mkdir(mode=0o700)
+        (rooted / ("a" * 64) / "rules").mkdir(parents=True)
+        (rooted / ("a" * 64) / "rules" / "close-v2-orphan.json").write_bytes(orphan_raw)
+        found, found_sha = write_fast(rooted, rules={"close-v2-0003-lay.json": fast_rule(
+            "close-v2-0003-lay", parent_sha256=sha(orphan_raw))})
+        self.assertRefused(self.run_pass(out, registration_path=found, sha=found_sha, root=self.given.day),
+                           "rule:parent_not_found", out)
+        # Both passes in one store, pass 1 never run: its folder is no recorded pass's.
+        store = self.tmp / "store"
+        first, first_sha = write_fast(store, rules={f"{FAST_LAY}.json": first_raw})
+        registration, digest = write_fast(store, rules=second)
+        with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+            self.assertRefused(self.run_pass(out, registration_path=registration, sha=digest, root=self.given.day),
+                               "rule:parent_pass_not_in_the_ledger", out)
+        # Nor does a line of pass 1's registration that is not a fast explore line: another study's explore line, a
+        # look of the fast id's.
+        head = "none"
+        common = dict(lineage="close", partitions=(D,), partitions_sha256=sha(V3_RAW), registration_sha256=first_sha,
+                      input_sha256="2" * 64, source_descriptor_sha256="3" * 64, code_commit=COMMIT)
+        for study, kind in ((EARLY_IDS[0], "explore"), (FAST, "look")):
+            seq, entry = StudyLedger.open(self.ledger, head).record(PassRequest(study=study, kind=kind, **common),
+                                                                    V3_RAW, "4" * 64, "completed", clock)
+            head = f"{seq}:{entry}"
+            with self.subTest(line=(study, kind)), \
+                    mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+                self.assertEqual(self.run_pass(out, head, registration_path=registration, sha=digest,
+                                               root=self.given.day),
+                                 {"status": "refused", "problems": ["rule:parent_pass_not_in_the_ledger"]})
+        # Pass 1 runs; then pass 2 runs, and its receipt names the chain.
+        head = self.assertCompleted(self.run_pass(self.tmp / "first", head, registration_path=first, sha=first_sha,
+                                                  root=self.given.day))["ledger_head"]
+        head = self.assertCompleted(self.run_pass(out, head, registration_path=registration, sha=digest,
+                                                  root=self.given.day))["ledger_head"]
+        receipt = json.loads((out / "receipt.json").read_bytes())
+        self.assertEqual(receipt["parent_chains"], {"close-v2-0002-lay": [
+            {"path": f"{first_sha}/rules/{FAST_LAY}.json", "sha256": sha(first_raw)},
+            {"path": "research/rules/close-early-v1-band.json", "sha256": sha(BAND_RAW)}]})
+        self.assertEqual(receipt["registration_folder"], f"{digest}/studies")
+        # Git first (build choice 3): where research/rules/ also holds pass 1's bytes, the chain ends there.
+        research = self.tmp / "research" / "rules"
+        research.mkdir(parents=True)
+        for name, data in ((f"{FAST_LAY}.json", first_raw), ("close-early-v1-band.json", BAND_RAW)):
+            (research / name).write_bytes(data)
+        with mock.patch.object(resting_study, "RULES_IN_GIT", research):
+            self.assertCompleted(self.run_pass(self.tmp / "again", head, registration_path=registration, sha=digest,
+                                               root=self.given.day))
+        self.assertEqual(json.loads((self.tmp / "again" / "receipt.json").read_bytes())["parent_chains"], {
+            "close-v2-0002-lay": [{"path": f"research/rules/{FAST_LAY}.json", "sha256": sha(first_raw)}]})
+
+    def test_a_parent_is_a_file_a_recorded_pass_ran(self):
+        """G11, C1 (adversarial S3, correctness S1 (f)): a store candidate is a rule file that a fast registration in
+        its own folder names by sha256, both of mode 0400, the folder not a symlink and not the pass's own; every chain
+        member names the fast id's lineage. A forged folder, an unnamed file beside the pass's own, a file of mode
+        0644, a symlinked folder, a file whose bytes are not the ones its registration names and another lineage's file
+        in Git are each refused before the read; the same child of a recorded pass's file runs."""
+        first_raw = fast_rule(FAST_LAY)
+        store = self.tmp / "store"
+        first, first_sha = write_fast(store, rules={f"{FAST_LAY}.json": first_raw})
+        head = self.assertCompleted(self.run_pass(self.tmp / "first", registration_path=first, sha=first_sha,
+                                                  root=self.given.day))["ledger_head"]
+        out = self.tmp / "out"
+
+        def child(name, parent):
+            return {f"{name}.json": fast_rule(name, parent_sha256=sha(parent))}
+
+        def refused(problem, registration, digest):
+            with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+                result = self.run_pass(out, head, registration_path=registration, sha=digest, root=self.given.day)
+            self.assertEqual(result, {"status": "refused", "problems": [problem]})
+            self.assertFalse(out.exists())
+
+        def placed(path, data):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            path.chmod(0o400)
+
+        # A forged folder: named by a sha256, holding a rule file and no registration.
+        forged_raw = fast_rule("close-v2-forged")
+        placed(store / ("b" * 64) / "rules" / "close-v2-forged.json", forged_raw)
+        with self.subTest(case="forged folder"):
+            refused("rule:parent_not_found", *write_fast(store, rules=child("close-v2-0003-lay", forged_raw)))
+        # An unnamed file beside the pass's own rule files.
+        sibling_raw = fast_rule("close-v2-sibling")
+        registration, digest = write_fast(store, rules=child("close-v2-0004-lay", sibling_raw))
+        placed(registration.parents[1] / "rules" / "close-v2-sibling.json", sibling_raw)
+        with self.subTest(case="unnamed sibling"):
+            refused("rule:parent_not_found", registration, digest)
+        # A sibling the pass's own registration names: its own folder is no candidate.
+        named_raw = fast_rule("close-v2-0009-a")
+        with self.subTest(case="named sibling"):
+            refused("rule:parent_not_found", *write_fast(store, rules={"close-v2-0009-a.json": named_raw,
+                                                                       **child("close-v2-0009-b", named_raw)}))
+        # A copy of pass 1's folder under another sha256's name, in a store of its own.
+        copied = self.tmp / "copied"
+        copied.mkdir(mode=0o700)
+        for source in (store / first_sha).rglob("*.json"):
+            placed(copied / ("c" * 64) / source.relative_to(store / first_sha), source.read_bytes())
+        with self.subTest(case="copied folder"):
+            refused("rule:parent_not_found", *write_fast(copied, rules=child("close-v2-0010-lay", first_raw)))
+        # Pass 1's rule file, or its registration, of mode 0644.
+        rule_path = store / first_sha / "rules" / f"{FAST_LAY}.json"
+        for index, (case, place) in enumerate((("rule file", rule_path), ("registration", first))):
+            with self.subTest(case=f"{case} of mode 0644"):
+                place.chmod(0o644)
+                refused("rule:parent_not_found", *write_fast(store, rules=child(f"close-v2-0005-{index}", first_raw)))
+                place.chmod(0o400)
+        # Pass 1's folder as a symlink in another store.
+        linked = self.tmp / "linked"
+        registration, digest = write_fast(linked, rules=child("close-v2-0006-lay", first_raw))
+        (linked / first_sha).symlink_to(store / first_sha, target_is_directory=True)
+        with self.subTest(case="symlinked folder"):
+            refused("rule:parent_not_found", registration, digest)
+        # The same child beside pass 1's own folder runs.
+        registration, digest = write_fast(store, rules=child("close-v2-0006-lay", first_raw))
+        self.assertCompleted(self.run_pass(self.tmp / "second", head, registration_path=registration, sha=digest,
+                                           root=self.given.day))
+        # Another lineage's file in Git as the parent.
+        inplay = (REPO / "research" / "rules" / "inplay-v1-lay.json").read_bytes()
+        with self.subTest(case="another lineage"):
+            refused("rule:parent_of_another_lineage", *write_fast(store, rules=child("close-v2-0007-lay", inplay)))
+        # Pass 1's rule file replaced by another rule file's bytes: not the bytes its registration names.
+        rule_path.chmod(0o600)
+        rule_path.write_bytes(fast_rule(FAST_LAY, intents=[{"persist": "lapse", "price": {"ref": "best_back"},
+                                                            "side": "LAY", "stake": "3.00"}]))
+        rule_path.chmod(0o400)
+        with self.subTest(case="changed bytes"):
+            refused("rule:parent_not_found", *write_fast(store, rules=child("close-v2-0008-lay", first_raw)))
+
+    def test_a_repeat_and_a_second_registration(self):
+        """S13 and G7: a repeat appends nothing and its summary hashes the same; a second registration is a second
+        explore line, and the receipt counts both."""
+        store = self.tmp / "store"
+        first, first_sha = write_fast(store)
+        other, other_sha = write_fast(store, registration=lambda value: value["reading"].update(rule="Other text."))
+        done = self.assertCompleted(self.run_pass(self.tmp / "a", registration_path=first, sha=first_sha,
+                                                  root=self.given.day))
+        again = self.assertCompleted(self.run_pass(self.tmp / "b", done["ledger_head"], registration_path=first,
+                                                   sha=first_sha, root=self.given.day))
+        self.assertEqual((again["ledger_repeat"], again["summary_sha256"], again["ledger_head"]),
+                         (True, done["summary_sha256"], done["ledger_head"]))
+        self.assertEqual(outputs_of(self.tmp / "a")["summary.md"], outputs_of(self.tmp / "b")["summary.md"])
+        second = self.assertCompleted(self.run_pass(self.tmp / "c", done["ledger_head"], registration_path=other,
+                                                    sha=other_sha, root=self.given.day))
+        entries = verify(self.ledger / LEDGER_FILE)
+        self.assertEqual([(entry["kind"], entry["registration_sha256"]) for entry in entries],
+                         [("explore", first_sha), ("explore", other_sha)])
+        self.assertEqual([json.loads((self.tmp / name / "receipt.json").read_bytes())["explore_lines_on_label"]
+                          for name in "abc"], [1, 1, 2])
+        self.assertFalse(second["ledger_repeat"])
+
+    def test_the_receipt_counts_the_lines_as_the_budget_counts_them(self):
+        """S13: explore_lines_on_label counts the lineage's explore and registered lines on the explore label, over
+        every study id: not a look, not another lineage's line."""
+        head = "none"
+        common = dict(partitions_sha256=sha(V3_RAW), input_sha256="2" * 64, source_descriptor_sha256="3" * 64,
+                      code_commit=COMMIT)
+        for index, (study, lineage, kind, labels, more) in enumerate((
+                (EARLY_IDS[0], "other", "explore", (D,), {}), (EARLY_IDS[0], "close", "look", (D,), {}),
+                (EARLY_IDS[1], "close", "explore", (D,), {}),
+                (STUDY, "close", "registered", (D, V), dict(m=2, alpha="0.02")))):
+            request = PassRequest(study=study, lineage=lineage, kind=kind, partitions=labels,
+                                  registration_sha256=str(index + 1) * 64, **common, **more)
+            seq, digest = StudyLedger.open(self.ledger, head).record(request, V3_RAW, "4" * 64, "completed", clock)
+            head = f"{seq}:{digest}"
+        self.assertCompleted(self.run_pass(self.tmp / "out", head, root=self.given.day))
+        receipt = json.loads((self.tmp / "out" / "receipt.json").read_bytes())
+        self.assertEqual((receipt["explore_lines_on_label"], receipt["ledger_counts"]),
+                         (3, {"looks": 1, "registered": 1}))
+
+    def test_the_budget_is_the_splits(self):
+        """G7: under a synthetic split whose PRO-D budget is 2 (FAST_SPLIT_SHA256 patched to its hash, since G10
+        would refuse it first), a third registration is refused before the read."""
+        parsed = json.loads(V3_RAW)
+        parsed["labels"]["PRO-D"]["explore_budget"] = 2
+        small = canonical(parsed)
+        store = self.tmp / "store"
+        made = [write_fast(store, split=small, registration=lambda value, index=index: value["reading"].update(
+            rule=f"Test text {index}.")) for index in range(3)]
+        with mock.patch.object(resting, "FAST_SPLIT_SHA256", sha(small)):
+            head = "none"
+            for index, (registration, digest) in enumerate(made[:2]):
+                head = self.assertCompleted(self.run_pass(self.tmp / f"out{index}", head,
+                                                          registration_path=registration, sha=digest,
+                                                          root=self.given.day))["ledger_head"]
+            receipt = json.loads((self.tmp / "out1" / "receipt.json").read_bytes())
+            self.assertEqual((receipt["explore_lines_on_label"], receipt["explore_budget"]), (2, 2))
+            with mock.patch.object(resting_study, "_tally", side_effect=AssertionError("a record was read")):
+                third = self.run_pass(self.tmp / "out2", head, registration_path=made[2][0], sha=made[2][1],
+                                      root=self.given.day)
+        self.assertEqual(third, {"status": "refused", "problems": ["ledger:explore_budget_spent"]})
+        self.assertEqual(len(verify(self.ledger / LEDGER_FILE)), 2)
+        # Unpatched, the same registration is refused by G10.
+        self.assertEqual(self.run_pass(self.tmp / "out3", head, registration_path=made[2][0], sha=made[2][1],
+                                       root=self.given.day),
+                         {"status": "refused", "problems": ["registration:data.split:not_the_merged_split"]})
+
+    def test_a_failed_check_still_spends_a_line(self):
+        """§2.2a (c): the summary is built before the ledger records it, so a pass whose checks fail is a line."""
+        with mock.patch.object(resting_study, "_minute_excess", return_value=True):
+            done = self.assertCompleted(self.run_pass(self.tmp / "out", root=self.given.day))
+        value = json.loads(outputs_of(self.tmp / "out")["summary.json"])
+        self.assertEqual(value["withheld_by_the_checks"], "machinery_check_failed:after_the_hour_minute_excess")
+        self.assertEqual([value["machinery_checks"][name]["fired_on"] for name in ("MC6", "MC7")],
+                         [[FAST_FAV, FAST_LAY, *(f"{cell.rule_id}@{cell.at_s}" for cell in FAST_CELLS), "pooled"]] * 2)
+        (entry,) = verify(self.ledger / LEDGER_FILE)
+        self.assertEqual((entry["kind"], entry["tables_sha256"]), ("explore", done["summary_sha256"]))
+
+    def test_lowered_floors_give_the_realised_figure_over_the_walks_markets(self):
+        """With FAST_FIXED's floors patched low (as lowered() for close-v1), cells on four markets where every model
+        fills give figures: the realised diagnostic reads the markets the walk gave (Tally.markets), every valued
+        order of the pessimistic model once."""
+        low = {"statistics.min_values": 2, "statistics.min_tested_values": 2, "statistics.min_tested_race_dates": 2,
+               "uncertainty.min_clusters": 2, "verdicts.half_year_min_fills": 2}
+        store = self.tmp / "store"
+        registration, digest = write_fast(store, registration=lowered)
+        with mock.patch.dict(resting.FAST_FIXED, low):
+            self.assertCompleted(self.run_pass(self.tmp / "out", registration_path=registration, sha=digest,
+                                               root=self.given.filled))
+        value = json.loads(outputs_of(self.tmp / "out")["summary.json"])
+        given = [(cell, label) for cell, found in value["figures"]["size_gate"].items()
+                 for label, item in found.items() if item["figures_given"]]
+        self.assertTrue(given)
+        for cell, label in given:
+            model = value["figures"]["by_cell"][cell][label]["bsp_as_written"]["models"][PESSIMISTIC]
+            with self.subTest(cell=cell):
+                if model["filled"]["net_closable"]["mean"] is not None:
+                    self.assertEqual(model["realised"]["rounded"]["bets"], model["filled"]["net_closable"]["bets"])
+                    self.assertEqual(model["realised"]["rounded"]["left_out"], {"dead_heat": 0,
+                                                                                "dead_heat_unknown": 0})
+        self.assertTrue(any(value["figures"]["by_cell"][cell][label]["bsp_as_written"]["models"][PESSIMISTIC][
+            "realised"]["rounded"]["mean"] is not None for cell, label in given))
+        resting_study.markdown(replace(FAST_PLAN, min_values=2), value)
+
+    def test_a_fast_summary_is_the_same_on_two_runs(self):
+        self.assertCompleted(self.run_pass(self.tmp / "again"))
+        self.assertEqual({name: data for name, data in outputs_of(self.tmp / "again").items()
+                          if name != "receipt.json"},
+                         {name: data for name, data in outputs_of(self.given.base / "explore").items()
+                          if name != "receipt.json"})
+
+    def test_no_output_holds_a_market_or_selection_id(self):
+        given = self.given
+        offs = study_offs() + [EDGE]
+        ids = given.ids + [market_id.split(".")[1] for market_id in given.ids] + [str(sid) for sid in SIDS] + \
+            [fx.EVENT] + sorted({off.date().isoformat() for off in offs}) + \
+            [str(ms(off))[:-3] for off in offs] + [iso(off)[:16] for off in offs]
+        printed = {**{name: data.decode() for name, data in outputs_of(given.base / "explore").items()},
+                   "stdout": given.explore[1], "ledger": (given.ledger / LEDGER_FILE).read_text()}
+        for name, text in printed.items():
+            with self.subTest(printed=name):
+                self.assertEqual([token for token in ids if token in text], [])
+
+
+# Hand-built rows of a fast plan: scored v2 rows on the explore label, eight race dates in each half-year.
+FAST_DAYS = D_DAYS[:8] + [(date(2016, 1, 5) + timedelta(days=index)).isoformat() for index in range(8)]
+NO_FILL = Fill(Fraction(0), None, None, (False, False), False, False, False, "pull", False, False, False)
+
+
+def fast_row(bsp, kind=VOLUME, filled=MODELS, minute="6-59", day=FAST_DAYS[0], price=2.5, closable=True, won=False,
+             dead_heat=False, label=D, refused=None, images=None, **fill):
+    """One scored v2 row of a LAY at price, filled by kind under the models in filled, in the minute bucket minute;
+    fill: the Fill's after_the_hour, image, through_below_stake and crossed (default False); refused: {model:
+    {bucket: count}}; images: OrderRow.images as buckets() gives them."""
+    made = Fill(Fraction(0), kind, 5.0, (False, True), fill.get("after_the_hour", False), False, False, None,
+                fill.get("image", False), fill.get("through_below_stake", False), fill.get("crossed", False))
+    return OrderRow(LAY, P(price), label, "H2" if day >= "2015-11-01" else "H1", day, SCORED, P(bsp), None,
+                    {model: made if model in filled else NO_FILL for model in MODELS}, None, "not_two_sided",
+                    dict.fromkeys(resting.FAST_TRD_COUNTS, 0), False, gap_ticks=1, fill_minute=dict.fromkeys(MODELS),
+                    minutes={model: minute if model in filled else None for model in MODELS},
+                    images=images or {IMAGE_BATCHES: buckets(), IMAGE_LEFT_OUT: buckets()},
+                    through_refused={model: (refused or {}).get(model, buckets()) for model in MODELS},
+                    closable={model: closable if model in filled else None for model in MODELS},
+                    in_play_before_pull=False, won=won, dead_heat=dead_heat)
+
+
+def fast_block(count, bsps, **kwargs):
+    """count fast rows over FAST_DAYS in turn, a day's rows sharing one BSP (bsps in turn by day)."""
+    return [fast_row(bsps[index % len(FAST_DAYS) % len(bsps)], day=FAST_DAYS[index % len(FAST_DAYS)], **kwargs)
+            for index in range(count)]
+
+
+def fast_tally(plan, rows):
+    """A Tally of a fast plan holding hand-built rows {Cell: [OrderRow]}, each its own market, under the explore
+    label, counted in the codes and the orders as decide_record counts a walked record's (every cell's column adds
+    up to the record count)."""
+    tally = Tally(plan)
+    tally.records = max((len(found) for found in rows.values()), default=0)
+    for cell in plan.cells:
+        found = rows.get(cell, [])
+        tally.codes[cell][resting.ISSUED] = len(found)
+        tally.codes[cell]["no_view"] = tally.records - len(found)
+        for row in found:
+            tally.rows[cell][D].append(row)
+            tally.markets[cell][D].append(row)
+            tally.months[plan.months[0]]["orders"][D] += 1
+    tally.books[D] = [1.0 + index % 7 / 100 for index in range(tally.records)]     # E3's sums of 1 / BSP
+    return tally
+
+
+def clean_rows():
+    """Rows under which every machinery check holds: per cell 160 filled (half of them won, every tenth held) and 120
+    unfilled orders over 16 race dates, at BSPs either side of the price."""
+    bsps = [2.3, 2.4, 2.46, 2.52, 2.6, 2.7, 2.8, 2.9]
+    found = {}
+    for index, cell in enumerate(FAST_CELLS):
+        rows = fast_block(160, bsps[index:] + bsps[:index])
+        rows = [row._replace(won=place % 2 == 0, closable={model: (place % 10 != 0) if value is not None else None
+                                                           for model, value in row.closable.items()})
+                for place, row in enumerate(rows)]
+        found[cell] = rows + fast_block(120, bsps, filled=NONE)
+    return found
+
+
+def fast_summary(rows, plan=FAST_LOW, requested="0" * 64):
+    return summary(plan, fast_tally(plan, rows), "explore", "0" * 64, requested)
+
+
+def mirrored(row):
+    """The row with the BSP that turns its g into minus g."""
+    return row._replace(bsp=row.price / (2 - row.price / row.bsp))
+
+
+def with_the_switch_of(value, other):
+    """A fast summary with another's BSP precision and the reading ends its switch gives (bsp_ends_decide_apart):
+    all that may move when every g changes sign and the checks fail."""
+    return {**value, "bsp_precision": other["bsp_precision"],
+            **{key: {**value[key], "reading_ends": other[key]["reading_ends"]} for key in ("figures", "half_years")}}
+
+
+# Where a float may lie in a fast summary whose checks failed: a fill rate, a quantile of a queue size or of
+# seconds, and sqrt(2 ln c). None is a location of an outcome.
+MACHINERY_FLOATS = {"fill_rate", "queue_quantiles", "seconds_quantiles", "sqrt_2_ln_c"}
+
+
+def gate_fixtures():
+    """{check: (rows, requested input sha256)}: clean_rows() changed so that exactly that check fails."""
+    def changed(cell, extra):
+        rows = clean_rows()
+        rows[cell] = rows[cell] + extra
+        return rows
+
+    lay = Cell(FAST_LAY, -600, -120)
+    return {
+        "MC1": (clean_rows(), "f" * 64),
+        "MC2": ({**clean_rows(), "count": None}, "0" * 64),
+        "MC3": (changed(lay, [fast_row(2.6, label=V)]), "0" * 64),
+        "MC4": (changed(lay, [fast_row(2.6, kind=VOLUME, after_the_hour=True)]), "0" * 64),
+        "MC5": (changed(lay, [fast_row(2.6, kind=THROUGH, image=True)]), "0" * 64),
+        "MC6": (changed(lay, fast_block(40, [2.6], kind=THROUGH, minute="1")
+                        + fast_block(19, [2.6], kind=THROUGH, minute="2")), "0" * 64),
+        "MC7": (changed(lay, fast_block(40, [2.6], kind=VOLUME, minute="1")
+                        + fast_block(19, [2.6], kind=VOLUME, minute="2")), "0" * 64),
+    }
+
+
+class FastSummary(unittest.TestCase):
+    """A fast summary on hand-built rows: its tables, the machinery checks MC1-MC7 and the one counts-only path
+    (§2.2a (b)-(c), §2.5, R2, R3, R5, V5)."""
+
+    def built(self, rows, requested="0" * 64, plan=FAST_LOW):
+        broken = rows.pop("count", False) is None
+        tally = fast_tally(plan, rows)
+        if broken:                              # MC2: one record more than the codes hold
+            tally.records += 1
+        return summary(plan, tally, "explore", "0" * 64, requested), tally
+
+    def test_clean_rows_give_every_figure(self):
+        value, _ = self.built(clean_rows())
+        self.assertIsNone(value["withheld_by_the_checks"])
+        self.assertTrue(all(item["holds"] for item in value["machinery_checks"].values()))
+        group = value["figures"]["by_cell"][f"{FAST_LAY}@-600"][D]["bsp_as_written"]
+        model = group["models"][PESSIMISTIC]
+        self.assertEqual(set(model), {"fills", "fill_race_dates", FILLED_IS_ALL_PLACED, "filled", "value_per_placed",
+                                      "gap", "hit_rate", "clv_ticks", "price_bands", "closable_fills", "realised"})
+        self.assertEqual(set(model["filled"]), {"g", "net_closed", "net_held", "net_closable"})
+        for figure in (model["filled"]["net_closable"], model["hit_rate"], model["realised"]["rounded"],
+                       model["realised"]["unrounded"], model["clv_ticks"]["filled"]):
+            self.assertIsNotNone(figure["mean"])
+        self.assertEqual(model["realised"]["rounded"]["left_out"], {"dead_heat": 0, "dead_heat_unknown": 0})
+        # At GBP 2 the penny rounding zeroes these small commissions: the rounded figure is the kinder one here.
+        self.assertGreater(model["realised"]["rounded"]["mean"], model["realised"]["unrounded"]["mean"])
+        self.assertIsNotNone(value["bsp_book"]["by_label"][D]["quantiles"])
+        self.assertEqual(model["closable_fills"], {"closable": 144, "not_closable": 16})
+        self.assertEqual(group["closable_differs"], {"optimistic and central": 0, "optimistic and pessimistic": 0,
+                                                     "central and pessimistic": 0})
+        table = value["figures"]
+        self.assertEqual((table["deciding_heading"], table["heading"]),
+                         ("the expectation given BSP; excludes the race result's noise", "exploratory"))
+        self.assertIn("unrounded", table["realised_note"])
+        # The half-years give their figures when both do, and keep no left_out when they do not.
+        halves = value["half_years"]["by_cell"][f"{FAST_LAY}@-600"][D]
+        self.assertEqual(set(halves), {"H1", "H2"})
+        self.assertIsNotNone(halves["H1"]["bsp_as_written"]["models"][PESSIMISTIC]["realised"]["rounded"]["mean"])
+        text = resting_study.markdown(FAST_LOW, value)
+        for words in ("## M Machinery checks", "Every check holds", "hit rate", "realised, unrounded", "CI low",
+                      "closable_differs", "## B10 ", "## E2 "):
+            self.assertIn(words, text)
+
+    def test_a_half_year_withheld_keeps_no_count_read_from_the_result(self):
+        """Part and rest across the half-years (_together): where one half gives no realised figure, the other's is
+        withheld too, and each keeps what the counts-only path gives (correctness M1, adversarial S2): the filled
+        part's n and race dates and no left_out, and beside a CLV in ticks with no filled mean the filled part's n and
+        no BSP off the ladder. So no count of dead heats or of BSPs beyond the ladder can be worked out from n and
+        the fills, and neither half's tree moves when the results in the given half do."""
+        lay = Cell(FAST_LAY, -600, -120)
+
+        def built(dead_heats, flipped=False, off=2):
+            """The cell with dead_heats dead-heat markets among H1's first fills and BSP 1000 on its last off."""
+            rows = clean_rows()
+            first = [row._replace(won=not row.won) if flipped else row for row in rows[lay] if row.half == "H1"]
+            filled = [index for index, row in enumerate(first) if row.fills[PESSIMISTIC].kind is not None]
+            for index in filled[:dead_heats]:
+                first[index] = first[index]._replace(dead_heat=True)
+            for index in filled[-off:]:
+                first[index] = first[index]._replace(bsp=P(1000))
+            rows[lay] = first + [fast_row(2.6, day=FAST_DAYS[8])] \
+                + [row for row in rows[lay] if row.half == "H2" and row.fills[PESSIMISTIC].kind is None]
+            value, _ = self.built(rows)
+            return value["half_years"]["by_cell"][f"{FAST_LAY}@-600"][D], value
+
+        halves, value = built(3)
+        for half in ("H1", "H2"):
+            for end in BSP_ENDS:
+                model = halves[half][end]["models"][PESSIMISTIC]
+                with self.subTest(half=half, end=end):
+                    self.assertEqual(model["fills"], {"H1": 80, "H2": 1}[half])
+                    for kind in ("rounded", "unrounded"):
+                        figure = model["realised"][kind]
+                        self.assertEqual((figure["mean"], figure["left_out"], figure["bets"], figure["race_dates"]),
+                                         (None, None, model["fills"], model["fill_race_dates"]))
+                    self.assertIsNone(model["clv_ticks"][resting.BSP_OFF_THE_LADDER])
+                    self.assertEqual((model["clv_ticks"]["filled"]["mean"], model["clv_ticks"]["filled"]["bets"]),
+                                     (None, model["fills"]))
+        # The whole cell gives both, with the dead heats it left out and the BSPs beyond the ladder at plus a step.
+        whole = value["figures"]["by_cell"][f"{FAST_LAY}@-600"][D]
+        model = whole["bsp_as_written"]["models"][PESSIMISTIC]
+        self.assertEqual(model["realised"]["rounded"]["left_out"], {"dead_heat": 3, "dead_heat_unknown": 0})
+        self.assertEqual(whole["bsp_plus_step"]["models"][PESSIMISTIC]["clv_ticks"][resting.BSP_OFF_THE_LADDER], 2)
+        # Other dead heats, or every result flipped, in the given half: neither half moves.
+        for changed in (built(5)[0], built(0)[0], built(3, flipped=True)[0]):
+            self.assertEqual(changed, halves)
+        # Nor when H1's dead heats leave it fewer than min_values valued orders, or its BSPs beyond the ladder fewer
+        # than min_values CLVs at plus a step: a withheld figure's reason is read from the filled part alone.
+        self.assertEqual(built(79)[0], halves)
+
+        def ticks(found):
+            return {(half, end, model): found[half][end]["models"][model][CLV_TICKS]
+                    for half in found for end in BSP_ENDS for model in MODELS}
+
+        self.assertEqual(ticks(built(3, off=79)[0]), ticks(halves))
+
+    def test_b4_has_no_minute_block_and_the_markdown_builds(self):
+        """R5 and V5: a fast summary's B4 holds no minute block (its minutes count from 0 in B10), an early
+        summary's keeps it, and a fast summary.md builds."""
+        value, _ = self.built(clean_rows())
+        for tables in value["cells"].values():
+            for item in tables["fills"][D].values():
+                self.assertNotIn("minutes_after_the_hour", item)
+        rows = {LAY_CELLS[0]: block(150, D_DAYS, [2.6], label=D)}
+        early = summary(EARLY_PLAN, early_tally(EARLY_PLAN, rows), "blind", "0" * 64)
+        self.assertIn("minutes_after_the_hour", early["cells"][cell_key(LAY_CELLS[0])]["fills"][D][PESSIMISTIC])
+        text = resting_study.markdown(FAST_LOW, value)
+        self.assertNotIn("minute 2 after the hour", text)
+        self.assertIn("minute 2 after the hour", resting_study.markdown(EARLY_PLAN, early))
+
+    def test_each_check_withholds_every_outcome_statistic(self):
+        """S5, R2: one fixture per check. Each fails that check alone, and the summary then holds floats only at the
+        machinery places, does not move but for the whole-hundredths count when every g changes sign, nor when
+        every result changes, and its Markdown holds no mean, CI low or hit-rate word; no hit count, no BSP off
+        the ladder and nothing read from won or dead_heat is left."""
+        for check, (rows, requested) in gate_fixtures().items():
+            with self.subTest(check=check):
+                value, _ = self.built(dict(rows), requested)
+                failed = {name for name, item in value["machinery_checks"].items() if not item["holds"]}
+                self.assertEqual(failed, {check})
+                self.assertEqual(value["withheld_by_the_checks"],
+                                 f"machinery_check_failed:{dict(resting_study.CHECKS)[check]}")
+                places = {trail for trail, _ in walk_floats(value)}
+                self.assertEqual([trail for trail in places if not MACHINERY_FLOATS & set(trail)], [])
+                left = [item for key, item in walk_items(value) if key in ("left_out", resting.BSP_OFF_THE_LADDER)]
+                self.assertEqual(set(map(json.dumps, left)), {"null"})
+                for _, figure in walk_items(value):
+                    if isinstance(figure, dict) and "mean" in figure:
+                        self.assertEqual(statistics_of(figure), {None})
+                        self.assertEqual(figure["reason"], value["withheld_by_the_checks"])
+                text = resting_study.markdown(FAST_LOW, value).lower()
+                for word in ("mean", "ci low", "hit rate", "hit_rate"):
+                    self.assertNotIn(word, text)
+                # Every g changes sign: only the whole-hundredths count moves.
+                flipped = {cell: [mirrored(row) for row in found] if isinstance(found, list) else found
+                           for cell, found in rows.items()}
+                other, _ = self.built(dict(flipped), requested)
+                self.assertNotEqual(other["bsp_precision"], value["bsp_precision"])
+                self.assertEqual(with_the_switch_of(value, other), other)
+                self.assertEqual(resting_study.markdown(FAST_LOW, with_the_switch_of(value, other)),
+                                 resting_study.markdown(FAST_LOW, other))
+                # Every result changes: nothing moves.
+                results = {cell: [row._replace(won=not row.won, dead_heat=None) for row in found]
+                           if isinstance(found, list) else found for cell, found in rows.items()}
+                self.assertEqual(self.built(dict(results), requested)[0], value)
+        # The values did change sign.
+        rows = clean_rows()[FAST_CELLS[0]]
+        self.assertEqual([value for _, value in series(FAST_LOW, rows, G, AS_WRITTEN)],
+                         [-value for _, value in series(FAST_LOW, [mirrored(row) for row in rows], G, AS_WRITTEN)])
+
+    def test_the_counts_only_path_has_the_figures_shape(self):
+        """_fast_counts gives every key _fast_figures gives, so the tables, the merge of half-years and the Markdown
+        read one shape."""
+        rows = clean_rows()[FAST_CELLS[2]]
+        full = resting_study._fast_figures(FAST_LOW, rows, rows, AS_WRITTEN, Fraction(2))
+        counted = resting_study._fast_counts(FAST_LOW, rows, "machinery_check_failed:x")
+
+        def shape(value):                       # a given realised figure's left_out is a dict, a withheld one None
+            return {trail[:trail.index("left_out") + 1] if "left_out" in trail else trail
+                    for trail, _ in leaves(value)}
+
+        self.assertEqual(shape(counted), shape(full))
+        model = counted["models"][PESSIMISTIC]
+        self.assertEqual((model["fills"], model["filled"]["net_closable"]["bets"], model["hit_rate"]["bets"],
+                          model["gap"]["bets"], model["closable_fills"]),
+                         (160, 160, 160, [160, 120], full["models"][PESSIMISTIC]["closable_fills"]))
+        # A cell under the size floor takes the same path, reason counts_only.
+        value, _ = self.built(clean_rows(), plan=replace(FAST_LOW, min_tested_values=1000))
+        group = value["figures"]["by_cell"][f"{FAST_LAY}@-600"][D]["bsp_as_written"]
+        self.assertEqual((group["models"][PESSIMISTIC]["hit_rate"]["reason"],
+                          group["models"][PESSIMISTIC]["realised"]["rounded"]["left_out"],
+                          group["models"][PESSIMISTIC]["clv_ticks"][resting.BSP_OFF_THE_LADDER]),
+                         (COUNTS_ONLY, None, None))
+        self.assertIsNone(value["withheld_by_the_checks"])
+
+    def test_the_minute_check(self):
+        """§2.2a (c), R3: 40 pessimistic trade_through fills in minute 1 against 19 in minute 2 in one rule file fire
+        it, against 20 hold it; two rule files at 20 and 0 each hold per file and fire pooled; on a weekend nothing
+        fires; MC7 alike for volume_at_price. Only the pessimistic model's fills count. Each cell is read too
+        (adversarial S1): a cell of 100 against 0 fires although its rule file's other cell adds 60 in minute 2."""
+        fav, lay, early = Cell(FAST_FAV, -600, -120), Cell(FAST_LAY, -300, -120), Cell(FAST_LAY, -600, -120)
+        for check, kind in (("MC6", THROUGH), ("MC7", VOLUME)):
+            cases = {
+                "40 against 19": ({lay: fast_block(40, [2.6], kind=kind, minute="1")
+                                   + fast_block(19, [2.6], kind=kind, minute="2")},
+                                  [FAST_LAY, f"{FAST_LAY}@-300", "pooled"]),
+                "a diluted cell": ({early: fast_block(100, [2.6], kind=kind, minute="1"),
+                                    lay: fast_block(60, [2.6], kind=kind, minute="2")}, [f"{FAST_LAY}@-600"]),
+                "40 against 20": ({lay: fast_block(40, [2.6], kind=kind, minute="1")
+                                   + fast_block(20, [2.6], kind=kind, minute="2")}, []),
+                "20 and 20": ({lay: fast_block(20, [2.6], kind=kind, minute="1"),
+                               fav: fast_block(20, [2.6], kind=kind, minute="1")}, ["pooled"]),
+                "a weekend": ({lay: fast_block(40, [2.6], kind=kind, minute="weekend")}, []),
+                "not pessimistic": ({lay: fast_block(40, [2.6], kind=kind, minute="1",
+                                                     filled=(OPTIMISTIC, CENTRAL))}, []),
+                "39 against 0": ({lay: fast_block(39, [2.6], kind=kind, minute="1")}, []),
+            }
+            for name, (rows, fired) in cases.items():
+                with self.subTest(check=check, case=name):
+                    value, _ = self.built(rows)
+                    self.assertEqual(value["machinery_checks"][check],
+                                     {"check": "after_the_hour_minute_excess", "kind": kind, "holds": not fired,
+                                      "fired_on": fired})
+                    other = "MC7" if check == "MC6" else "MC6"
+                    self.assertTrue(value["machinery_checks"][other]["holds"])
+
+    def test_the_other_clauses_of_mc2_and_mc3(self):
+        """Correctness S1 (d): each clause of MC2 and MC3 fails its check alone: a row of a class not in CLASSES (its
+        order counted by month too), one order more by month than the rows hold, and rows kept under a label not
+        read."""
+        lay = Cell(FAST_LAY, -600, -120)
+        month = FAST_LOW.months[0]
+
+        def klass(tally):
+            tally.rows[lay][D].append(fast_row(2.6)._replace(klass="not_a_class"))
+            tally.months[month]["orders"][D] += 1
+
+        def orders(tally):
+            tally.months[month]["orders"][D] += 1
+
+        def label(tally):
+            tally.rows[lay][V] = []
+
+        for check, change in (("MC2", klass), ("MC2", orders), ("MC3", label)):
+            with self.subTest(check=check, change=change.__name__):
+                tally = fast_tally(FAST_LOW, clean_rows())
+                change(tally)
+                value = summary(FAST_LOW, tally, "explore", "0" * 64, "0" * 64)
+                self.assertEqual({name for name, item in value["machinery_checks"].items() if not item["holds"]},
+                                 {check})
+                self.assertEqual(value["withheld_by_the_checks"],
+                                 f"machinery_check_failed:{dict(resting_study.CHECKS)[check]}")
+
+    def test_the_reading_ends(self):
+        """Correctness S3: E1 and E2 name the BSP end the frozen reading rule reads for a claim and for a kill, as
+        resting.deciding_end gives it for a LAY: the claim end as written, the kill end plus a step when the ends
+        decide apart and as written when not; the Markdown names both."""
+        value, _ = self.built(clean_rows())
+        other, _ = self.built({cell: [mirrored(row) for row in found] for cell, found in clean_rows().items()})
+        self.assertEqual([found["bsp_precision"]["bsp_ends_decide_apart"] for found in (value, other)], [True, False])
+        for found, ends in ((value, (AS_WRITTEN, resting.PLUS_STEP)), (other, (AS_WRITTEN, AS_WRITTEN))):
+            with self.subTest(apart=found["bsp_precision"]["bsp_ends_decide_apart"]):
+                for key in ("figures", "half_years"):
+                    self.assertEqual(found[key]["reading_ends"], {"claim_end": ends[0], "kill_end": ends[1]})
+                self.assertEqual(resting_study.markdown(FAST_LOW, found).count(
+                    f"The reading rule's ends: the claim end is {ends[0]}, the kill end {ends[1]}."), 2)
+
+    def test_the_machinery_tables(self):
+        """§2.2a (b) and S6 on fixtures: fills by minute, image batches by minute, the level rule and the orders it
+        left unfilled (C3), trade_throughs below the stake and quote_crosses on a crossed book, per cell and per rule
+        file; only filled legs count."""
+        lay = Cell(FAST_LAY, -600, -120)
+        imaged = {IMAGE_BATCHES: buckets(b1=2, rest=1), IMAGE_LEFT_OUT: buckets(b1=3)}
+        rows = {lay: [fast_row(2.6, kind=THROUGH, minute="1", through_below_stake=True, images=imaged),
+                      fast_row(2.6, kind=CROSS, minute="2", crossed=True),
+                      fast_row(2.6, kind=VOLUME, minute="weekend", filled=(OPTIMISTIC,),
+                               refused={PESSIMISTIC: buckets(b1=2), CENTRAL: buckets(b2=1)}),
+                      fast_row(2.6, filled=NONE, refused={PESSIMISTIC: buckets(rest=1)}, through_below_stake=True,
+                               crossed=True)],
+                Cell(FAST_LAY, -300, -120): [fast_row(2.6, kind=THROUGH, minute="0", filled=(OPTIMISTIC,))]}
+        value, _ = self.built(rows)
+        cell, rule = value["machinery_counts"]["by_cell"][f"{FAST_LAY}@-600"], \
+            value["machinery_counts"]["by_rule"][FAST_LAY]
+        self.assertEqual(cell["fills_by_minute"][THROUGH][PESSIMISTIC], buckets(b1=1))
+        self.assertEqual(cell["fills_by_minute"][CROSS][CENTRAL], buckets(b2=1))
+        self.assertEqual(cell["fills_by_minute"][VOLUME][OPTIMISTIC], buckets(weekend=1))
+        self.assertEqual(rule["fills_by_minute"][THROUGH][OPTIMISTIC], buckets(b0=1, b1=1))
+        self.assertEqual(cell["image_batches_by_minute"], imaged)
+        self.assertEqual(cell[resting.THROUGH_NOT_LOWERED], {PESSIMISTIC: buckets(b1=2, rest=1), CENTRAL: buckets(b2=1),
+                                                             OPTIMISTIC: buckets()})
+        self.assertEqual(cell[resting.UNFILLED_AFTER_REFUSAL], {OPTIMISTIC: 0, CENTRAL: 1, PESSIMISTIC: 2})
+        self.assertEqual(cell["trade_throughs_below_the_stake"], dict.fromkeys(MODELS, 1))
+        self.assertEqual(cell["quote_crosses_on_a_crossed_book"], dict.fromkeys(MODELS, 1))
+        self.assertEqual((cell["orders"], rule["orders"]), (4, 5))
+        self.assertEqual(value["cells"][f"{FAST_LAY}@-600"]["move_undefined"],
+                         {"-3000..t": dict.fromkeys(resting.MOVE_COUNTS, 0),
+                          "-3000..-600": dict.fromkeys(resting.MOVE_COUNTS, 0)})
+
+    def test_a_net_closable_plan_never_reaches_the_registered_tables(self):
+        """PR D's adversarial N5: the registered pass's selection, tests and labels read net_held."""
+        for plan in (FAST_LOW, replace(PLAN, views=resting.V2, value_measure=NET_CLOSABLE)):
+            with self.subTest(plan=plan.study):
+                with self.assertRaises(ValueError) as caught:
+                    summary(plan, Tally(plan), "registered", "0" * 64)
+                self.assertEqual(str(caught.exception), "registered:value_measure_not_net_held")
+
+
 class RestingBoundaries(unittest.TestCase):
     MODULES = ("fills", "resting", "resting_study")
 
@@ -8040,13 +9397,13 @@ class RestingBoundaries(unittest.TestCase):
         self.assertLessEqual({f"betangel_research.betfair.backtest.{name}" for name in self.MODULES}, loaded)
 
     def test_the_runner_takes_its_studies_and_every_argument_the_ledger_needs(self):
-        self.assertEqual(resting_study.STUDIES, (STUDY,) + EARLY_IDS)
+        self.assertEqual(resting_study.STUDIES, (STUDY,) + EARLY_IDS + resting.FAST_IDS)
         parser = resting_study.build_parser()
         required = {action.dest for action in parser._actions if action.required}
         self.assertEqual(required, {"study", "pass_name", "registration_sha256", "archive_root", "out",
                                     "code_commit", "ledger", "ledger_head"})
         self.assertEqual({action.dest for action in parser._actions if not action.required} - {"help"},
-                         {"blind_receipt", "registration"})
+                         {"blind_receipt", "registration", "store"})
 
 
 if __name__ == "__main__":

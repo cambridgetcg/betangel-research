@@ -83,6 +83,35 @@ CLASSIC ticks from the runner's best back to its best lay at t (gap_ticks, None 
 ladder), whether t lies in the after-the-hour seconds (placed_in_the_hour), and per model whether its fill came in
 the second or the third minute after a whole UTC hour on a Monday to Friday (fill_minute: 2, 3 or None).
 
+betangel.rule/v2's walk (Plan.views V2; no registration sets a v2 field yet, and the Plan's defaults leave every
+walk as it was). The view is view_of2's rulefile.RuleView2: view_of's fields by view_of's checks, then per runner
+best_lay_size, back_depth_3 and lay_depth_3 (the sizes at the first three price points of its PRO books at t, read
+by a partial sort, summed) and moves, one item per window of rulefile.windows(rule) in that order; and over the whole
+field back_book_pct and lay_book_pct (100 x the sum of 1 / best price, None when some runner has none). Every value
+put in it is an exact Fraction (view:not_exact otherwise). A window (from_s, to_s) is read from captures: one capture
+event at each offset of Plan.windows that is at or before the walk's latest decision, shared by every cell, keeps the
+Moment's quotes, whether the market was OPEN and not in play, and the runners ACTIVE and listed then (values, never a
+reference into the folds); a null to_s ends at the decision's own Moment. Events are (time, rank, counter, kind,
+payload), and at one ms a capture fires before a decision and a decision before a null (EVENTS), so a window that
+ends at t reads the batch at t; every decision is pushed before any null, as before. A move is the mid at the end
+over the mid at the start, exact, or None for the first of MOVE_UNDEFINED that holds; its removals run over (start,
+t] and are read from the walk's own market fold at the decision, which holds nothing published after t. A window the
+walk did not compute raises (view:move_window_missing): it is never read as None. Walked.move_undefined counts, per
+cell and window, the runners of each reason and the moves that kept their value with a status other than OPEN inside
+the window (suspension_in_window). Two fill switches are dormant by default. Under Plan.image_rises_counted false no
+rise of an image batch is counted, then or later (the hour switch counts first), and each is counted as
+IMAGE_LEFT_OUT, which the plan's trade counts must then list. Under Plan.through_needs_lowered a counted price beyond
+an order's reaches fills.judge only when the batch lowered or deleted the level shown at that price on either side
+(lp._Batch.levels, called before the ladder fold); a batch in which only that keeps a judged leg from filling by any
+kind is one refusal. A v2 walk's rows also hold, per model, the fill's MINUTE_BUCKETS name (minutes), the refusals
+by bucket (through_refused) and whether a close was possible (closable: the state after the fill's batch, or after
+some later batch up to the pull, was OPEN and not in play; None unfilled); per order, the image batches met in (t,
+pull time] and the image rises left out, by bucket (images), and whether inPlay was true by the pull
+(in_play_before_pull); and its Fills say whether the fill came in an image batch, was a trade_through whose volume
+through the price in its batch was below the stake, or a quote_cross in a batch that left the book crossed or
+locked. A v1 walk leaves every one of these at its default, None. A plan with either switch on must build v2 views
+(walk:fill_switch_without_v2_views), so that every refusal is counted on its row.
+
 Classes (CLASSES), from facts that do not depend on a fill, the first that applies: movement.measure's five
 (outcome_unknown, void_own_runner_removed, post_decision_removal, result_revised_after_close, missing_bsp); then
 stream_malformed_after_placement when a ladder entry, a trd entry or an rc runner id published after t and up to
@@ -127,8 +156,9 @@ import math
 import re
 
 from . import fills, rulefile
-from .lp import (BACK, DAY_MS, FILL_KINDS, HOUR_MS, LAY, TIERS, TRADED_BASIS, TRADED_DIVISOR, TRADED_KEY, TradedFold,
-                 _Batch, _rules, _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top, wide)
+from .lp import (BACK, CROSS, DAY_MS, FILL_KINDS, HOUR_MS, LAY, THROUGH, TIERS, TRADED_BASIS, TRADED_DIVISOR,
+                 TRADED_KEY, TradedFold, _Batch, _rules, _seconds, Leg, after_the_hour, facing, mid, spread_ticks, top,
+                 wide)
 from .market_index import _as_of, _checked_changes, _last, _Market, _messages, _runner_id, _Unreadable, loads_strict
 from .metrics import HashStream
 from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LADDER_NAMES, LADDERS, MARKET_CODES,
@@ -138,7 +168,8 @@ from .movement import (ANCHOR, CLUSTER, DATE_RE, ELIGIBLE, ISSUED, LADDER_H, LAD
                        registration_sha256, sample_sd, student_t_cdf, student_t_quantile, tick_index)
 from .partition import EXPLORE, HALVES, HOLDOUT, PartitionError, file_bytes, parse_split
 from .replay import PriceFold, ReplayProblem
-from .rulefile import EACH_ACTIVE, FAVOURITE, LAPSE, RuleError, RuleView, RunnerView, parse_rule
+from .rulefile import (EACH_ACTIVE, FAVOURITE, LAPSE, RuleError, RuleView, RuleView2, RunnerView, RunnerView2,
+                       parse_rule)
 
 STUDY_ID = "close-v1"
 # The new ids: close-early-v1, and its registered fallback, one rule file each. They are parsed alike.
@@ -176,8 +207,32 @@ TRD_COUNTS = ("rises_counted", "rises_not_counted_at_touch_outside_the_hour", "r
 # switch left out (data.traded_volume.hour_rises).
 LEFT_OUT = "rises_left_out_in_the_hour_seconds"
 EARLY_TRD_COUNTS = TRD_COUNTS + (LEFT_OUT,)
+# The image switch's count (Plan.image_rises_counted false): rises of the order's runner in an open image batch that
+# the hour switch has not left out already, at a price the batch also carries an atb or atl entry at, so that the
+# counting rule would have counted them. A plan with the switch on lists it in its trade counts.
+IMAGE_LEFT_OUT = "rises_left_out_in_an_image_batch"
 NOT_COUNTED, EXPLORE_ONLY = "not_counted", "explore_only"      # a new id's hour_rises and partitions.read
 SECOND, THIRD = 2, 3                        # the minutes after a whole hour that a fill_minute names
+# The views a plan's walk builds: v1's (view_of, rulefile.RuleView) or betangel.rule/v2's (view_of2,
+# rulefile.RuleView2, and the row fields only a v2 walk fills).
+V1, V2 = VIEWS = ("v1", "v2")
+# Why a move of a v2 view (mid_ratio) has no value, the first that applies (window_moves). Each is counted per cell
+# and window (Walked.move_undefined), never as a cell code; suspension_in_window is counted beside them, for a move
+# that has its value although the market was not OPEN at some pt inside its window.
+MOVE_UNDEFINED = ("anchor_not_known_at_start", "not_open_at_start", "not_open_at_end", "runner_not_active_at_start",
+                  "removal_in_window", "not_two_sided_at_start", "not_two_sided_at_end", "spread_above_max_at_start",
+                  "spread_above_max_at_end")
+SUSPENSION_IN_WINDOW = "suspension_in_window"
+MOVE_COUNTS = MOVE_UNDEFINED + (SUSPENSION_IN_WINDOW,)
+# A v2 row's buckets of a pt (minute_bucket): minutes 0 to 5 after a weekday whole UTC hour, the rest of a weekday
+# hour, and a weekend day.
+MINUTE_BUCKETS = ("0", "1", "2", "3", "4", "5", "6-59", "weekend")
+# What a v2 row counts by bucket: image batches met in (t, pull time] and the rises the image switch left out in
+# them (OrderRow.images); per model, the level rule's refusals (OrderRow.through_refused counts these); and, read
+# from the rows, the orders with a refusal still unfilled at the pull (orders_unfilled_after_through_refused).
+IMAGE_BATCHES = "image_batches"
+THROUGH_NOT_LOWERED = "through_refused_level_not_lowered"
+UNFILLED_AFTER_REFUSAL = "orders_unfilled_after_through_refused"
 VERDICTS = ("kill_optimistic", "underpowered", "edge_candidate", "measurement_pilot_candidate", "unresolved")
 BLOCKED, FILLED_IS_ALL_PLACED = "claim_blocked_by_placebo", "filled_is_all_placed"
 HOLM = "holm"
@@ -206,7 +261,7 @@ TOP_KEYS = ("blind_pass", "data", "decided_by", "diagnostics", "doc", "exposure"
             "seeds", "selection", "statistics", "status", "summary", "uncertainty", "verdicts")
 DATA_KEYS = ("duplicates", "end_month", "files", "ladders", "month", "partitions", "provider", "rules", "source",
              "split", "start_month", "tiers", "traded_volume")
-DECIDE, NULL = "decide", "null"
+CAPTURE, DECIDE, NULL = EVENTS = ("capture", "decide", "null")      # the walk's events, in rank order at one ms
 # The walk keeps each resting runner's top of book between batches (_stale). False: every batch reads lp.top afresh,
 # as before; the outputs are the same, and the tests walk both ways.
 KEEP_TOPS = True
@@ -216,12 +271,22 @@ Cell = namedtuple("Cell", ("rule_id", "at_s", "pull_s"))
 # size gate counts), and whether the rows are every scored order (filled_is_all_placed).
 Part = namedtuple("Part", ("rows", "fills", "fill_dates", "all_placed"))
 Selection = namedtuple("Selection", ("eligible", "primaries"))
-# One model's answer for one order (module docstring). within: one bool per Plan.within_s.
-Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn", "ended"))
-# The last three fields have defaults, so a row can still be built from the thirteen older fields alone.
+# One model's answer for one order (module docstring). within: one bool per Plan.within_s. The last three fields
+# are a v2 walk's (None from a v1 walk): whether the fill came in an image batch, a trade_through whose through
+# volume in its batch was below the stake, and a quote_cross in a batch that left the runner's book crossed or locked.
+Fill = namedtuple("Fill", ("queue", "kind", "seconds", "within", "after_the_hour", "transition", "turn", "ended",
+                           "image", "through_below_stake", "crossed"), defaults=(None, None, None))
+# The fields from gap_ticks on have defaults, so a row can still be built from the thirteen older fields alone; the
+# last five are a v2 walk's and stay None from a v1 walk (module docstring).
 OrderRow = namedtuple("OrderRow", ("side", "price", "label", "half", "race_date", "klass", "bsp", "mid", "fills",
                                    "null_mid", "null_reason", "trd", "no_status", "gap_ticks", "placed_in_the_hour",
-                                   "fill_minute"), defaults=(None, False, None))
+                                   "fill_minute", "minutes", "images", "through_refused", "closable",
+                                   "in_play_before_pull"), defaults=(None, False, None, None, None, None, None, None))
+# What a v2 walk keeps of one time before a decision (capture_of): t in ms, view_problem's code then (None with a
+# view), the Moment's quotes, whether the market was OPEN and not in play, and the runners ACTIVE and listed then.
+# Values only: never a reference into the folds, which keep changing.
+Capture = namedtuple("Capture", ("t", "reason", "quotes", "opened", "active"))
+_Cap = namedtuple("_Cap", ("max_spread_ticks",))           # what lp.wide reads, for a move's own spread cap
 _Gate = namedtuple("_Gate", ("tiers", "start_month", "end_month", "countries", "event_type_id", "market_type",
                              "betting_type", "number_of_winners", "min_active_runners"))
 
@@ -235,9 +300,15 @@ class Plan:
     registration's; split is the partition.Split and rules the rulefile.Rules, in the registration's order; cells
     is every Cell, rule by rule, each rule's times in order. queue_fractions is {model: exact fraction}. The levels
     and thresholds are exact Fractions; pilot_floor is below 0. label_note and exposure_note are the two sentences
-    the registration says are printed with every label. The last three fields default to close-v1's values: every
-    rise in the after-the-hour seconds counts (hour_rises_counted), a pass reads both labels (explore_only false;
-    labels_read), and the trade counts are TRD_COUNTS. A new id's plan sets them from its registration."""
+    the registration says are printed with every label. hour_rises_counted, explore_only and trd_counts default to
+    close-v1's values: every rise in the after-the-hour seconds counts, a pass reads both labels (labels_read), and
+    the trade counts are TRD_COUNTS. A new id's plan sets them from its registration. The last five fields are
+    betangel.rule/v2's walk (module docstring), and their defaults leave every walk as it was: views V1 (view_of);
+    windows (), the move windows whose times the walk captures (windows_of(rules) for a v2 plan);
+    move_max_spread_ticks None, a move's spread cap in CLASSIC ticks, an int from 1 that a plan with windows must
+    set; image_rises_counted True (False: the image switch); through_needs_lowered False (True: the level rule). A
+    plan with either switch on must build v2 views (walk:fill_switch_without_v2_views), so that every refusal is
+    counted on its row. No registration sets them yet: parse_registration leaves them at their defaults."""
 
     sha256: str
     study: str
@@ -285,6 +356,11 @@ class Plan:
     hour_rises_counted: bool = True         # data.traded_volume.hour_rises; a new id's is "not_counted"
     explore_only: bool = False              # data.partitions.read; a new id's is "explore_only"
     trd_counts: tuple = TRD_COUNTS          # diagnostics.trd_counts
+    views: str = V1                         # V2: view_of2, the captures and the v2 row fields
+    windows: tuple = ()                     # ((from_s, to_s), ...): the windows the walk captures
+    move_max_spread_ticks: object = None    # an int from 1 when windows is not empty
+    image_rises_counted: bool = True        # False: no rise of an image batch counts (the image switch)
+    through_needs_lowered: bool = False     # True: a trade_through needs its level lowered (the level rule)
 
     @property
     def labels(self):
@@ -314,17 +390,30 @@ class Plan:
 def population_codes(rules):
     """The codes a cell of these rule files can get, in evaluation order (module docstring): the record's, the
     flag codes of the flags some rule file gates, ladder_malformed, then per rule file its market rows' codes, its
-    selector's and its runner rows', then no_reference_price and price_off_ladder. issued is not in it."""
+    selector's and its runner rows', then no_reference_price and price_off_ladder. issued is not in it. Which rows
+    are market rows and which are runner rows is each rule file's schema's (rulefile.market_features and
+    runner_features: v1's tuples for a v1 file, as before)."""
     flags = tuple(code for name, _, code in FLAG_GATES if any(getattr(rule.market, name) is True for rule in rules))
     decided = []
     for rule in rules:
-        market = [row.code for row in rule.when if row.feature in rulefile.MARKET_FEATURES]
-        runner = [row.code for row in rule.when if row.feature in rulefile.RUNNER_FEATURES]
+        market = [row.code for row in rule.when if row.feature in rulefile.market_features(rule)]
+        runner = [row.code for row in rule.when if row.feature in rulefile.runner_features(rule)]
         for code in market + list(SELECTOR_CODES.get(rule.select, ())) + runner:
             if code not in decided:
                 decided.append(code)
     return RECORD_CODES + flags + (rulefile.LADDER_MALFORMED,) + tuple(decided) + (rulefile.NO_REFERENCE_PRICE,
                                                                                     PRICE_OFF_LADDER)
+
+
+def windows_of(rules):
+    """The distinct move windows of rule files, rule by rule, each in rulefile.windows' order: what a v2 plan's
+    walk captures (Plan.windows). Never sorted; () when no rule file has a move row."""
+    found = []
+    for rule in rules:
+        for window in rulefile.windows(rule):
+            if window not in found:
+                found.append(window)
+    return tuple(found)
 
 
 def _loaded(raw):
@@ -678,9 +767,143 @@ def view_of(moment, active, malformed=False):
             raise ValueError("view:not_exact")
         ticks = None if back[0] is None or lay[0] is None else spread_ticks(back[0], lay[0])
         runners.append(RunnerView(sid, back[0], back[1], lay[0], ticks))
-    opened = moment.view.field("status") == fills.OPEN and moment.view.field("inPlay") is not True
-    return RuleView(at_s=moment.offset_s, market_open=1 if opened else 0, active_runners=len(runners),
+    return RuleView(at_s=moment.offset_s, market_open=1 if _opened(moment.view) else 0, active_runners=len(runners),
                     ladder_malformed=bool(moment.ladder_malformed or malformed), runners=tuple(runners))
+
+
+def _opened(view):
+    """Whether a view's market is OPEN and not in play as of its time (a RuleView's market_open)."""
+    return view.field("status") == fills.OPEN and view.field("inPlay") is not True
+
+
+def capture_of(moment):
+    """The Capture of a movement.Moment: with no view, its reason and nothing else."""
+    if moment.view is None:
+        return Capture(moment.t, moment.reason, (), False, ())
+    return Capture(moment.t, None, moment.quotes, _opened(moment.view), moment.active())
+
+
+def _quote_in(quotes, selection_id):
+    """(best back, best lay) of one runner in a Moment's quotes, as movement.Moment.quote reads them."""
+    for rid, back, lay in quotes:
+        if rid == selection_id:
+            return back, lay
+    return None, None
+
+
+def _move(start, end, selection_id, removed, cap):
+    """(ratio, None) or (None, the first MOVE_UNDEFINED reason) of one runner's move from the Capture start to the
+    Capture end: the mid at the end over the mid at the start (lp.mid), both exact. removed: whether some runner of
+    the market was removed in the window (window_moves); cap: the move's spread cap in CLASSIC ticks (lp.wide).
+    ValueError when the end has no view, which no window of a decision with a view can give."""
+    if start.reason is not None:
+        return None, "anchor_not_known_at_start"
+    if not start.opened:
+        return None, "not_open_at_start"
+    if end.reason is not None:
+        raise ValueError("view:no_view_at_the_window_end")
+    if not end.opened:
+        return None, "not_open_at_end"
+    if selection_id not in start.active:
+        return None, "runner_not_active_at_start"
+    if removed:
+        return None, "removal_in_window"
+    quotes = (_quote_in(start.quotes, selection_id), _quote_in(end.quotes, selection_id))
+    for quote, reason in zip(quotes, ("not_two_sided_at_start", "not_two_sided_at_end")):
+        if mid(quote) is None:
+            return None, reason
+    for quote, reason in zip(quotes, ("spread_above_max_at_start", "spread_above_max_at_end")):
+        if wide(_Cap(cap), quote):
+            return None, reason
+    return mid(quotes[1]) / mid(quotes[0]), None
+
+
+def window_moves(moment, selection_ids, captures, windows, removals, cap):
+    """{window: {selection id: (ratio, None) or (None, reason)}} of the runners selection_ids at a decision's
+    Moment, for every window of windows (module docstring). captures: {window: (start Capture, end Capture, or None
+    for a window whose to_s is null: its end is the decision's own Moment)}; removals: the pt of every removal the
+    walk's market fold holds at the decision, which holds nothing published after t. A window's removals run from
+    its start to t, not to its end: the view at t is the field that is left."""
+    now, found = capture_of(moment), {}
+    for window in windows:
+        start, end = captures[window]
+        removed = any(start.t < pt <= moment.t for pt in removals)
+        found[window] = {sid: _move(start, now if end is None else end, sid, removed, cap) for sid in selection_ids}
+    return found
+
+
+def move_counts(moment, selection_ids, captures, windows, removals, statuses, cap):
+    """{window: {MOVE_COUNTS name: runners}} of window_moves' answer: each undefined move by its reason, and each
+    defined move whose window held a market status other than OPEN at some pt in (start, end] (statuses: the walk's
+    market fold's status timeline at the decision)."""
+    found = {}
+    for window, moves in window_moves(moment, selection_ids, captures, windows, removals, cap).items():
+        start, end = captures[window]
+        until = moment.t if end is None else end.t
+        suspended = any(start.t < pt <= until and value != fills.OPEN for pt, value in statuses)
+        counts = dict.fromkeys(MOVE_COUNTS, 0)
+        for _, reason in moves.values():
+            if reason is not None:
+                counts[reason] += 1
+            elif suspended:
+                counts[SUSPENSION_IN_WINDOW] += 1
+        found[window] = counts
+    return found
+
+
+def _points(book, pick):
+    """The first three (price, size) points of a PRO book {price: (price, size)}, best first: pick is heapq.nlargest
+    for a back book, heapq.nsmallest for a lay book (a partial sort, never the whole book's)."""
+    return [book[price] for price in pick(3, book)]
+
+
+def _book_pct(prices):
+    """100 x the sum of 1 / price over the field's best prices on one side, or None when the field is empty or some
+    runner has no price there."""
+    if not prices or any(price is None for price in prices):
+        return None
+    return 100 * sum(1 / price for price in prices)
+
+
+def view_of2(moment, active, malformed, ladders, captures, windows, removals, cap):
+    """The rulefile.RuleView2 of a movement.Moment with a view, for a rule whose move windows are windows
+    (rulefile.windows(rule)): view_of's fields, by view_of's own checks, then per runner best_lay_size (the size at
+    its best lay), back_depth_3 and lay_depth_3 (the sizes at the first three price points of its atb and atl books
+    in ladders, best first, summed) and moves (window_moves, one item per window, in windows' order), and over the
+    whole field back_book_pct and lay_book_pct. ladders is the walk's movement.LadderFold at t, keyed by price;
+    captures, removals and cap as window_moves takes them. ValueError: view:move_window_missing unless every window
+    is in captures (a window the walk did not compute is never read as None); view:move_cap_not_set; view:not_exact
+    for a value put in the view that is not an exact Fraction; view:ladders_not_the_moments when the books' best
+    points are not the Moment's quotes; view:ladders_not_keyed_by_price."""
+    view = view_of(moment, active, malformed)
+    if ladders.level_keyed:
+        raise ValueError("view:ladders_not_keyed_by_price")
+    if any(window not in captures for window in windows):
+        raise ValueError("view:move_window_missing")
+    if windows and (type(cap) is not int or cap < 1):
+        raise ValueError("view:move_cap_not_set")
+    moves = window_moves(moment, [item.selection_id for item in view.runners], captures, windows, removals, cap)
+    runners = []
+    for item in view.runners:
+        sid = item.selection_id
+        back_book, lay_book = ladders.books.get(sid, ({}, {}))
+        backs, lays = _points(back_book, heapq.nlargest), _points(lay_book, heapq.nsmallest)
+        if ((backs[0] if backs else None), (lays[0] if lays else None)) != moment.quote(sid):
+            raise ValueError("view:ladders_not_the_moments")
+        lay_size = lays[0][1] if lays else None
+        back_3 = sum(size for _, size in backs) if backs else None
+        lay_3 = sum(size for _, size in lays) if lays else None
+        found = tuple((window, moves[window][sid][0]) for window in windows)
+        if any(value is not None and type(value) is not Fraction
+               for value in (lay_size, back_3, lay_3) + tuple(ratio for _, ratio in found)):
+            raise ValueError("view:not_exact")
+        runners.append(RunnerView2(*item, lay_size, back_3, lay_3, found))
+    books = (_book_pct([item.best_back for item in view.runners]), _book_pct([item.best_lay for item in view.runners]))
+    if any(value is not None and type(value) is not Fraction for value in books):
+        raise ValueError("view:not_exact")
+    return RuleView2(at_s=view.at_s, market_open=view.market_open, active_runners=view.active_runners,
+                     ladder_malformed=view.ladder_malformed, runners=tuple(runners), back_book_pct=books[0],
+                     lay_book_pct=books[1])
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -692,25 +915,33 @@ class Walked:
     issued each_active cell} for every cell of the plan; flags_missing {Cell: the gated flags with no value at t} for
     every cell that passed the record's gates; replayed, whether the member was read; runner_codes {Cell:
     runner_codes' counts} for every cell of an each_active rule file whose view at t was built and whose market rows
-    and selector held (B8)."""
+    and selector held (B8); move_undefined {Cell: move_counts' answer} for every cell whose v2 view at t was built
+    (a v2 plan's only)."""
 
     outcomes: dict
     flags_missing: dict
     replayed: bool
     runner_codes: dict = dataclass_field(default_factory=dict)
+    move_undefined: dict = dataclass_field(default_factory=dict)
 
 
 class _Order:
     """One placed order while it is walked: its cell, the rulefile.Intent, t and the pull time in ms, one lp.Leg per
-    model, the runners ACTIVE and listed at t, the mid at t, the gap in ticks at t, and what the walk fills in."""
+    model, the runners ACTIVE and listed at t, the mid at t, the gap in ticks at t, and what the walk fills in; under
+    a v2 plan also per model whether a close was possible (closable), the v2 Fill fields (fill), the level rule's
+    refusals by bucket (refused), and the image batches and image rises left out by bucket (images)."""
 
     __slots__ = ("cell", "intent", "t", "end", "legs", "active", "mid", "lapsed", "transition", "null", "trd",
-                 "no_status", "gap")
+                 "no_status", "gap", "closable", "fill", "refused", "images")
 
-    def __init__(self, cell, intent, t, end, legs, active, centre, names, gap):
+    def __init__(self, cell, intent, t, end, legs, active, centre, names, gap, v2=False):
         self.cell, self.intent, self.t, self.end, self.legs, self.active = cell, intent, t, end, legs, active
         self.mid, self.lapsed, self.transition, self.null = centre, False, {}, None
         self.trd, self.no_status, self.gap = dict.fromkeys(names, 0), False, gap
+        self.closable, self.fill = {}, {}
+        self.refused = {model: dict.fromkeys(MINUTE_BUCKETS, 0) for model in legs} if v2 else None
+        self.images = {name: dict.fromkeys(MINUTE_BUCKETS, 0) for name in (IMAGE_BATCHES, IMAGE_LEFT_OUT)} if v2 \
+            else None
 
 
 def _mid(plan, quote):
@@ -743,6 +974,23 @@ def minute_after_the_hour(pt):
     return minute if minute in (SECOND, THIRD) and (pt // DAY_MS + 3) % 7 < 5 else None
 
 
+def minute_bucket(pt):
+    """The MINUTE_BUCKETS name of ms pt: "0" to "5" for minutes 0 to 5 after a whole UTC hour on a Monday to Friday
+    (minute k runs from :0k:00 to :0k:59), "6-59" for the rest of such an hour, "weekend" on a Saturday or a Sunday
+    (UTC, by lp.after_the_hour's day rule). Minutes count from 0 here; minute_after_the_hour counts from 1."""
+    if (pt // DAY_MS + 3) % 7 >= 5:
+        return MINUTE_BUCKETS[-1]
+    minute = pt % HOUR_MS // 60_000
+    return MINUTE_BUCKETS[minute] if minute <= 5 else MINUTE_BUCKETS[6]
+
+
+def orders_unfilled_after_through_refused(rows, model):
+    """How many v2 rows had at least one level-rule refusal under model and were still unfilled under it at the
+    pull: the only orders whose lost fills can lean the filled mean optimistic (read from OrderRow.through_refused
+    and the fill, so it needs no field of its own)."""
+    return sum(1 for row in rows if sum(row.through_refused[model].values()) and row.fills[model].kind is None)
+
+
 def runner_codes(view, rule):
     """B8 of an each_active rule file at one view: {code: runners} over the view's runners, each by the code
     rulefile.decide gives for a view that keeps the market's fields and holds that runner alone (the code of its
@@ -773,23 +1021,35 @@ def _row(plan, record, placed, dated, malformed, in_play):
     # false leaves it false.
     lapsed = intent.persist == LAPSE and (_as_of(in_play, t) is True
                                           or any(t < pt < end and _as_of(in_play, pt) is True for pt, _ in in_play))
+    v2 = plan.views == V2
     found = {}
     for model, leg in placed.legs.items():
         if leg.fill_pt is None:
             found[model] = Fill(leg.queue, None, None, (False,) * len(plan.within_s), False, False, False,
-                                LAPSED if lapsed else PULLED)
+                                LAPSED if lapsed else PULLED, *((False,) * 3 if v2 else ()))
             continue
         took = leg.fill_pt - t
         found[model] = Fill(leg.queue, leg.fill_kind, took / 1000, tuple(took <= s * 1000 for s in plan.within_s),
-                            after_the_hour(leg.fill_pt, plan.after_the_hour_s), *placed.transition[model], None)
+                            after_the_hour(leg.fill_pt, plan.after_the_hour_s), *placed.transition[model], None,
+                            *(placed.fill[model] if v2 else ()))
     null_mid, null_reason = _null(plan, placed.null)
     day, label, half = dated
     minutes = {model: None if leg.fill_pt is None else minute_after_the_hour(leg.fill_pt)
                for model, leg in placed.legs.items()}
+    more = {}
+    if v2:                                      # a v1 walk leaves these at their defaults
+        more = dict(minutes={model: None if leg.fill_pt is None else minute_bucket(leg.fill_pt)
+                             for model, leg in placed.legs.items()},
+                    images={name: dict(counts) for name, counts in placed.images.items()},
+                    through_refused={model: dict(counts) for model, counts in placed.refused.items()},
+                    closable={model: None if leg.fill_pt is None else placed.closable[model]
+                              for model, leg in placed.legs.items()},
+                    in_play_before_pull=_as_of(in_play, t) is True or any(t < pt <= end and _as_of(in_play, pt) is True
+                                                                          for pt, _ in in_play))
     return OrderRow(side=intent.side, price=intent.price, label=label, half=half, race_date=day, klass=klass,
                     bsp=bsp if klass == SCORED else None, mid=placed.mid, fills=found, null_mid=null_mid,
                     null_reason=null_reason, trd=dict(placed.trd), no_status=placed.no_status, gap_ticks=placed.gap,
-                    placed_in_the_hour=after_the_hour(t, plan.after_the_hour_s), fill_minute=minutes)
+                    placed_in_the_hour=after_the_hour(t, plan.after_the_hour_s), fill_minute=minutes, **more)
 
 
 def _stale(tops, change):
@@ -808,7 +1068,19 @@ def _stale(tops, change):
 def walk(stream, record, plan, limits):
     """The Walked of one index record: every cell's code from the record alone and, when some cell reaches the
     book, the rest from the record's primary member's decompressed stream (module docstring). stream is not read
-    when no cell reaches the book. ReplayProblem when the stream is not what the index says."""
+    when no cell reaches the book. ReplayProblem when the stream is not what the index says; ValueError for a plan
+    whose betangel.rule/v2 fields do not fit together (walk:...) and for a view that cannot be built (view:...)."""
+    if plan.views not in VIEWS:
+        raise ValueError("walk:views_not_supported")
+    if plan.windows and plan.views != V2:
+        raise ValueError("walk:windows_without_v2_views")
+    if plan.windows and (type(plan.move_max_spread_ticks) is not int or plan.move_max_spread_ticks < 1):
+        raise ValueError("walk:move_max_spread_ticks_not_set")
+    if not plan.image_rises_counted and IMAGE_LEFT_OUT not in plan.trd_counts:
+        raise ValueError("walk:trd_counts_without_the_image_count")
+    if plan.views != V2 and (not plan.image_rises_counted or plan.through_needs_lowered):
+        raise ValueError("walk:fill_switch_without_v2_views")   # a refusal or an image is counted on v2 rows only
+    v2 = plan.views == V2
     market_id = record["market_id"]
     outcomes, missing = {}, {}
     for cell in plan.cells:
@@ -821,23 +1093,43 @@ def walk(stream, record, plan, limits):
     off, dated = decision_time(record, 0), race_label(plan, record)
     until = off + max(cell.pull_s for cell in cells) * 1000
     order = itertools.count()
-    events = [(off + cell.at_s * 1000, next(order), DECIDE, cell) for cell in cells]
+    # Events are (time, rank, counter, kind, payload): at one ms a capture fires first, then a decision, then a
+    # null (EVENTS). Every decision is pushed before any null, as before ranks, so old outputs do not move.
+    events = [(off + cell.at_s * 1000, EVENTS.index(DECIDE), next(order), DECIDE, cell) for cell in cells]
+    latest = max(time for time, *_ in events)
+    for offset in sorted({offset for window in plan.windows for offset in window if offset is not None}):
+        if off + offset * 1000 <= latest:       # one capture a time, shared by every cell and window that reads it
+            events.append((off + offset * 1000, EVENTS.index(CAPTURE), next(order), CAPTURE, offset))
     heapq.heapify(events)
     market, prices, ladders, traded = None, PriceFold(), LadderFold(plan.ladders[record["provenance"]["plan"]]), \
         TradedFold()
     orders, runners_by_code, tops = [], {}, {}  # tops: {runner: lp.top} as of the last change folded (_stale)
+    captured, moves_by_cell = {}, {}            # captured: {offset: Capture}
 
     def state():                                # (status, inPlay) in force after every message applied so far
         if market is None:
             return None, None
         return _last(market.fields.get("status")), _last(market.fields.get("inPlay"))
 
+    def view_at(cell, moment, active, rule, malformed):
+        if not v2:
+            return view_of(moment, active, malformed)
+        # The windows whose captures have fired; the market fold holds nothing published after t (M6).
+        computed = {window: (captured[window[0]], None if window[1] is None else captured[window[1]])
+                    for window in plan.windows
+                    if window[0] in captured and (window[1] is None or window[1] in captured)}
+        wanted, removals = rulefile.windows(rule), tuple(item["pt"] for item in market.removals())
+        view = view_of2(moment, active, malformed, ladders, computed, wanted, removals, plan.move_max_spread_ticks)
+        moves_by_cell[cell] = move_counts(moment, [item.selection_id for item in view.runners], computed, wanted,
+                                          removals, market.fields.get("status", []), plan.move_max_spread_ticks)
+        return view
+
     def decide(time, cell):
         moment = _moment(record, market, prices, ladders, cell.at_s, time)
         if moment.view is None:
             return moment.reason
         active, rule = active_ids(record, time), plan.rule(cell.rule_id)
-        view = view_of(moment, active, any(pt <= time for pt in traded.malformed))
+        view = view_at(cell, moment, active, rule, any(pt <= time for pt in traded.malformed))
         decision = rulefile.decide(view, rule)
         if rule.select == EACH_ACTIVE:
             found = runner_codes(view, rule)
@@ -867,42 +1159,53 @@ def walk(stream, record, plan, limits):
                                fills.queue_ahead(plan.queue_fractions[model], shown), time, end, base)
                     for model in plan.models}
             placed = _Order(cell, intent, time, end, legs, active, _mid(plan, moment.quote(sid))[0], plan.trd_counts,
-                            gaps[sid])
-            heapq.heappush(events, (u, next(order), NULL, placed))
+                            gaps[sid], v2)
+            heapq.heappush(events, (u, EVENTS.index(NULL), next(order), NULL, placed))
             orders.append(placed)
         return None
 
     def handle(time, kind, payload):
-        if kind == DECIDE:
+        if kind == CAPTURE:                     # values only, taken after the last batch at or before its time
+            captured[payload] = capture_of(_moment(record, market, prices, ladders, payload, time))
+        elif kind == DECIDE:
             outcomes[payload] = decide(time, payload)
         else:
             payload.null = (top(ladders, payload.intent.selection_id), *state())
 
     def fire(limit):                            # every event before limit (None: every event)
         while events and (limit is None or events[0][0] < limit):
-            time, _, kind, payload = heapq.heappop(events)
+            time, _, _, kind, payload = heapq.heappop(events)
             handle(time, kind, payload)
 
     def close(pt, batch, prior, before):        # one pt batch is complete: count its trades, then fill
         was_open, was_in_play = fills.is_open(before[0]), before[1] is True     # (status, inPlay) before the batch
         hour = after_the_hour(pt, plan.after_the_hour_s)                        # read first: the hour switch
         switched = hour and not plan.hour_rises_counted
-        counted, dropped = {}, {}
+        imaged = batch.image and not plan.image_rises_counted                   # the image switch
+        counted, dropped, left_image, volume = {}, {}, {}, {}
         for rid, price, rise in fills.counted_rises(batch, was_open):
             if switched:                        # never counted, then or later: traded.count is not called
                 dropped.setdefault(rid, set()).add(price)
                 continue
+            if imaged:                          # the same, for a rise of an image batch the hour switch let through
+                left_image.setdefault(rid, set()).add(price)
+                continue
             traded.count(rid, price, rise)
             counted.setdefault(rid, set()).add(price)
+            volume[rid, price] = volume.get((rid, price), 0) + rise
         after = state()
         left = (not fills.is_open(after[0]), after[1] is True and not was_in_play)  # not OPEN now; turned in play
+        closable = fills.is_open(after[0]) and after[1] is not True     # C4: read from after itself, not from left
+        bucket = minute_bucket(pt) if v2 else None
         for placed in orders:
             if not placed.t < pt <= placed.end:
                 continue
             placed.no_status = placed.no_status or before[0] is None
             intent = placed.intent
             sid, now = intent.selection_id, counted.get(intent.selection_id, ())
-            out = dropped.get(sid, ())
+            out, out_image = dropped.get(sid, ()), left_image.get(sid, ())
+            if v2 and batch.image:
+                placed.images[IMAGE_BATCHES][bucket] += 1
             for rid, price, _ in batch.rises:
                 if rid != sid:
                     continue
@@ -912,6 +1215,10 @@ def walk(stream, record, plan, limits):
                     placed.trd[TRD_COUNTS[0]] += 1
                 elif price in out:              # empty unless the switch is on and the batch is in the hour seconds
                     placed.trd[LEFT_OUT] += 1
+                elif price in out_image:        # empty unless the image switch is on and the batch is an image
+                    placed.trd[IMAGE_LEFT_OUT] += 1
+                    if v2:
+                        placed.images[IMAGE_LEFT_OUT][bucket] += 1
                 elif not hour and any(quote is not None and quote[0] == price for quote in prior[sid]):
                     placed.trd[TRD_COUNTS[1]] += 1
             placed.lapsed = placed.lapsed or (was_in_play and intent.persist == LAPSE)
@@ -920,11 +1227,24 @@ def walk(stream, record, plan, limits):
                 shown = facing(ladders, placed.legs[plan.models[0]])     # one side and price for every model
             at_price = traded.counted.get(sid, {}).get(intent.price, 0)
             for model, leg in placed.legs.items():
+                if v2 and leg.fill_pt is not None and leg.fill_pt < pt:    # a later batch up to the pull time
+                    placed.closable[model] = placed.closable[model] or closable
                 if not fills.judged(leg, pt, was_open, placed.lapsed, intent.persist):
                     continue
-                kind = fills.judge(leg, intent.stake, plan.divisor, now, at_price, shown)
+                kinds = now
+                if plan.through_needs_lowered:  # the level rule: a price beyond the leg's needs its level lowered
+                    kinds = {price for price in now if not leg.beyond(price) or (sid, price) in batch.lowered}
+                kind = fills.judge(leg, intent.stake, plan.divisor, kinds, at_price, shown)
+                if v2 and kind is None and any(map(leg.beyond, now)) and not any(map(leg.beyond, kinds)):
+                    placed.refused[model][bucket] += 1      # one refusal: no fill by any kind in this batch
                 if kind is not None:
                     leg.fill_pt, leg.fill_kind, placed.transition[model] = pt, kind, left
+                    if v2:                      # S6: the volume through the price, and the book the batch left
+                        below = kind == THROUGH and sum(volume[sid, price] for price in kinds if leg.beyond(price)) \
+                            / plan.divisor < intent.stake
+                        back, lay = top(ladders, sid)
+                        crossed = kind == CROSS and back is not None and lay is not None and back[0] >= lay[0]
+                        placed.closable[model], placed.fill[model] = closable, (batch.image, below, crossed)
 
     # A batch no order's window holds is folded but not kept: fills and the counts read counted volume only as its
     # rise since t, and only in (t, pull time].
@@ -976,6 +1296,8 @@ def walk(stream, record, plan, limits):
             prices.change(pt, change)
             if tops:                            # before the fold, so that no kept top is older than the books
                 _stale(tops, change)
+            if pending is not None and plan.through_needs_lowered:
+                pending.levels(ladders, change)     # before the fold, as lp.walk_market: which levels it lowered
             ladders.change(pt, change)
             moved = traded.change(pt, change)
             if pending is not None:
@@ -991,7 +1313,7 @@ def walk(stream, record, plan, limits):
         if record["evaluator_only_outcome"]["read_complete"] is True:
             raise ReplayProblem(f"replay:{market_id}:unreadable_where_the_index_read")
         fire(unreadable_from)
-        if any(kind == DECIDE for _, _, kind, _ in events):     # the index says each walked cell has a view at t
+        if any(kind == DECIDE for _, _, _, kind, _ in events):  # the index says each walked cell has a view at t
             raise ReplayProblem(f"replay:{market_id}:unreadable_before_view_ends")
     malformed = sorted(set(ladders.malformed) | set(traded.malformed))
     in_play = market.fields.get("inPlay", []) if market is not None else []
@@ -1000,7 +1322,8 @@ def walk(stream, record, plan, limits):
         rows.setdefault(placed.cell, []).append(_row(plan, record, placed, dated, malformed, in_play))
     for cell, found in rows.items():            # a favourite cell keeps its one row; an each_active cell, a tuple
         outcomes[cell] = tuple(found) if plan.rule(cell.rule_id).select == EACH_ACTIVE else found[0]
-    return Walked(outcomes=outcomes, flags_missing=missing, replayed=True, runner_codes=runners_by_code)
+    return Walked(outcomes=outcomes, flags_missing=missing, replayed=True, runner_codes=runners_by_code,
+                  move_undefined=moves_by_cell)
 
 
 # ---------------------------------------------------------------------------------------------------------------

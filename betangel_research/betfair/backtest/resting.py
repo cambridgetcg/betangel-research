@@ -3,8 +3,10 @@
 close-v1 asks whether a resting GBP 2 order on the favourite, placed minutes before the off and pulled before it,
 gets a price that beats BSP once only the orders that would fill are counted (docs/research-loop.md). close-early-v1
 asks the same of resting orders placed hours before the off, on the favourite and on each runner of a price range,
-and reads the explore label alone. So there are two kinds of study here: close-v1 (STUDY_ID), and the new ids
-(EARLY_IDS: close-early-v1 and its registered fallback close-early-fav-v1 and close-early-band-v1, parsed alike).
+and reads the explore label alone. So there are three kinds of study here: close-v1 (STUDY_ID); the new ids
+(EARLY_IDS: close-early-v1 and its registered fallback close-early-fav-v1 and close-early-band-v1, parsed alike);
+and the fast ids (FAST_IDS: close-v2-explore, lineage close), which explore on the explore label alone with
+betangel.rule/v2 files, a resting LAY valued closed at BSP (below: "A fast id").
 An "order" here is a simulated intent inside the backtest package; nothing here can reach an exchange. It is not a
 backtest contract, but as modules of this package fills.py and this file are in the engine certificate's source
 descriptor, so any change to them moves the certificate key: any later P0 run-backtest needs certify-engine at
@@ -19,10 +21,11 @@ domain, the file in its one byte form (sorted keys, indent 2, ASCII, one final n
 classes, models, fill kinds, reasons and labels equal to this module's own, in order. It is given the raw bytes
 of the split file and of each rule file, checks each sha256 against the one the registration names, and refuses:
 rule files whose lineages differ; a partition label the split refuses (unknown, sealed, never, no budget) or of
-the wrong role; a rule file of any schema but betangel.rule/v1 (rule_schema_not_for_this_study: every study here
-walks v1 views); a rule file whose when row uses one of this module's own codes (HARNESS_CODES) or a code the
-registration's population.codes does not hold; a fixed price off the CLASSIC ladder. Its id is close-v1 or one of
-EARLY_IDS (any other: id:not_supported), and Plan.study is the file's id. A new id's registration also holds
+the wrong role; a rule file of any schema but betangel.rule/v1 under an old id (rule_schema_not_for_this_study:
+close-v1 and the new ids walk v1 views); a rule file whose when row uses one of this module's own codes
+(HARNESS_CODES) or a code the registration's population.codes does not hold; a fixed price off the CLASSIC ladder.
+Its id is close-v1 or one of EARLY_IDS or FAST_IDS (any other: id:not_supported), and Plan.study is the file's id.
+A new id's registration also holds
 data.traded_volume.hour_rises, "not_counted", and data.partitions.read, "explore_only", and lists four trade
 counts (EARLY_TRD_COUNTS); close-v1's holds neither key, so its key sets stay exact, and lists the three
 (TRD_COUNTS). Each cell walks its orders to a pull time before the off, so every rule file has exactly one intent,
@@ -30,14 +33,32 @@ lapses and has a pull time at every time; close-v1's rule files select the favou
 id's select the favourite or each_active. The answer is one frozen Plan, whose last fields default to close-v1's
 values. A cell is one rule file at one of its times (Cell).
 
+A fast id (FAST_IDS; DESIGN-rule-v2 §3). Its registration is a new id's (one predicate, Plan.is_new, drives every
+place a new id differs: the hour switch, the explore label alone, the new ids' tables) and more. First, before its
+split file is parsed: data.split.sha256 must be FAST_SPLIT_SHA256 (data.split:not_the_merged_split), then every key
+of FAST_FIXED must hold close-early-v1's value (fast:value_not_fixed:<key>) and measurement.close_lead_s (60 to
+86400) and measurement.move_max_spread_ticks (1 to 20) be JSON ints in bounds (fast:value_out_of_range:<key>). It
+holds the keys data.traded_volume.image_rises ("not_counted") and data.traded_volume.through ("level_lowered"),
+which no other id may hold; measurement.close, close_lead_s, move_max_spread_ticks and realised;
+diagnostics.move_undefined (MOVE_UNDEFINED) and five trade counts (FAST_TRD_COUNTS); and the frozen reading rule,
+reading, whose model, measure, ends and excludes are code constants (READING, READING_EXCLUDES). Its rule files are
+betangel.rule/v2's alone (rule_schema_not_for_this_study), and each names the fast id's lineage
+(lineage_not_the_fast_ids), a parent (parent_missing_for_a_fast_id: run_study resolves the chain to a file in Git),
+gates bspMarket true (bsp_market_not_gated), pulls no later than close_lead_s before the off
+(pull_after_the_close_lead), and its one intent is a LAY (side_not_lay) of at least GBP 1.00
+(stake_below_the_bet_minimum). Its Plan builds v2 views with both fill switches on and values fills by net_closable
+(the v2 paragraphs below); its population codes hold bsp_market_unknown after the flag codes.
+
 Population (record_code, then the walk): per cell, the first code that applies, in population_codes' order.
 From the index record alone: movement.market_code's first twelve codes, through an adapter that holds the rule
 file's market block and a minimum field of 0 (the field size is the rule file's own row); partition_not_registered
 when the race date's label is not one the plan reads (Plan.labels_read: both labels the registration names for
 close-v1, the explore label alone for a new id); then a flag code (bsp_market_false) when the rule file gates that
 flag and its value as of t is exactly false. A gated flag with no value at t passes and is reported
-(flags_missing). A record whose cells all have a code is never opened. In the walk: a view problem (as
-lp.walk_market, never met for a cell that passed the record's gates); the code rulefile.decide gives for the view
+(flags_missing). A fast plan asks the label first, right after the anchor (a record with no anchor keeps
+market_code's code), and gives bsp_market_unknown for a gated bspMarket not known true at t (record_code). A record
+whose cells all have a code is never opened. In the walk: a view problem (as lp.walk_market, never met for a cell
+that passed the record's gates); the code rulefile.decide gives for the view
 at t (ladder_malformed first: a ladder entry, a trd entry or an rc runner id published at or before t could not be
 read; under each_active, when no runner passes, the first runner's code); price_off_ladder when no order's price
 is a CLASSIC price. A favourite cell with no code holds one order. An each_active cell with no code holds one order
@@ -83,8 +104,9 @@ CLASSIC ticks from the runner's best back to its best lay at t (gap_ticks, None 
 ladder), whether t lies in the after-the-hour seconds (placed_in_the_hour), and per model whether its fill came in
 the second or the third minute after a whole UTC hour on a Monday to Friday (fill_minute: 2, 3 or None).
 
-betangel.rule/v2's walk (Plan.views V2; no registration sets a v2 field yet, and the Plan's defaults leave every
-walk as it was). The view is view_of2's rulefile.RuleView2: view_of's fields by view_of's checks, then per runner
+betangel.rule/v2's walk (Plan.views V2; only a fast id's registration sets the v2 fields, and the Plan's defaults
+leave every other walk as it was). The view is view_of2's rulefile.RuleView2: view_of's fields by view_of's
+checks, then per runner
 best_lay_size, back_depth_3 and lay_depth_3 (the sizes at the first three price points of its PRO books at t, read
 by a partial sort, summed) and moves, one item per window of rulefile.windows(rule) in that order; and over the whole
 field back_book_pct and lay_book_pct (100 x the sum of 1 / best price, None when some runner has none). Every value
@@ -207,9 +229,19 @@ from .rulefile import (EACH_ACTIVE, FAVOURITE, LAPSE, RuleError, RuleView, RuleV
 STUDY_ID = "close-v1"
 # The new ids: close-early-v1, and its registered fallback, one rule file each. They are parsed alike.
 EARLY_IDS = ("close-early-v1", "close-early-fav-v1", "close-early-band-v1")
-STUDY_IDS = (STUDY_ID,) + EARLY_IDS
+# The fast ids (betangel.rule/v2's fast explore on an explore label): one id per lineage, with many explore passes,
+# each pass a registration of its own. FAST_LINEAGES is the one lineage each fast id's rule files may name (M2).
+FAST_IDS = ("close-v2-explore",)
+FAST_LINEAGES = {"close-v2-explore": "close"}
+STUDY_IDS = (STUDY_ID,) + EARLY_IDS + FAST_IDS
+# The one split file a fast id takes: the sha256 of research/partitions-v3.json as merged (M1). Raising a budget is
+# a split file v4, on Yu's word, and then a reviewed change of this line.
+FAST_SPLIT_SHA256 = "fd35425aab3717099f0be2ce497505ec57fc37549cd24d470e3d6961ff792b65"
 TRIALS = "independent"
 PARTITION_NOT_REGISTERED, PRICE_OFF_LADDER = "partition_not_registered", "price_off_ladder"
+# A fast plan's code for a cell whose rule file gates bspMarket true and whose bspMarket is not known true at t (S8):
+# live, no BSP back could be planned there.
+BSP_MARKET_UNKNOWN = "bsp_market_unknown"
 # The codes one index record can give a cell before its file is opened: movement.market_code's first twelve (its
 # thirteenth, too_few_active_runners, is never given here: the adapter's minimum field is 0), then the split.
 RECORD_CODES = MARKET_CODES[:12] + (PARTITION_NOT_REGISTERED,)
@@ -219,11 +251,12 @@ FLAG_GATES = (("bsp_market", "bspMarket", "bsp_market_false"),
               ("persistence_enabled", "persistenceEnabled", "persistence_not_enabled"))
 # This module's own codes: a when row of a rule file may use none of them (decide's own are refused by rulefile).
 HARNESS_CODES = RECORD_CODES + tuple(code for _, _, code in FLAG_GATES) + (rulefile.LADDER_MALFORMED,
-                                                                          PRICE_OFF_LADDER, ISSUED)
+                                                                          PRICE_OFF_LADDER, ISSUED,
+                                                                          BSP_MARKET_UNKNOWN)
 SELECTOR_CODES = {FAVOURITE: (rulefile.NO_PRICED_ACTIVE_RUNNER, rulefile.FAVOURITE_TIE),
                   EACH_ACTIVE: (rulefile.NO_ACTIVE_RUNNER,)}
-# The selectors a rule file may use: close-v1's walk is the favourite's alone; a new id's takes both.
-SELECTORS = {STUDY_ID: (FAVOURITE,), **dict.fromkeys(EARLY_IDS, (FAVOURITE, EACH_ACTIVE))}
+# The selectors a rule file may use: close-v1's walk is the favourite's alone; a new id's and a fast id's take both.
+SELECTORS = {STUDY_ID: (FAVOURITE,), **dict.fromkeys(EARLY_IDS + FAST_IDS, (FAVOURITE, EACH_ACTIVE))}
 SCORED, MALFORMED_AFTER = "scored", "stream_malformed_after_placement"
 CLASSES = ("outcome_unknown", "void_own_runner_removed", "post_decision_removal", "result_revised_after_close",
            "missing_bsp", MALFORMED_AFTER, SCORED)
@@ -244,7 +277,12 @@ EARLY_TRD_COUNTS = TRD_COUNTS + (LEFT_OUT,)
 # the hour switch has not left out already, at a price the batch also carries an atb or atl entry at, so that the
 # counting rule would have counted them. A plan with the switch on lists it in its trade counts.
 IMAGE_LEFT_OUT = "rises_left_out_in_an_image_batch"
+# A fast id's five trade counts: a new id's four, then the image switch's (R6).
+FAST_TRD_COUNTS = EARLY_TRD_COUNTS + (IMAGE_LEFT_OUT,)
 NOT_COUNTED, EXPLORE_ONLY = "not_counted", "explore_only"      # a new id's hour_rises and partitions.read
+# A fast id's data.traded_volume.image_rises (NOT_COUNTED: the image switch) and data.traded_volume.through (the
+# level rule), both fixed by the id, never chosen by a pass (§2.2a (a)).
+LEVEL_LOWERED = "level_lowered"
 SECOND, THIRD = 2, 3                        # the minutes after a whole hour that a fill_minute names
 # The views a plan's walk builds: v1's (view_of, rulefile.RuleView) or betangel.rule/v2's (view_of2,
 # rulefile.RuleView2, and the row fields only a v2 walk fills).
@@ -314,6 +352,34 @@ TOP_KEYS = ("blind_pass", "data", "decided_by", "diagnostics", "doc", "exposure"
             "seeds", "selection", "statistics", "status", "summary", "uncertainty", "verdicts")
 DATA_KEYS = ("duplicates", "end_month", "files", "ladders", "month", "partitions", "provider", "rules", "source",
              "split", "start_month", "tiers", "traded_volume")
+# A fast registration's top keys: every key above and its frozen reading rule (S4), whose values are code constants:
+# the pessimistic model's net_closable, the claim end for a lead and the kill end for ended, never a figure flagged
+# filled_is_all_placed or under a failed machinery check (MACHINERY_CHECK_FAILED); reading.rule is its words.
+MACHINERY_CHECK_FAILED = "machinery_check_failed"
+FAST_TOP_KEYS = tuple(sorted(TOP_KEYS + ("reading",)))
+READING_KEYS = ("claim_end", "excludes", "kill_end", "measure", "model", "rule")
+READING = (("model", fills.PESSIMISTIC), ("measure", NET_CLOSABLE), ("claim_end", CLAIM_END), ("kill_end", KILL_END))
+READING_EXCLUDES = (FILLED_IS_ALL_PLACED, MACHINERY_CHECK_FAILED)
+# The protocol values a fast registration may not choose (R1, C5): one value per key, by its path, equal to
+# close-early-v1's registered value (research/studies/close-early-v1.json), as JSON compares it, type included; any
+# other value is fast:value_not_fixed:<key>. Left free: the grid, the rule files, population.codes, the counts the
+# rule files give (grid.cells, family.m), the texts and the two bounded keys of FAST_BOUNDS. Changing one is a
+# reviewed change of this table.
+FAST_FIXED = {
+    "data.end_month": "2016-04", "data.start_month": "2015-05", "data.traded_volume.after_the_hour_s": 60,
+    "data.traded_volume.divisor": 2, "diagnostics.within_s": [1, 2], "family.alpha": "0.0",
+    "fill_models.queue_fraction": {"central": [1, 2], "optimistic": [0, 1], "pessimistic": [1, 1]},
+    "measurement.bsp_ends.step": "0.01", "measurement.bsp_ends.whole_hundredths_share": "0.99",
+    "measurement.commission_rate": "0.02", "null.alpha": "0.05", "null.fraction_of_main": "0.5",
+    "null.max_spread_ticks": 20, "seeds.null": 4, "statistics.detectable_level": "0.99",
+    "statistics.min_tested_race_dates": 15, "statistics.min_tested_values": 200, "statistics.min_values": 100,
+    "statistics.power": "0.8", "statistics.quantiles": ["0.05", "0.1", "0.25", "0.5", "0.75", "0.9", "0.95"],
+    "uncertainty.confidence_level": "0.95", "uncertainty.min_clusters": 15, "verdicts.half_year_min_fills": 100,
+    "verdicts.kill_level": "0.975", "verdicts.lower_bound_level": "0.98", "verdicts.pilot_floor_below_zero": "0.015"}
+# A fast registration's two bounded keys (C5), each a JSON int: the close lead is a floor of 60 s (a later pass may
+# pull nearer the off), and the move's spread cap is never wider than close-early-v1's null.max_spread_ticks of 20.
+# Out of bounds is fast:value_out_of_range:<key>.
+FAST_BOUNDS = (("measurement.close_lead_s", 60, 86_400), ("measurement.move_max_spread_ticks", 1, 20))
 CAPTURE, DECIDE, NULL = EVENTS = ("capture", "decide", "null")      # the walk's events, in rank order at one ms
 # The walk keeps each resting runner's top of book between batches (_stale). False: every batch reads lp.top afresh,
 # as before; the outputs are the same, and the tests walk both ways.
@@ -365,8 +431,11 @@ class Plan:
     plan with either switch on must build v2 views (walk:fill_switch_without_v2_views), so that every refusal is
     counted on its row. The last field is the scoring's: value_measure NET_HELD, what figures() values a fill by as
     before (NET_CLOSABLE: net_closable and the new figures, module docstring), which only a plan that builds v2 views
-    may set (walk:value_measure_without_v2_views), since only a v2 row says whether a close was possible. No
-    registration sets them yet: parse_registration leaves them at their defaults."""
+    may set (walk:value_measure_without_v2_views), since only a v2 row says whether a close was possible. An old id's
+    registration leaves every one of them at its default; a fast id's sets them all (parse_registration): views V2,
+    windows windows_of(rules), its move cap, both fill switches on, value_measure NET_CLOSABLE, trd_counts
+    FAST_TRD_COUNTS, then close_lead_s (measurement.close_lead_s, an int from 60) and fast True. is_new is the one
+    property every new-id switch reads (M3): a new id's plan and a fast id's."""
 
     sha256: str
     study: str
@@ -420,6 +489,14 @@ class Plan:
     image_rises_counted: bool = True        # False: no rise of an image batch counts (the image switch)
     through_needs_lowered: bool = False     # True: a trade_through needs its level lowered (the level rule)
     value_measure: str = NET_HELD           # NET_CLOSABLE: figures() values fills by net_closable (v2 views only)
+    close_lead_s: object = None             # a fast id's measurement.close_lead_s: an int from 60
+    fast: bool = False                      # a fast id's plan (FAST_IDS)
+
+    @property
+    def is_new(self):
+        """Whether the plan is a new id's or a fast id's: the hour switch, the explore label alone and the new ids'
+        tables (M3). close-v1's is the only plan that is not."""
+        return self.study in EARLY_IDS + FAST_IDS
 
     @property
     def labels(self):
@@ -446,13 +523,14 @@ class Plan:
         return next(rule for rule in self.rules if rule.id == rule_id)
 
 
-def population_codes(rules):
+def population_codes(rules, fast=False):
     """The codes a cell of these rule files can get, in evaluation order (module docstring): the record's, the
-    flag codes of the flags some rule file gates, ladder_malformed, then per rule file its market rows' codes, its
-    selector's and its runner rows', then no_reference_price and price_off_ladder. issued is not in it. Which rows
-    are market rows and which are runner rows is each rule file's schema's (rulefile.market_features and
-    runner_features: v1's tuples for a v1 file, as before)."""
+    flag codes of the flags some rule file gates (for a fast plan, then bsp_market_unknown), ladder_malformed, then
+    per rule file its market rows' codes, its selector's and its runner rows', then no_reference_price and
+    price_off_ladder. issued is not in it. Which rows are market rows and which are runner rows is each rule file's
+    schema's (rulefile.market_features and runner_features: v1's tuples for a v1 file, as before)."""
     flags = tuple(code for name, _, code in FLAG_GATES if any(getattr(rule.market, name) is True for rule in rules))
+    flags += (BSP_MARKET_UNKNOWN,) if fast else ()
     decided = []
     for rule in rules:
         market = [row.code for row in rule.when if row.feature in rulefile.market_features(rule)]
@@ -482,7 +560,8 @@ def _loaded(raw):
         value = loads_strict(raw)
     except (ValueError, UnicodeDecodeError, RecursionError):
         _fail("file", "not_json")
-    return _object(value, "top", TOP_KEYS)
+    fast = isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"] in FAST_IDS
+    return _object(value, "top", FAST_TOP_KEYS if fast else TOP_KEYS)
 
 
 def _named(value, place):
@@ -511,6 +590,15 @@ def named_files(raw):
     to read before parse_registration; RegistrationError otherwise."""
     _, split, rules = _files(_loaded(raw))
     return split[0], tuple(name for name, _ in rules)
+
+
+def named_rule_files(raw):
+    """(the study id, ((rule file name, sha256), ...)) a registration's raw bytes name, its top keys and data.rules
+    checked as parse_registration checks them and nothing else: what a runner reads of an earlier pass's registration
+    to know which rule files that pass ran (resting_study's parent resolver); RegistrationError otherwise."""
+    top = _loaded(raw)
+    _, _, rules = _files(top)
+    return top["id"], rules
 
 
 def _level(value, place):
@@ -544,11 +632,14 @@ def _split(data, expected, raw, read=False):
     return split, partitions["explore"], partitions["test"]
 
 
-def _rule_files(named, raws, codes, selectors=(FAVOURITE,)):
+def _rule_files(named, raws, codes, selectors=(FAVOURITE,), study=STUDY_ID):
     """The Rules of the named rule files' bytes, after the checks of the module docstring; codes is the
-    registration's population.codes as written, selectors the study's (SELECTORS)."""
+    registration's population.codes as written, selectors the study's (SELECTORS). A fast id's rule files are
+    betangel.rule/v2's alone, and each also names the fast id's lineage (FAST_LINEAGES) and a parent, gates bspMarket
+    true, and its one intent is a LAY of at least the GBP 1.00 bet minimum (F38): the order §2.3's close assumes."""
     if not isinstance(raws, dict):
         _fail("data.rules", "not_given")
+    fast = study in FAST_IDS
     rules = []
     for index, (name, sha256) in enumerate(named):
         place = f"data.rules[{index}]"
@@ -561,8 +652,8 @@ def _rule_files(named, raws, codes, selectors=(FAVOURITE,)):
             rule = parse_rule(raw)
         except RuleError as error:
             _fail(place, str(error))
-        if rule.schema != rulefile.SCHEMA:
-            _fail(place, "rule_schema_not_for_this_study")      # every study here walks v1 views (RuleView)
+        if rule.schema != (rulefile.SCHEMA_V2 if fast else rulefile.SCHEMA):
+            _fail(place, "rule_schema_not_for_this_study")      # an old id walks v1 views, a fast id v2 views
         if name != f"{rule.id}.json":
             _fail(place, "name_not_the_rule_id")
         if rule.select not in selectors:
@@ -580,6 +671,17 @@ def _rule_files(named, raws, codes, selectors=(FAVOURITE,)):
                 _fail(place, "when_code_reserved")
             if row.code not in codes:
                 _fail(place, "when_code_not_in_population_codes")
+        if fast:
+            if rule.lineage != FAST_LINEAGES[study]:
+                _fail(place, "lineage_not_the_fast_ids")         # M2: the budget and the one test are per lineage
+            if rule.parent_sha256 is None:
+                _fail(place, "parent_missing_for_a_fast_id")     # its chain must reach a file in Git (run_study)
+            if rule.market.bsp_market is not True:
+                _fail(place, "bsp_market_not_gated")             # S8: a BSP back is planned only where one exists
+            if rule.intents[0].side != LAY:
+                _fail(place, "side_not_lay")                     # C4: the close the figures assume is a LAY's
+            if rule.intents[0].stake < 1:
+                _fail(place, "stake_below_the_bet_minimum")      # F38: GBP 1.00
         rules.append(rule)
     if len({rule.lineage for rule in rules}) != 1:
         _fail("data.rules", "lineages_differ")
@@ -595,6 +697,8 @@ def parse_registration(raw, split_raw, rules_raw):
     if _text(top["id"], "id") not in STUDY_IDS:
         _fail("id", "not_supported")
     early = top["id"] in EARLY_IDS              # a new id: the hour switch, the explore label alone, four counts
+    fast = top["id"] in FAST_IDS                # a fast id: all of that (new), and every fast-only key and check
+    new = early or fast                         # M3: every place a new id differs reads this one predicate
     _text(top["status"], "status", "registered")
     if not isinstance(top["registered_on"], str) or not DATE_RE.fullmatch(top["registered_on"]):
         _fail("registered_on", "not_a_date")
@@ -610,6 +714,10 @@ def parse_registration(raw, split_raw, rules_raw):
     _text(registered["rule"], "registered_pass.rule")
 
     data, split_named, rules_named = _files(top)
+    if fast:                                    # first, before the split is parsed: the merged v3 split alone (M1)
+        if split_named[1] != FAST_SPLIT_SHA256:
+            _fail("data.split", "not_the_merged_split")
+        _fixed(top)                             # then close-early-v1's protocol values (R1) and two bounds (C5)
     _text(data["provider"], "data.provider", "betfair_historical_data")
     for key in ("duplicates", "files", "month", "source"):
         _text(data[key], f"data.{key}")
@@ -619,10 +727,16 @@ def parse_registration(raw, split_raw, rules_raw):
     ladders = _object(data["ladders"], "data.ladders", tiers)
     if any(ladders[tier] != LADDER_NAMES[tier] for tier in tiers):
         _fail("data.ladders", "not_supported")
+    # The two switch keys join the key set for a fast id alone, never for every new id: close-early-v1's file
+    # holds neither (recheck §3.3).
     traded = _object(data["traded_volume"], "data.traded_volume", ("after_the_hour_s", "basis", "divisor", "key",
-                                                                    "rule") + (("hour_rises",) if early else ()))
-    if early:
+                                                                    "rule") + (("hour_rises",) if new else ())
+                     + (("image_rises", "through") if fast else ()))
+    if new:
         _text(traded["hour_rises"], "data.traded_volume.hour_rises", NOT_COUNTED)
+    if fast:
+        _text(traded["image_rises"], "data.traded_volume.image_rises", NOT_COUNTED)
+        _text(traded["through"], "data.traded_volume.through", LEVEL_LOWERED)
     _text(traded["key"], "data.traded_volume.key", TRADED_KEY)
     _text(traded["basis"], "data.traded_volume.basis", TRADED_BASIS)
     _text(traded["rule"], "data.traded_volume.rule")
@@ -631,13 +745,14 @@ def parse_registration(raw, split_raw, rules_raw):
     months = (data["start_month"], data["end_month"])
     if not all(isinstance(month, str) and MONTH_RE.fullmatch(month) for month in months) or months[0] > months[1]:
         _fail("data.months", "malformed")
-    split, explore, test = _split(data, split_named, split_raw, read=early)
+    split, explore, test = _split(data, split_named, split_raw, read=new)
 
     population = _object(top["population"], "population", ("codes", "codes_rule", "price_ladder", "quotes", "source"))
     for key in ("codes_rule", "price_ladder", "quotes", "source"):
         _text(population[key], f"population.{key}")
-    rules = _rule_files(rules_named, rules_raw, _texts(population["codes"], "population.codes"), SELECTORS[top["id"]])
-    codes = _codes(population["codes"], "population.codes", population_codes(rules))
+    rules = _rule_files(rules_named, rules_raw, _texts(population["codes"], "population.codes"), SELECTORS[top["id"]],
+                        top["id"])
+    codes = _codes(population["codes"], "population.codes", population_codes(rules, fast))
     cells = tuple(Cell(rule.id, at_s, pull_s) for rule in rules for at_s, pull_s in rule.times)
     grid = _object(top["grid"], "grid", ("anchor", "cells", "rule", "trials"))
     _text(grid["anchor"], "grid.anchor", ANCHOR)
@@ -662,12 +777,17 @@ def parse_registration(raw, split_raw, rules_raw):
 
     measurement = _object(top["measurement"], "measurement", (
         "bsp_ends", "bsp_valid_if", "classes", "classes_rule", "commission_rate", "commission_source",
-        "deciding_net", "g", "intent_to_treat", "mid", "net_closed", "net_held", "part_and_rest", "removals", "unit"))
+        "deciding_net", "g", "intent_to_treat", "mid", "net_closed", "net_held", "part_and_rest", "removals", "unit")
+        + (("close", "close_lead_s", "move_max_spread_ticks", "realised") if fast else ()))
     _codes(measurement["classes"], "measurement.classes", CLASSES)
     _texts(measurement["bsp_valid_if"], "measurement.bsp_valid_if")
     for key in ("classes_rule", "commission_source", "deciding_net", "g", "intent_to_treat", "mid", "net_closed",
-                "net_held", "part_and_rest", "removals", "unit"):
+                "net_held", "part_and_rest", "removals", "unit") + (("close", "realised") if fast else ()):
         _text(measurement[key], f"measurement.{key}")
+    if fast:                                    # §2.3: no pull later than the close lead before the off
+        for index, rule in enumerate(rules):
+            if any(pull_s > -measurement["close_lead_s"] for _, pull_s in rule.times):
+                _fail(f"data.rules[{index}]", "pull_after_the_close_lead")
     ends = _object(measurement["bsp_ends"], "measurement.bsp_ends", ("names", "rule", "step",
                                                                      "whole_hundredths_share"))
     _codes(ends["names"], "measurement.bsp_ends.names", BSP_ENDS)
@@ -735,9 +855,23 @@ def parse_registration(raw, split_raw, rules_raw):
     _text(uncertainty["method"], "uncertainty.method", UNCERTAINTY_METHOD)
     _text(uncertainty["cluster"], "uncertainty.cluster", CLUSTER)
     _text(uncertainty["rule"], "uncertainty.rule")
-    diagnostics = _object(top["diagnostics"], "diagnostics", ("rule", "trd_counts", "within_s"))
+    diagnostics = _object(top["diagnostics"], "diagnostics", ("rule", "trd_counts", "within_s")
+                          + (("move_undefined",) if fast else ()))
     _text(diagnostics["rule"], "diagnostics.rule")
-    trd_counts = _codes(diagnostics["trd_counts"], "diagnostics.trd_counts", EARLY_TRD_COUNTS if early else TRD_COUNTS)
+    # Three ways (R6): a fast id's five counts, a new id's four, close-v1's three.
+    trd_counts = _codes(diagnostics["trd_counts"], "diagnostics.trd_counts",
+                        FAST_TRD_COUNTS if fast else EARLY_TRD_COUNTS if early else TRD_COUNTS)
+    switches = {}
+    if fast:                                    # every fast-only Plan field (§1.10), from the checked values
+        _codes(diagnostics["move_undefined"], "diagnostics.move_undefined", MOVE_UNDEFINED)
+        reading = _object(top["reading"], "reading", READING_KEYS)
+        for key, value in READING:
+            _text(reading[key], f"reading.{key}", value)
+        _codes(reading["excludes"], "reading.excludes", READING_EXCLUDES)
+        _text(reading["rule"], "reading.rule")
+        switches = dict(views=V2, windows=windows_of(rules), move_max_spread_ticks=measurement["move_max_spread_ticks"],
+                        image_rises_counted=False, through_needs_lowered=True, value_measure=NET_CLOSABLE,
+                        close_lead_s=measurement["close_lead_s"], fast=True)
     plan = Plan(
         sha256=registration_sha256(raw), study=top["id"], lineage=rules[0].lineage, split=split, rules=rules,
         cells=cells, explore_label=explore, test_label=test, tiers=tiers,
@@ -766,10 +900,48 @@ def parse_registration(raw, split_raw, rules_raw):
         quantiles=quantiles, power=_level(statistics["power"], "statistics.power"),
         detectable_level=_level(statistics["detectable_level"], "statistics.detectable_level"),
         label_note=verdicts["printed_with"], exposure_note=exposure["printed_with_every_label"],
-        hour_rises_counted=not early, explore_only=early, trd_counts=trd_counts)
+        hour_rises_counted=not new, explore_only=new, trd_counts=trd_counts, **switches)
     if file_bytes(top) != raw:                  # last: every value is now known to be small (as partition.py)
         _fail("file", "not_canonical")
     return plan
+
+
+def _same(value, other):
+    """Whether two JSON values are equal as JSON compares them: equal types (a bool is not an int), dicts key by
+    key, lists item by item."""
+    if type(value) is not type(other):
+        return False
+    if isinstance(value, dict):
+        return set(value) == set(other) and all(_same(value[key], other[key]) for key in value)
+    if isinstance(value, list):
+        return len(value) == len(other) and all(map(_same, value, other))
+    return value == other
+
+
+def _at(top, key):
+    """The value at a dotted path of a registration's top object, or _ABSENT when the path is not there."""
+    value = top
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return _ABSENT
+        value = value[part]
+    return value
+
+
+_ABSENT = object()
+
+
+def _fixed(top):
+    """A fast registration's protocol values (§3.2a, R1, C5): every key of FAST_FIXED holds exactly its value, else
+    fast:value_not_fixed:<key>; each key of FAST_BOUNDS holds a JSON int in its bounds, else
+    fast:value_out_of_range:<key>. Read from the top object before any block is checked."""
+    for key, value in FAST_FIXED.items():
+        if not _same(_at(top, key), value):
+            _fail("fast", f"value_not_fixed:{key}")
+    for key, low, high in FAST_BOUNDS:
+        value = _at(top, key)
+        if type(value) is not int or not low <= value <= high:
+            _fail("fast", f"value_out_of_range:{key}")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -788,9 +960,17 @@ def record_code(plan, record, cell):
     """(code, ()) when the index record alone gives the cell a code (RECORD_CODES, then a flag code); else
     (None, the gated flags with no true or false value as of t): the cell reaches the book. A record whose label is
     not one the plan reads (Plan.labels_read) is partition_not_registered here, at every cell its history gates let
-    through; this is the one function the runner's record facts and the walk both ask."""
+    through; this is the one function the runner's record facts and the walk both ask. For a fast plan the label
+    comes first, right after the anchor (S1): a record with an anchor whose label is not read is
+    partition_not_registered at every cell, before any other gate, so no fact of it is counted under another code; a
+    record with no anchor keeps market_code's code. A fast plan's gated bspMarket that is not known true at t, and
+    no flag false, is bsp_market_unknown (S8)."""
     rule = plan.rule(cell.rule_id)
     market = rule.market
+    if plan.fast:
+        dated = race_label(plan, record)
+        if dated is not None and dated[1] not in plan.labels_read:
+            return PARTITION_NOT_REGISTERED, ()
     gate = _Gate(plan.tiers, plan.start_month, plan.end_month, market.countries, market.event_type_id,
                  market.market_type, market.betting_type, market.number_of_winners, 0)
     code = market_code(gate, record, cell.at_s)
@@ -806,6 +986,8 @@ def record_code(plan, record, cell):
                 return failed, ()
             if value is not True:
                 missing.append(name)
+    if plan.fast and FLAG_GATES[0][0] in missing:
+        return BSP_MARKET_UNKNOWN, ()
     return None, tuple(missing)
 
 
